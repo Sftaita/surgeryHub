@@ -978,6 +978,14 @@ pertinent : instrumentiste affecté, mission terminée (`endAt <= now`), aucune 
 (source `PLANNED`), statut `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`, encodage ni
 verrouillé ni facturé — même condition que `MissionVoter::HOURS_REMIND`.
 
+**Corrections directes du manager (D-153) :** `edit_encoding` (interventions, matériel) et
+`edit_hours` (heures réelles) sont proposés au manager / admin en `DECLARED`, `ASSIGNED`,
+`IN_PROGRESS`, `ENCODING_IN_PROGRESS` et `SUBMITTED`, encodage ni verrouillé ni facturé et sans
+calcul financier `LOCKED` ; `edit_hours` exige en plus une instrumentiste affectée. Jamais en
+`VALIDATED` (rouvrir d'abord), `CLOSED`, `OPEN`, `DRAFT`, `CANCELLED`, `REJECTED`. Même règle
+exactement que `MissionVoter::EDIT_ENCODING` et `MissionExecutionVoter::UPDATE` : un appel
+direct hors de ces cas répond `403`.
+
 ---
 
 ## 13. Erreurs standard
@@ -2590,6 +2598,7 @@ elle est libre).
 | `TO_REVIEW` | `CALCULATION_PENDING_APPROVAL` | calcul actif `CALCULATED` | total (non facturable) |
 | `TO_REVIEW` | `RECALCULATION_REQUIRED` | élément encodé absent du calcul actif, sans exclusion | `null` |
 | `TO_REVIEW` | `ENCODING_REOPENED` | ligne active non facturée d'une mission qui n'est plus `VALIDATED` | total |
+| `TO_REVIEW` | `CALCULATION_OBSOLETE` | **D-153** — mission revalidée, calcul actif rendu obsolète par la réouverture de son encodage (`obsolete: true`) : à recalculer ; anomalie mission avec l'action `RECALCULATE`, jamais `APPROVE` | total |
 | `TO_REVIEW` | `CALCULATION_BLOCKED` | élément correct, calcul de la mission en échec sur une autre anomalie. **D-141 :** `reasonDetail` donne le tarif résolu (montant, règle, période) et les anomalies qui bloquent ENCORE la mission (évaluation actuelle du moteur) | `null` |
 | `TO_REVIEW` | `FIXED_PENDING_RECALCULATION` | **D-141** — mission en échec dont l'évaluation actuelle du moteur ne trouve plus aucune anomalie : il reste à relancer le calcul (`reasonDetail` = tarif résolu) | `null` |
 | `TO_REVIEW` | `MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE`, `MISSING_PRIMARY_FIRM`, `MISSING_INTERVENTION_TYPE`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER`, `MISSING_REQUIRED_CHOICE_ANSWER` | anomalie rattachée à l'élément (codes identiques au moteur ; `MISSING_PRIMARY_FIRM` aussi avant calcul). **D-141 :** pour une mission en échec sans calcul actif, c'est l'anomalie que le moteur produit MAINTENANT pour l'élément — une anomalie auditée dont la cause a disparu ne qualifie plus la ligne (ex. « Pas de forfait » posé depuis → `FEE_NOT_APPLICABLE`, `reasonDetail` le signale) | `null` |
@@ -2680,8 +2689,10 @@ génération.
 `FINANCIAL_LINE_NOT_BILLABLE` (ligne à 0 € — `context.reasonCode` = `REPRESENTATIVE_PRESENT`
 délégué présent ou `ZERO_AMOUNT` tarif nul ; mêmes règles que la worklist, revue PR #1),
 `MISSION_NOT_VALIDATED` (encodage rouvert après le calcul — « Encodage rouvert » dans la worklist),
+`FINANCIAL_CALCULATION_OBSOLETE` (**D-153** — calcul rendu obsolète par une réouverture, à
+recalculer ; aussi pour les relevés instrumentiste),
 `FINANCIAL_LINE_ALREADY_ASSIGNED` (document émis), `FINANCIAL_LINE_STALE` (calcul changé
-depuis l'ajout), `FINANCIAL_LINE_BENEFICIARY_MISMATCH`, `FINANCIAL_LINE_CURRENCY_MISMATCH`,
+depuis l'ajout, **D-153 :** ou rendu obsolète par une réouverture), `FINANCIAL_LINE_BENEFICIARY_MISMATCH`, `FINANCIAL_LINE_CURRENCY_MISMATCH`,
 `FINANCIAL_LINE_NOT_ELIGIBLE`, `FINANCIAL_CALCULATION_NOT_APPROVED`, `DRAFT_EMPTY`,
 `DRAFT_LINE_NOT_FOUND` ; `409 INVOICE_STATUS_TRANSITION_INVALID` (le document n'est pas/plus
 un brouillon) ; `422 VALIDATION_FAILED` ; `404` ; `403`.
@@ -6010,7 +6021,11 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 - `MissionLifecycleChangedMessage(ENCODING_REOPENED)` dispatché après le flush → **D-148 :**
   `ENCODING_CORRECTION_REQUESTED` à l'instrumentiste (`action: "REOPENED"`, même contrat que
   `reject`)
-- Aucun recalcul, aucune modification d'un calcul ou document financier (D-148)
+- Aucun recalcul, aucune modification d'un calcul ou document financier (D-148).
+  **D-153 :** le calcul actif `CALCULATED` / `APPROVED` est marqué obsolète
+  (`encodingReopenedAt`, statut et montants inchangés ; ids dans l'audit,
+  `obsoleteFinancialCalculationIds`) : il n'est plus approuvé, verrouillé ni facturé tant
+  qu'un recalcul explicite ne l'a pas remplacé
 
 **Erreurs :**
 
@@ -6026,6 +6041,49 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 réouverture est réellement possible (jamais avec un calcul `LOCKED`) ; le champ
 `encodingCorrectionBlockedReason` (managers seulement, `null` sinon) donne le motif d'un refus
 (`CLOSED` ou calcul `LOCKED`, mêmes textes que les `409`) pour l'afficher tel quel.
+
+**D-153 — `GET /api/missions/{id}`** : `encodingCorrectionFinancialNotice` (managers seulement,
+`null` sinon) explique qu'un calcul financier `CALCULATED` / `APPROVED` actif reflète
+l'encodage tel qu'il a été validé et devra être recalculé depuis la fiche mission après
+revalidation ; présent seulement quand une correction est possible. Aucun recalcul ni aucune
+facturation automatiques.
+
+### `GET /api/missions/{id}/encoding/history` (D-153)
+
+Historique des corrections de l'encodage d'une mission, lu dans le journal d'activité
+existant (aucun événement produit). **AuthZ :** `MissionVoter::VIEW_ENCODING_HISTORY` —
+manager / admin uniquement (`403` sinon). Au plus 200 lignes, les plus récentes d'abord.
+
+```json
+{
+  "items": [
+    {
+      "id": 9812,
+      "occurredAt": "2026-10-15T09:12:44+00:00",
+      "category": "HOURS",
+      "eventType": "MISSION_EXECUTION_DURATION_CHANGED",
+      "actorName": "Sophie Martin",
+      "summary": "Sophie Martin a corrigé les heures réelles de la mission #512 : 08:00–11:30 (210 min) → 08:00–12:15 (255 min)",
+      "changes": [
+        { "field": "Fin réelle", "from": "2026-10-12T11:30:00+02:00", "to": "2026-10-12T12:15:00+02:00", "redacted": false },
+        { "field": "Source des heures", "from": "INSTRUMENTIST", "to": "MANAGER", "redacted": false }
+      ]
+    }
+  ]
+}
+```
+
+- `category` : `HOURS` (`MISSION_EXECUTION_CREATED|UPDATED|DURATION_CHANGED`),
+  `INTERVENTION` (`MISSION_INTERVENTION_ADDED|UPDATED|REMOVED`), `MATERIAL`
+  (`MISSION_MATERIAL_LINE_ADDED|UPDATED|REMOVED`), `WORKFLOW`
+  (`MISSION_ENCODING_STARTED|COMPLETED|REOPENED|VALIDATED|REJECTED`).
+- `changes` : champ (libellé), ancienne et nouvelle valeur ; une valeur masquée (commentaire)
+  a `redacted: true` et `from` / `to` à `null`. Vide pour un ajout, une suppression ou une
+  correction d'heures antérieure à D-153.
+- Les audits `MISSION_EXECUTION_UPDATED` / `MISSION_EXECUTION_DURATION_CHANGED` portent
+  désormais `previousActualStartAt`, `actualStartAt`, `previousActualEndAt`, `actualEndAt`,
+  `previousActualDurationMinutes`, `actualDurationMinutes`, `previousHoursSource`,
+  `hoursSource`.
 
 ---
 
@@ -6374,14 +6432,14 @@ avec `version + 1`.
 ### `POST /api/financial-calculations/{id}/approve`
 
 `CALCULATED → APPROVED`. **Erreurs :** `409 FINANCIAL_CALCULATION_INELIGIBLE` si le
-calcul n'est pas `CALCULATED`.
+calcul n'est pas `CALCULATED`, ou (**D-153**) s'il est obsolète (`obsolete: true`).
 
 ### `POST /api/financial-calculations/{id}/lock`
 
 `APPROVED → LOCKED`. Un calcul `LOCKED` ne peut plus être recalculé ni annulé — et bloque
 désormais la réouverture de l'encodage de la mission (`POST .../encoding/reopen`, §32,
 `409` si un calcul `LOCKED` existe). **Erreurs :** `409 FINANCIAL_CALCULATION_INELIGIBLE`
-si le calcul n'est pas `APPROVED`.
+si le calcul n'est pas `APPROVED`, ou (**D-153**) s'il est obsolète.
 
 ### Forme d'un calcul (toutes réponses)
 
@@ -6393,6 +6451,7 @@ si le calcul n'est pas `APPROVED`.
   "approvedAt": null, "approvedBy": null, "lockedAt": null,
   "cancelledAt": null, "cancelledBy": null,
   "supersededAt": null, "supersededByCalculationId": null,
+  "obsolete": false, "encodingReopenedAt": null,
   "totalsByCurrency": { "EUR": { "FIRM": "340.00", "INSTRUMENTIST": "90.00" } },
   "lines": [
     {

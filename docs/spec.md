@@ -125,6 +125,14 @@ Managers (D-152): view, create and lift any surgeon–instrumentist incompatibil
 every conflict it raises on already-assigned future missions (reassign, open to the pool or
 lift) — a conflict can never be ignored
 
+Managers (D-153): correct a mission's real hours, interventions and material directly from
+the encoding tracking drawer while its encoding is still open (declared, assigned, in
+progress, being encoded or submitted); a validated encoding is reopened first; a closed
+mission or a financially locked calculation is never corrected; every correction is kept in
+a readable history (date, author, what changed, before → after); a correction never
+recalculates nor invoices anything — an existing calculation is flagged for recalculation
+after revalidation
+
 Managers/Admins:
 
 control planning

@@ -90,6 +90,15 @@ class FinancialCalculation
     #[ORM\Column(name: 'superseded_at', type: 'datetime_immutable', nullable: true)]
     private ?\DateTimeImmutable $supersededAt = null;
 
+    /**
+     * D-153 — encodage de la mission rouvert alors que ce calcul était actif (CALCULATED ou
+     * APPROVED) : ses montants reflètent un encodage qui a pu être corrigé depuis. Il n'est
+     * plus jamais approuvé, verrouillé ni repris dans une facture firme ou un relevé ; seul
+     * recalculate() en produit une version à jour. Statut et montants restent inchangés.
+     */
+    #[ORM\Column(name: 'encoding_reopened_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $encodingReopenedAt = null;
+
     /** Le NOUVEAU calcul qui a remplacé celui-ci — renseigné uniquement sur l'ancien (SUPERSEDED). */
     #[ORM\ManyToOne(targetEntity: self::class)]
     #[ORM\JoinColumn(name: 'superseded_by_calculation_id', nullable: true)]
@@ -145,6 +154,12 @@ class FinancialCalculation
 
     public function getSupersededAt(): ?\DateTimeImmutable { return $this->supersededAt; }
     public function setSupersededAt(?\DateTimeImmutable $supersededAt): static { $this->supersededAt = $supersededAt; return $this; }
+
+    public function getEncodingReopenedAt(): ?\DateTimeImmutable { return $this->encodingReopenedAt; }
+    public function setEncodingReopenedAt(?\DateTimeImmutable $at): static { $this->encodingReopenedAt = $at; return $this; }
+
+    /** D-153 — calculé sur un encodage rouvert depuis : jamais une source de facturation. */
+    public function isObsolete(): bool { return $this->encodingReopenedAt !== null; }
 
     public function getSupersededByCalculation(): ?self { return $this->supersededByCalculation; }
     public function setSupersededByCalculation(?self $calculation): static { $this->supersededByCalculation = $calculation; return $this; }

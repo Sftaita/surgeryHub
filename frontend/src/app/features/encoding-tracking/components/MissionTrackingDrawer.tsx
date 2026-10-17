@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Box, CircularProgress, Tooltip } from "@mui/material";
+import { Box, CircularProgress, Dialog, DialogContent, DialogTitle, Tooltip } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
@@ -13,8 +13,10 @@ import { EncodingCorrectionDialog } from "./EncodingCorrectionDialog";
 import type { EncodingCorrectionKind } from "./EncodingCorrectionDialog";
 import { useToast } from "../../../ui/toast/useToast";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
-import { getMissionFinancialAnomalies } from "../api/encodingTracking.api";
-import type { EncodingTrackingItem } from "../api/encodingTracking.api";
+import { getMissionEncodingHistory, getMissionFinancialAnomalies } from "../api/encodingTracking.api";
+import type { EncodingHistoryChange, EncodingHistoryItem, EncodingTrackingItem } from "../api/encodingTracking.api";
+import EditServiceHoursDialog from "../../missions/components/EditServiceHoursDialog";
+import InterventionsSection from "../../encoding/components/InterventionsSection";
 import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, formatMinutes } from "../encodingStateMeta";
 
 const GRAY_950 = "#0B1320";
@@ -75,6 +77,22 @@ function automaticRemindersLabel(reminders: { stage: string; sentAt: string | nu
 function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("fr-BE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+const HISTORY_CATEGORY_LABEL: Record<EncodingHistoryItem["category"], string> = {
+  HOURS: "Heures",
+  INTERVENTION: "Intervention",
+  MATERIAL: "Matériel",
+  WORKFLOW: "Encodage",
+};
+
+/** D-153 — valeur avant/après telle que servie par le journal (jamais recalculée ici). */
+function formatChangeValue(change: EncodingHistoryChange, value: EncodingHistoryChange["from"]): string {
+  if (change.redacted) return "(masqué)";
+  if (value === null || value === "") return "—";
+  if (typeof value === "boolean") return value ? "oui" : "non";
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return formatDateTime(value);
+  return String(value);
 }
 
 interface StepInfo { label: string; done: boolean; when: string; }
@@ -147,6 +165,13 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   });
   // D-138 — explication de l'anomalie FINANCE, servie par le backend (même état que la liste).
   const isFinancialAnomaly = item?.financial.state === "ANOMALY";
+  // D-153 — historique des corrections (heures, interventions, matériel, étapes) : lecture
+  // du journal d'activité, servie aux managers seulement (MissionVoter::VIEW_ENCODING_HISTORY).
+  const historyQuery = useQuery({
+    queryKey: ["mission-encoding-history", missionId],
+    queryFn: () => getMissionEncodingHistory(missionId!),
+    enabled: open,
+  });
   const financialQuery = useQuery({
     queryKey: ["encoding-tracking-financial-anomalies", missionId],
     queryFn: () => getMissionFinancialAnomalies(missionId!),
@@ -172,6 +197,8 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       queryClient.invalidateQueries({ queryKey: ["mission", missionId] }),
       queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] }),
       queryClient.invalidateQueries({ queryKey: ["mission-audit", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["mission-execution", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["mission-encoding-history", missionId] }),
       queryClient.invalidateQueries({ queryKey: ["missions"], exact: false }),
       queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false }),
       queryClient.invalidateQueries({ queryKey: ["encoding-tracking-financial-anomalies", missionId] }),
@@ -251,14 +278,20 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
     onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
   });
 
+  // D-153 — corrections directes du manager (heures / interventions & matériel).
+  const [hoursOpen, setHoursOpen] = React.useState(false);
+  const [encodingEditOpen, setEncodingEditOpen] = React.useState(false);
+  React.useEffect(() => { setHoursOpen(false); setEncodingEditOpen(false); }, [missionId]);
+
   // Le tiroir se superpose à la liste (aucun reflow) : Échap le ferme, comme un tiroir MUI.
-  // D-148 — pendant la fenêtre de motif, Échap ne concerne que la fenêtre (jamais le tiroir).
+  // D-148 / D-153 — pendant une fenêtre (motif, heures, encodage), Échap ne concerne qu'elle.
+  const modalOpen = correctionKind !== null || hoursOpen || encodingEditOpen;
   React.useEffect(() => {
-    if (!open || correctionKind !== null) return;
+    if (!open || modalOpen) return;
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose, correctionKind]);
+  }, [open, onClose, modalOpen]);
 
   if (!open || !item) return null;
 
@@ -282,6 +315,13 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   const canReturnEncoding = allowedActions.includes("reject") && missionQuery.data?.status === "SUBMITTED";
   const canReopenEncoding = allowedActions.includes("reopen");
   const correctionBlockedReason = missionQuery.data?.encodingCorrectionBlockedReason ?? null;
+  // D-153 — accordés uniquement par le backend (MissionEncodingCorrectionPolicy), jamais déduits
+  // ici du statut : une mission validée se rouvre d'abord, une mission clôturée ou verrouillée
+  // financièrement ne se corrige pas.
+  const canEditHours = allowedActions.includes("edit_hours");
+  const canEditEncoding = allowedActions.includes("edit_encoding");
+  const financialNotice = missionQuery.data?.encodingCorrectionFinancialNotice ?? null;
+  const history = historyQuery.data ?? [];
   const isValidated = item.encodingState === "VALIDATED" || item.encodingState === "LOCKED";
   const entries = encodingQuery.data?.entries ?? [];
   const refs = item.encoding.materialLineCount;
@@ -394,6 +434,12 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           />
         )}
 
+        {financialNotice && (
+          <Box data-testid="drawer-financial-notice" sx={{ padding: "10px 12px", borderRadius: "12px", background: AMBER_50, border: "1px solid", borderColor: AMBER_100, fontSize: 12.5, fontWeight: 600, color: AMBER_700 }}>
+            {financialNotice}
+          </Box>
+        )}
+
         <Card>
           <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
             <Eyebrow>HEURES</Eyebrow>
@@ -418,6 +464,22 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
                 </Box>
               </Tooltip>
             )}
+            {canEditHours && missionQuery.data && (
+              <Box
+                component="button"
+                type="button"
+                data-testid="drawer-edit-hours"
+                onClick={() => setHoursOpen(true)}
+                sx={{
+                  ml: canRemindHours ? 0 : "auto", display: "flex", alignItems: "center", gap: "6px", height: 28, padding: "0 10px", borderRadius: "8px",
+                  border: "1px solid", borderColor: GRAY_200, background: "#fff", color: GRAY_700, font: "inherit",
+                  fontSize: 12, fontWeight: 800, cursor: "pointer", "&:hover": { background: GRAY_75 },
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                Corriger les heures
+              </Box>
+            )}
           </Box>
           <Box sx={{ display: "flex", flexDirection: "column", gap: "7px" }}>
             <Bar label="Planifié" text={planRange} total={formatMinutes(item.hours.plannedMinutes)} pct={100} color={GRAY_400} plan />
@@ -441,6 +503,21 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             {isValidated && (
               <Box sx={{ flexShrink: 0, whiteSpace: "nowrap", height: 20, padding: "0 8px", borderRadius: "999px", display: "inline-flex", alignItems: "center", fontSize: 10.5, fontWeight: 800, background: GRAY_100, color: GRAY_600 }}>
                 Lecture seule
+              </Box>
+            )}
+            {canEditEncoding && encodingQuery.isSuccess && (
+              <Box
+                component="button"
+                type="button"
+                data-testid="drawer-edit-encoding"
+                onClick={() => setEncodingEditOpen(true)}
+                sx={{
+                  display: "flex", alignItems: "center", gap: "6px", height: 26, padding: "0 10px", borderRadius: "8px",
+                  border: "1px solid", borderColor: GRAY_200, background: "#fff", color: GRAY_700, font: "inherit",
+                  fontSize: 12, fontWeight: 800, cursor: "pointer", "&:hover": { background: GRAY_75 },
+                }}
+              >
+                Corriger l'encodage
               </Box>
             )}
             <Box sx={{ ml: "auto", fontSize: 12, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
@@ -471,6 +548,29 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             )}
           </Box>
         </Card>
+
+        {history.length > 0 && (
+          <Card>
+            <Eyebrow>HISTORIQUE DES CORRECTIONS</Eyebrow>
+            <Box component="ul" data-testid="drawer-encoding-history" sx={{ m: 0, p: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "10px" }}>
+              {history.map((h) => (
+                <Box component="li" key={h.id} sx={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                  <Box sx={{ display: "flex", alignItems: "baseline", gap: "8px", fontSize: 11, color: GRAY_500 }}>
+                    <Box component="span" sx={{ fontWeight: 800, color: GRAY_600 }}>{HISTORY_CATEGORY_LABEL[h.category]}</Box>
+                    <Box component="span">{formatDateTime(h.occurredAt)}</Box>
+                    <Box component="span">· {h.actorName ?? "Système"}</Box>
+                  </Box>
+                  <Box sx={{ fontSize: 12.5, color: GRAY_800 }}>{h.summary}</Box>
+                  {h.changes.map((c, i) => (
+                    <Box key={i} sx={{ fontSize: 11.5, color: GRAY_600, fontVariantNumeric: "tabular-nums" }}>
+                      {c.field} : {formatChangeValue(c, c.from)} → {formatChangeValue(c, c.to)}
+                    </Box>
+                  ))}
+                </Box>
+              ))}
+            </Box>
+          </Card>
+        )}
       </Box>
 
       <Box sx={{ flexShrink: 0, background: "#fff", borderTop: "1px solid", borderColor: GRAY_150, padding: "13px 20px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px" }}>
@@ -565,6 +665,41 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         onConfirm={confirmCorrection}
         onCancel={() => setCorrectionKind(null)}
       />
+
+      {canEditHours && hoursOpen && missionQuery.data && (
+        <EditServiceHoursDialog
+          open={hoursOpen}
+          onClose={() => setHoursOpen(false)}
+          mission={missionQuery.data}
+          hoursSource="MANAGER"
+          title="Corriger les heures"
+          onSaved={() => void refreshAfterAction()}
+        />
+      )}
+
+      {encodingEditOpen && encodingQuery.data && (
+        <Dialog open onClose={() => { setEncodingEditOpen(false); void refreshAfterAction(); }} maxWidth="md" fullWidth>
+          <DialogTitle>Corriger l'encodage — mission #{item.missionId}</DialogTitle>
+          <DialogContent dividers>
+            {financialNotice && (
+              <Box sx={{ mb: 1.5, padding: "10px 12px", borderRadius: "12px", background: AMBER_50, fontSize: 12.5, fontWeight: 600, color: AMBER_700 }}>
+                {financialNotice}
+              </Box>
+            )}
+            <InterventionsSection
+              missionId={item.missionId}
+              canEdit={canEditEncoding}
+              entries={encodingQuery.data.entries ?? []}
+              legacyInterventions={encodingQuery.data.interventions ?? []}
+              catalog={encodingQuery.data.catalog}
+              onSaved={() => void refreshAfterAction()}
+              canSubmit={false}
+              onValidate={() => undefined}
+              progress={encodingQuery.data.progress}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
     </Box>
   );
 }

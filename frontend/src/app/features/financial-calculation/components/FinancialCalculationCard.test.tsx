@@ -138,3 +138,21 @@ describe("FinancialCalculationCard — détail du calcul (D-092)", () => {
     expect(screen.getByText("Ajustée")).toBeInTheDocument();
   });
 });
+
+describe("FinancialCalculationCard — calcul obsolète (D-153)", () => {
+  it("signale un calcul rendu obsolète par une réouverture et ne propose que le recalcul", async () => {
+    renderCard({ ...makeCalculation([baseLine()]), status: "APPROVED", obsolete: true, encodingReopenedAt: "2026-06-02T09:00:00+02:00" });
+
+    expect(await screen.findByTestId("calculation-obsolete")).toHaveTextContent("Calcul obsolète");
+    expect(screen.queryByRole("button", { name: "Verrouiller" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approuver" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Recalculer/ })).toBeInTheDocument();
+  });
+
+  it("un calcul à jour garde ses actions habituelles", async () => {
+    renderCard({ ...makeCalculation([baseLine()]), status: "APPROVED", obsolete: false });
+
+    expect(await screen.findByRole("button", { name: "Verrouiller" })).toBeInTheDocument();
+    expect(screen.queryByTestId("calculation-obsolete")).toBeNull();
+  });
+});

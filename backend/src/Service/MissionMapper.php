@@ -78,6 +78,7 @@ final class MissionMapper
             encodingCorrectionBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::reopenBlockedReason($m) : null,
             currentAssignment: $isManagerViewer || $m->getSurgeon()?->getId() === $viewer->getId() ? $this->currentAssignment($m) : null,
             myAssignmentStatus: $this->myAssignmentStatus($m, $viewer),
+            encodingCorrectionFinancialNotice: $isManagerViewer ? MissionEncodingCorrectionPolicy::financialImpactNotice($m) : null,
         );
     }
 

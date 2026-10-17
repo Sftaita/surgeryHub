@@ -170,6 +170,7 @@ final class FinancialCalculationService
         if ($calculation->getStatus() !== FinancialCalculationStatus::CALCULATED) {
             throw new FinancialCalculationIneligibleException('Only a CALCULATED calculation can be approved.');
         }
+        $this->assertNotObsolete($calculation);
 
         $calculation->setStatus(FinancialCalculationStatus::APPROVED);
         $calculation->setApprovedAt(new \DateTimeImmutable());
@@ -187,6 +188,7 @@ final class FinancialCalculationService
         if ($calculation->getStatus() !== FinancialCalculationStatus::APPROVED) {
             throw new FinancialCalculationIneligibleException('Only an APPROVED calculation can be locked.');
         }
+        $this->assertNotObsolete($calculation);
 
         $calculation->setStatus(FinancialCalculationStatus::LOCKED);
         $calculation->setLockedAt(new \DateTimeImmutable());
@@ -214,6 +216,16 @@ final class FinancialCalculationService
         $this->em->flush();
 
         return $calculation;
+    }
+
+    public const OBSOLETE_MESSAGE = "Ce calcul est obsolète : l'encodage de la mission a été rouvert depuis. Recalculez-le après revalidation de l'encodage.";
+
+    /** D-153 — un calcul rendu obsolète par une réouverture n'avance plus dans le workflow. */
+    private function assertNotObsolete(FinancialCalculation $calculation): void
+    {
+        if ($calculation->isObsolete()) {
+            throw new FinancialCalculationIneligibleException(self::OBSOLETE_MESSAGE);
+        }
     }
 
     /**

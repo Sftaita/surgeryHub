@@ -64,6 +64,9 @@ export interface FinancialCalculation {
   cancelledBy: number | null;
   supersededAt: string | null;
   supersededByCalculationId: number | null;
+  /** D-153 — encodage rouvert depuis ce calcul : à recalculer, jamais approuvé, verrouillé ni facturé. */
+  obsolete?: boolean;
+  encodingReopenedAt?: string | null;
   totalsByCurrency: Record<string, Record<string, string>>;
   lines: FinancialCalculationLineDetail[];
 }

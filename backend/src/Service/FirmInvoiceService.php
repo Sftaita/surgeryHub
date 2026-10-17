@@ -308,7 +308,8 @@ class FirmInvoiceService
             }
             ['lines' => $lines] = $this->lockAndReloadSelectedLines($financialLineIds);
             foreach ($lines as $fcl) {
-                if (!in_array($fcl->getFinancialCalculation()->getStatus(), [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true)) {
+                if (!in_array($fcl->getFinancialCalculation()->getStatus(), [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true)
+                    || $fcl->getFinancialCalculation()->isObsolete()) {
                     $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_STALE', sprintf(
                         'Le calcul de la ligne #%d a été recalculé ou annulé depuis son ajout au brouillon : retirez-la puis ajoutez la ligne à jour.', $fcl->getId(),
                     ), ['financialCalculationLineId' => $fcl->getId()]);
@@ -394,8 +395,9 @@ class FirmInvoiceService
         }
         $stale = [];
         foreach ($draft->getLines() as $line) {
-            $status = $line->getFinancialCalculationLine()?->getFinancialCalculation()?->getStatus();
-            if (!in_array($status, [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true)) {
+            $calculation = $line->getFinancialCalculationLine()?->getFinancialCalculation();
+            // D-153 — un calcul rendu obsolète par une réouverture l'est aussi dans un brouillon.
+            if (!in_array($calculation?->getStatus(), [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true) || $calculation?->isObsolete()) {
                 $stale[(int) $line->getId()] = true;
             }
         }
@@ -908,6 +910,14 @@ class FirmInvoiceService
                 $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_CALCULATION_NOT_APPROVED', sprintf('Le calcul de la ligne #%d n\'est ni APPROVED ni LOCKED.', $line->getId()), $context);
                 continue;
             }
+            // D-153 — calcul rendu obsolète par une réouverture de l'encodage : ses montants
+            // ne reflètent plus l'encodage revalidé. Jamais facturé ; recalculer d'abord.
+            if ($line->getFinancialCalculation()->isObsolete()) {
+                $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_CALCULATION_OBSOLETE', sprintf(
+                    'Le calcul de la ligne #%d est obsolète : l\'encodage de sa mission a été rouvert depuis. Recalculez la mission, puis ajoutez la ligne à jour.', $line->getId(),
+                ), $context);
+                continue;
+            }
             // Revue PR #1 — mêmes règles que la worklist (D-133) : le backend refuse ce que
             // l'écran présente comme non facturable, même via un appel API direct.
             if ($line->getFinancialCalculation()->getMission()?->getStatus() !== MissionStatus::VALIDATED) {
@@ -953,6 +963,7 @@ class FirmInvoiceService
             ->andWhere('l.beneficiaryFirm = :firm')
             ->andWhere('l.currency = :currency')
             ->andWhere('fc.status IN (:statuses)')
+            ->andWhere('fc.encodingReopenedAt IS NULL') // D-153 — jamais un calcul obsolète
             ->andWhere('fil.id IS NULL')
             ->andWhere('l.effectiveAt >= :start')
             ->andWhere('l.effectiveAt <= :end')

@@ -9,6 +9,7 @@ use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
 use App\Service\MissionAssignmentService;
 use App\Service\MissionDispatchService;
+use App\Service\MissionEncodingCorrectionPolicy;
 use App\Service\MissionHoursReminderPolicy;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\Voter;
@@ -77,6 +78,9 @@ class MissionVoter extends Voter
     // read-only view of it ("Affectation annulée"), never anything about why.
     public const VIEW_FORMER_ASSIGNMENT = 'MISSION_VIEW_FORMER_ASSIGNMENT';
 
+    // D-153 — the encoding correction history (hours, interventions, material): managers only.
+    public const VIEW_ENCODING_HISTORY = 'MISSION_VIEW_ENCODING_HISTORY';
+
     public function __construct(
         // Optional only so plain unit tests can build the voter; always autowired.
         private readonly ?MissionAssignmentService $assignments = null,
@@ -112,6 +116,7 @@ class MissionVoter extends Voter
             self::REFUSE_ASSIGNMENT,
             self::REQUEST_ASSIGNMENT_REVIEW,
             self::VIEW_FORMER_ASSIGNMENT,
+            self::VIEW_ENCODING_HISTORY,
         ], true)) {
             return false;
         }
@@ -175,7 +180,8 @@ class MissionVoter extends Voter
             self::VIEW_FORMER_ASSIGNMENT      => in_array('ROLE_INSTRUMENTIST', $roles, true)
                 && $mission->getInstrumentist()?->getId() !== $user->getId()
                 && ($this->assignments?->hasEndedAffectationOf($mission, $user) ?? false),
-            default                           => false,
+            self::VIEW_ENCODING_HISTORY       => $isManager,
+            default                          => false,
         };
     }
 
@@ -302,9 +308,10 @@ class MissionVoter extends Voter
 
     private function canEditEncoding(Mission $mission, User $user, bool $managerContext): bool
     {
-        // manager/admin: OK (support / correction)
+        // manager/admin: correction (D-153) in the correctable statuses, never on a locked
+        // encoding (a validated one is reopened first) — same rule as 'edit_encoding'.
         if ($managerContext) {
-            return true;
+            return MissionEncodingCorrectionPolicy::managerCanEditEncoding($mission);
         }
 
         // instrumentiste assigné seulement

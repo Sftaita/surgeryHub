@@ -277,6 +277,13 @@ final class AuditEventActivityMapper
             AuditEventType::INSTRUMENTIST_STATEMENT_CANCELLED => sprintf('Décompte instrumentiste %s annulé (par %s)', self::docNumber($p, 'instrumentistStatementId'), $who),
             AuditEventType::DOCUMENT_PAYMENT_RECORDED => sprintf('Paiement du document %s enregistré (par %s)', self::docNumber($p, 'documentId'), $who),
             AuditEventType::REFUND_RECORDED => sprintf('Remboursement sur le document %s enregistré (par %s)', self::docNumber($p, 'documentId'), $who),
+            // D-153 — before → after of the real hours, when the payload carries them.
+            AuditEventType::MISSION_EXECUTION_UPDATED, AuditEventType::MISSION_EXECUTION_DURATION_CHANGED
+                => array_key_exists('previousActualStartAt', $p)
+                    ? sprintf('%s a corrigé les heures réelles de la %s : %s → %s', $who, $m ?? 'mission',
+                        self::hoursRange($p['previousActualStartAt'] ?? null, $p['previousActualEndAt'] ?? null, $p['previousActualDurationMinutes'] ?? null),
+                        self::hoursRange($p['actualStartAt'] ?? null, $p['actualEndAt'] ?? null, $p['actualDurationMinutes'] ?? null))
+                    : sprintf('%s%s (par %s)', self::LABELS[$type->value] ?? $type->value, $m !== null ? ' — ' . $m : '', $who),
             default => sprintf('%s%s%s (par %s)', self::LABELS[$type->value] ?? $type->value,
                 $m !== null ? ' — ' . $m : '', $cause, $who) . $site,
         };
@@ -390,6 +397,32 @@ final class AuditEventActivityMapper
         $d = \DateTimeImmutable::createFromFormat('!Y-m-d', substr($date, 0, 10));
 
         return $d !== false ? $d->format('d/m/Y') : $date;
+    }
+
+    /** D-153 — "08:00–12:30 (270 min)", or "aucune" when nothing was encoded. */
+    private static function hoursRange(mixed $start, mixed $end, mixed $minutes): string
+    {
+        $time = static function (mixed $iso): ?string {
+            if (!is_string($iso) || $iso === '') {
+                return null;
+            }
+            try {
+                return (new \DateTimeImmutable($iso))->format('H:i');
+            } catch (\Exception) {
+                return $iso;
+            }
+        };
+        $s = $time($start);
+        $e = $time($end);
+        $range = $s !== null || $e !== null ? sprintf('%s–%s', $s ?? '?', $e ?? '?') : null;
+        $duration = is_int($minutes) ? sprintf('%d min', $minutes) : null;
+
+        return match (true) {
+            $range !== null && $duration !== null => sprintf('%s (%s)', $range, $duration),
+            $range !== null => $range,
+            $duration !== null => $duration,
+            default => 'aucune',
+        };
     }
 
     private static function hm(mixed $value): string

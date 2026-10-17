@@ -133,6 +133,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\FinancialCalculation::lockedAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService::lock(), never client input',
         'App\Entity\FinancialCalculation::cancelledAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService::cancel(), never client input',
         'App\Entity\FinancialCalculation::supersededAt' => 'set from new \DateTimeImmutable() in FinancialCalculationService::recalculate(), never client input',
+        'App\Entity\FinancialCalculation::encodingReopenedAt' => 'D-153 — set from new \DateTimeImmutable() in MissionEncodingWorkflowService::reopen(), never client input',
         'App\Entity\FinancialCalculationLine::effectiveAt' => 'date-only (date_immutable, Y-m-d) — copied from the owning FinancialCalculation.effectiveAt, never a client instant',
         'App\Entity\FinancialCalculationLine::createdAt' => 'set from new \DateTimeImmutable() in the constructor, never client input',
 

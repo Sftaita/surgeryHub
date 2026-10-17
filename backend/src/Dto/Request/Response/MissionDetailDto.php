@@ -70,5 +70,10 @@ final class MissionDetailDto
          * that has ended ("Affectation annulée" — never why). Null otherwise.
          */
         public readonly ?string $myAssignmentStatus = null,
+        /**
+         * D-153 — managers only: why a correction has financial consequences (an active
+         * CALCULATED / APPROVED calculation to recalculate after revalidation), null otherwise.
+         */
+        public readonly ?string $encodingCorrectionFinancialNotice = null,
     ) {}
 }

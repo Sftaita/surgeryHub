@@ -13627,3 +13627,152 @@ deviennent des conflits, notifiés après le commit.
 `SurgeonInstrumentistIncompatibilityFunctionalTest` (7 scénarios HTTP + base réelle),
 `IncompatibilityConcurrencyTest` (deux connexions réelles), tests frontend
 `Incompatibilities.test.tsx` et refus durable (`MissionDetailPage.assignment.test.tsx`).
+
+### Réserves de validation (suivi technique, 2026-10-15)
+
+Lot L3 validé par le métier avec les réserves suivantes, à lever avant tout déploiement ; aucune
+refonte de L3 tant qu'aucun contournement actif n'est trouvé.
+
+1. **Sélecteur d'instrumentistes du manager limité à 500 comptes.** Les écrans manager
+   (incompatibilités, attribution) chargent la liste des instrumentistes en une page de 500 ;
+   au-delà, un compte n'est pas sélectionnable. À remplacer par une recherche paginée côté
+   serveur (aucun impact sur la règle : l'éligibilité reste décidée par le backend).
+2. **Déploiement Planning V1.** Vérifié le 2026-10-15 : la seule route qui déploie
+   (`PlanningV2GenerationController::deploy`) passe toujours un `versionId` à
+   `PlanningDeploymentService::deploy()` ; la branche historique sans version n'est plus
+   atteignable par HTTP et ne crée aucune affectation. Aucun contournement actif des
+   incompatibilités. Si cette branche redevenait atteignable, elle devrait passer par
+   `MissionEligibilityService` ou être neutralisée.
+3. **Vérification navigateur et tests sur une copie de production** (données réelles :
+   incompatibilités, conflits, alertes) obligatoires avant tout déploiement.
+
+---
+
+## D-153 — Correction de l'encodage par le manager depuis « Suivi des encodages » (2026-10-15)
+
+**Statut : implémenté sur `feat/surgeon-refusal-compat` (lot L4), non commité, non déployé.**
+Amende D-070 (droit d'encodage du manager « toujours »), D-143 (voter des heures) et complète
+D-148 (renvoi / réouverture) et D-136.
+
+### Contexte
+
+Le manager doit pouvoir corriger lui-même les heures réelles, les interventions et le matériel
+d'une mission depuis le tiroir du suivi des encodages, avec un historique lisible (date,
+auteur, type, ancienne et nouvelle valeur), sans jamais modifier silencieusement un montant
+verrouillé ni déclencher de facturation. Jusqu'ici, `MissionVoter::EDIT_ENCODING` accordait
+au manager l'écriture **dans tous les statuts** (y compris `DRAFT`, `OPEN`, `CANCELLED`) et
+`MissionExecutionVoter::UPDATE` dans tous les statuts non verrouillés, alors que
+`allowedActions` ne proposait jamais `edit_encoding` / `edit_hours` au manager : droits réels
+et droits annoncés divergeaient.
+
+### Décision 1 — une seule politique, appliquée aux voters et à `allowedActions`
+
+`MissionEncodingCorrectionPolicy::managerCanEditEncoding()` : statut `DECLARED`, `ASSIGNED`,
+`IN_PROGRESS`, `ENCODING_IN_PROGRESS` ou `SUBMITTED` ; encodage ni verrouillé ni facturé
+(`encodingLockedAt`, `invoiceGeneratedAt`) ; aucun calcul financier `LOCKED`.
+`managerCanEditHours()` : la même chose et une instrumentiste affectée (les heures sont les
+siennes). Ces deux méthodes sont l'unique source de `MissionVoter::EDIT_ENCODING` (branche
+manager), de `MissionExecutionVoter::UPDATE` (branche manager) et des actions
+`edit_encoding` / `edit_hours` du manager : un appel direct à l'API est refusé exactement
+quand l'action n'est pas proposée (test de cohérence sur tous les statuts). Une mission
+`VALIDATED` se **rouvre d'abord** (D-148) ; `CLOSED` et un calcul `LOCKED` ne se corrigent
+jamais. Conséquence assumée : la création d'une demande de catalogue
+(`InterventionTypeRequest`, `MaterialItemRequest`) par un manager suit la même règle. La
+branche instrumentiste est inchangée.
+
+### Décision 2 — aucun nouvel endpoint d'écriture
+
+Les corrections passent par les endpoints, services et règles existants :
+`PATCH /api/missions/{id}/execution` (heures, `hoursSource = MANAGER`),
+`/interventions` et `/material-lines` (ajout, modification, suppression ; règles
+obligatoires / exclusives / conditionnelles, choix obligatoires et tarification existants,
+`MissionEncodingGuard` inchangé). Une correction ne change ni le statut ni l'affectation.
+
+### Décision 3 — historique sans événement dupliqué
+
+- `MissionExecutionService::updateActuals()` ajoute aux audits existants
+  `MISSION_EXECUTION_UPDATED` / `MISSION_EXECUTION_DURATION_CHANGED` les valeurs avant / après
+  (`previousActualStartAt`, `actualStartAt`, `previousActualEndAt`, `actualEndAt`,
+  `previousActualDurationMinutes`, `actualDurationMinutes`, `previousHoursSource`,
+  `hoursSource`) ; ces clés sont ajoutées à la liste blanche du miroir
+  (`ActivityPayloadPolicy::MIRROR_KEYS`) et le résumé du journal devient « X a corrigé les
+  heures réelles de la mission #N : 08:00–11:30 (210 min) → 08:00–12:15 (255 min) ».
+- Interventions et matériel : rien d'ajouté, le listener gouverné (H5b) journalise déjà
+  chaque champ modifié (`from` / `to`, commentaire masqué).
+- Lecture : `GET /api/missions/{id}/encoding/history` (`MissionVoter::VIEW_ENCODING_HISTORY`,
+  managers) lit le journal d'activité de la mission (heures, interventions, matériel, étapes
+  du cycle d'encodage), au plus 200 lignes, les plus récentes d'abord. Aucun événement n'est
+  produit par cette lecture.
+
+### Décision 4 — conséquences financières
+
+| État du calcul | Correction | Conséquence |
+|---|---|---|
+| aucun / `SUPERSEDED` | possible | rien à faire |
+| `CALCULATED` / `APPROVED` actif | possible (après réouverture si validée) | le calcul reflète l'encodage validé : à recalculer depuis la fiche mission après revalidation |
+| `LOCKED` (intégré à un document) | impossible | montant figé ; régularisation par les procédures financières existantes |
+
+Le cas `CALCULATED` / `APPROVED` est annoncé au manager (`encodingCorrectionFinancialNotice`
+du détail de mission, servi par le backend). Aucun recalcul et aucune facturation ne sont
+déclenchés par une correction ou par la revalidation (vérifié : `validate()` n'en déclenche
+aucun).
+
+### Décision 6 — un calcul rendu obsolète n'est jamais facturé (vérification résiduelle, 2026-10-16)
+
+**Défaut constaté.** `reopen()` laissait le calcul actif (`CALCULATED` / `APPROVED`) intact ;
+après correction et revalidation, la mission redevenait `VALIDATED` et ce calcul, calculé
+sur l'ancien encodage, redevenait sélectionnable sans aucun signal : lignes éligibles d'une
+facture firme, génération d'un brouillon qui le contenait déjà, verrouillage, relevé
+instrumentiste (qui ne contrôlait même pas le statut de la mission pendant la réouverture).
+La liste de travail le présentait comme « Facturable ».
+
+**Décision.** `reopen()` pose `FinancialCalculation.encodingReopenedAt` sur le calcul actif
+`CALCULATED` / `APPROVED` (migration `Version20261016090000`, colonne nullable) et liste ces
+calculs dans l'audit `MISSION_ENCODING_REOPENED` (`obsoleteFinancialCalculationIds`). Un
+calcul ainsi marqué (`isObsolete()`) :
+
+- n'est plus approuvé ni verrouillé (`FinancialCalculationService::approve()` / `lock()`
+  refusent, message « Ce calcul est obsolète… ») ;
+- n'apparaît plus dans les lignes éligibles d'une facture firme ni d'un relevé instrumentiste ;
+- est refusé à l'ajout dans un brouillon et dans un relevé (`FINANCIAL_CALCULATION_OBSOLETE`)
+  et à la génération d'un brouillon qui le contient (`FINANCIAL_LINE_STALE`, ligne signalée
+  comme obsolète dans le brouillon) ;
+- apparaît dans « Facturation firmes » avec le motif `CALCULATION_OBSOLETE` (« Calcul
+  obsolète », à vérifier) et l'action « Recalculer », jamais « Approuver » ;
+- est signalé sur la carte « Calcul financier » de la mission (`obsolete`,
+  `encodingReopenedAt` dans l'API), sans bouton Approuver ni Verrouiller.
+
+Son statut et ses montants ne changent pas ; rien n'est recalculé ni annulé automatiquement.
+Seul `recalculate()`, explicite, en produit une version à jour (l'ancien passe `SUPERSEDED`,
+le nouveau n'est pas marqué). Un calcul `LOCKED` n'est jamais concerné (la réouverture reste
+refusée). Les calculs actifs de missions rouvertes avant cette migration ne sont pas marqués
+rétroactivement. Seuls ces contrôles de facturation sont ajoutés : aucun autre workflow de
+facturation n'est modifié.
+
+### Décision 5 — écran
+
+Tiroir « Suivi des encodages » : « Corriger les heures » (fenêtre des heures existante,
+`EditServiceHoursDialog`), « Corriger l'encodage » (section d'encodage existante,
+`InterventionsSection`, sans soumission), avertissement financier, carte « Historique des
+corrections ». Les boutons n'apparaissent que si `allowedActions` les contient ; après chaque
+correction, mission, heures, encodage, historique et liste sont relus.
+
+### Limites
+
+- Les corrections d'heures antérieures à D-153 n'ont pas de valeurs avant / après dans le
+  journal (seul leur résumé générique est affiché).
+- `hoursSource` reste déclaré par le client (comportement antérieur, hors périmètre).
+
+### Tests
+
+`ManagerEncodingCorrectionD153Test` (heures, interventions, matériel, historique avant / après
+sans doublon, refus sur mission validée puis correction après réouverture sans recalcul,
+refus `CLOSED` / `OPEN` / `DRAFT` / calcul `LOCKED`, historique réservé aux managers),
+`MissionActionsServiceTest` (cohérence `allowedActions` ↔ voters sur tous les statuts),
+`MissionTrackingDrawer.test.tsx` (actions servies par le backend, heures `MANAGER`, section
+d'encodage sans soumission, avertissement financier, historique).
+Décision 6 : `FirmInvoiceFinancialCalculationControllerTest::test_calculation_made_obsolete_by_a_reopen_is_never_billed_silently`
+(calcul approuvé dans un brouillon → réouverture, correction des heures, revalidation → ni
+ligne éligible firme ni instrumentiste, génération refusée, verrouillage refusé → recalcul
+explicite, de nouveau facturable), `FirmBillingWorklistControllerTest` (motif
+`CALCULATION_OBSOLETE`, action « Recalculer », ajout refusé), `FinancialCalculationCard.test.tsx`.

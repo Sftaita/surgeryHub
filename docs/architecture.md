@@ -4266,3 +4266,15 @@ publication.
 - **Conflits** : `PlanningAlert` `SURGEON_INCOMPATIBILITY` (non ignorable), fermée par
   `MissionAssignmentService::close()` ou par la levée.
 - **Droits** : `SurgeonInstrumentistIncompatibilityVoter` ; l'instrumentiste n'a aucun accès.
+
+### 31.3 Correction de l'encodage par le manager (D-153)
+
+- **Politique unique** : `MissionEncodingCorrectionPolicy::managerCanEditEncoding()` /
+  `managerCanEditHours()`, lues par `MissionVoter::EDIT_ENCODING`,
+  `MissionExecutionVoter::UPDATE` et `MissionActionsService` (`edit_encoding`, `edit_hours`).
+- **Écritures** : endpoints et services d'encodage existants, aucun nouveau chemin.
+- **Historique** : `MissionEncodingHistoryService` lit `activity_event` (listener gouverné
+  pour interventions / matériel, miroir d'audit pour les heures avec valeurs avant / après) ;
+  `GET /api/missions/{id}/encoding/history`, `MissionVoter::VIEW_ENCODING_HISTORY`.
+- **Finances** : `financialImpactNotice()` annonce un calcul actif à relancer ; aucun recalcul
+  automatique, calcul `LOCKED` bloquant.

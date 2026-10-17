@@ -52,6 +52,20 @@ final class FirmInvoiceFinancialCalculationControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // D-153 — réouverture (commentaire, notifications) et recalcul (chaîne SUPERSEDED).
+            $c = $this->em->getConnection();
+            $missions = implode(',', array_map('intval', $this->created['missions'])) ?: '0';
+            $users = implode(',', array_map('intval', $this->created['users'])) ?: '0';
+            $c->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($users) OR mission_id IN ($missions)");
+            $c->executeStatement("DELETE FROM notification_event WHERE user_id IN ($users) OR mission_id IN ($missions)");
+            $c->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($users) OR mission_id IN ($missions)");
+            $c->executeStatement("DELETE FROM mission_encoding_comment WHERE mission_id IN ($missions)");
+            $c->executeStatement("UPDATE financial_calculation SET superseded_by_calculation_id = NULL WHERE mission_id IN ($missions)");
+            foreach ($c->fetchFirstColumn("SELECT id FROM financial_calculation WHERE mission_id IN ($missions)") as $calcId) {
+                if (!in_array((int) $calcId, $this->created['calculations'], true)) {
+                    $this->created['calculations'][] = (int) $calcId;
+                }
+            }
             foreach ($this->created['missions'] as $missionId) {
                 foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $missionId]) as $evt) {
                     $this->em->remove($evt);
@@ -203,7 +217,7 @@ final class FirmInvoiceFinancialCalculationControllerTest extends WebTestCase
         $calc = $calcService->approve($calc, $actor);
         $this->created['calculations'][] = $calc->getId();
 
-        return [$firm, $today];
+        return [$firm, $today, $mission, $instrumentist];
     }
 
     public function test_eligible_lines_and_create_from_financial_calculations_happy_path(): void
@@ -310,6 +324,69 @@ final class FirmInvoiceFinancialCalculationControllerTest extends WebTestCase
         $this->em->clear();
         self::assertSame([], $this->em->getRepository(\App\Entity\FirmInvoice::class)->findBy(['firm' => $firm->getId()]), 'aucune facture créée');
         self::assertFalse(method_exists(\App\Service\FirmInvoiceService::class, 'createFromEligibleLines'), 'aucun chemin de service direct');
+    }
+
+    /**
+     * D-153 — un calcul approuvé puis rendu obsolète par une réouverture de l'encodage
+     * (correction du manager, revalidation) n'est plus jamais une source de facturation :
+     * ni ligne éligible, ni génération d'un brouillon qui le contient, ni verrouillage, ni
+     * relevé instrumentiste. Statut et montants inchangés ; seul un recalcul le remplace.
+     */
+    public function test_calculation_made_obsolete_by_a_reopen_is_never_billed_silently(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        [$firm, $today, $mission, $instrumentist] = $this->makeApprovedCalculationLine($manager);
+        $missionId = $mission->getId();
+        $token = $this->login($client, $manager);
+        $period = sprintf('firmId=%d&currency=EUR&periodStart=%s&periodEnd=%s', $firm->getId(), $today->modify('-1 day')->format('Y-m-d'), $today->modify('+1 day')->format('Y-m-d'));
+        $statementQuery = sprintf('/api/instrumentist-statements/eligible-lines?instrumentistId=%d&currency=EUR&year=2026&month=6', $instrumentist->getId());
+
+        $lineId = json_decode((string) $this->getJson($client, $token, "/api/firm-invoices/eligible-lines?$period")->getContent(), true)['lines'][0]['id'];
+        self::assertCount(1, json_decode((string) $this->getJson($client, $token, $statementQuery)->getContent(), true)['lines'], 'ligne instrumentiste éligible avant réouverture');
+        $draft = $this->postJson($client, $token, '/api/firm-invoices/drafts', [
+            'firmId' => $firm->getId(), 'currency' => 'EUR',
+            'periodStart' => $today->modify('-1 day')->format('Y-m-d'), 'periodEnd' => $today->modify('+1 day')->format('Y-m-d'),
+            'financialLineIds' => [$lineId],
+        ]);
+        self::assertSame(Response::HTTP_CREATED, $draft->getStatusCode(), (string) $draft->getContent());
+        $draftId = json_decode((string) $draft->getContent(), true)['id'];
+        $this->created['invoices'][] = $draftId;
+
+        // Réouverture puis correction des heures par le manager (D-153).
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $token, "/api/missions/$missionId/encoding/reopen", ['comment' => 'Heures à corriger.'])->getStatusCode());
+        $calculations = json_decode((string) $this->getJson($client, $token, "/api/missions/$missionId/financial-calculations")->getContent(), true);
+        $old = $calculations['items'][0] ?? $calculations[0];
+        self::assertSame('APPROVED', $old['status'], 'statut inchangé : aucune transition financière automatique');
+        self::assertTrue($old['obsolete']);
+        $client->request('PATCH', "/api/missions/$missionId/execution", server: ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer ' . $token],
+            content: json_encode(['actualStartAt' => $today->format(DATE_ATOM), 'actualEndAt' => $today->modify('+3 hours')->format(DATE_ATOM), 'hoursSource' => 'MANAGER']));
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+
+        // Revalidation (la soumission par l'instrumentiste est hors du sujet de ce test).
+        $this->em->getConnection()->executeStatement('UPDATE mission SET status = ? WHERE id = ?', [MissionStatus::SUBMITTED->value, $missionId]);
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $token, "/api/missions/$missionId/encoding/validate")->getStatusCode());
+
+        // Mission revalidée, calcul toujours APPROVED mais obsolète : jamais facturé.
+        self::assertSame([], json_decode((string) $this->getJson($client, $token, "/api/firm-invoices/eligible-lines?$period")->getContent(), true)['lines']);
+        self::assertSame([], json_decode((string) $this->getJson($client, $token, $statementQuery)->getContent(), true)['lines']);
+        $generate = $this->postJson($client, $token, "/api/firm-invoices/$draftId/generate");
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $generate->getStatusCode(), (string) $generate->getContent());
+        self::assertStringContainsString('FINANCIAL_LINE_STALE', (string) $generate->getContent());
+        $lock = $this->postJson($client, $token, "/api/financial-calculations/{$old['id']}/lock");
+        self::assertGreaterThanOrEqual(400, $lock->getStatusCode(), 'verrouillage refusé');
+        self::assertStringContainsString('obsol', (string) $lock->getContent());
+
+        // Seul un recalcul explicite produit une version à jour, de nouveau facturable après approbation.
+        $recalc = $this->postJson($client, $token, "/api/financial-calculations/{$old['id']}/recalculate");
+        self::assertContains($recalc->getStatusCode(), [Response::HTTP_OK, Response::HTTP_CREATED], (string) $recalc->getContent());
+        $new = json_decode((string) $recalc->getContent(), true);
+        self::assertFalse($new['obsolete']);
+        self::assertSame('CALCULATED', $new['status']);
+        self::assertSame(Response::HTTP_OK, $this->postJson($client, $token, "/api/financial-calculations/{$new['id']}/approve")->getStatusCode());
+        $this->em->clear();
+        self::assertSame(\App\Enum\FinancialCalculationStatus::SUPERSEDED, $this->em->find(FinancialCalculation::class, $old['id'])->getStatus());
+        self::assertCount(1, json_decode((string) $this->getJson($client, $token, $statementQuery)->getContent(), true)['lines'], 'durée corrigée valorisée par le nouveau calcul');
     }
 
     public function test_instrumentist_cannot_manage_invoices(): void

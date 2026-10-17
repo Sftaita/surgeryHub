@@ -38,6 +38,8 @@ enum FirmBillingReason: string
     case RECALCULATION_REQUIRED = 'RECALCULATION_REQUIRED';
     /** Encodage rouvert après le calcul : la mission n'est plus validée. */
     case ENCODING_REOPENED = 'ENCODING_REOPENED';
+    /** D-153 — encodage rouvert puis revalidé : le calcul actif date d'avant la correction. */
+    case CALCULATION_OBSOLETE = 'CALCULATION_OBSOLETE';
     /** L'élément est correct mais une autre anomalie de la mission bloque tout le calcul. */
     case CALCULATION_BLOCKED = 'CALCULATION_BLOCKED';
     /**
@@ -149,6 +151,7 @@ enum FirmBillingReason: string
             self::CALCULATION_PENDING_APPROVAL => 'Calcul à approuver',
             self::RECALCULATION_REQUIRED => 'Calcul à mettre à jour',
             self::ENCODING_REOPENED => 'Encodage rouvert',
+            self::CALCULATION_OBSOLETE => 'Calcul obsolète',
             self::CALCULATION_BLOCKED => 'Calcul bloqué',
             self::FIXED_PENDING_RECALCULATION => 'Corrigé — à recalculer',
             self::MISSING_FIRM_INTERVENTION_RATE => "Tarif d'intervention manquant",
@@ -182,6 +185,7 @@ enum FirmBillingReason: string
             self::CALCULATION_PENDING_APPROVAL => 'Les montants sont calculés mais doivent être approuvés avant facturation.',
             self::RECALCULATION_REQUIRED => "Cet élément a été encodé après le dernier calcul financier : il n'y figure pas encore.",
             self::ENCODING_REOPENED => "L'encodage de la mission a été rouvert après le calcul : il doit être revalidé avant facturation.",
+            self::CALCULATION_OBSOLETE => "L'encodage de la mission a été rouvert après ce calcul : ses montants ne reflètent plus l'encodage revalidé. Recalculez la mission avant facturation.",
             self::CALCULATION_BLOCKED => 'Cet élément est correct, mais une autre anomalie de la mission empêche tout le calcul.',
             self::FIXED_PENDING_RECALCULATION => "Les causes de l'échec du dernier calcul sont corrigées : relancez le calcul pour enregistrer les montants.",
             self::MISSING_FIRM_INTERVENTION_RATE => "Aucun tarif applicable n'est configuré pour cette prestation à la date de la mission.",

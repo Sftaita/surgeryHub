@@ -220,6 +220,8 @@ export interface Mission {
   targetedOffer?: TargetedOffer | null;
   /** D-148 — pourquoi l'encodage ne peut pas être rouvert (clôture, verrou financier), managers seulement. */
   encodingCorrectionBlockedReason?: string | null;
+  /** D-153 — conséquence financière d'une correction (calcul actif à recalculer après revalidation), managers seulement. */
+  encodingCorrectionFinancialNotice?: string | null;
 
   /** D-151 — affectation en cours, servie au chirurgien de la mission et aux managers seulement. */
   currentAssignment?: CurrentAssignment | null;

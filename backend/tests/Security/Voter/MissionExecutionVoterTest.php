@@ -97,9 +97,18 @@ final class MissionExecutionVoterTest extends TestCase
 
     public function test_manager_can_update(): void
     {
-        $mission = $this->makeMission();
+        $mission = $this->makeMission(instrumentist: $this->makeUser(['ROLE_INSTRUMENTIST'], 60));
         $result = $this->voter->vote($this->tokenFor($this->makeUser(['ROLE_MANAGER'], 6)), $mission, [MissionExecutionVoter::UPDATE]);
         self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    /** D-153 — les heures sont celles d'une instrumentiste ; une mission validée se rouvre d'abord. */
+    public function test_manager_cannot_update_without_instrumentist_or_on_validated_mission(): void
+    {
+        $manager = $this->tokenFor($this->makeUser(['ROLE_MANAGER'], 61));
+        self::assertSame(VoterInterface::ACCESS_DENIED, $this->voter->vote($manager, $this->makeMission(), [MissionExecutionVoter::UPDATE]));
+        $validated = $this->makeMission(instrumentist: $this->makeUser(['ROLE_INSTRUMENTIST'], 62), status: MissionStatus::VALIDATED);
+        self::assertSame(VoterInterface::ACCESS_DENIED, $this->voter->vote($manager, $validated, [MissionExecutionVoter::UPDATE]));
     }
 
     public function test_assigned_instrumentist_can_update(): void

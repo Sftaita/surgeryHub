@@ -73,6 +73,16 @@ final class MissionActionsService
                 $actions[] = 'remind_hours';
             }
 
+            // D-153 — corrections directes du manager : mêmes règles exactement que
+            // MissionVoter::EDIT_ENCODING et MissionExecutionVoter::UPDATE (une mission
+            // validée se rouvre d'abord, jamais une mission clôturée ou verrouillée).
+            if (MissionEncodingCorrectionPolicy::managerCanEditEncoding($mission)) {
+                $actions[] = 'edit_encoding';
+            }
+            if (MissionEncodingCorrectionPolicy::managerCanEditHours($mission)) {
+                $actions[] = 'edit_hours';
+            }
+
             return $actions;
         }
 

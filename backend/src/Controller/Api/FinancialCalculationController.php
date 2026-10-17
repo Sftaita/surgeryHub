@@ -138,6 +138,9 @@ final class FinancialCalculationController extends AbstractController
             'cancelledBy' => $c->getCancelledBy()?->getId(),
             'supersededAt' => $c->getSupersededAt()?->format(DATE_ATOM),
             'supersededByCalculationId' => $c->getSupersededByCalculation()?->getId(),
+            // D-153 — encodage rouvert depuis ce calcul : plus jamais approuvé, verrouillé ni facturé.
+            'obsolete' => $c->isObsolete(),
+            'encodingReopenedAt' => $c->getEncodingReopenedAt()?->format(DATE_ATOM),
             'totalsByCurrency' => $c->totalsByCurrency(),
             'lines' => array_map($this->serializeLine(...), $c->getLines()->toArray()),
         ];
