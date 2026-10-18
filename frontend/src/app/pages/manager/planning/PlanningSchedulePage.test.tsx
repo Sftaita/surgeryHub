@@ -119,6 +119,17 @@ describe("PlanningSchedulePage — mission status chips", () => {
     await waitFor(() => expect(screen.getByText("À réserver")).toBeInTheDocument());
   });
 
+  it("deux salles simultanées restent identifiables : période juste et horaire affiché (recette D-156)", async () => {
+    await loadMissions([
+      makeAssignedMission({ id: 1, startAt: "2026-07-01T07:45:00", endAt: "2026-07-01T13:00:00" }),
+      makeAssignedMission({ id: 2, startAt: "2026-07-01T07:45:00", endAt: "2026-07-01T18:00:00" }),
+    ]);
+    await waitFor(() => expect(screen.getByText("07h45–18h00")).toBeInTheDocument());
+    expect(screen.getByText("07h45–13h00")).toBeInTheDocument();
+    expect(screen.getByText("Journée")).toBeInTheDocument();
+    expect(screen.getByText("Matin")).toBeInTheDocument();
+  });
+
   it("shows 'Assigné' chip for ASSIGNED missions", async () => {
     await loadMissions([makeAssignedMission()]);
     await waitFor(() => expect(screen.getByText("Assigné")).toBeInTheDocument());

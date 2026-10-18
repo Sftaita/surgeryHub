@@ -164,6 +164,50 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
     }
 
     #[WithoutErrorHandler]
+    public function test_a_room_with_a_zero_share_is_valued_without_an_hourly_line(): void
+    {
+        // Recette 2026-10-18 : the day ended at 12:00, so the room ranked second gets 0 min.
+        // Its valuation must not crash on chk_fcl_duration_minutes_positive (it did: 500).
+        $a = $this->createAssigned('07:45', '13:00', $this->sophie);
+        $b = $this->createAssigned('07:45', '18:00', $this->sophie);
+        $sophieToken = $this->login($this->client, $this->sophie);
+
+        $res = $this->api($this->client, $sophieToken, 'PUT', "/api/missions/{$a}/prestation/presence", [
+            'actualStartAt' => $this->at($this->day, '07:45'), 'actualEndAt' => $this->at($this->day, '12:00'),
+            'expectedMissionIds' => [$a, $b],
+        ]);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $view = $this->body($res);
+        self::assertSame(255, $view['missions'][0]['imputedMinutes']);
+        self::assertSame(0, $view['missions'][1]['imputedMinutes']);
+
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$a}/prestation/submit", ['fingerprint' => $view['fingerprint'], 'noMaterialComment' => 'Aucun implant posé.']);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        foreach ([$a, $b] as $id) {
+            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate")->getStatusCode());
+            if ($id === $a) {
+                // One room validated: the common hours are locked, and the view says by which mission.
+                $view = $this->body($this->api($this->client, $sophieToken, 'GET', "/api/missions/{$b}/prestation"));
+                self::assertNotContains('edit_presence', $view['allowedActions']);
+                self::assertContains($a, $view['hoursLockedByMissionIds']);
+            }
+            $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/financial-calculations");
+            self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
+        }
+
+        // 255 min × 37.77 €/h = 160.52 €, all on the first room; the second has no hourly line.
+        $line = $this->hourlyLine($a);
+        self::assertSame(255, $line->getDurationMinutes());
+        self::assertSame('160.52', $line->getTotalAmount());
+        self::assertNull($this->em->createQueryBuilder()
+            ->select('l.id')->from(FinancialCalculationLine::class, 'l')->join('l.financialCalculation', 'c')
+            ->andWhere('c.mission = :m')->andWhere('l.lineType = :t')
+            ->setParameter('m', $b)->setParameter('t', FinancialLineType::INSTRUMENTIST_HOURLY)
+            ->getQuery()->getOneOrNullResult());
+        self::assertSame(0, $line->getSnapshot()['imputedMinutesByMission'][$b]);
+    }
+
+    #[WithoutErrorHandler]
     public function test_reassigning_one_room_splits_the_prestation_and_reassigning_back_regroups_it(): void
     {
         $a = $this->createAssigned('07:45', '13:00', $this->sophie);

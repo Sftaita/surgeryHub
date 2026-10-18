@@ -13380,7 +13380,13 @@ interruption non planifiée → segment précédent ; départ anticipé → une 
 rangée dans `mission_execution.actual_duration_minutes` des missions liées (source
 `PRESENCE_SHARE` de `resolveEffectiveDuration()`, point d'entrée canonique) : imputation
 comptable, distincte de l'horaire opérationnel (Mission) et de la présence physique
-(WorkedPresence).
+(WorkedPresence). Une part de 0 minute (mission entièrement couverte par des sœurs mieux
+classées, ou départ anticipé) ne produit aucune ligne horaire à sa valorisation : la présence
+est intégralement payée sur les autres missions, dont le snapshot porte la répartition
+complète (`imputedMinutesByMission`). Constat de recette (2026-10-18) : les postes réels
+Journée + Matin + Après-midi d'un même chirurgien avec la même instrumentiste donnent une
+prestation de 3 missions dont l'après-midi reçoit 0 minute — total exact, ventilation par
+salle à arbitrer si elle doit refléter autre chose.
 
 **Encodage commun.** `GET /api/missions/{id}/prestation`, `PUT …/prestation/presence`,
 `POST …/prestation/submit`. La soumission porte une empreinte de l'état (composition,

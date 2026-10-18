@@ -64,6 +64,9 @@ type Props = {
    *  interventions RÉELLES uniquement — jamais recomptés ici depuis `entries`, qui
    *  contient aussi les drafts (en attente / historique), affichés "hors décompte". */
   progress: MissionEncodingProgress;
+  /** D-156 — prestation multi-salles : le pied de validation ouvre la soumission COMMUNE
+   *  (toutes les missions de la prestation) ; le libellé le dit. Absent = mission seule. */
+  prestationSize?: number;
 };
 
 const GREEN_900 = "#144D38";
@@ -201,7 +204,7 @@ function WarnIcon() {
   );
 }
 
-export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, progress }: Props) {
+export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, progress, prestationSize }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -723,10 +726,12 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
           >
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Box sx={{ fontSize: 15, fontWeight: 800, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
-                Terminer l'encodage · {doneCount}/{totalCount}
+                {prestationSize && prestationSize > 1 ? "Terminer la prestation" : `Terminer l'encodage · ${doneCount}/${totalCount}`}
               </Box>
               <Box sx={{ mt: "3px", fontSize: 12.5, fontWeight: 600, color: GREEN_300 }}>
-                {totalCount === 0
+                {prestationSize && prestationSize > 1
+                  ? `Cette salle : ${totalCount === 0 ? "aucune intervention" : `${doneCount}/${totalCount} intervention(s) complète(s)`}. Les ${prestationSize} missions sont soumises ensemble.`
+                  : totalCount === 0
                   ? "Aucune intervention encodée."
                   : allDone
                   ? "Tout est encodé. Vous pouvez valider la mission."

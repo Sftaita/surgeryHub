@@ -19,9 +19,9 @@ import { fetchAllMissions } from "../../features/missions/api/missions.api";
 import { collapsePrestations, rowTimes, type PlanningRow } from "../../features/prestations/utils/collapsePrestations";
 
 /** D-156 — « Dr Deltour — 2 missions » pour une prestation multi-salles. */
-function prestationSubtitle(row: PlanningRow, surgeonLabel: string): string {
+function prestationTag(row: PlanningRow): string | undefined {
   const size = row.mission.prestation?.size ?? 1;
-  return size > 1 ? `${surgeonLabel} — ${size} missions` : surgeonLabel;
+  return size > 1 ? `Multi-salles · ${size} missions` : undefined;
 }
 import { MissionDetailContent } from "./MissionDetailPage";
 import type { Mission } from "../../features/missions/api/missions.types";
@@ -333,7 +333,8 @@ export default function PlanningPage() {
                   <MissionListRow
                     key={m.id}
                     mission={{ ...m, ...rowTimes(row) }}
-                    subtitlePerson={prestationSubtitle(row, getSurgeonLabel(m))}
+                    subtitlePerson={getSurgeonLabel(m)}
+                    tag={prestationTag(row)}
                     statusInfo={status}
                     dateTileVariant={dateTileVariantFor(status)}
                     onClick={() => navigate(`/app/i/missions/${m.id}/encoding`)}
@@ -361,7 +362,8 @@ export default function PlanningPage() {
                   <MissionListRow
                     key={m.id}
                     mission={{ ...m, ...rowTimes(row) }}
-                    subtitlePerson={prestationSubtitle(row, getSurgeonLabel(m))}
+                    subtitlePerson={getSurgeonLabel(m)}
+                    tag={prestationTag(row)}
                     statusInfo={status}
                     dateTileVariant={dateTileVariantFor(status)}
                     onClick={() => setSelectedMissionId(m.id)}

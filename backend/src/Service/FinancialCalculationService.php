@@ -854,6 +854,14 @@ final class FinancialCalculationService
             return null;
         }
 
+        // Part nulle (mission entièrement couverte par ses sœurs mieux classées, ou présence
+        // plus courte que prévu) : rien à valoriser ici, la présence est intégralement payée
+        // sur les autres missions (voir leur snapshot imputedMinutesByMission). Aucune ligne
+        // de 0 minute n'est créée (chk_fcl_duration_minutes_positive).
+        if ($storedShare === 0) {
+            return null;
+        }
+
         $settled = $this->settledSiblingLines($mission, $members);
         foreach ($settled as $line) {
             if ((int) ($line->getSnapshot()['presenceRevision'] ?? -1) !== $presence->getRevision()) {

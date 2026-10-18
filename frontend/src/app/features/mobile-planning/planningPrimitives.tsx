@@ -412,13 +412,16 @@ export function MonthGrid({
 // Pur composant de présentation — `subtitlePerson` (chirurgien pour l'instrumentiste,
 // instrumentiste pour le chirurgien) et `statusInfo` sont calculés par l'appelant.
 export function MissionListRow({
-  mission, subtitlePerson, statusInfo, dateTileVariant, onClick,
+  mission, subtitlePerson, statusInfo, dateTileVariant, onClick, tag,
 }: {
   mission: { id: number; startAt?: string; endAt?: string; site?: { name?: string | null } | null };
   subtitlePerson: string;
   statusInfo: { variant: StatusPillVariant; label: string; withDot?: boolean };
   dateTileVariant: DateTileVariant;
   onClick: () => void;
+  /** D-156 — courte mention sur sa propre ligne (ex. « Multi-salles · 2 missions »),
+   *  jamais tronquée avec le sous-titre sur mobile. */
+  tag?: string;
 }) {
   const start = mission.startAt ? new Date(mission.startAt) : null;
   const timeLine = mission.startAt && mission.endAt
@@ -447,6 +450,9 @@ export function MissionListRow({
         <Typography sx={{ mt: "3px", fontSize: 13, color: "text.secondary", fontVariantNumeric: "tabular-nums" }} noWrap>
           {timeLine}{subtitlePerson ? ` · ${subtitlePerson}` : ""}
         </Typography>
+        {tag && (
+          <Typography sx={{ mt: "3px", fontSize: 12, fontWeight: 700, color: BLUE_700, lineHeight: 1.25 }}>{tag}</Typography>
+        )}
       </Box>
       <StatusPill variant={statusInfo.variant} label={statusInfo.label} withDot={statusInfo.withDot} />
     </Box>

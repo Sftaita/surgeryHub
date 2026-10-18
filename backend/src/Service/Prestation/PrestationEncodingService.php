@@ -43,7 +43,7 @@ final class PrestationEncodingService
 
     /**
      * @param list<Mission> $group
-     * @param array{editPresence: bool, submit: bool} $groupRights droits déjà évalués par les Voters
+     * @param array{editPresence: bool, submit: bool, hoursLockedByMissionIds?: list<int>} $groupRights droits déjà évalués par les Voters
      * @return array<string,mixed>
      */
     public function view(array $group, User $viewer, array $groupRights): array
@@ -122,6 +122,9 @@ final class PrestationEncodingService
                 $groupRights['editPresence'] ? 'edit_presence' : null,
                 $groupRights['submit'] ? 'submit' : null,
             ])),
+            // Missions dont l'état interdit au lecteur de modifier les heures communes (une
+            // seule suffit : soumise, validée…) — pour expliquer pourquoi, jamais pour décider.
+            'hoursLockedByMissionIds' => $groupRights['hoursLockedByMissionIds'] ?? [],
         ];
     }
 

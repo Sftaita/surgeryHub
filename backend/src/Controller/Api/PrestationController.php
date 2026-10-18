@@ -158,22 +158,24 @@ final class PrestationController extends AbstractController
 
     /**
      * @param list<Mission> $group
-     * @return array{editPresence: bool, submit: bool}
+     * @return array{editPresence: bool, submit: bool, hoursLockedByMissionIds: list<int>}
      */
     private function groupRights(array $group): array
     {
-        $edit = true;
+        $lockedBy = [];
         $submit = false;
         $allSubmittable = true;
         foreach ($group as $member) {
-            $edit = $edit && $this->isGranted(MissionExecutionVoter::UPDATE, $member);
+            if (!$this->isGranted(MissionExecutionVoter::UPDATE, $member)) {
+                $lockedBy[] = (int) $member->getId();
+            }
             if ($member->getStatus() !== MissionStatus::SUBMITTED) {
                 $submit = true;
                 $allSubmittable = $allSubmittable && $this->isGranted(MissionVoter::SUBMIT, $member);
             }
         }
 
-        return ['editPresence' => $edit, 'submit' => $submit && $allSubmittable];
+        return ['editPresence' => $lockedBy === [], 'submit' => $submit && $allSubmittable, 'hoursLockedByMissionIds' => $lockedBy];
     }
 
     /** @return array<string,mixed> */

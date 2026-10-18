@@ -188,6 +188,35 @@ describe("MissionEncodingPage — prestation multi-salles (D-156)", () => {
     expect(apiPostMock.mock.calls.map(([u]) => u)).not.toContain(`/api/missions/${MISSION_A}/encoding/complete`);
   });
 
+  it("explique pourquoi les heures communes ne sont plus modifiables quand une salle est déjà soumise", async () => {
+    const base = prestation();
+    mockApi(prestation({
+      allowedActions: ["submit"],
+      hoursLockedByMissionIds: [MISSION_B],
+      statuses: ["ENCODING_IN_PROGRESS", "SUBMITTED"],
+      globalStatus: "MIXED",
+      missions: [base.missions[0], { ...base.missions[1], status: "SUBMITTED" }],
+    }));
+    renderPage();
+
+    await screen.findByTestId("prestation-panel");
+    expect(screen.queryByRole("button", { name: /Renseigner|Modifier/ })).not.toBeInTheDocument();
+    expect(screen.getByTestId("prestation-hours-locked")).toHaveTextContent(`Mission 2/2 · 07h45–18h00 · n° ${MISSION_B}`);
+    expect(screen.getByTestId("prestation-hours-locked")).toHaveTextContent(/renvoyer aussi en correction/);
+  });
+
+  it("le pied de validation d'une salle annonce la soumission commune de la prestation", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByTestId("prestation-panel");
+    await user.click(screen.getByTestId(`prestation-mission-${MISSION_B}`));
+    expect(await screen.findByText("Terminer la prestation", { selector: "div" })).toBeInTheDocument();
+    expect(screen.getByText(/Les 2 missions sont soumises ensemble/)).toBeInTheDocument();
+    expect(screen.queryByText(/Vous pouvez valider la mission/)).not.toBeInTheDocument();
+  });
+
   it("une mission seule garde l'encodage habituel (aucun panneau de prestation)", async () => {
     mockApi(prestation({ size: 1, missionIds: [MISSION_A], missions: [prestation().missions[0]] }) as any);
     renderPage();

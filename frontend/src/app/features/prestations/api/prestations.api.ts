@@ -55,6 +55,8 @@ export type PrestationView = {
   /** Empreinte de l'état soumis : renvoyée telle quelle à la soumission (contrôle de concurrence). */
   fingerprint: string;
   allowedActions: string[];
+  /** Missions qui empêchent le lecteur de modifier les heures communes (soumise, validée…). */
+  hoursLockedByMissionIds?: number[];
 };
 
 export async function fetchPrestation(missionId: number): Promise<PrestationView> {

@@ -8238,7 +8238,9 @@ Prestation dynamique de la mission (une mission seule = prestation de taille 1).
 
 `globalStatus` = le statut commun, ou `MIXED`. `allowedActions` : `edit_presence` si
 `MISSION_EXECUTION_UPDATE` est accordé sur chaque mission, `submit` si `MISSION_SUBMIT` est
-accordé sur chaque mission encore à soumettre.
+accordé sur chaque mission encore à soumettre. `hoursLockedByMissionIds` (`int[]`) : missions
+pour lesquelles le lecteur n'a pas `MISSION_EXECUTION_UPDATE` (soumise, validée…) — une seule
+suffit à verrouiller les heures communes ; sert à l'expliquer, jamais à décider côté client.
 
 ### `PUT /api/missions/{id}/prestation/presence`
 

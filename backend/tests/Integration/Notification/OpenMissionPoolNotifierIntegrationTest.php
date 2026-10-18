@@ -40,6 +40,8 @@ final class OpenMissionPoolNotifierIntegrationTest extends KernelTestCase
     private Hospital $delta;
     private Hospital $elsewhere;
     private User $surgeon;
+    /** D-156 — a real schedule conflict involves another surgeon: same surgeon + site + BLOC is a multi-room prestation. */
+    private User $otherSurgeon;
     private User $francoise;
     private User $sophie;
     private User $marie;
@@ -56,6 +58,7 @@ final class OpenMissionPoolNotifierIntegrationTest extends KernelTestCase
         $this->delta     = $this->makeSite('Repro Delta');
         $this->elsewhere = $this->makeSite('Autre site');
         $this->surgeon   = $this->makeUser('Philippe', 'Schiepers', 'ROLE_SURGEON');
+        $this->otherSurgeon = $this->makeUser('Yorick', 'Berger', 'ROLE_SURGEON');
         $this->francoise = $this->member($this->makeUser('Françoise', 'Detrembleur'), $this->delta);
         $this->sophie    = $this->member($this->makeUser('Sophie', 'Gillard'), $this->delta);
         $this->marie     = $this->member($this->makeUser('Marie', 'Absente'), $this->delta);
@@ -412,12 +415,13 @@ final class OpenMissionPoolNotifierIntegrationTest extends KernelTestCase
 
     private function assignedMission(User $instrumentist, string $start, string $end): Mission
     {
-        return $this->mission(MissionStatus::ASSIGNED, $instrumentist, $start, $end);
+        return $this->mission(MissionStatus::ASSIGNED, $instrumentist, $start, $end, $this->otherSurgeon);
     }
 
-    private function mission(MissionStatus $status, ?User $instrumentist, string $start, string $end): Mission
+    private function mission(MissionStatus $status, ?User $instrumentist, string $start, string $end, ?User $surgeon = null): Mission
     {
-        $m = (new Mission())->setSite($this->delta)->setSurgeon($this->surgeon)->setCreatedBy($this->surgeon)
+        $surgeon ??= $this->surgeon;
+        $m = (new Mission())->setSite($this->delta)->setSurgeon($surgeon)->setCreatedBy($surgeon)
             ->setType(MissionType::BLOCK)->setSchedulePrecision(SchedulePrecision::EXACT)->setStatus($status)
             ->setInstrumentist($instrumentist)
             ->setStartAt(new \DateTimeImmutable($start))->setEndAt(new \DateTimeImmutable($end));

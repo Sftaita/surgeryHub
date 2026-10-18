@@ -228,7 +228,10 @@ export function MissionDetailContent({
       else navigate("/app/m/missions", { replace: true });
     },
     onError: (err: any) => {
-      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors de l'annulation.");
+      // D-156 — un refus métier (409, ex. MISSION_HAS_ENCODING_DATA) porte son explication.
+      const status = err?.response?.status;
+      const serverMessage: string | undefined = err?.response?.data?.error?.message;
+      toast.error(status === 403 ? "Accès interdit." : status === 409 && serverMessage ? serverMessage : "Erreur lors de l'annulation.");
     },
   });
 

@@ -283,6 +283,7 @@ export default function MissionEncodingPage() {
             canSubmit={canSubmit}
             onValidate={() => setOpenSubmit(true)}
             progress={encoding.progress}
+            prestationSize={isPrestation ? prestation?.size : undefined}
           />
         ) : canSubmit ? (
           <Button variant="contained" color="success" onClick={() => setOpenSubmit(true)} data-testid="prestation-submit-open">

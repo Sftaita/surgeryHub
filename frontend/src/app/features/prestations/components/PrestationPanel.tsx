@@ -28,6 +28,8 @@ type Props = {
  * laquelle on ajoute des interventions est choisie explicitement (jamais « la première »).
  */
 export function PrestationPanel({ prestation, selectedMissionId, onSelectMission, canEditHours, onEditHours }: Props) {
+  const lockedIds = prestation.hoursLockedByMissionIds ?? [];
+  const lockedBy = prestation.missions.filter((m) => lockedIds.includes(m.id));
   const presence = prestation.presence;
   const hoursComplete = presence?.actualStartAt != null && presence?.actualEndAt != null;
 
@@ -75,6 +77,13 @@ export function PrestationPanel({ prestation, selectedMissionId, onSelectMission
             </Box>
           )}
         </Box>
+        {!canEditHours && lockedBy.length > 0 && lockedBy.length < prestation.missions.length && (
+          <Box sx={{ mt: "8px", fontSize: 12.5, color: GRAY_700 }} data-testid="prestation-hours-locked">
+            Heures communes non modifiables : {lockedBy.map((m) => m.label).join(", ")}{" "}
+            {lockedBy.length > 1 ? "sont déjà soumises ou validées" : "est déjà soumise ou validée"}. Pour corriger les heures,
+            demandez au manager de {lockedBy.length > 1 ? "les" : "la"} renvoyer aussi en correction.
+          </Box>
+        )}
       </Box>
 
       {/* Missions distinctes — choix explicite de celle dont on encode les interventions. */}

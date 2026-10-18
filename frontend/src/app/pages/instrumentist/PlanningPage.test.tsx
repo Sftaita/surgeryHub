@@ -282,7 +282,7 @@ describe("PlanningPage — prestation multi-salles (D-156)", () => {
     const user = userEvent.setup();
     renderPage();
 
-    const rows = await screen.findAllByText(/— 2 missions/);
+    const rows = await screen.findAllByText(/Multi-salles · 2 missions/);
     expect(rows).toHaveLength(1);
     expect(screen.getAllByText("CHU Brugmann")).toHaveLength(1);
     await user.click(rows[0]);
@@ -298,7 +298,7 @@ describe("PlanningPage — prestation multi-salles (D-156)", () => {
     });
     renderPage("/planning?view=month&date=2026-07-24");
 
-    await screen.findAllByText(/— 2 missions/);
+    await screen.findAllByText(/Multi-salles · 2 missions/);
     expect(screen.queryByTitle("Conflit potentiel")).not.toBeInTheDocument();
   });
 

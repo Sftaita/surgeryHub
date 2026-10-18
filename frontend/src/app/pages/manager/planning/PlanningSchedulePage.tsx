@@ -56,8 +56,11 @@ function getDayName(dateStr: string): string {
   const s = new Date(dateStr + "T00:00:00").toLocaleDateString("fr-BE", { weekday: "long" });
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-function getPeriod(startTime: string): string {
-  return parseInt(startTime.split(":")[0], 10) < 12 ? "Matin" : "Après-midi";
+function getPeriod(startTime: string, endTime: string): string {
+  const startsMorning = parseInt(startTime.split(":")[0], 10) < 12;
+  // Recette D-156 : une mission 07:45–18:00 n'est pas « Matin » — elle couvre la journée.
+  if (startsMorning && endTime > "13:30") return "Journée";
+  return startsMorning ? "Matin" : "Après-midi";
 }
 function displayName(u: { firstname?: string | null; lastname?: string | null; email?: string } | null | undefined): string {
   if (!u) return "—";
@@ -167,6 +170,9 @@ const STATUS_LABEL: Record<string, {
   DRAFT:       { label: "Brouillon",  color: "default"   },
   OPEN:        { label: "À réserver", color: "info"      },
   ASSIGNED:    { label: "Assigné",    color: "success"   },
+  // Recette D-156 — absents, ces statuts (désormais chargés, lot 1) retombaient sur « À réserver ».
+  IN_PROGRESS:          { label: "En cours",          color: "success" },
+  ENCODING_IN_PROGRESS: { label: "Encodage en cours", color: "warning" },
   DECLARED:    { label: "Déclaré",    color: "warning"   },
   REJECTED:    { label: "Rejeté",     color: "error"     },
   SUBMITTED:   { label: "Soumis",     color: "primary"   },
@@ -634,7 +640,13 @@ export default function PlanningSchedulePage() {
                         )}
 
                         <TableCell sx={{ fontWeight: 500 }}>{row.surgeonName}</TableCell>
-                        <TableCell sx={{ color: "text.secondary" }}>{getPeriod(row.startTime)}</TableCell>
+                        <TableCell sx={{ color: "text.secondary" }}>
+                          {getPeriod(row.startTime, row.endTime)}
+                          {/* D-156 — deux salles simultanées restent identifiables : l'horaire est affiché. */}
+                          <Box component="span" sx={{ display: "block", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+                            {row.startTime.replace(":", "h")}–{row.endTime.replace(":", "h")}
+                          </Box>
+                        </TableCell>
 
                         <TableCell sx={{ py: "2px !important" }} onClick={(e) => e.stopPropagation()}>
                           <ScheduleInstrumentistCell

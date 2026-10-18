@@ -64,12 +64,15 @@ final class MissionEncodingDataGuard
             return;
         }
 
+        // « d'annuler », « de réaffecter » : élision devant une voyelle.
+        $impossible = preg_match('/^[aeiouéèê]/iu', $operation) === 1 ? "Impossible d'" : 'Impossible de ';
+
         throw new PrestationConflictException(
             PrestationConflictException::MISSION_HAS_ENCODING_DATA,
             $hoursBlock
-                ? sprintf("Impossible de %s cette mission : des heures réelles y sont déjà enregistrées pour l'instrumentiste actuelle. Elles ne sont jamais transférées ni effacées automatiquement — %s.", $operation,
+                ? sprintf("%s%s cette mission : des heures réelles y sont déjà enregistrées pour l'instrumentiste actuelle. Elles ne sont jamais transférées ni effacées automatiquement — %s.", $impossible, $operation,
                     $f['presenceId'] !== null ? 'détachez d\'abord la mission de la présence commune (correction contrôlée)' : 'faites d\'abord corriger l\'encodage')
-                : sprintf("Impossible de %s cette mission sans confirmation : elle porte déjà des interventions ou du matériel encodés, qui resteront attachés à la mission.", $operation),
+                : sprintf("%s%s cette mission sans confirmation : elle porte déjà des interventions ou du matériel encodés, qui resteront attachés à la mission.", $impossible, $operation),
             ['missionId' => $mission->getId(), 'operation' => $operation, 'confirmable' => !$hoursBlock] + $f,
         );
     }
