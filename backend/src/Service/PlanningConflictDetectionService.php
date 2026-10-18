@@ -2,6 +2,8 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\PrestationGrouping;
+
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningAlert;
@@ -94,7 +96,7 @@ class PlanningConflictDetectionService
      * hasConflictInPool() instead to stay within the project's fixed-query-budget
      * discipline (see PlanningGeneratorServiceV2).
      */
-    public function findConflict(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): ?Mission
+    public function findConflict(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): ?Mission
     {
         $qb = $this->em->createQueryBuilder()
             ->select('m')
@@ -107,8 +109,15 @@ class PlanningConflictDetectionService
             ->setParameter('start', $start)
             ->setParameter('end', $end)
             ->setParameter('statuses', self::ACTIVE_STATUSES)
-            ->orderBy('m.startAt', 'ASC')
-            ->setMaxResults(1);
+            ->orderBy('m.startAt', 'ASC');
+
+        // D-156 — the INSTRUMENTIST-role check of a mission ($multiRoomContext) skips the
+        // legitimate multi-room overlaps (BLOC, same surgeon, same site, same local date —
+        // PrestationGrouping::isMultiRoomSlot()). Filtered in PHP on the (few) overlapping
+        // rows, so the rule stays the single shared one, never re-encoded in DQL.
+        if ($multiRoomContext === null) {
+            $qb->setMaxResults(1);
+        }
 
         if ($excludeMissionId !== null) {
             $qb->andWhere('m.id != :excludeId')->setParameter('excludeId', $excludeMissionId);
@@ -120,7 +129,23 @@ class PlanningConflictDetectionService
                 ->setParameter('doubleRoomSite', $doubleRoomSite);
         }
 
-        return $qb->getQuery()->getOneOrNullResult();
+        if ($multiRoomContext === null) {
+            return $qb->getQuery()->getOneOrNullResult();
+        }
+
+        foreach ($qb->getQuery()->getResult() as $candidate) {
+            if (!self::isMultiRoomOverlap($candidate, $person, $multiRoomContext, $start, $end)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /** D-156 — $existing vs the slot [$start,$end) of $context, for $person as instrumentist. */
+    private static function isMultiRoomOverlap(Mission $existing, User $person, Mission $context, \DateTimeImmutable $start, \DateTimeImmutable $end): bool
+    {
+        return PrestationGrouping::isMultiRoomSlot($existing, $person, $context->getSurgeon(), $context->getSite(), $context->getType(), $start, $end);
     }
 
     /**
@@ -141,7 +166,7 @@ class PlanningConflictDetectionService
                 ? $this->findConflict($surgeon, $start, $end, $mission->getId(), $mission->getSite())
                 : null,
             'instrumentist' => $instrumentist !== null
-                ? $this->findConflict($instrumentist, $start, $end, $mission->getId())
+                ? $this->findConflict($instrumentist, $start, $end, $mission->getId(), null, $mission)
                 : null,
         ];
     }
@@ -187,9 +212,14 @@ class PlanningConflictDetectionService
      * $doubleRoomSite carve-out as findConflict() — pass the checked mission's site only
      * when $personId is being checked in their SURGEON role, null for INSTRUMENTIST.
      */
-    public function hasConflictInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): ?Mission
+    public function hasConflictInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): ?Mission
     {
         foreach ($pool[$personId] ?? [] as $mission) {
+            // D-156 — same multi-room exception as findConflict(), for the INSTRUMENTIST role.
+            if ($multiRoomContext !== null && $mission->getInstrumentist()?->getId() === $personId
+                && self::isMultiRoomOverlap($mission, $mission->getInstrumentist(), $multiRoomContext, $start, $end)) {
+                continue;
+            }
             if ($excludeMissionId !== null && $mission->getId() === $excludeMissionId) {
                 continue;
             }
@@ -232,7 +262,8 @@ class PlanningConflictDetectionService
 
         foreach ($this->personChecks($mission) as [$person, $type]) {
             $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
-            $conflict = $this->findConflict($person, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), $doubleRoomSite);
+            $multiRoom = $type === PlanningAlertType::INSTRUMENTIST_CONFLICT ? $mission : null;
+            $conflict = $this->findConflict($person, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), $doubleRoomSite, $multiRoom);
             if ($conflict !== null && $this->conflictWaiver->findActiveWaiver($mission, $conflict) !== null) {
                 $conflict = null;
             }
@@ -276,7 +307,8 @@ class PlanningConflictDetectionService
         foreach ($missions as $mission) {
             foreach ($this->personChecks($mission) as [$person, $type]) {
                 $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
-                $conflict = $this->hasConflictInPool($person->getId(), $mission->getStartAt(), $mission->getEndAt(), $pool, $mission->getId(), $doubleRoomSite);
+                $multiRoom = $type === PlanningAlertType::INSTRUMENTIST_CONFLICT ? $mission : null;
+                $conflict = $this->hasConflictInPool($person->getId(), $mission->getStartAt(), $mission->getEndAt(), $pool, $mission->getId(), $doubleRoomSite, $multiRoom);
                 if ($conflict !== null && $this->conflictWaiver->findActiveWaiver($mission, $conflict) !== null) {
                     $conflict = null;
                 }

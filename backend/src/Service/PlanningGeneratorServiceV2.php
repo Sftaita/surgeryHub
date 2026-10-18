@@ -2,6 +2,8 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\PrestationGrouping;
+
 use App\Activity\Recorder\PlanningActivityRecorder;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -11,6 +13,7 @@ use App\Entity\SiteGroup;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
 use App\Enum\PlanningVersionScopeSource;
@@ -253,9 +256,14 @@ class PlanningGeneratorServiceV2
             $slotStartMins = $this->hhmm2mins($startTime->format('H:i'));
             $slotEndMins   = $this->hhmm2mins($endTime->format('H:i'));
 
+            // D-156 — two BLOC slots of the same surgeon on the same site, same day, with the
+            // same instrumentist are one multi-room prestation, never a CONFLICT (same rule
+            // as PrestationGrouping::isMultiRoomSlot(), for slots not yet missions).
+            $isBlock = $post->getType() === MissionType::BLOCK;
             $intraConflict = false;
-            foreach ($previewAssignments[$instId] ?? [] as [$aDate, $aStart, $aEnd]) {
-                if ($aDate === $dayStr && $slotStartMins < $aEnd && $slotEndMins > $aStart) {
+            foreach ($previewAssignments[$instId] ?? [] as [$aDate, $aStart, $aEnd, $aSurgeonId, $aSiteId, $aBlock]) {
+                if ($aDate === $dayStr && $slotStartMins < $aEnd && $slotEndMins > $aStart
+                    && !($isBlock && $aBlock && $aSurgeonId === $surgeon->getId() && $aSiteId === $site->getId())) {
                     $intraConflict = true;
                     break;
                 }
@@ -266,13 +274,13 @@ class PlanningGeneratorServiceV2
             } else {
                 $startAt = $current->setTime((int) $startTime->format('H'), (int) $startTime->format('i'));
                 $endAt   = $current->setTime((int) $endTime->format('H'), (int) $endTime->format('i'));
-                $hasConflict = $this->hasConflictFast($instId, $startAt, $endAt, $missionsByInstrumentist);
+                $hasConflict = $this->hasConflictFast($slotInstrumentist, $startAt, $endAt, $missionsByInstrumentist, $surgeon, $site, $post->getType());
 
                 if ($hasConflict) {
                     $status = 'CONFLICT';
                 } else {
                     $status = 'COVERED';
-                    $previewAssignments[$instId][] = [$dayStr, $slotStartMins, $slotEndMins];
+                    $previewAssignments[$instId][] = [$dayStr, $slotStartMins, $slotEndMins, $surgeon->getId(), $site->getId(), $isBlock];
                 }
             }
         } else {
@@ -948,13 +956,15 @@ class PlanningGeneratorServiceV2
         return $index;
     }
 
-    private function hasConflictFast(int $instrumentistId, \DateTimeImmutable $slotStart, \DateTimeImmutable $slotEnd, array $missionsByInstrumentist): bool
+    private function hasConflictFast(User $instrumentist, \DateTimeImmutable $slotStart, \DateTimeImmutable $slotEnd, array $missionsByInstrumentist, User $surgeon, Hospital $site, MissionType $type): bool
     {
-        foreach ($missionsByInstrumentist[$instrumentistId] ?? [] as $mission) {
+        foreach ($missionsByInstrumentist[$instrumentist->getId()] ?? [] as $mission) {
             if ($mission->getStatus() === MissionStatus::REJECTED) {
                 continue;
             }
-            if ($mission->getStartAt() < $slotEnd && $mission->getEndAt() > $slotStart) {
+            if ($mission->getStartAt() < $slotEnd && $mission->getEndAt() > $slotStart
+                // D-156 — legitimate multi-room overlap: same prestation, not a conflict.
+                && !PrestationGrouping::isMultiRoomSlot($mission, $instrumentist, $surgeon, $site, $type, $slotStart, $slotEnd)) {
                 return true;
             }
         }

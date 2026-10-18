@@ -33,5 +33,22 @@ final class MissionListDto
          * @var array<string,mixed>|null
          */
         public readonly ?array $targetedOffer = null,
+        /** D-156 — libellé de salle facultatif (manager). */
+        public readonly ?string $roomLabel = null,
+        /**
+         * D-156 — prestation regroupée multi-salles de la mission (null si elle est seule) :
+         * {key, size, missionIds, plannedStartAt, plannedEndAt, plannedUnionMinutes}.
+         * Calculée côté serveur (PrestationGrouping), jamais recalculée par le client.
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $prestation = null,
+        /**
+         * D-156 — vrais conflits d'horaire de l'instrumentiste (chevauchement qui n'est pas une
+         * double salle légitime), calculés côté serveur.
+         *
+         * @var list<int>
+         */
+        public readonly array $scheduleConflictMissionIds = [],
     ) {}
 }

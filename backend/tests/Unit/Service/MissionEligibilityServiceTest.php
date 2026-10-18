@@ -92,6 +92,16 @@ final class MissionEligibilityServiceTest extends TestCase
         return $m;
     }
 
+    /** @return list<Mission> $count overlapping missions of an unrelated context (a real conflict). */
+    private function conflictRows(int $count): array
+    {
+        $rows = [];
+        for ($i = 0; $i < $count; $i++) {
+            $rows[] = $this->makeConflictMission($this->makeUser());
+        }
+        return $rows;
+    }
+
     /**
      * Set up em->createQuery for evaluate() calls.
      * Q1 = membership count, Q2 = absence count, Q3 = conflict count.
@@ -107,9 +117,11 @@ final class MissionEligibilityServiceTest extends TestCase
                 $q->method('getSingleScalarResult')->willReturn(match ($call) {
                     1 => $memberCount,
                     2 => $absenceCount,
-                    3 => $conflictCount,
                     default => 0,
                 });
+                // D-156 — the conflict query returns the overlapping missions themselves
+                // (the multi-room exception is applied on them), not a count.
+                $q->method('getResult')->willReturn($call === 3 ? $this->conflictRows($conflictCount) : []);
                 return $q;
             });
     }
@@ -664,9 +676,9 @@ final class MissionEligibilityServiceTest extends TestCase
                 $q->method('setParameter')->willReturnSelf();
                 $q->method('getSingleScalarResult')->willReturn(match ($call) {
                     1 => $absenceCount,
-                    2 => $conflictCount,
                     default => 0,
                 });
+                $q->method('getResult')->willReturn($call === 2 ? $this->conflictRows($conflictCount) : []);
                 return $q;
             });
     }

@@ -25,6 +25,12 @@ use App\Exception\FinancialCalculationAnomaliesException;
 use App\Exception\FinancialCalculationIneligibleException;
 use App\Exception\InstrumentistRateConflictException;
 use App\Exception\PricingRuleConflictException;
+use App\Entity\WorkedPresence;
+use App\Service\Prestation\PrestationEncodingService;
+use App\Service\Prestation\PrestationGrouping;
+use App\Service\Prestation\PrestationGroupResolver;
+use App\Service\Prestation\PresenceAllocator;
+use App\Service\Prestation\WorkedPresenceService;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -50,7 +56,12 @@ final class FinancialCalculationService
         private readonly RepresentativePolicyResolver $representativePolicyResolver,
         private readonly RequiredChoiceGroupResolver $choiceGroupResolver,
         private readonly AuditService $audit,
-    ) {}
+        ?PrestationGroupResolver $prestationGroups = null,
+    ) {
+        $this->prestationGroups = $prestationGroups ?? new PrestationGroupResolver($em);
+    }
+
+    private readonly PrestationGroupResolver $prestationGroups;
 
     /**
      * §9 du lot — la seule règle de date, centralisée : horaires réels si connus,
@@ -59,6 +70,10 @@ final class FinancialCalculationService
     public function resolveEffectiveAt(Mission $mission): \DateTimeImmutable
     {
         $execution = $mission->getExecution();
+        // D-156 — mission liée à une présence partagée : le début réel est celui de la présence.
+        if ($execution?->getPresence()?->getActualStartAt() !== null) {
+            return $execution->getPresence()->getActualStartAt();
+        }
         if ($execution?->getActualStartAt() !== null) {
             return $execution->getActualStartAt();
         }
@@ -171,6 +186,21 @@ final class FinancialCalculationService
             throw new FinancialCalculationIneligibleException('Only a CALCULATED calculation can be approved.');
         }
 
+        // D-156 — a calculation valued on a shared presence is approved only if that presence
+        // did not change since (checked under the presence's lock, in the same transaction).
+        if (!$this->hasSharedPresenceLine($calculation)) {
+            return $this->doApprove($calculation, $actor);
+        }
+
+        return $this->em->wrapInTransaction(function () use ($calculation, $actor): FinancialCalculation {
+            $this->assertSharedPresenceStillCurrent($calculation);
+
+            return $this->doApprove($calculation, $actor);
+        });
+    }
+
+    private function doApprove(FinancialCalculation $calculation, User $actor): FinancialCalculation
+    {
         $calculation->setStatus(FinancialCalculationStatus::APPROVED);
         $calculation->setApprovedAt(new \DateTimeImmutable());
         $calculation->setApprovedBy($actor);
@@ -179,6 +209,17 @@ final class FinancialCalculationService
         $this->em->flush();
 
         return $calculation;
+    }
+
+    private function hasSharedPresenceLine(FinancialCalculation $calculation): bool
+    {
+        foreach ($calculation->getLines() as $line) {
+            if (isset($line->getSnapshot()['presenceId'])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** §19 — un calcul LOCKED ne peut plus être superseded ; voir aussi MissionEncodingWorkflowService::reopen(). */
@@ -707,6 +748,24 @@ final class FinancialCalculationService
             return null;
         }
 
+        // D-156 — prestation regroupée multi-salles : la présence réelle unique est valorisée
+        // UNE fois, puis ventilée entre les missions (heures ET centimes) — jamais deux fois.
+        if ($duration->source === EffectiveDurationSource::PRESENCE_SHARE) {
+            return $this->resolveSharedPresenceHourlyLine($mission, $instrumentist, $effectiveAt, $duration->minutes, $anomalies);
+        }
+
+        // D-156 — anciennes heures propres de plusieurs missions d'une même prestation (saisies
+        // avant le regroupement) : leur somme compterait deux fois des heures simultanées.
+        $siblingsWithOwnHours = $this->siblingsWithOwnHours($mission);
+        if ($siblingsWithOwnHours !== []) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'OVERLAPPING_HOURS_IN_PRESTATION',
+                sprintf('Mission #%d and simultaneous mission(s) #%s of the same multi-room prestation each carry their own actual hours: declare the shared presence once before valuing.', $mission->getId(), implode(', #', $siblingsWithOwnHours)),
+                ['missionId' => $mission->getId(), 'siblingMissionIds' => $siblingsWithOwnHours],
+            );
+            return null;
+        }
+
         if ($duration->minutes <= 0) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'INVALID_EFFECTIVE_DURATION',
@@ -763,6 +822,180 @@ final class FinancialCalculationService
                 'effectiveDurationSource' => $duration->source->value,
             ],
         ];
+    }
+
+    /**
+     * D-156 — ligne horaire d'une mission liée à une présence partagée.
+     *
+     * - la part enregistrée doit être celle que la présence ACTUELLE produit (sinon
+     *   SHARED_PRESENCE_STALE : jamais valoriser une ventilation obsolète) ;
+     * - le montant de la présence entière est calculé UNE fois (durée totale × tarif,
+     *   arrondi au centime) puis réparti au centime près entre les missions (plus grand
+     *   reste) : la somme des lignes du groupe vaut exactement ce montant, sans écart ;
+     * - une mission sœur dont le calcul est déjà approuvé/verrouillé sur une autre révision
+     *   de la présence bloque (SHARED_PRESENCE_SETTLED) : aucune donnée arrêtée n'est
+     *   contredite en silence, la régularisation reste explicite.
+     *
+     * @param FinancialCalculationAnomaly[] &$anomalies
+     */
+    private function resolveSharedPresenceHourlyLine(Mission $mission, User $instrumentist, \DateTimeImmutable $effectiveAt, int $storedShare, array &$anomalies): ?array
+    {
+        $presence = $mission->getExecution()->getPresence();
+        $members = $presence->getMissions();
+        $shares = WorkedPresenceService::sharesFor($presence, $members);
+        $missionId = (int) $mission->getId();
+
+        if ($shares === null || !array_key_exists($missionId, $shares) || $shares[$missionId] !== $storedShare) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'SHARED_PRESENCE_STALE',
+                sprintf('The imputed share of mission #%d no longer matches its shared presence #%d: the presence must be saved again before valuing.', $missionId, $presence->getId()),
+                ['missionId' => $missionId, 'presenceId' => $presence->getId(), 'storedMinutes' => $storedShare, 'expectedMinutes' => $shares[$missionId] ?? null],
+            );
+            return null;
+        }
+
+        $settled = $this->settledSiblingLines($mission, $members);
+        foreach ($settled as $line) {
+            if ((int) ($line->getSnapshot()['presenceRevision'] ?? -1) !== $presence->getRevision()) {
+                $anomalies[] = new FinancialCalculationAnomaly(
+                    'SHARED_PRESENCE_SETTLED',
+                    sprintf('A simultaneous mission (#%d) of the same prestation is already approved or locked on another version of the shared presence #%d: regularise it explicitly first.', $line->getFinancialCalculation()->getMission()->getId(), $presence->getId()),
+                    ['missionId' => $missionId, 'presenceId' => $presence->getId(), 'settledMissionId' => $line->getFinancialCalculation()->getMission()->getId()],
+                );
+                return null;
+            }
+        }
+
+        try {
+            $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::HOURLY_RATE, $effectiveAt);
+        } catch (InstrumentistRateConflictException $conflict) {
+            $anomalies[] = $this->instrumentistRateConflictAnomaly($instrumentist, InstrumentistRateType::HOURLY_RATE, $conflict);
+            return null;
+        }
+        if ($rate === null) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'MISSING_INSTRUMENTIST_RATE',
+                sprintf('No active HOURLY_RATE InstrumentistRate for instrumentist=%d at %s.', $instrumentist->getId(), $effectiveAt->format('Y-m-d')),
+                ['instrumentistId' => $instrumentist->getId(), 'rateType' => InstrumentistRateType::HOURLY_RATE->value],
+            );
+            return null;
+        }
+
+        $totalMinutes = (int) $presence->getTotalMinutes();
+        // Same rounding as a single hourly line (hours to 4 decimals × rate, to the cent),
+        // applied ONCE to the whole presence.
+        $presenceTotalCents = (int) round((float) $this->roundMoney(round($totalMinutes / 60, 4) * (float) $rate->getAmount()) * 100);
+        $order = PresenceAllocator::rankOrder(PrestationGrouping::allocationMembers($members));
+        $cents = PresenceAllocator::allocateCents($presenceTotalCents, $shares, $order);
+        $hours = round($storedShare / 60, 4);
+        $memberIds = PrestationGrouping::ids($members);
+
+        return [
+            'beneficiaryType' => FinancialBeneficiaryType::INSTRUMENTIST,
+            'beneficiaryFirm' => null,
+            'beneficiaryInstrumentist' => $instrumentist,
+            'lineType' => FinancialLineType::INSTRUMENTIST_HOURLY,
+            'sourceType' => FinancialLineSourceType::MISSION_EXECUTION,
+            'missionIntervention' => null,
+            'materialLine' => null,
+            'pricingRule' => null,
+            'instrumentistRate' => $rate,
+            'descriptionSnapshot' => sprintf('Prestation horaire (part multi-salles) — %s', $this->displayName($instrumentist)),
+            'quantity' => number_format($hours, 4, '.', ''),
+            'durationMinutes' => $storedShare,
+            'unitAmount' => $rate->getAmount(),
+            'totalAmount' => number_format($cents[$missionId] / 100, 2, '.', ''),
+            'currency' => $rate->getCurrency(),
+            'effectiveAt' => $effectiveAt,
+            'snapshot' => [
+                'instrumentistRateId' => $rate->getId(),
+                'rateType' => $rate->getRateType()->value,
+                'validFrom' => $rate->getValidFrom()->format('Y-m-d'),
+                'validTo' => $rate->getValidTo()?->format('Y-m-d'),
+                'instrumentistId' => $instrumentist->getId(),
+                'instrumentistNameSnapshot' => $this->displayName($instrumentist),
+                'durationMinutes' => $storedShare,
+                'effectiveDurationSource' => EffectiveDurationSource::PRESENCE_SHARE->value,
+                'presenceId' => $presence->getId(),
+                'presenceRevision' => $presence->getRevision(),
+                'presenceActualStartAt' => $presence->getActualStartAt()?->format(\DateTimeInterface::ATOM),
+                'presenceActualEndAt' => $presence->getActualEndAt()?->format(\DateTimeInterface::ATOM),
+                'presenceTotalMinutes' => $totalMinutes,
+                'presenceTotalAmount' => number_format($presenceTotalCents / 100, 2, '.', ''),
+                'prestationMissionIds' => $memberIds,
+                'imputedMinutesByMission' => $shares,
+                'imputedAmountByMission' => array_map(static fn (int $c) => number_format($c / 100, 2, '.', ''), $cents),
+                'allocationRule' => PresenceAllocator::RULE,
+            ],
+        ];
+    }
+
+    /**
+     * Lignes horaires approuvées/verrouillées des missions sœurs d'une présence.
+     *
+     * @param list<Mission> $members
+     * @return FinancialCalculationLine[]
+     */
+    private function settledSiblingLines(Mission $mission, array $members): array
+    {
+        $siblings = array_values(array_filter($members, static fn (Mission $m) => $m->getId() !== $mission->getId()));
+        if ($siblings === []) {
+            return [];
+        }
+
+        return $this->em->createQueryBuilder()
+            ->select('l', 'c')
+            ->from(FinancialCalculationLine::class, 'l')
+            ->join('l.financialCalculation', 'c')
+            ->andWhere('c.mission IN (:siblings)')
+            ->andWhere('c.status IN (:settled)')
+            ->andWhere('l.lineType = :hourly')
+            ->setParameter('siblings', $siblings)
+            ->setParameter('settled', [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED])
+            ->setParameter('hourly', FinancialLineType::INSTRUMENTIST_HOURLY)
+            ->getQuery()
+            ->getResult();
+    }
+
+    /**
+     * D-156 — ids des missions de la même prestation dynamique qui portent, comme $mission,
+     * leurs propres heures réelles (aucune présence partagée) : situation historique où une
+     * même heure simultanée serait comptée deux fois.
+     *
+     * @return list<int>
+     */
+    private function siblingsWithOwnHours(Mission $mission): array
+    {
+        if (!PrestationEncodingService::hasOwnHours($mission)) {
+            return [];
+        }
+        $ids = [];
+        foreach ($this->prestationGroups->groupOf($mission) as $sibling) {
+            if ($sibling->getId() !== $mission->getId() && PrestationEncodingService::hasOwnHours($sibling)) {
+                $ids[] = (int) $sibling->getId();
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * D-156 — une ligne horaire calculée sur une présence partagée n'est approuvable que si
+     * la présence n'a pas changé depuis (même révision) : sinon le calcul doit être refait.
+     * La présence est verrouillée pour sérialiser l'approbation avec une correction d'heures.
+     */
+    private function assertSharedPresenceStillCurrent(FinancialCalculation $calculation): void
+    {
+        foreach ($calculation->getLines() as $line) {
+            $snapshot = $line->getSnapshot();
+            if ($line->getLineType() !== FinancialLineType::INSTRUMENTIST_HOURLY || !isset($snapshot['presenceId'])) {
+                continue;
+            }
+            $presence = $this->em->find(WorkedPresence::class, (int) $snapshot['presenceId'], LockMode::PESSIMISTIC_WRITE);
+            if ($presence === null || $presence->getRevision() !== (int) $snapshot['presenceRevision']) {
+                throw new FinancialCalculationIneligibleException('The shared presence of this multi-room prestation changed since this calculation: recalculate it before approving.');
+            }
+        }
     }
 
     /** @param FinancialCalculationAnomaly[] &$anomalies */

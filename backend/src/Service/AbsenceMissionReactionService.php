@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\MissionEncodingDataGuard;
 use App\Entity\Absence;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -282,6 +283,11 @@ class AbsenceMissionReactionService
             if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
                 return; // handled concurrently between the overlap query and now
             }
+            // D-156 — a mission whose work is already encoded is never released automatically
+            // (its hours/interventions would move to the pool): left to the manager.
+            if (MissionEncodingDataGuard::hasEncodingData($mission)) {
+                return;
+            }
 
             $instrumentist = $mission->getInstrumentist();
             $captured = [
@@ -345,6 +351,10 @@ class AbsenceMissionReactionService
 
             if (!in_array($mission->getStatus(), self::SURGEON_ACTIONABLE_STATUSES, true)) {
                 return; // handled concurrently between the overlap query and now
+            }
+            // D-156 — already-encoded work is never cancelled automatically: left to the manager.
+            if (MissionEncodingDataGuard::hasEncodingData($mission)) {
+                return;
             }
 
             $instrumentist = $mission->getInstrumentist();

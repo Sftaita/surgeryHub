@@ -18,7 +18,11 @@ final class MissionMapper
         private readonly EncodingReminderService $reminders,
     ) {}
 
-    public function toListDto(Mission $m, User $viewer): MissionListDto
+    /**
+     * @param array{prestation: ?array<string,mixed>, scheduleConflictMissionIds: list<int>}|null $annotation
+     *        D-156 — MissionListAnnotator, calculé par page (jamais par mission)
+     */
+    public function toListDto(Mission $m, User $viewer, ?array $annotation = null): MissionListDto
     {
         return new MissionListDto(
             id: (int) $m->getId(),
@@ -35,6 +39,9 @@ final class MissionMapper
             allowedActions: $this->actions->allowedActions($m, $viewer),
             covered: $this->coverage->isCovered($m),
             targetedOffer: $this->targetedOffer($m),
+            roomLabel: $m->getRoomLabel(),
+            prestation: $annotation['prestation'] ?? null,
+            scheduleConflictMissionIds: $annotation['scheduleConflictMissionIds'] ?? [],
         );
     }
 
@@ -73,6 +80,7 @@ final class MissionMapper
             submittedAt: $m->getSubmittedAt()?->format(\DateTimeInterface::ATOM),
             targetedOffer: $this->targetedOffer($m),
             encodingCorrectionBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::reopenBlockedReason($m) : null,
+            roomLabel: $m->getRoomLabel(),
         );
     }
 

@@ -59,6 +59,12 @@ enum FirmBillingReason: string
     case INVALID_EFFECTIVE_DURATION = 'INVALID_EFFECTIVE_DURATION';
     /** D-143 — aucune heure réelle déclarée : jamais une rémunération sur le planifié. */
     case MISSING_ACTUAL_HOURS = 'MISSING_ACTUAL_HOURS';
+    /** D-156 — part imputée d'une présence partagée obsolète (présence modifiée depuis). */
+    case SHARED_PRESENCE_STALE = 'SHARED_PRESENCE_STALE';
+    /** D-156 — une mission sœur est déjà approuvée/verrouillée sur une autre version de la présence. */
+    case SHARED_PRESENCE_SETTLED = 'SHARED_PRESENCE_SETTLED';
+    /** D-156 — missions simultanées d'une même prestation portant chacune leurs propres heures. */
+    case OVERLAPPING_HOURS_IN_PRESTATION = 'OVERLAPPING_HOURS_IN_PRESTATION';
     /** D-138 — plusieurs règles actives couvrent la même cible à la même date. */
     case CONFLICTING_FIRM_INTERVENTION_RATE = 'CONFLICTING_FIRM_INTERVENTION_RATE';
     case CONFLICTING_FIRM_MATERIAL_RATE = 'CONFLICTING_FIRM_MATERIAL_RATE';
@@ -112,6 +118,7 @@ enum FirmBillingReason: string
             self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE,
             self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
             self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::MISSING_ACTUAL_HOURS, self::CALCULATION_FAILED,
+            self::SHARED_PRESENCE_STALE, self::SHARED_PRESENCE_SETTLED, self::OVERLAPPING_HOURS_IN_PRESTATION,
             self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE,
         ], true);
     }
@@ -128,7 +135,8 @@ enum FirmBillingReason: string
             self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE,
             self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE => 'CONFIGURATION',
             self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
-            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::MISSING_ACTUAL_HOURS => 'ENCODING',
+            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::MISSING_ACTUAL_HOURS,
+            self::SHARED_PRESENCE_STALE, self::SHARED_PRESENCE_SETTLED, self::OVERLAPPING_HOURS_IN_PRESTATION => 'ENCODING',
             self::CALCULATION_FAILED => 'TECHNICAL',
             default => null,
         };
@@ -160,6 +168,9 @@ enum FirmBillingReason: string
             self::MISSING_REQUIRED_CHOICE_ANSWER => 'Choix obligatoire non renseigné',
             self::INVALID_EFFECTIVE_DURATION => 'Durée de mission invalide',
             self::MISSING_ACTUAL_HOURS => 'Heures prestées non déclarées',
+            self::SHARED_PRESENCE_STALE => 'Heures communes modifiées depuis la ventilation',
+            self::SHARED_PRESENCE_SETTLED => 'Prestation multi-salles déjà arrêtée sur une autre version',
+            self::OVERLAPPING_HOURS_IN_PRESTATION => 'Heures simultanées saisies sur plusieurs salles',
             self::CALCULATION_FAILED => 'Calcul financier en erreur',
             self::CONFLICTING_FIRM_INTERVENTION_RATE => "Tarifs d'intervention contradictoires",
             self::CONFLICTING_FIRM_MATERIAL_RATE => 'Tarifs matériel contradictoires',
@@ -193,6 +204,9 @@ enum FirmBillingReason: string
             self::MISSING_REQUIRED_CHOICE_ANSWER => "Une réponse obligatoire manque dans l'encodage de cette intervention : elle détermine le forfait.",
             self::INVALID_EFFECTIVE_DURATION => 'La durée prestée de la mission est nulle ou négative : corrigez les heures prestées.',
             self::MISSING_ACTUAL_HOURS => "Aucune heure prestée n'a été déclarée : la prestation n'est jamais rémunérée sur les heures planifiées. Renvoyez l'encodage à l'instrumentiste.",
+            self::SHARED_PRESENCE_STALE => "Les heures communes de cette prestation multi-salles ont changé depuis la ventilation enregistrée : réenregistrez la présence commune, puis relancez le calcul.",
+            self::SHARED_PRESENCE_SETTLED => "Une autre mission de la même prestation multi-salles est déjà approuvée ou verrouillée sur une version antérieure des heures communes : régularisez-la explicitement avant de valoriser celle-ci (aucun double paiement possible).",
+            self::OVERLAPPING_HOURS_IN_PRESTATION => "Plusieurs missions simultanées de la même prestation multi-salles portent chacune leurs propres heures : additionnées, ces heures seraient payées deux fois. Déclarez une seule présence commune pour la prestation.",
             self::CALCULATION_FAILED => 'Le calcul financier a échoué pour une raison non reconnue. Le détail technique est disponible dans les journaux.',
             self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE
                 => "Plusieurs tarifs actifs s'appliquent à la même date : le calcul ne choisit jamais entre eux. Clôturez ou corrigez l'un d'eux.",

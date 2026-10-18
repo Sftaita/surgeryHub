@@ -3,6 +3,8 @@
 namespace App\Service;
 
 use App\Entity\AuditEvent;
+use App\Service\Prestation\PrestationGrouping;
+use App\Service\Prestation\PrestationGroupResolver;
 use App\Entity\Mission;
 use App\Entity\MissionEncodingReminder;
 use App\Entity\NotificationDispatch;
@@ -94,8 +96,12 @@ class EncodingReminderService
         /** true seulement là où la commande est réellement planifiée (cron). */
         #[Autowire('%env(bool:ENCODING_REMINDER_AUTO_ENABLED)%')]
         private readonly bool $automaticRemindersScheduled = false,
+        ?PrestationGroupResolver $prestationGroups = null,
     ) {
+        $this->prestationGroups = $prestationGroups ?? new PrestationGroupResolver($em);
     }
+
+    private readonly PrestationGroupResolver $prestationGroups;
 
     // ── Calendrier ──────────────────────────────────────────────────────────────
 
@@ -179,7 +185,52 @@ class EncodingReminderService
             }
         }
 
-        return $due;
+        return $this->onePerPrestation($due);
+    }
+
+    /**
+     * D-156 — une prestation regroupée multi-salles est UNE journée de travail, encodée et
+     * soumise en une fois : une seule relance par échéance, portée par la première mission
+     * encore en attente du groupe (le lien ouvre l'encodage commun). Les missions sœurs ne
+     * sont jamais relancées séparément tant que cette mission porte la relance.
+     *
+     * @param list<array{mission: Mission, stage: EncodingReminderStage}> $due
+     * @return list<array{mission: Mission, stage: EncodingReminderStage}>
+     */
+    private function onePerPrestation(array $due): array
+    {
+        if (count($due) < 2) {
+            return $due;
+        }
+        $groups = $this->prestationGroups->groupsFor(array_map(static fn (array $d) => $d['mission'], $due));
+
+        $kept = [];
+        $seen = [];
+        foreach ($due as $entry) {
+            $group = $groups[(int) $entry['mission']->getId()] ?? [$entry['mission']];
+            $pending = array_values(array_filter($group, [self::class, 'isEncodingPending']));
+            $anchor = $pending[0] ?? $entry['mission'];
+            $key = PrestationGrouping::key($group) . '|' . $entry['stage']->value;
+            if (isset($seen[$key]) || $anchor->getId() !== $entry['mission']->getId() && $this->isDueAnchorIn($anchor, $due, $entry['stage'])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $kept[] = $entry;
+        }
+
+        return $kept;
+    }
+
+    /** @param list<array{mission: Mission, stage: EncodingReminderStage}> $due */
+    private function isDueAnchorIn(Mission $anchor, array $due, EncodingReminderStage $stage): bool
+    {
+        foreach ($due as $d) {
+            if ($d['mission']->getId() === $anchor->getId() && $d['stage'] === $stage) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

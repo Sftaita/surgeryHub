@@ -370,6 +370,28 @@ class MissionService
      * still recomputes whether material lines exist itself, `$dto->noMaterial` stays
      * unused/informational, never trusted as the source of truth).
      */
+    /**
+     * D-156 — libellé de salle facultatif. Purement descriptif (aucune règle ne le lit),
+     * audité avant/après, jamais exigé. Vide = retiré.
+     */
+    public function updateRoomLabel(Mission $mission, User $actor, ?string $roomLabel): Mission
+    {
+        $label = $roomLabel !== null ? trim($roomLabel) : '';
+        $label = $label === '' ? null : $label;
+        if ($label !== null && mb_strlen($label) > 60) {
+            throw new UnprocessableEntityHttpException('Le libellé de salle ne peut pas dépasser 60 caractères.');
+        }
+
+        $previous = $mission->getRoomLabel();
+        if ($previous !== $label) {
+            $mission->setRoomLabel($label);
+            $this->auditService->record($mission, $actor, AuditEventType::MISSION_ROOM_LABEL_CHANGED, ['before' => $previous, 'after' => $label]);
+            $this->em->flush();
+        }
+
+        return $mission;
+    }
+
     public function submit(Mission $mission, MissionSubmitRequest $dto, User $actor): Mission
     {
         return $this->encodingWorkflowService->complete($mission, $actor, $dto->comment);

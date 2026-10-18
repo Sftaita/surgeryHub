@@ -126,7 +126,8 @@ final class EncodingStateResolver
 
         $execution = $mission->getExecution();
         $hasActuals = $execution !== null && (
-            $execution->getActualStartAt() !== null
+            $execution->getPresence() !== null // D-156 — heures communes d'une prestation multi-salles
+            || $execution->getActualStartAt() !== null
             || $execution->getActualEndAt() !== null
             || $execution->getActualDurationMinutes() !== null
         );

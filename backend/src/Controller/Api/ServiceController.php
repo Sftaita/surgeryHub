@@ -2,6 +2,8 @@
 
 namespace App\Controller\Api;
 
+use App\Service\Prestation\PrestationGroupResolver;
+
 use App\Dto\Request\MissionExecutionDisputeCreateRequest;
 use App\Dto\Request\MissionExecutionDisputeUpdateRequest;
 use App\Dto\Request\ServiceUpdateRequest;
@@ -37,6 +39,7 @@ class ServiceController extends AbstractController
         private readonly MissionExecutionService $executionService,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
+        private readonly PrestationGroupResolver $prestationGroups,
     ) {
     }
 
@@ -47,6 +50,7 @@ class ServiceController extends AbstractController
         $this->denyAccessUnlessGranted(MissionExecutionVoter::UPDATE, $mission);
 
         $dto = $this->deserializeAndValidate($request->getContent(), ServiceUpdateRequest::class);
+        MissionExecutionController::assertNotPartOfPrestation($mission, $this->prestationGroups);
 
         // legacy: hours = durée décimale en heures ; nouveau modèle: minutes entières.
         $durationMinutes = $dto->hours !== null ? (int) round($dto->hours * 60) : null;

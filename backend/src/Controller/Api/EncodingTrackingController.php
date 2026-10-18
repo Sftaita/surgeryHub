@@ -201,6 +201,13 @@ final class EncodingTrackingController extends AbstractController
                 'anomalyCount' => array_sum(array_column($item->financialAnomalyReasons, 'count')),
                 'anomalyReasons' => $item->financialAnomalyReasons,
             ],
+            // D-156 — prestation regroupée multi-salles (null si la mission est seule) : un total
+            // « planifié » compte chaque prestation une fois (union), jamais la somme des salles.
+            'prestation' => $item->prestationKey === null ? null : [
+                'key' => $item->prestationKey,
+                'missionIds' => $item->prestationMissionIds,
+                'plannedUnionMinutes' => $item->prestationPlannedUnionMinutes,
+            ],
         ];
     }
 }

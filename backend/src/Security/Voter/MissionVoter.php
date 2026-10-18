@@ -66,6 +66,14 @@ class MissionVoter extends Voter
     // ENCODING_REMIND : condition unique dans MissionHoursReminderPolicy.
     public const HOURS_REMIND = 'MISSION_HOURS_REMIND';
 
+    // D-156 — correction contrôlée : détacher une mission de sa présence réelle partagée
+    // (prestation multi-salles). Manager/admin uniquement, mission liée et non verrouillée ;
+    // les gardes métier (calculs arrêtés, présence orpheline) restent dans WorkedPresenceService.
+    public const PRESENCE_DETACH = 'MISSION_PRESENCE_DETACH';
+
+    // D-156 — libellé de salle facultatif : manager/admin, mission non annulée/refusée.
+    public const EDIT_ROOM_LABEL = 'MISSION_EDIT_ROOM_LABEL';
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -93,6 +101,8 @@ class MissionVoter extends Voter
             self::ENCODING_REOPEN,
             self::ENCODING_REMIND,
             self::HOURS_REMIND,
+            self::PRESENCE_DETACH,
+            self::EDIT_ROOM_LABEL,
         ], true)) {
             return false;
         }
@@ -151,6 +161,11 @@ class MissionVoter extends Voter
             self::ENCODING_REOPEN             => $isManager && $mission->getStatus() === MissionStatus::VALIDATED,
             self::ENCODING_REMIND             => $isManager && $this->canEncodingRemind($mission),
             self::HOURS_REMIND                => $isManager && MissionHoursReminderPolicy::isReminderRelevant($mission),
+            self::PRESENCE_DETACH             => $isManager
+                && $mission->getExecution()?->getPresence() !== null
+                && !$mission->isEncodingLocked(),
+            self::EDIT_ROOM_LABEL             => $isManager
+                && !in_array($mission->getStatus(), [MissionStatus::CANCELLED, MissionStatus::REJECTED], true),
             default                           => false,
         };
     }

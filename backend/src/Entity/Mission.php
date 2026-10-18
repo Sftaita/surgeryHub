@@ -134,6 +134,16 @@ class Mission
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?bool $submittedWithoutMaterial = null;
 
+    /**
+     * D-156 — libellé de salle FACULTATIF (« Salle 3 », « Bloc B »), posé par le manager.
+     * Purement descriptif : n'intervient dans aucune règle (regroupement, conflit,
+     * facturation), jamais exigé, jamais produit par la génération du planning. Sert à
+     * distinguer deux missions simultanées d'une même prestation.
+     */
+    #[ORM\Column(length: 60, nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?string $roomLabel = null;
+
     #[ORM\ManyToOne(inversedBy: 'missions')]
     #[ORM\JoinColumn(nullable: true)]
     private ?PlanningVersion $planningVersion = null;
@@ -264,6 +274,9 @@ class Mission
 
     public function getDeclaredComment(): ?string { return $this->declaredComment; }
     public function setDeclaredComment(?string $declaredComment): static { $this->declaredComment = $declaredComment; return $this; }
+
+    public function getRoomLabel(): ?string { return $this->roomLabel; }
+    public function setRoomLabel(?string $roomLabel): static { $this->roomLabel = $roomLabel; return $this; }
 
     public function getNoMaterialComment(): ?string { return $this->noMaterialComment; }
     public function setNoMaterialComment(?string $noMaterialComment): static { $this->noMaterialComment = $noMaterialComment; return $this; }

@@ -22,6 +22,7 @@ use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
 use App\Service\MissionPostDeployService;
 use App\Service\MissionService;
+use App\Service\Prestation\MissionListAnnotator;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -50,6 +51,7 @@ class MissionController extends AbstractController
         private readonly MissionPostDeployService  $missionPostDeployService,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly MissionDispatchService    $dispatchService,
+        private readonly MissionListAnnotator      $listAnnotator,
     ) {}
 
     #[Route(name: 'api_missions_create', methods: ['POST'])]
@@ -379,7 +381,15 @@ class MissionController extends AbstractController
             );
         }
 
-        $this->missionPostDeployService->reassign($mission, $user, (int) $instrumentistId);
+        // D-156 — correction contrôlée : une mission qui porte déjà des interventions / du
+        // matériel n'est réaffectée qu'après confirmation explicite et motivée (409 sinon).
+        $this->missionPostDeployService->reassign(
+            $mission,
+            $user,
+            (int) $instrumentistId,
+            confirmEncodingData: (bool) ($data['confirmEncodingData'] ?? false),
+            encodingDataReason: isset($data['encodingDataReason']) ? (string) $data['encodingDataReason'] : null,
+        );
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
@@ -414,7 +424,9 @@ class MissionController extends AbstractController
 
         $result = $this->missionService->list($dto, $user);
 
-        $items = array_map(fn (Mission $m) => $this->mapper->toListDto($m, $user), $result['items']);
+        // D-156 — prestation + vrais conflits, calculés pour toute la page en deux requêtes.
+        $annotations = $this->listAnnotator->annotate($result['items']);
+        $items = array_map(fn (Mission $m) => $this->mapper->toListDto($m, $user, $annotations[(int) $m->getId()] ?? null), $result['items']);
 
         return $this->json([
             'items' => $items,

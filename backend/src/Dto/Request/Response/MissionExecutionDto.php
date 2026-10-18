@@ -21,5 +21,16 @@ final class MissionExecutionDto
         public readonly int $effectiveDurationMinutes,
         public readonly string $effectiveDurationSource,
         public readonly array $disputes,
+        /**
+         * D-156 — présence réelle partagée quand la mission appartient à une prestation
+         * multi-salles dont les heures ont été déclarées : {id, revision, actualStartAt,
+         * actualEndAt, totalMinutes, missionIds}. actualDurationMinutes est alors la PART
+         * IMPUTÉE à cette mission (effectiveDurationSource = PRESENCE_SHARE).
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $presence = null,
+        /** @var list<int> D-156 — missions de la prestation dynamique (seule = [missionId]). */
+        public readonly array $prestationMissionIds = [],
     ) {}
 }

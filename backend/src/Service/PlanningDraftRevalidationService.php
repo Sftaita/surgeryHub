@@ -158,6 +158,9 @@ class PlanningDraftRevalidationService
                 $other = $this->conflictDetection->findConflict(
                     $person, $start, $end, $mission->getId(),
                     $role === 'SURGEON' ? $mission->getSite() : null,
+                    // D-156 — same instrumentist, same surgeon, same site, same day, BLOC:
+                    // a legitimate multi-room prestation, never a conflict (no waiver needed).
+                    $role === 'INSTRUMENTIST' ? $mission : null,
                 );
                 if ($other === null) {
                     continue;

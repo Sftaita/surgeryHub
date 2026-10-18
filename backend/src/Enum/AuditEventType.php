@@ -128,6 +128,21 @@ enum AuditEventType: string
     case MISSION_EXECUTION_DISPUTE_RESOLVED  = 'MISSION_EXECUTION_DISPUTE_RESOLVED';
     case MISSION_EXECUTION_DISPUTE_REJECTED  = 'MISSION_EXECUTION_DISPUTE_REJECTED';
 
+    // D-156 — présence réelle partagée d'une prestation regroupée multi-salles
+    // (WorkedPresenceService). Enregistrés sur CHAQUE mission concernée, avec presenceId,
+    // révision, avant/après et missions membres : l'historique de chaque mission reste lisible.
+    case MISSION_EXECUTION_PRESENCE_DECLARED   = 'MISSION_EXECUTION_PRESENCE_DECLARED';
+    case MISSION_EXECUTION_PRESENCE_UPDATED    = 'MISSION_EXECUTION_PRESENCE_UPDATED';
+    case MISSION_EXECUTION_PRESENCE_LINKED     = 'MISSION_EXECUTION_PRESENCE_LINKED';
+    case MISSION_EXECUTION_PRESENCE_DETACHED   = 'MISSION_EXECUTION_PRESENCE_DETACHED';
+    /** Heures propres d'une mission (saisies avant le regroupement) converties explicitement en présence commune ; anciennes valeurs dans le payload. */
+    case MISSION_EXECUTION_OWN_HOURS_CONVERTED = 'MISSION_EXECUTION_OWN_HOURS_CONVERTED';
+
+    /** D-156 — libellé de salle facultatif modifié par un manager (avant/après). */
+    case MISSION_ROOM_LABEL_CHANGED = 'MISSION_ROOM_LABEL_CHANGED';
+    /** D-156 — réaffectation explicitement confirmée d'une mission qui porte déjà des interventions/matériel (restent sur la mission, auteurs conservés). */
+    case MISSION_REASSIGNED_WITH_ENCODING_DATA = 'MISSION_REASSIGNED_WITH_ENCODING_DATA';
+
     // Exécution & Valorisation, Lot 2 (D-072) — historisation des tarifs.
     // PricingRuleVersioningService / InstrumentistRateService. Non rattachés à une
     // Mission — voir AuditService::recordGlobal() (AuditEvent.mission désormais

@@ -211,7 +211,7 @@ class PlanningAlertActionService
     private function hasConflict(User $instrumentist, Mission $mission): bool
     {
         return $this->conflictDetection->findConflict(
-            $instrumentist, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(),
+            $instrumentist, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), null, $mission,
         ) !== null;
     }
 }

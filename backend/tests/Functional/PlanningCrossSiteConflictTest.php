@@ -168,13 +168,14 @@ final class PlanningCrossSiteConflictTest extends WebTestCase
         ?PlanningVersion $version, Hospital $site, User $surgeon, User $createdBy,
         string $date, string $startTime, string $endTime, ?User $instrumentist,
         MissionStatus $status = MissionStatus::DRAFT,
+        MissionType $type = MissionType::BLOCK,
     ): Mission {
         $tz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
         $m = new Mission();
         if ($version !== null) {
             $m->setPlanningVersion($version);
         }
-        $m->setType(MissionType::BLOCK);
+        $m->setType($type);
         $m->setSite($site);
         $m->setSurgeon($surgeon);
         $m->setCreatedBy($createdBy);
@@ -427,13 +428,34 @@ final class PlanningCrossSiteConflictTest extends WebTestCase
         self::assertSame('CROSS_SITE_CONFLICT', $conflict['type']);
     }
 
+    /**
+     * D-156 (modifies D-091/D-119 for this single shape) — BLOC missions with the same
+     * instrumentist, surgeon, site and day form one multi-room prestation: never a conflict.
+     */
+    public function test_d156_same_instrumentist_same_surgeon_same_site_bloc_overlap_deploys(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token   = $this->login($client, $manager);
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite('DoubleRoomSameInstrBloc');
+
+        $this->makeMission(null, $site, $surgeon, $manager, '2026-10-23', '08:00', '13:00', $instr, MissionStatus::ASSIGNED);
+        $version = $this->makeDraftVersion($site, $manager, '2026-10-01', '2026-10-31');
+        $this->makeMission($version, $site, $surgeon, $manager, '2026-10-23', '10:00', '14:00', $instr);
+
+        $response = $this->deploy($client, $token, $version);
+
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+    }
+
     public function test_same_instrumentist_overlapping_missions_still_blocks_deploy_even_same_site_same_surgeon(): void
     {
-        // Regression guard: the carve-out never applies to the instrumentist role. A single
-        // instrumentist genuinely cannot be in two rooms at once — this must remain a real,
-        // blocking SCHEDULE_CONFLICT, even for an otherwise-valid double-salle surgeon/site
-        // shape (D-091 follow-up's narrow waiver still exists for this exact case, but no
-        // waiver was authorized here — it must stay blocked).
+        // Regression guard: outside the D-156 BLOC multi-room prestation, the same
+        // instrumentist on two overlapping missions remains a real, blocking conflict — here
+        // CONSULTATION missions (not grouped in this version), for which D-091 follow-up's
+        // narrow waiver still exists (no waiver authorized here: it must stay blocked).
         $client  = $this->boot();
         $manager = $this->createUser('ROLE_MANAGER');
         $token   = $this->login($client, $manager);
@@ -441,10 +463,10 @@ final class PlanningCrossSiteConflictTest extends WebTestCase
         $instr   = $this->createUser('ROLE_INSTRUMENTIST');
         $site    = $this->makeSite('DoubleRoomSameInstr');
 
-        $this->makeMission(null, $site, $surgeon, $manager, '2026-10-23', '08:00', '13:00', $instr, MissionStatus::ASSIGNED);
+        $this->makeMission(null, $site, $surgeon, $manager, '2026-10-23', '08:00', '13:00', $instr, MissionStatus::ASSIGNED, MissionType::CONSULTATION);
 
         $version = $this->makeDraftVersion($site, $manager, '2026-10-01', '2026-10-31');
-        $mission = $this->makeMission($version, $site, $surgeon, $manager, '2026-10-23', '10:00', '14:00', $instr);
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, '2026-10-23', '10:00', '14:00', $instr, MissionStatus::DRAFT, MissionType::CONSULTATION);
 
         $response = $this->deploy($client, $token, $version);
 

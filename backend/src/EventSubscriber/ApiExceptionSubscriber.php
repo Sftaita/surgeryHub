@@ -53,6 +53,7 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpKernel\Event\ExceptionEvent;
 use App\Exception\MissionCreatedNotDispatchedException;
+use App\Exception\PrestationConflictException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\HttpKernel\KernelInterface;
@@ -293,6 +294,12 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             // D-146 bis — refus explicite d'une demande / résolution catalogue, avec les
             // données utiles au manager (firme existante, doublons, réponses à compléter).
             $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+        } elseif ($e instanceof PrestationConflictException) {
+            // D-156 — refus explicite, avec le contexte permettant de rafraîchir / corriger.
+            $status = 409;
             $code = $e->getErrorCode();
             $message = $e->getMessage();
             $extra = $e->getExtra();

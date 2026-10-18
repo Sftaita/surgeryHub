@@ -56,5 +56,7 @@ final class MissionDetailDto
          * que la question ne se pose pas (MissionEncodingCorrectionPolicy).
          */
         public readonly ?string $encodingCorrectionBlockedReason = null,
+        /** D-156 — libellé de salle facultatif (manager). */
+        public readonly ?string $roomLabel = null,
     ) {}
 }
