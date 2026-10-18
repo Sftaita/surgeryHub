@@ -232,13 +232,30 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $candidate = $this->makeInstrumentist();
         $this->makeMembership($candidate, $site);
         // Existing ASSIGNED mission overlapping the OPEN mission's slot.
-        $this->makeAssignedMission($site, $surgeon, $surgeon, $candidate, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
+        // D-156 — a real conflict: another surgeon (same surgeon + site would be a legitimate double room).
+        $this->makeAssignedMission($site, $otherSurgeon = $this->makeSurgeon(), $otherSurgeon, $candidate, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
         $result = $this->service()->findEligibleByMission([$mission]);
 
         $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertNotContains($candidate->getId(), $ids);
+    }
+
+    /** D-156 — same surgeon, same site, BLOC, same day: a second room of the same prestation, never a conflict. */
+    public function test_same_surgeon_same_site_overlap_is_a_double_room_not_a_conflict(): void
+    {
+        $site      = $this->makeSite();
+        $surgeon   = $this->makeSurgeon();
+        $candidate = $this->makeInstrumentist();
+        $this->makeMembership($candidate, $site);
+        $this->makeAssignedMission($site, $surgeon, $surgeon, $candidate, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
+        $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
+
+        $result = $this->service()->findEligibleByMission([$mission]);
+
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
+        self::assertContains($candidate->getId(), $ids);
     }
 
     public function test_multiple_eligible_candidates_are_all_returned(): void
@@ -285,7 +302,8 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->makeMembership($candidate, $site);
         $free     = $this->makeOpenMission($site, $surgeon, $surgeon, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
         $busySlot = $this->makeOpenMission($site, $surgeon, $surgeon, '2026-09-08 08:00:00', '2026-09-08 13:00:00');
-        $this->makeAssignedMission($site, $surgeon, $surgeon, $candidate, '2026-09-08 09:00:00', '2026-09-08 12:00:00');
+        // D-156 — a real conflict: another surgeon (same surgeon + site would be a legitimate double room).
+        $this->makeAssignedMission($site, $otherSurgeon = $this->makeSurgeon(), $otherSurgeon, $candidate, '2026-09-08 09:00:00', '2026-09-08 12:00:00');
 
         $result = $this->service()->findEligibleByMission([$free, $busySlot]);
 
@@ -345,7 +363,8 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $site       = $this->makeSite();
         $surgeon    = $this->makeSurgeon();
         $freelancer = $this->makeInstrumentist(employmentType: EmploymentType::FREELANCER);
-        $this->makeAssignedMission($site, $surgeon, $surgeon, $freelancer, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
+        // D-156 — a real conflict: another surgeon (same surgeon + site would be a legitimate double room).
+        $this->makeAssignedMission($site, $otherSurgeon = $this->makeSurgeon(), $otherSurgeon, $freelancer, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
         $result = $this->service()->findEligibleByMission([$mission]);
