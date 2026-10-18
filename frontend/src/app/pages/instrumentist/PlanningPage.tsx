@@ -15,7 +15,7 @@ import {
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 
-import { fetchMissions } from "../../features/missions/api/missions.api";
+import { fetchAllMissions } from "../../features/missions/api/missions.api";
 import { MissionDetailContent } from "./MissionDetailPage";
 import type { Mission } from "../../features/missions/api/missions.types";
 import type { DateTileVariant } from "../../ui/mobile/DateTile";
@@ -58,8 +58,10 @@ const AMBER_500 = "#F0A91B";
 const BLUE_50 = "#EDF4FF";
 const BLUE_700 = "#1B5FD0";
 
+// D-156 lot 1 — ENCODING_IN_PROGRESS manquait : une mission dont l'encodage était démarré
+// disparaissait du planning personnel.
 const MY_MISSIONS_STATUSES =
-  "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED,CLOSED";
+  "ASSIGNED,DECLARED,IN_PROGRESS,ENCODING_IN_PROGRESS,SUBMITTED,VALIDATED,CLOSED";
 
 const CONFLICT_STATUSES = new Set(["ASSIGNED", "DECLARED", "IN_PROGRESS"]);
 const SWIPE_THRESHOLD_PX = 50;
@@ -153,13 +155,17 @@ export default function PlanningPage() {
 
   const missionsQuery = useQuery({
     queryKey: ["missions", "planning", { view, date, from: range.from, to: range.to }],
-    queryFn: () =>
-      fetchMissions(1, 100, {
+    // D-156 lot 1 — every page (the API caps at 100): a single page silently truncated
+    // a busy month.
+    queryFn: async () => {
+      const items = await fetchAllMissions({
         from: range.from,
         to: range.to,
         assignedToMe: true,
         status: MY_MISSIONS_STATUSES,
-      }),
+      });
+      return { items, total: items.length };
+    },
   });
 
   const missions = missionsQuery.data?.items ?? [];

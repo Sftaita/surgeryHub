@@ -20,6 +20,7 @@ import {
 
 import { getSurgeonPlanning } from "../api/surgeons.api";
 import { MissionDetailContent } from "../../../pages/manager/MissionDetailPage";
+import { OPERATIONAL_LIVE_QUERY_OPTIONS } from "../../missions/sync/liveQueryOptions";
 
 type ViewMode = "week" | "month";
 
@@ -141,6 +142,7 @@ export function SurgeonPlanningSection({ surgeonId }: Props) {
     queryKey: ["surgeon-planning", surgeonId, range.from, range.to],
     queryFn: () => getSurgeonPlanning(surgeonId, range.from, range.to),
     enabled: surgeonId > 0,
+    ...OPERATIONAL_LIVE_QUERY_OPTIONS,
   });
 
   const events = React.useMemo(() => {

@@ -82,7 +82,7 @@ class PlanningDeploymentService
 
         // ── 2. Archive the current ACTIVE version (if any) ───────────────────
         if ($version !== null) {
-            $previousActive = $this->findActiveVersion($version->getSite()?->getId(), $fromDate, $toDate);
+            $previousActive = $this->findActiveVersion($version->getSite()?->getId(), $fromDate, $toDate, $version->getSiteGroup()?->getId());
             if ($previousActive !== null && $previousActive->getId() !== $version->getId()) {
                 $previousActive->setStatus(PlanningVersionStatus::ARCHIVED);
                 $previousActive->setArchivedAt(new \DateTimeImmutable());
@@ -243,7 +243,14 @@ class PlanningDeploymentService
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    private function findActiveVersion(?int $siteId, \DateTimeImmutable $from, \DateTimeImmutable $to): ?PlanningVersion
+    /**
+     * D-156 lot 1 — the ACTIVE version a deploy replaces is the one of the SAME target: same
+     * site, or same site group, or (legacy) the global scope. `v.site IS NULL` alone matched
+     * any group's or the global version: deploying group A could archive group B's ACTIVE
+     * month, whose missions then stayed live but could no longer be opened in Modification
+     * mode.
+     */
+    private function findActiveVersion(?int $siteId, \DateTimeImmutable $from, \DateTimeImmutable $to, ?int $siteGroupId = null): ?PlanningVersion
     {
         $qb = $this->em->createQueryBuilder()
             ->select('v')
@@ -258,10 +265,21 @@ class PlanningDeploymentService
 
         if ($siteId !== null) {
             $qb->andWhere('v.site = :siteId')->setParameter('siteId', $siteId);
-        } else {
-            $qb->andWhere('v.site IS NULL');
+
+            return $qb->getQuery()->getOneOrNullResult();
         }
 
-        return $qb->getQuery()->getOneOrNullResult();
+        $qb->andWhere('v.site IS NULL');
+        if ($siteGroupId !== null) {
+            // Same group first; otherwise a legacy global version (no site, no group) that
+            // this group deploy supersedes — never another group's version.
+            $sameGroup = (clone $qb)->andWhere('v.siteGroup = :siteGroupId')->setParameter('siteGroupId', $siteGroupId)
+                ->getQuery()->getOneOrNullResult();
+            if ($sameGroup !== null) {
+                return $sameGroup;
+            }
+        }
+
+        return $qb->andWhere('v.siteGroup IS NULL')->getQuery()->getOneOrNullResult();
     }
 }

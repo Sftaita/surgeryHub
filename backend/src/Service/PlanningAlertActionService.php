@@ -65,9 +65,11 @@ class PlanningAlertActionService
             }
             $this->missionPostDeployService->assign($mission, $actor, $instrumentistId);
         } else {
-            // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
+            // DRAFT — pre-deploy setup: only the instrumentist changes. D-156 lot 1 — the status
+            // used to be flipped to ASSIGNED here, which published the mission silently (no
+            // publication, no audit, no notification, D-056 bypassed) while its draft version
+            // was not deployed. A DRAFT stays DRAFT; deploy() or the dispatch publish it.
             $mission->setInstrumentist($instrumentist);
-            $mission->setStatus(MissionStatus::ASSIGNED);
         }
 
         $resolvedNote = $note ?? sprintf('Réassigné à %s.', $instrumentist->getEmail());
@@ -96,9 +98,9 @@ class PlanningAlertActionService
             }
             $this->missionPostDeployService->release($mission, $actor);
         } elseif ($mission->getStatus() !== MissionStatus::OPEN) {
-            // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
+            // DRAFT — pre-deploy setup: the slot is simply left without instrumentist, still
+            // DRAFT (D-156 lot 1, same reason as reassign() above): it is deployed as OPEN.
             $mission->setInstrumentist(null);
-            $mission->setStatus(MissionStatus::OPEN);
         }
         // OPEN → already in the target state; no mutation needed.
         // ASSIGNED → the RELEASED lifecycle message solicits the pool (OpenMissionPoolNotifier).

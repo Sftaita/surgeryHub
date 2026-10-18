@@ -2,6 +2,7 @@
 
 namespace App\Dto\Request;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use Symfony\Component\Validator\Constraints as Assert;
 use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
@@ -193,8 +194,10 @@ class MissionFilter
         }
 
         try {
-            // Supporte ISO 8601 (avec ou sans timezone, selon conventions existantes)
-            return new \DateTimeImmutable($value);
+            // Supporte ISO 8601 (avec ou sans timezone, selon conventions existantes).
+            // D-156 lot 1 — une valeur SANS offset (« 2026-11-12 », « 2026-11-12T08:00 ») est
+            // une heure locale de Bruxelles (D-066), jamais l'heure UTC du conteneur PHP.
+            return new \DateTimeImmutable($value, new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE));
         } catch (\Throwable) {
             return null;
         }

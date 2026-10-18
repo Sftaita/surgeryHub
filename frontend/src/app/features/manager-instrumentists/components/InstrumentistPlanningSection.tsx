@@ -20,6 +20,7 @@ import {
 
 import { getInstrumentistPlanning } from "../api/instrumentists.api";
 import { MissionDetailContent } from "../../../pages/manager/MissionDetailPage";
+import { OPERATIONAL_LIVE_QUERY_OPTIONS } from "../../missions/sync/liveQueryOptions";
 
 type ViewMode = "week" | "month";
 
@@ -150,6 +151,7 @@ export function InstrumentistPlanningSection({ instrumentistId }: Props) {
         to: range.to,
       }),
     enabled: instrumentistId > 0,
+    ...OPERATIONAL_LIVE_QUERY_OPTIONS,
   });
 
   const events = React.useMemo(() => {

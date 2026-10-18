@@ -21,6 +21,7 @@ import { REQUESTS_COUNTS_KEY } from "../../features/manager-mission-requests/req
 import { useNavBadgeCount } from "../../ui/hooks/useNavBadgeCount";
 import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 import { EmptyState } from "../../ui/EmptyState";
+import { OPERATIONAL_LIVE_QUERY_OPTIONS } from "../../features/missions/sync/liveQueryOptions";
 
 const DAY_PAGE_SIZE = 50;
 const TABLE_PAGE_SIZE = 100;
@@ -122,6 +123,7 @@ export default function MissionsListPage() {
     getNextPageParam: (last, pages) => (pages.length * DAY_PAGE_SIZE < last.total ? pages.length + 1 : undefined),
     enabled: !isRequestsView && filters.view === "day",
     placeholderData: keepPreviousData,
+    ...OPERATIONAL_LIVE_QUERY_OPTIONS,
   });
 
   const [tablePage, setTablePage] = useState(1);
@@ -131,6 +133,7 @@ export default function MissionsListPage() {
     queryFn: () => fetchMissions(tablePage, TABLE_PAGE_SIZE, effectiveFilters),
     enabled: !isRequestsView && filters.view === "table",
     placeholderData: keepPreviousData,
+    ...OPERATIONAL_LIVE_QUERY_OPTIONS,
   });
 
   const activeQuery = filters.view === "day" ? dayQuery : tableQuery;

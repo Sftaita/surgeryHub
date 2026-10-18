@@ -9,6 +9,7 @@ use App\Dto\Request\MissionPatchRequest;
 use App\Dto\Request\MissionPublishRequest;
 use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\AuditEvent;
+use App\Exception\MissionCreatedNotDispatchedException;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Entity\Hospital;
@@ -22,6 +23,7 @@ use App\Service\MissionMapper;
 use App\Service\MissionPostDeployService;
 use App\Service\MissionService;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -58,7 +60,31 @@ class MissionController extends AbstractController
         /** @var MissionCreateRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionCreateRequest::class);
 
+        // D-156 lot 1 — create + dispatch in ONE request. The dispatch is validated first on
+        // the transient slot (same rules as the real dispatch, MissionDispatchService), so an
+        // ineligible choice is refused with nothing created — same sequencing as accepting a
+        // SurgeonMissionRequest. Residual window (eligibility changing between the check and
+        // the dispatch): the mission exists as DRAFT and a 409 MISSION_CREATED_NOT_DISPATCHED
+        // carries its id, so the client opens it instead of creating a duplicate.
+        if ($dto->dispatchMode !== null) {
+            $slot = (new Mission())
+                ->setSite($this->em->find(Hospital::class, (int) $dto->siteId) ?? throw new NotFoundHttpException('Site not found'))
+                ->setSurgeon($this->em->find(User::class, (int) $dto->surgeonUserId) ?? throw new NotFoundHttpException('Surgeon not found'))
+                ->setType($dto->type)
+                ->setStartAt($dto->startAt)
+                ->setEndAt($dto->endAt);
+            $this->dispatchService->assertDispatchable($slot, $dto->dispatchMode, $dto->dispatchInstrumentistId);
+        }
+
         $mission = $this->missionService->create($dto, $user);
+
+        if ($dto->dispatchMode !== null) {
+            try {
+                $this->dispatchService->dispatch($mission, $user, $dto->dispatchMode, $dto->dispatchInstrumentistId);
+            } catch (\Throwable $e) {
+                throw new MissionCreatedNotDispatchedException((int) $mission->getId(), $e->getMessage(), $e);
+            }
+        }
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_CREATED);
     }

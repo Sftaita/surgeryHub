@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import PlanningSchedulePage from "./PlanningSchedulePage";
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
@@ -29,6 +30,7 @@ vi.mock("../../../features/planning-v2/api/planningV2.api", () => ({
   releaseMission:  vi.fn().mockResolvedValue(undefined),
   cancelMission:   vi.fn().mockResolvedValue(undefined),
   reassignMission: vi.fn().mockResolvedValue(undefined),
+  extractErrorV2: (err: any) => err?.response?.data?.error?.message ?? "Erreur",
   fetchMissionAudit: vi.fn().mockResolvedValue([]),
   fetchMissionEligibleInstrumentists: vi.fn().mockResolvedValue({
     missionId: 1,
@@ -50,6 +52,7 @@ vi.mock("../../../features/planning-v2/api/planningV2.api", () => ({
 
 import * as missionsApi from "../../../features/missions/api/missions.api";
 import * as planningApi from "../../../features/planning-v2/api/planningV2.api";
+import { apiClient } from "../../../api/apiClient";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -78,9 +81,11 @@ function makeAssignedMission(overrides: Record<string, unknown> = {}) {
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <PlanningSchedulePage />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <PlanningSchedulePage />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -386,9 +391,11 @@ describe("PlanningSchedulePage — rafraîchissement après mutation (D-125)", (
     vi.mocked(missionsApi.fetchAllMissions).mockResolvedValue([makeAssignedMission()] as any);
     const user = userEvent.setup();
     render(
-      <QueryClientProvider client={client}>
-        <PlanningSchedulePage />
-      </QueryClientProvider>,
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <PlanningSchedulePage />
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
     await user.click(screen.getByRole("button", { name: /charger le planning/i }));
     await waitFor(() => expect(screen.getByText("Assigné")).toBeInTheDocument());
@@ -402,5 +409,47 @@ describe("PlanningSchedulePage — rafraîchissement après mutation (D-125)", (
     await client.invalidateQueries({ queryKey: ["planning-schedule"] });
 
     await waitFor(() => expect(screen.getByText("À réserver")).toBeInTheDocument());
+  });
+});
+
+// D-156 lot 1 — the published planning shows the same operational reality as Missions.
+describe("PlanningSchedulePage — cohérence avec Missions (D-156 lot 1)", () => {
+  it("la date « Au » est incluse : l'API reçoit le lendemain comme borne exclusive", async () => {
+    vi.mocked(missionsApi.fetchAllMissions).mockResolvedValue([] as any);
+    const user = userEvent.setup();
+    renderPage();
+    fireEvent.change(screen.getByLabelText("Du"), { target: { value: "2026-11-01" } });
+    fireEvent.change(screen.getByLabelText("Au"), { target: { value: "2026-11-30" } });
+    await user.click(screen.getByRole("button", { name: /charger le planning/i }));
+
+    await waitFor(() => expect(missionsApi.fetchAllMissions).toHaveBeenCalledWith(
+      expect.objectContaining({ from: "2026-11-01", to: "2026-12-01" }),
+    ));
+  });
+
+  it("annonce les brouillons de la période au lieu de les laisser invisibles", async () => {
+    await loadMissions([makeMission({ id: 1, status: "OPEN" }), makeMission({ id: 2, status: "DRAFT" })]);
+
+    const notice = await screen.findByTestId("schedule-draft-notice");
+    expect(notice.textContent).toContain("1 mission en brouillon");
+    expect(within(notice).getByRole("link", { name: /voir les brouillons/i })).toHaveAttribute("href", "/app/m/missions?status=DRAFT&period=all");
+  });
+
+  it("affecter une mission OPEN passe par l'attribution directe, jamais par l'endpoint réservé aux brouillons", async () => {
+    vi.mocked(planningApi.fetchRosterEligibility).mockResolvedValueOnce({
+      policy: "STRICT_ASSIGNMENT",
+      candidates: [
+        { id: 20, name: "Claire Dubois", email: "claire@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+      ],
+    });
+    vi.mocked(apiClient.post).mockClear();
+    const user = await loadMissions([makeMission({ status: "OPEN" })]);
+
+    await waitFor(() => expect(screen.getByText("À réserver")).toBeInTheDocument());
+    await user.click(screen.getByText("Non assigné"));
+    await user.click(await screen.findByTestId("schedule-instrumentist-option-20"));
+
+    await waitFor(() => expect(apiClient.post).toHaveBeenCalledWith("/api/missions/1/assign-directly", { instrumentistId: 20 }));
+    expect(vi.mocked(apiClient.post).mock.calls.map(([url]) => url)).not.toContain("/api/missions/1/assign-instrumentist");
   });
 });

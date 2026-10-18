@@ -56,7 +56,7 @@ vi.mock("../../../api/apiClient", () => ({
 }));
 
 describe("MissionCreateWizard — diffusion à la création (D-125)", () => {
-  it("attribution directe : crée la mission puis l'attribue à l'instrumentiste choisie par son nom", async () => {
+  it("attribution directe : crée et attribue en UNE requête à l'instrumentiste choisie par son nom (D-156 lot 1)", async () => {
     postMock.mockReset();
     getMock.mockReset();
     postMock.mockImplementation((url: string) =>
@@ -86,10 +86,40 @@ describe("MissionCreateWizard — diffusion à la création (D-125)", () => {
     await user.click(screen.getByRole("button", { name: "Créer et diffuser" }));
 
     await vi.waitFor(() => expect(onDone).toHaveBeenCalledWith({ missionId: 555, mode: "PUBLISH", dispatchMode: "DIRECT" }));
-    expect(postMock.mock.calls.map(([url]) => url)).toEqual(["/api/missions", "/api/missions/555/assign-directly"]);
-    expect(postMock).toHaveBeenLastCalledWith("/api/missions/555/assign-directly", { instrumentistId: 41 });
+    // D-156 lot 1 — one request: the backend validates the dispatch before creating the mission.
+    expect(postMock.mock.calls.map(([url]) => url)).toEqual(["/api/missions"]);
+    expect(postMock.mock.calls[0][1]).toMatchObject({ dispatchMode: "DIRECT", dispatchInstrumentistId: 41 });
     // Candidates scoped to the chosen site.
     expect(getMock.mock.calls[0][0]).toBe("/api/missions/dispatch-candidates");
     expect(getMock.mock.calls[0][1].params.siteId).toBe(1);
+  });
+
+  it("publication refusée après création : ouvre la mission en brouillon au lieu d'en recréer une (D-156 lot 1)", async () => {
+    postMock.mockReset();
+    getMock.mockReset();
+    postMock.mockRejectedValue({
+      response: { status: 409, data: { error: { code: "MISSION_CREATED_NOT_DISPATCHED", missionId: 777, message: "La mission a été créée en brouillon, mais sa publication a échoué : absente" } } },
+    });
+    getMock.mockResolvedValue({ data: { candidates: [] } });
+    const onDone = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MissionCreateWizard sites={SITES} surgeons={SURGEONS} onDone={onDone} onCancel={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    await user.click(screen.getByLabelText("Site"));
+    await user.click(await screen.findByText("Site Delta"));
+    await user.click(screen.getByLabelText("Chirurgien"));
+    await user.click(await screen.findByText("Dr Martin"));
+    await user.click(screen.getByRole("button", { name: "Continuer" }));
+    await user.click(await screen.findByRole("button", { name: "Continuer" }));
+    await user.click(screen.getByRole("button", { name: "Créer et diffuser" }));
+
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledWith({
+      missionId: 777, mode: "DRAFT", dispatchError: "La mission a été créée en brouillon, mais sa publication a échoué : absente",
+    }));
+    expect(postMock).toHaveBeenCalledTimes(1);
   });
 });

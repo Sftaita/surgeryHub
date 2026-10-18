@@ -5,6 +5,7 @@ namespace App\Service;
 use App\Activity\Recorder\PlanningActivityRecorder;
 use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\AuditEvent;
+use App\Enum\AuditEventType;
 use App\Entity\EncodingAnomalyReport;
 use App\Entity\FinancialCalculation;
 use App\Entity\FirmInvoiceLine;
@@ -259,6 +260,30 @@ final class PlanningDraftService
      *
      * @var list<class-string>
      */
+    /**
+     * D-156 lot 1 — ids, among $missionIds, of missions created by hand (never generated):
+     * MissionService::create() always records MISSION_CREATED_MANUALLY, generate() never does.
+     *
+     * @param int[] $missionIds
+     * @return int[]
+     */
+    private function manuallyCreatedMissionIds(array $missionIds): array
+    {
+        if ($missionIds === []) {
+            return [];
+        }
+
+        $rows = $this->em->createQuery(sprintf(
+            'SELECT DISTINCT IDENTITY(a.mission) AS id FROM %s a WHERE a.mission IN (:ids) AND a.eventType = :type',
+            AuditEvent::class,
+        ))
+            ->setParameter('ids', $missionIds)
+            ->setParameter('type', AuditEventType::MISSION_CREATED_MANUALLY)
+            ->getScalarResult();
+
+        return array_map(static fn (array $r) => (int) $r['id'], $rows);
+    }
+
     private const CLEANUP_ON_MISSION_DELETE = [
         PlanningAlert::class,
         AuditEvent::class,
@@ -358,20 +383,39 @@ final class PlanningDraftService
             }
         }
 
-        $missionIds = array_map(static fn (Mission $m) => $m->getId(), $missions->toArray());
+        // D-156 lot 1 — generate() takes over existing DRAFT missions of the scope, including
+        // missions a manager created by hand (MissionService::create(), audited
+        // MISSION_CREATED_MANUALLY — also the accepted surgeon requests). Deleting the draft
+        // used to delete them physically with the generated ones: a mission created in
+        // Missions vanished from Missions. They were never this draft's to delete — they are
+        // detached (back to "no version", still DRAFT, untouched) and only the generated
+        // missions are deleted.
+        $manualIds = $this->manuallyCreatedMissionIds(array_map(static fn (Mission $m) => (int) $m->getId(), $missions->toArray()));
+        $generated = array_values(array_filter($missions->toArray(), static fn (Mission $m) => !in_array((int) $m->getId(), $manualIds, true)));
+        $missionIds = array_map(static fn (Mission $m) => $m->getId(), $generated);
 
         if ($missionIds !== []) {
             $this->assertNoProtectedArtifacts($missionIds);
         }
 
-        $this->em->wrapInTransaction(function () use ($version, $missionIds, $missions, $actor): void {
+        $manual = array_values(array_filter($missions->toArray(), static fn (Mission $m) => in_array((int) $m->getId(), $manualIds, true)));
+
+        $this->em->wrapInTransaction(function () use ($version, $missionIds, $generated, $manual, $actor): void {
+            // Detached first and flushed before the version row is removed (FK).
+            foreach ($manual as $mission) {
+                $mission->setPlanningVersion(null);
+            }
+            if ($manual !== []) {
+                $this->em->flush();
+            }
+
             // H1 (D-126) — the journal entry is written FIRST, inside this same transaction,
             // while every Mission (and its names) is still loaded: CLEANUP_ON_MISSION_DELETE
             // below physically removes these DRAFT missions together with their AuditEvent,
             // NotificationEvent and PlanningAlert rows (unchanged contract), so this
             // snapshot is what keeps the deletion explainable afterwards. No FK ties
             // activity_event to them, so it survives the DELETEs.
-            $this->activity->draftDeleted($version, $missions->toArray(), PlanningDraftDeletionSource::MANUAL, $actor);
+            $this->activity->draftDeleted($version, $generated, PlanningDraftDeletionSource::MANUAL, $actor);
 
             foreach (self::CLEANUP_ON_MISSION_DELETE as $entityClass) {
                 if ($missionIds === []) {

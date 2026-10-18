@@ -3,6 +3,7 @@
 
 namespace App\Service;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Dto\Request\DeclareMissionRequest;
 use App\Dto\Request\MissionCreateRequest;
 use App\Dto\Request\MissionFilter;
@@ -568,10 +569,14 @@ class MissionService
 
         if ($useRange) {
             if ($filter->toProvided === true && $filter->to !== null) {
-                $qb->andWhere('m.startAt < :to')->setParameter('to', $filter->to);
+                // D-156 lot 1 — bound as a business datetime: m.startAt/endAt are Brussels
+                // wall-clock (D-066), so an instant sent with `Z`/an offset must be converted to
+                // Brussels before comparison — an untyped binding wrote it with its own offset
+                // (1–2 h skew on every day boundary).
+                $qb->andWhere('m.startAt < :to')->setParameter('to', $filter->to, BusinessDateTimeImmutableType::NAME);
             }
             if ($filter->fromProvided === true && $filter->from !== null) {
-                $qb->andWhere('m.endAt > :from')->setParameter('from', $filter->from);
+                $qb->andWhere('m.endAt > :from')->setParameter('from', $filter->from, BusinessDateTimeImmutableType::NAME);
             }
         } else {
             // Legacy behaviour unchanged

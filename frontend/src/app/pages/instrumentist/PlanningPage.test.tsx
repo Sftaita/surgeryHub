@@ -125,6 +125,8 @@ const mockNavigate = vi.fn();
 
 vi.mock("../../features/missions/api/missions.api", () => ({
   fetchMissions: (...args: unknown[]) => fetchMissionsMock(...args),
+  // D-156 lot 1 — the page reads every page through fetchAllMissions (API capped at 100).
+  fetchAllMissions: async (filters: unknown) => ((await fetchMissionsMock(1, 100, filters))?.items ?? []),
 }));
 
 vi.mock("./MissionDetailPage", () => ({

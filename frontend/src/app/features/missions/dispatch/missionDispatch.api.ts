@@ -77,18 +77,40 @@ export async function fetchDispatchCandidates(slot: DispatchSlot): Promise<Candi
 }
 
 /**
- * Every React Query cache that shows the operational planning — invalidated after any
- * mutation that changes a Mission's existence, status or instrumentist (creation, dispatch,
- * request acceptance, claim, decline, release, reassign, cancel), so the calendar reflects
- * it without reloading, changing month or regenerating.
+ * Every React Query cache that shows the operational planning (Mission = source of truth,
+ * D-156 lot 1) — invalidated after any mutation that changes a Mission's existence, status,
+ * schedule or instrumentist, whatever the screen it comes from (Missions tab, mission
+ * detail, published planning, Planning V2 modification mode, alerts, deploy…), so every
+ * view shows the same operational reality without reloading, changing month or
+ * regenerating. Keep this list exhaustive: a key missing here is a screen left stale.
  */
+export const OPERATIONAL_PLANNING_QUERY_KEYS: readonly (readonly string[])[] = [
+  ["missions"],
+  ["planning-schedule"],
+  ["planning-v2", "modification-missions"],
+  ["planning-v2", "alerts"],
+  ["planning-v2", "available-rooms"],
+  ["planning-v2", "versions-history"],
+  ["coverage-summary"],
+  ["dispatch-candidates"],
+  ["dashboard"],
+  ["instrumentist-planning"],
+  ["surgeon-planning"],
+  ["surgeon-activity"],
+  ["available-rooms"],
+  ["mission-audit"],
+  ["prestation"],
+];
+
 export function invalidateOperationalPlanning(queryClient: QueryClient, missionId?: number | null): Promise<unknown> {
   return Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["missions"] }),
-    queryClient.invalidateQueries({ queryKey: ["planning-schedule"] }),
-    queryClient.invalidateQueries({ queryKey: ["planning-v2", "modification-missions"] }),
-    queryClient.invalidateQueries({ queryKey: ["coverage-summary"] }),
-    queryClient.invalidateQueries({ queryKey: ["dispatch-candidates"] }),
-    ...(missionId ? [queryClient.invalidateQueries({ queryKey: ["mission", missionId] })] : []),
+    ...OPERATIONAL_PLANNING_QUERY_KEYS.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+    ...(missionId
+      ? [
+          queryClient.invalidateQueries({ queryKey: ["mission", missionId] }),
+          queryClient.invalidateQueries({ queryKey: ["mission-execution", missionId] }),
+          queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] }),
+        ]
+      : []),
   ]);
 }

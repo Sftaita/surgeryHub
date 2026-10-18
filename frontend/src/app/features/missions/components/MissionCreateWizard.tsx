@@ -17,7 +17,6 @@ import type { MissionType, SchedulePrecision } from "../api/missions.types";
 import { createMission } from "../api/missions.api";
 import {
   DEFAULT_DISPATCH_CHOICE,
-  dispatchMission,
   isDispatchChoiceComplete,
   type DispatchMode,
   type DispatchSlot,
@@ -35,7 +34,13 @@ dayjs.tz.setDefault("Europe/Brussels");
 type Props = {
   sites: Array<{ id: number; name: string }>;
   surgeons: Array<{ id: number; label: string }>;
-  onDone: (result: { missionId: number; mode: "DRAFT" | "PUBLISH"; dispatchMode?: DispatchMode }) => void;
+  onDone: (result: {
+    missionId: number;
+    mode: "DRAFT" | "PUBLISH";
+    dispatchMode?: DispatchMode;
+    /** D-156 lot 1 — created as DRAFT but the dispatch failed right after (server message). */
+    dispatchError?: string;
+  }) => void;
   onCancel: () => void;
 };
 
@@ -199,12 +204,21 @@ export default function MissionCreateWizard(props: Props) {
         return;
       }
 
-      // Same two backend operations as any other origin: create (always DRAFT), then the
-      // manager's dispatch choice (MissionDispatchService) — never a client-side status.
-      const created = await createMission(body);
-      await dispatchMission(created.id, state.dispatch);
+      // D-156 lot 1 — ONE request: the backend validates the dispatch choice before creating
+      // the mission, then dispatches it (MissionDispatchService) — never two calls that could
+      // leave an orphan DRAFT invisible in the published planning, or a duplicate on retry.
+      const created = await createMission({
+        ...body,
+        dispatchMode: state.dispatch.mode,
+        dispatchInstrumentistId: state.dispatch.instrumentistId,
+      });
       onDone({ missionId: created.id, mode: "PUBLISH", dispatchMode: state.dispatch.mode });
     } catch (e: any) {
+      const error = e?.response?.data?.error;
+      if (error?.code === "MISSION_CREATED_NOT_DISPATCHED" && typeof error.missionId === "number") {
+        onDone({ missionId: error.missionId, mode: "DRAFT", dispatchError: error.message });
+        return;
+      }
       setBackendError(backendErrorToString(e));
     } finally {
       setSubmitting(false);

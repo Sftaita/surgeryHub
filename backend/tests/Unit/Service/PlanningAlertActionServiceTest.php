@@ -235,7 +235,21 @@ class PlanningAlertActionServiceTest extends TestCase
         $this->makeService()->reassign($alert, $newInst->getId(), null, null);
 
         $this->assertSame($newInst, $mission->getInstrumentist());
-        $this->assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
+        // D-156 lot 1 — a DRAFT is never published by an alert action (deploy publishes it).
+        $this->assertSame(MissionStatus::DRAFT, $mission->getStatus());
+    }
+
+    public function test_open_as_available_keeps_a_draft_mission_draft(): void
+    {
+        $mission = $this->makeMission($this->makeSite(), MissionStatus::DRAFT, $this->makeUser('old-inst@test.com'));
+        $alert   = $this->makeAlert($mission);
+
+        $this->deployService->expects($this->never())->method('release');
+
+        $this->makeService()->openAsAvailable($alert, null, null);
+
+        $this->assertNull($mission->getInstrumentist());
+        $this->assertSame(MissionStatus::DRAFT, $mission->getStatus());
     }
 
     // ── Reassign: rejections ──────────────────────────────────────────────────

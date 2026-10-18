@@ -44,8 +44,11 @@ const SHADOW_SM = "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)";
 // docs/design/components/mission-hero.md — repli sans photo : dégradé encodeHeader, jamais un autre.
 const ENCODE_HEADER_GRADIENT = "linear-gradient(150deg, #123F30 0%, #1E634A 55%, #2E7D5F 120%)";
 
-const TODAY_STATUSES = "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED";
-const ENCODING_PENDING_STATUSES = "ASSIGNED,IN_PROGRESS,DECLARED";
+// D-156 lot 1 — ENCODING_IN_PROGRESS (encodage démarré, pas encore soumis) manquait : la
+// mission disparaissait d'« Aujourd'hui » et de « À encoder » dès le premier clic sur
+// « Commencer l'encodage » (D-143 : encodage encore attendu = ces quatre statuts).
+const TODAY_STATUSES = "ASSIGNED,DECLARED,IN_PROGRESS,ENCODING_IN_PROGRESS,SUBMITTED,VALIDATED";
+const ENCODING_PENDING_STATUSES = "ASSIGNED,IN_PROGRESS,ENCODING_IN_PROGRESS,DECLARED";
 
 function todayRange() {
   const now = new Date();

@@ -12,6 +12,7 @@ import { useToast } from "../../../ui/toast/useToast";
 import { AlertCard } from "../components/AlertCard";
 import { ReassignDialog } from "../components/ReassignDialog";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
+import { invalidateOperationalPlanning } from "../../missions/dispatch/missionDispatch.api";
 
 type FilterKey = "all" | "open" | "priority";
 
@@ -27,8 +28,10 @@ export function PlanningAlertsTab() {
     queryFn: () => getAlerts({ limit: 100 }),
   });
 
+  // D-156 lot 1 — alert actions (reassign, open as available…) change missions too: every
+  // operational view must follow, not only the alert list.
   function invalidate() {
-    qc.invalidateQueries({ queryKey: ["planning-v2", "alerts"] });
+    void invalidateOperationalPlanning(qc);
   }
 
   const ackMutation = useMutation({

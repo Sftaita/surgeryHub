@@ -46,6 +46,8 @@ import { PersonAvatar, EmptyAvatar } from "../../../ui/avatar/PersonAvatar";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
 import { apiClient } from "../../../api/apiClient";
+import { invalidateOperationalPlanning } from "../../missions/dispatch/missionDispatch.api";
+import { OPERATIONAL_FOCUS_QUERY_OPTIONS } from "../../missions/sync/liveQueryOptions";
 
 type PlanningEditorMode = "generation" | "modification";
 
@@ -215,6 +217,7 @@ export function GeneratePlanningTab() {
       return items.filter((m) => m.status !== "REJECTED").map(missionToPreviewLine);
     },
     enabled: modificationVersionId !== null,
+    ...OPERATIONAL_FOCUS_QUERY_OPTIONS,
   });
 
   // Sites and site-groups share one searchable field — ids are offset for groups so
@@ -246,6 +249,23 @@ export function GeneratePlanningTab() {
   const historyQuery = useQuery({
     queryKey: ["planning-v2", "versions-history", targetId],
     queryFn: () => listPlanningVersions({ limit: 10, siteId: targetId !== null && targetId < GROUP_ID_OFFSET ? targetId : undefined }),
+    enabled: !preview && !generated,
+  });
+
+  // D-156 lot 1 — the month ↔ ACTIVE/DRAFT version match below must never depend on the
+  // 10-row history list: for a site group (no siteId filter) or a busy site, an ACTIVE
+  // version could drop out of it and its month could no longer be opened in Modification
+  // mode although its missions are live everywhere else.
+  const scopeVersionsQuery = useQuery({
+    queryKey: ["planning-v2", "versions-history", targetId, "scope-match"],
+    queryFn: async () => {
+      const siteId = targetId !== null && targetId < GROUP_ID_OFFSET ? targetId : undefined;
+      const [active, draft] = await Promise.all([
+        listPlanningVersions({ limit: 100, status: "ACTIVE", siteId }),
+        listPlanningVersions({ limit: 100, status: "DRAFT", siteId }),
+      ]);
+      return [...active.items, ...draft.items];
+    },
     enabled: !preview && !generated,
   });
 
@@ -459,6 +479,9 @@ export function GeneratePlanningTab() {
     onSuccess: (data) => {
       toast.success(`Planning déployé — ${data.missionCount} mission(s) publiée(s)`);
       setDeployed(data);
+      // D-156 lot 1 — deployed missions must show up in Missions, the published planning,
+      // personal plannings and dashboards right away.
+      void invalidateOperationalPlanning(queryClient);
     },
     onError: (err: any) => {
       if (err?.response?.status === 409 && err?.response?.data?.code === "DRAFT_CONFLICTS") {
@@ -508,6 +531,7 @@ export function GeneratePlanningTab() {
       setNewLines([]);
       setSelectedLineKey(null);
       setIsCreatingMission(false);
+      void invalidateOperationalPlanning(queryClient);
       // The mutation itself is already confirmed applied server-side above — but the list
       // still shows what was on screen *before* the redeploy until this refetch lands. If it
       // fails (session expired between the two requests, network blip…), that stale view
@@ -549,6 +573,7 @@ export function GeneratePlanningTab() {
       setDeleteMonthConfirmOpen(false);
       toast.success(result.cancelled > 0 ? `${result.cancelled} mission(s) annulée(s) — mois supprimé` : "Rien à annuler, ce mois était déjà vide");
       exitModification();
+      void invalidateOperationalPlanning(queryClient);
     },
     onError: (err) => {
       setDeleteMonthConfirmOpen(false);
@@ -564,7 +589,7 @@ export function GeneratePlanningTab() {
     mutationFn: () => verifyConflicts(modificationVersionId!),
     onSuccess: async (result) => {
       setVerifyResult(result);
-      queryClient.invalidateQueries({ queryKey: ["planning-v2", "alerts"] });
+      void invalidateOperationalPlanning(queryClient);
       const refreshed = await modificationMissionsQuery.refetch();
       if (refreshed.isError) {
         toast.error("La vérification est terminée, mais l'affichage n'a pas pu être actualisé — rechargez la page.");
@@ -1279,13 +1304,13 @@ export function GeneratePlanningTab() {
                 // ARCHIVED one is already superseded by a newer ACTIVE version for this same
                 // period+site (editing it would be a dead end: apply-modifications/cancel-all
                 // both reject anything that isn't ACTIVE server-side).
-                const matchedActiveVersion = historyQuery.data?.items.find((v) => {
+                const matchedActiveVersion = scopeVersionsQuery.data?.find((v) => {
                   const d = new Date(v.periodStart);
                   return v.status === "ACTIVE" && d.getFullYear() === ym.year && d.getMonth() + 1 === ym.month && matchesScope(v);
                 });
                 // CAS D (D-115) — a DRAFT for this exact month/scope is reopenable, never a
                 // dead end: "Ouvrir le brouillon" continues editing the SAME PlanningVersion.
-                const matchedDraftVersion = !matchedActiveVersion ? historyQuery.data?.items.find((v) => {
+                const matchedDraftVersion = !matchedActiveVersion ? scopeVersionsQuery.data?.find((v) => {
                   const d = new Date(v.periodStart);
                   return v.status === "DRAFT" && d.getFullYear() === ym.year && d.getMonth() + 1 === ym.month && matchesScope(v);
                 }) : undefined;

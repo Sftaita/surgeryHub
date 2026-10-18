@@ -54,6 +54,7 @@ import { EncodingStatusPanel } from "../../features/encoding/components/Encoding
 import { ReadOnlyInterventionCard } from "../../features/surgeon-encoding/components/ReadOnlyInterventionCard";
 import { AnomalyReportsManagerPanel } from "../../features/encoding-anomaly-reports/components/AnomalyReportsManagerPanel";
 import { useToast } from "../../ui/toast/useToast";
+import { invalidateOperationalPlanning } from "../../features/missions/dispatch/missionDispatch.api";
 
 type ChipColor = "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning";
 
@@ -138,9 +139,9 @@ export function MissionDetailContent({
   const [cancelReason, setCancelReason] = React.useState("");
 
   async function refreshAfterAction() {
-    await queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
-    await queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
-    await queryClient.invalidateQueries({ queryKey: ["missions"], exact: false });
+    // D-156 lot 1 — every operational view (Missions, published planning, Planning V2,
+    // fiches, dashboard), not only the Missions list.
+    await invalidateOperationalPlanning(queryClient, missionId);
     await queryClient.refetchQueries({ queryKey: ["missions"], exact: false });
     // D-121 — validate/reject/reopen changent tous le nombre de missions SUBMITTED :
     // le badge de nav doit refléter l'action immédiatement, pas seulement au prochain

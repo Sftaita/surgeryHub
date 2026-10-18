@@ -104,5 +104,19 @@ export function applyMissionSyncToCache(
     });
   }
 
+  // 4) D-156 lot 1 — Planning / Aujourd'hui / À venir : une mission nouvellement assignée
+  // (ou modifiée) absente de ces listes n'y était jamais ajoutée (seules les listes déjà
+  // chargées étaient patchées). Ces listes ont des filtres serveur (statuts, période) qu'on
+  // ne rejoue pas côté client : on les fait simplement relire au backend.
+  if (claimedByMe.length > 0) {
+    const missingFrom = (key: readonly unknown[]) =>
+      queryClient
+        .getQueriesData<PaginatedResponse<Mission>>({ queryKey: key })
+        .some(([, data]) => isPaginatedMissionList(data) && claimedByMe.some((m) => !data.items.some((it) => it.id === m.id)));
+    for (const key of [["missions", "planning"], ["missions", "today"], ["missions", "upcoming"], ["missions", "pending-encoding"]] as const) {
+      if (missingFrom(key)) void queryClient.invalidateQueries({ queryKey: key });
+    }
+  }
+
   return { newOpenOffers, removedCount: sync.removedMissionIds.length };
 }

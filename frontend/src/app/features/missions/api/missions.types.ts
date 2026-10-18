@@ -56,6 +56,9 @@ export type CreateMissionBody = {
   startAt: string;
   endAt: string;
   surgeonUserId: number;
+  /** D-156 lot 1 — dispatch decided in the same request (validated before creation). */
+  dispatchMode?: "POOL" | "TARGETED" | "DIRECT";
+  dispatchInstrumentistId?: number | null;
 };
 
 export type CreateMissionResult = Mission;
