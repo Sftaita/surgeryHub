@@ -55,6 +55,7 @@ import { ReadOnlyInterventionCard } from "../../features/surgeon-encoding/compon
 import { AnomalyReportsManagerPanel } from "../../features/encoding-anomaly-reports/components/AnomalyReportsManagerPanel";
 import { useToast } from "../../ui/toast/useToast";
 import { invalidateOperationalPlanning } from "../../features/missions/dispatch/missionDispatch.api";
+import { ManagerPrestationCard } from "../../features/prestations/components/ManagerPrestationCard";
 
 type ChipColor = "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning";
 
@@ -386,6 +387,13 @@ export function MissionDetailContent({
           </InfoRow>
         </Paper>
 
+        {/* D-156 — libellé de salle facultatif et prestation multi-salles (missions distinctes). */}
+        <ManagerPrestationCard
+          missionId={data.id}
+          roomLabel={data.roomLabel}
+          canEditRoomLabel={data.status !== "CANCELLED" && data.status !== "REJECTED"}
+        />
+
         {/* Personnel */}
         <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
           <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
@@ -430,6 +438,7 @@ export function MissionDetailContent({
                 <Typography component="span" variant="caption" color="text.secondary">
                   ({executionQuery.data.effectiveDurationSource === "ACTUAL_TIMES" ? "heures prestées"
                     : executionQuery.data.effectiveDurationSource === "ACTUAL_EXPLICIT" ? "durée déclarée"
+                    : executionQuery.data.effectiveDurationSource === "PRESENCE_SHARE" ? "part de la présence commune"
                     : "repli planifié"})
                 </Typography>
               </Typography>

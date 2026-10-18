@@ -103,6 +103,25 @@ interface Props {
  * collant (maquette validée). Une ligne = un item déjà entièrement résolu par le
  * backend ; ce composant n'affiche que ce qui est fourni, ne recalcule rien.
  */
+/**
+ * D-156 — heures planifiées d'un jour : une prestation multi-salles compte une fois (union
+ * des horaires, fournie par le serveur), jamais la somme brute des missions simultanées.
+ */
+function plannedMinutesOf(list: EncodingTrackingItem[]): number {
+  const seen = new Set<string>();
+  let total = 0;
+  for (const item of list) {
+    if (item.prestation) {
+      if (seen.has(item.prestation.key)) continue;
+      seen.add(item.prestation.key);
+      total += item.prestation.plannedUnionMinutes;
+    } else {
+      total += item.hours.plannedMinutes;
+    }
+  }
+  return total;
+}
+
 export function EncodingTrackingTable({
   items, total, page, limit, isLoading, isError, onPageChange, emptyTitle, emptyDescription, onOpen, selectedMissionId,
 }: Props) {
@@ -165,7 +184,7 @@ export function EncodingTrackingTable({
         {order.map((key) => {
           const list = byDay.get(key)!;
           const late = list.filter((i) => i.encoding.isStale).length;
-          const planned = Math.round(list.reduce((a, i) => a + i.hours.plannedMinutes, 0) / 60);
+          const planned = Math.round(plannedMinutesOf(list) / 60);
           return (
             <Box key={key}>
               <Box sx={{

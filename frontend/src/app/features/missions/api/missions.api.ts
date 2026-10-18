@@ -392,6 +392,20 @@ export interface MissionExecutionInfo {
   effectiveDurationMinutes: number;
   effectiveDurationSource: string;
   disputes: MissionExecutionDispute[];
+  /**
+   * D-156 — présence réelle commune (prestation multi-salles). actualDurationMinutes est
+   * alors la part imputée à cette mission ; les horaires réels sont ceux de la présence.
+   */
+  presence?: {
+    id: number;
+    revision: number;
+    actualStartAt: string | null;
+    actualEndAt: string | null;
+    totalMinutes: number | null;
+    missionIds: number[];
+  } | null;
+  /** D-156 — missions de la prestation dynamique ([missionId] si seule). */
+  prestationMissionIds?: number[];
 }
 
 export async function getMissionExecution(id: number): Promise<MissionExecutionInfo> {

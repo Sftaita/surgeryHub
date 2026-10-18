@@ -286,8 +286,28 @@ describe("PlanningSchedulePage — Reassign action", () => {
     fireEvent.click(confirmBtn);
 
     await waitFor(() => {
-      expect(planningApi.reassignMission).toHaveBeenCalledWith(1, 20);
+      expect(planningApi.reassignMission).toHaveBeenCalledWith(1, 20, undefined);
     });
+  });
+
+  // D-156 — a mission that already carries encoded interventions/material is never reassigned
+  // implicitly: the server says whether a motivated confirmation is enough.
+  it("demande une confirmation motivée quand la mission porte déjà des données d'encodage", async () => {
+    vi.mocked(planningApi.reassignMission)
+      .mockRejectedValueOnce({ response: { status: 409, data: { error: { code: "MISSION_HAS_ENCODING_DATA", message: "Impossible de réaffecter cette mission sans confirmation.", confirmable: true } } } })
+      .mockResolvedValueOnce(undefined);
+    const user = await loadMissions([makeAssignedMission()]);
+
+    await user.click(await screen.findByRole("button", { name: /réassigner la mission/i }));
+    await waitFor(() => screen.getByTestId("reassign-candidate-list"));
+    fireEvent.click(screen.getByTestId("reassign-candidate-20"));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Réassigner/i }));
+
+    expect(await screen.findByText("Données d'encodage déjà enregistrées")).toBeInTheDocument();
+    await user.type(screen.getByTestId("encoding-data-reason"), "Salle reprise par Claire.");
+    await user.click(screen.getByRole("button", { name: "Confirmer la réaffectation" }));
+
+    await waitFor(() => expect(planningApi.reassignMission).toHaveBeenLastCalledWith(1, 20, { encodingDataReason: "Salle reprise par Claire." }));
   });
 });
 

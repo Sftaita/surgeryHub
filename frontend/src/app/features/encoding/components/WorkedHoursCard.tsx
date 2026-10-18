@@ -43,6 +43,12 @@ export function formatHm(minutes: number): string {
  */
 function detailLabel(execution: MissionExecutionInfo | null | undefined): string {
   if (!execution?.hasExecutionRecord) return "Non renseignées — appuyez pour saisir";
+  // D-156 — heures communes d'une prestation multi-salles (présence réelle partagée).
+  const presence = execution.presence;
+  if (presence?.actualStartAt) {
+    const end = presence.actualEndAt ? dayjs(presence.actualEndAt).format("HH[h]mm") : "…";
+    return `Présence commune ${dayjs(presence.actualStartAt).format("HH[h]mm")} → ${end}`;
+  }
   if (execution.actualStartAt && execution.actualEndAt) {
     const range = `${dayjs(execution.actualStartAt).format("HH[h]mm")} → ${dayjs(execution.actualEndAt).format("HH[h]mm")}`;
     return range;
@@ -55,6 +61,7 @@ function detailLabel(execution: MissionExecutionInfo | null | undefined): string
 
 /** D-143 — vrai tant que début ET fin réels ne sont pas connus (condition de soumission). */
 export function hoursIncomplete(execution: MissionExecutionInfo | null | undefined): boolean {
+  if (execution?.presence) return !(execution.presence.actualStartAt && execution.presence.actualEndAt);
   return !(execution?.actualStartAt && execution?.actualEndAt);
 }
 

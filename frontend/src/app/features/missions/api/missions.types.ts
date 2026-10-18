@@ -219,9 +219,24 @@ export interface Mission {
   targetedOffer?: TargetedOffer | null;
   /** D-148 — pourquoi l'encodage ne peut pas être rouvert (clôture, verrou financier), managers seulement. */
   encodingCorrectionBlockedReason?: string | null;
+  /** D-156 — libellé de salle facultatif (manager). */
+  roomLabel?: string | null;
+  /** D-156 — prestation regroupée multi-salles (serveur), null si la mission est seule. */
+  prestation?: MissionPrestationSummary | null;
+  /** D-156 — vrais conflits d'horaire (serveur) : jamais recalculés côté client. */
+  scheduleConflictMissionIds?: number[];
 
   [key: string]: unknown;
 }
+
+export type MissionPrestationSummary = {
+  key: string;
+  size: number;
+  missionIds: number[];
+  plannedStartAt: string;
+  plannedEndAt: string;
+  plannedUnionMinutes: number;
+};
 
 export type TargetedOffer = {
   status: "PENDING" | "DECLINED";

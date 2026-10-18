@@ -13,6 +13,8 @@ import SwapHorizIcon  from "@mui/icons-material/SwapHoriz";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAllMissions } from "../../../features/missions/api/missions.api";
 import { dispatchMission, invalidateOperationalPlanning } from "../../../features/missions/dispatch/missionDispatch.api";
+import { prestationError } from "../../../features/prestations/api/prestations.api";
+import { EncodingDataConfirmDialog } from "../../../features/prestations/components/EncodingDataConfirmDialog";
 import type { Mission, MissionStatus } from "../../../features/missions/api/missions.types";
 import { fetchSites } from "../../../features/sites/api/sites.api";
 import { useToast } from "../../../ui/toast/useToast";
@@ -98,7 +100,8 @@ function toRow(m: Mission): ScheduleRow {
     instrumentistId:   m.instrumentist?.id ?? null,
     instrumentistName: m.instrumentist ? displayName(m.instrumentist) : null,
     siteId:            m.site?.id ?? null,
-    siteName:          m.site?.name ?? null,
+    // D-156 — libellé de salle facultatif affiché avec le site.
+    siteName:          m.site?.name ? `${m.site.name}${m.roomLabel ? ` · ${m.roomLabel}` : ""}` : null,
     status,
     canEdit:    status === "OPEN",
     canRelease: status === "ASSIGNED",
@@ -426,9 +429,15 @@ export default function PlanningSchedulePage() {
 
   // ── Reassign mutation ─────────────────────────────────────────────────────
 
+  // D-156 — 409 MISSION_HAS_ENCODING_DATA : la mission porte déjà des données d'encodage ;
+  // confirmation motivée si le serveur l'autorise, jamais un transfert implicite.
+  const [encodingDataConflict, setEncodingDataConflict] = React.useState<
+    { id: number; instrumentistId: number; instrumentistName: string; message: string; confirmable: boolean } | null
+  >(null);
+
   const reassignMut = useMutation({
-    mutationFn: ({ id, instrumentistId }: { id: number; instrumentistId: number; instrumentistName: string }) =>
-      reassignMission(id, instrumentistId),
+    mutationFn: ({ id, instrumentistId, encodingDataReason }: { id: number; instrumentistId: number; instrumentistName: string; encodingDataReason?: string }) =>
+      reassignMission(id, instrumentistId, encodingDataReason ? { encodingDataReason } : undefined),
     onMutate: ({ id, instrumentistId, instrumentistName }) => {
       const prev = rows.find((r) => r.missionId === id);
       setRows((r) =>
@@ -440,13 +449,19 @@ export default function PlanningSchedulePage() {
       );
       return { prev };
     },
-    onError: (_e, { id }, ctx) => {
+    onError: (e, { id, instrumentistId, instrumentistName }, ctx) => {
       if (ctx?.prev) {
         setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
       }
-      toast.error("Erreur lors de la réassignation");
+      const err = prestationError(e);
+      if (err.code === "MISSION_HAS_ENCODING_DATA") {
+        setEncodingDataConflict({ id, instrumentistId, instrumentistName, message: err.message, confirmable: err.extra.confirmable === true });
+        return;
+      }
+      toast.error(err.message || "Erreur lors de la réassignation");
     },
     onSuccess: () => {
+      setEncodingDataConflict(null);
       toast.success("Mission réassignée");
       invalidateCoverage();
     },
@@ -731,6 +746,23 @@ export default function PlanningSchedulePage() {
       />
 
       {/* Reassign dialog */}
+      <EncodingDataConfirmDialog
+        open={encodingDataConflict !== null}
+        message={encodingDataConflict?.message ?? ""}
+        confirmable={encodingDataConflict?.confirmable ?? false}
+        loading={reassignMut.isPending}
+        onClose={() => setEncodingDataConflict(null)}
+        onConfirm={(reason) =>
+          encodingDataConflict !== null &&
+          reassignMut.mutate({
+            id: encodingDataConflict.id,
+            instrumentistId: encodingDataConflict.instrumentistId,
+            instrumentistName: encodingDataConflict.instrumentistName,
+            encodingDataReason: reason,
+          })
+        }
+      />
+
       <ReassignMissionDialog
         open={reassignTarget !== null}
         loading={reassignMut.isPending}

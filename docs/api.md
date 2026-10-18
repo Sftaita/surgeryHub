@@ -4671,7 +4671,10 @@ entrée (D-091 follow-up). Règle métier (D-119, 2026-09-13) :
 - **Chirurgien**, même site, chevauchement → **jamais** dans `conflicts[]` (« double salle »
   autorisée par construction, quels que soient les instrumentistes — D-035). Seul un
   chirurgien sur des sites **différents** produit une entrée, toujours `waivable: false`.
-- **Instrumentiste**, même site ou non, chevauchement → toujours dans `conflicts[]`
+- **D-156** — **Instrumentiste**, missions **BLOC**, même chirurgien, même site, même date
+  locale, chevauchement → **jamais** dans `conflicts[]` : prestation multi-salles légitime
+  (une seule présence réelle, aucune dérogation nécessaire).
+- **Instrumentiste**, autres cas (chirurgien ou site différent, CONSULTATION), chevauchement → toujours dans `conflicts[]`
   (un instrumentiste ne peut pas être dans deux salles à la fois). `waivable: true`
   uniquement dans la forme étroite même chirurgien + même instrumentiste + même site des
   deux côtés (D-091 follow-up) ; sinon `false`.
@@ -8178,3 +8181,133 @@ tous les `AuditEvent` (rattachés à une mission ou globaux), tri `id` DESC.
 `mission` (`id`, `status`, `startAt`, `endAt`, `site`, `surgeon`, `instrumentist`) est
 renseigné quand l'événement porte une mission ; `surgeonMissionRequest` quand le payload
 porte `surgeonMissionRequestId`. `payload` est renvoyé tel qu'enregistré.
+
+
+## Missions ↔ Planning V2 et prestations regroupées multi-salles (D-156)
+
+Voir D-156 dans `docs/decisions.md` pour les règles complètes.
+
+### `GET /api/missions` — bornes de dates (lot 1)
+
+`from` / `to` : instant ISO 8601 avec offset (converti en heure de Bruxelles) ou valeur
+sans offset (`2026-11-12`, `2026-11-12T08:00`), lue comme heure locale de Bruxelles. `to`
+reste exclusif. Chaque élément porte en plus :
+
+- `roomLabel` (`string|null`) — libellé de salle facultatif ;
+- `prestation` (`object|null`) — prestation multi-salles de la mission, `null` si elle est
+  seule : `{key, size, missionIds, plannedStartAt, plannedEndAt, plannedUnionMinutes}` ;
+- `scheduleConflictMissionIds` (`int[]`) — vrais conflits d'horaire de l'instrumentiste
+  (chevauchement qui n'est pas une double salle légitime). Calculés par le serveur ; le
+  client ne recalcule jamais de conflit.
+
+Mêmes champs dans `GET /api/instrumentist/missions/sync`. `GET /api/missions/{id}` expose
+`roomLabel`.
+
+### `POST /api/missions` — création et diffusion en une requête (lot 1)
+
+Champs optionnels : `dispatchMode` (`POOL` | `TARGETED` | `DIRECT`) et
+`dispatchInstrumentistId`. La diffusion est validée AVANT la création (un choix inéligible
+est refusé, rien n'est créé), puis appliquée dans la même requête. Échec résiduel après
+création : `409 MISSION_CREATED_NOT_DISPATCHED`, `error.missionId` = la mission créée en
+DRAFT (l'ouvrir, ne pas recréer). Sans `dispatchMode` : comportement inchangé (DRAFT).
+
+### `GET /api/missions/{id}/prestation`
+
+Prestation dynamique de la mission (une mission seule = prestation de taille 1). Droit :
+`MISSION_VIEW` sur chaque mission du groupe.
+
+```json
+{
+  "key": "p674-675", "size": 2, "missionIds": [674, 675], "date": "2026-11-04",
+  "missions": [
+    { "id": 674, "ordinal": 1, "label": "Mission 1/2 · 07h45–13h00 · n° 674", "roomLabel": null,
+      "startAt": "…", "endAt": "…", "plannedMinutes": 315, "status": "ENCODING_IN_PROGRESS",
+      "imputedMinutes": 315, "effectiveMinutes": 315, "effectiveSource": "PRESENCE_SHARE",
+      "linkedToPresence": true, "hasOwnHours": false, "interventionCount": 2,
+      "activeMaterialLineCount": 3, "noMaterialComment": null, "allowedActions": ["…"] }
+  ],
+  "instrumentist": {"id": 18, "name": "…"}, "surgeon": {"id": 8, "name": "Dr …"}, "site": {"id": 1, "name": "…"},
+  "planned": { "startAt": "…", "endAt": "…", "unionMinutes": 615 },
+  "presence": { "id": 9, "revision": 2, "actualStartAt": "…", "actualEndAt": "…", "totalMinutes": 615,
+                "missionIds": [674, 675], "allocationRule": "EARLIEST_END_FIRST" },
+  "unlinkedMissionIds": [], "ownHoursMissionIds": [],
+  "statuses": ["ENCODING_IN_PROGRESS"], "globalStatus": "ENCODING_IN_PROGRESS",
+  "fingerprint": "sha256…", "allowedActions": ["edit_presence", "submit"]
+}
+```
+
+`globalStatus` = le statut commun, ou `MIXED`. `allowedActions` : `edit_presence` si
+`MISSION_EXECUTION_UPDATE` est accordé sur chaque mission, `submit` si `MISSION_SUBMIT` est
+accordé sur chaque mission encore à soumettre.
+
+### `PUT /api/missions/{id}/prestation/presence`
+
+Heures réelles de la prestation, saisies une fois. Corps : `actualStartAt` (requis),
+`actualEndAt` (optionnel = brouillon, D-143), `expectedMissionIds` (requis),
+`expectedRevision` (si une présence existe), `convertOwnHours` (confirmation explicite de
+remplacer des heures propres déjà saisies). Droit : `MISSION_EXECUTION_UPDATE` sur chaque
+mission. Prestation d'une seule mission sans présence : identique à
+`PATCH /api/missions/{id}/execution`. Réponse : la vue `GET …/prestation`.
+
+Erreurs `409` (`error.code`) : `PRESTATION_CHANGED` (composition différente, avec
+`currentMissionIds`), `PRESENCE_REVISION_CHANGED`, `PRESTATION_HAS_OWN_HOURS` (avec
+`missionIds`), `PRESTATION_PRESENCE_CONFLICT`, `PRESENCE_ENCODING_LOCKED`,
+`PRESENCE_FINANCIALLY_SETTLED`. `422` : fin ≤ début.
+
+### `POST /api/missions/{id}/prestation/submit`
+
+Soumission commune. Corps : `fingerprint` (requis, celui de la vue), `noMaterialComment`
+(une justification, posée sur les seules missions BLOC sans matériel). Droit :
+`MISSION_SUBMIT` sur chaque mission encore à soumettre. Tout ou rien, dans une transaction ;
+les missions déjà `SUBMITTED` sont laissées telles quelles. Erreurs : `409 PRESTATION_CHANGED`
+(empreinte différente), `422 ENCODING_INCOMPLETE` (avec `missing`), `422` sans matériel ni
+justification.
+
+Dans une prestation de 2+ missions, `PATCH /api/missions/{id}/execution`,
+`PATCH /api/missions/{id}/service`, `POST /api/missions/{id}/encoding/complete` et
+`POST /api/missions/{id}/submit` répondent `409 PRESTATION_REQUIRES_COMMON_HOURS` /
+`PRESTATION_REQUIRES_COMMON_SUBMIT` (avec `prestationMissionIds`).
+
+`GET /api/missions/{id}/execution` expose en plus `presence` (`{id, revision, actualStartAt,
+actualEndAt, totalMinutes, missionIds}` ou `null`) et `prestationMissionIds`. Pour une
+mission liée, `actualStartAt` / `actualEndAt` sont `null` et `actualDurationMinutes` est la
+part imputée (`effectiveDurationSource = PRESENCE_SHARE`).
+
+### `POST /api/missions/{id}/encoding/detach-presence`
+
+Correction contrôlée, manager (`MISSION_PRESENCE_DETACH`). Corps : `reason` (requis). La
+mission quitte la présence (sans heures réelles ; rien n'est transféré ni effacé), les autres
+missions sont réimputées, audit sur chaque mission. Erreurs : `409 PRESENCE_LAST_MISSION`,
+`PRESENCE_ENCODING_LOCKED`, `PRESENCE_FINANCIALLY_SETTLED` ; `403` si la mission est
+verrouillée ou non liée.
+
+### `PATCH /api/missions/{id}/room-label`
+
+Manager (`MISSION_EDIT_ROOM_LABEL`, mission ni annulée ni refusée). Corps : `roomLabel`
+(≤ 60 caractères ; vide ou `null` = retiré). Audit `MISSION_ROOM_LABEL_CHANGED`. Purement
+descriptif.
+
+### Données encodées — `409 MISSION_HAS_ENCODING_DATA`
+
+`reassign`, `release`, `cancel`, `updateSchedule` (et `assign` remplaçant un instrumentiste)
+refusent une mission qui porte des heures, une présence, des interventions, du matériel ou
+des demandes. `error` : `missionId`, `operation`, `confirmable`, `hasOwnHours`, `presenceId`,
+`interventionCount`, `materialLineCount`, `interventionRequestCount`. Si `confirmable` est
+vrai (interventions / matériel seuls), `POST /api/missions/{id}/reassign` accepte
+`confirmEncodingData: true` et `encodingDataReason` (requis) ; les données restent sur la
+mission.
+
+### Valorisation — anomalies D-156
+
+`SHARED_PRESENCE_STALE`, `SHARED_PRESENCE_SETTLED`, `OVERLAPPING_HOURS_IN_PRESTATION`
+(catégorie ENCODING, action « Corriger les heures communes de la prestation »). Le snapshot
+d'une ligne `INSTRUMENTIST_HOURLY` valorisée sur une présence porte `presenceId`,
+`presenceRevision`, `presenceTotalMinutes`, `presenceTotalAmount`, `prestationMissionIds`,
+`imputedMinutesByMission`, `imputedAmountByMission`, `allocationRule`. L'approbation d'un tel
+calcul est refusée si la présence a changé depuis.
+
+### Suivi des encodages
+
+Chaque élément de `GET /api/billing/encoding-tracking` porte `prestation`
+(`{key, missionIds, plannedUnionMinutes}` ou `null`) : un total d'heures planifiées compte
+chaque prestation une fois.

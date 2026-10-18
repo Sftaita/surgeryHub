@@ -16,6 +16,13 @@ import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 
 import { fetchAllMissions } from "../../features/missions/api/missions.api";
+import { collapsePrestations, rowTimes, type PlanningRow } from "../../features/prestations/utils/collapsePrestations";
+
+/** D-156 — « Dr Deltour — 2 missions » pour une prestation multi-salles. */
+function prestationSubtitle(row: PlanningRow, surgeonLabel: string): string {
+  const size = row.mission.prestation?.size ?? 1;
+  return size > 1 ? `${surgeonLabel} — ${size} missions` : surgeonLabel;
+}
 import { MissionDetailContent } from "./MissionDetailPage";
 import type { Mission } from "../../features/missions/api/missions.types";
 import type { DateTileVariant } from "../../ui/mobile/DateTile";
@@ -29,7 +36,6 @@ import {
   getSafeView,
   shiftDate,
   formatDisplayDate,
-  normalizeMissionInterval,
   getMissionStartDayKey,
   compareMissionsByStart,
   buildMonthGridCells,
@@ -63,7 +69,6 @@ const BLUE_700 = "#1B5FD0";
 const MY_MISSIONS_STATUSES =
   "ASSIGNED,DECLARED,IN_PROGRESS,ENCODING_IN_PROGRESS,SUBMITTED,VALIDATED,CLOSED";
 
-const CONFLICT_STATUSES = new Set(["ASSIGNED", "DECLARED", "IN_PROGRESS"]);
 const SWIPE_THRESHOLD_PX = 50;
 
 function getSurgeonLabel(mission: Mission): string {
@@ -170,27 +175,13 @@ export default function PlanningPage() {
 
   const missions = missionsQuery.data?.items ?? [];
 
-  const conflictMissionIds = React.useMemo(() => {
-    const relevant = missions
-      .filter((m) => m.status && CONFLICT_STATUSES.has(m.status))
-      .map((m) => ({ mission: m, interval: normalizeMissionInterval(m) }))
-      .filter((item): item is { mission: Mission; interval: NonNullable<ReturnType<typeof normalizeMissionInterval>> } =>
-        item.interval !== null
-      );
-
-    const ids = new Set<number>();
-    for (let i = 0; i < relevant.length; i++) {
-      for (let j = i + 1; j < relevant.length; j++) {
-        const a = relevant[i].interval;
-        const b = relevant[j].interval;
-        if (a.startMs < b.endMs && b.startMs < a.endMs) {
-          ids.add(relevant[i].mission.id);
-          ids.add(relevant[j].mission.id);
-        }
-      }
-    }
-    return ids;
-  }, [missions]);
+  // D-156 — « Conflit potentiel » = vrai conflit calculé par le serveur
+  // (scheduleConflictMissionIds) : deux salles simultanées du même chirurgien sur le même
+  // site ne sont plus un conflit (prestation multi-salles). Jamais recalculé ici.
+  const conflictMissionIds = React.useMemo(
+    () => new Set(missions.filter((m) => (m.scheduleConflictMissionIds?.length ?? 0) > 0).map((m) => m.id)),
+    [missions],
+  );
 
   const dayBuckets = React.useMemo(() => {
     const buckets = new Map<string, Mission[]>();
@@ -231,7 +222,8 @@ export default function PlanningPage() {
     }
     toEncode.sort(compareMissionsByStart);
     upcoming.sort(compareMissionsByStart);
-    return { toEncodeMissions: toEncode, upcomingMissions: upcoming };
+    // D-156 — une prestation multi-salles = une seule ligne (et une seule demande d'encodage).
+    return { toEncodeMissions: collapsePrestations(toEncode), upcomingMissions: collapsePrestations(upcoming) };
   }, [missions]);
 
   const updateSearchParams = React.useCallback(
@@ -334,13 +326,14 @@ export default function PlanningPage() {
             {toEncodeMissions.length === 0 ? (
               <EmptyStateRow text="Aucune mission à encoder" />
             ) : (
-              toEncodeMissions.map((m) => {
+              toEncodeMissions.map((row) => {
+                const m = row.mission;
                 const status = missionRowStatus(m);
                 return (
                   <MissionListRow
                     key={m.id}
-                    mission={m}
-                    subtitlePerson={getSurgeonLabel(m)}
+                    mission={{ ...m, ...rowTimes(row) }}
+                    subtitlePerson={prestationSubtitle(row, getSurgeonLabel(m))}
                     statusInfo={status}
                     dateTileVariant={dateTileVariantFor(status)}
                     onClick={() => navigate(`/app/i/missions/${m.id}/encoding`)}
@@ -361,13 +354,14 @@ export default function PlanningPage() {
             {upcomingMissions.length === 0 ? (
               <EmptyUpcomingBanner onSeeOffers={() => navigate("/app/i/offers")} />
             ) : (
-              upcomingMissions.map((m) => {
+              upcomingMissions.map((row) => {
+                const m = row.mission;
                 const status = missionRowStatus(m);
                 return (
                   <MissionListRow
                     key={m.id}
-                    mission={m}
-                    subtitlePerson={getSurgeonLabel(m)}
+                    mission={{ ...m, ...rowTimes(row) }}
+                    subtitlePerson={prestationSubtitle(row, getSurgeonLabel(m))}
                     statusInfo={status}
                     dateTileVariant={dateTileVariantFor(status)}
                     onClick={() => setSelectedMissionId(m.id)}

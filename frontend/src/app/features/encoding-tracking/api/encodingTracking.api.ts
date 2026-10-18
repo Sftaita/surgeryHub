@@ -28,7 +28,7 @@ export type EncodingFinancialState =
   | "PAID"
   | "ANOMALY";
 
-export type EffectiveDurationSource = "PLANNED" | "ACTUAL_TIMES" | "ACTUAL_EXPLICIT";
+export type EffectiveDurationSource = "PLANNED" | "ACTUAL_TIMES" | "ACTUAL_EXPLICIT" | "PRESENCE_SHARE";
 
 /** D-136 — comparaison réel / planifié calculée par le backend (jamais recalculée ici). */
 export type HoursComparison = "NO_REAL_HOURS" | "WITHIN_PLAN" | "OVER_PLAN";
@@ -125,6 +125,8 @@ export interface EncodingTrackingItem {
   hours: EncodingTrackingHours;
   encoding: EncodingTrackingEncoding;
   financial: EncodingTrackingFinancial;
+  /** D-156 — prestation regroupée multi-salles (serveur), null si la mission est seule. */
+  prestation?: { key: string; missionIds: number[]; plannedUnionMinutes: number } | null;
 }
 
 export interface EncodingTrackingPeriod {

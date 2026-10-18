@@ -263,3 +263,51 @@ describe("PlanningPage", () => {
     expect(await screen.findAllByText("Clinique Saint-Luc")).toHaveLength(1);
   });
 });
+
+// D-156 — prestation multi-salles : une seule ligne, aucun faux conflit.
+describe("PlanningPage — prestation multi-salles (D-156)", () => {
+  const prestation = {
+    key: "p11-12", size: 2, missionIds: [11, 12],
+    plannedStartAt: "2026-07-24T07:45:00+02:00", plannedEndAt: "2026-07-24T18:00:00+02:00", plannedUnionMinutes: 615,
+  };
+  const surgeon = { id: 8, firstname: "Arnaud", lastname: "Deltour", email: "a@x.test" };
+
+  it("affiche une seule demande d'encodage « 2 missions » sur le créneau global", async () => {
+    fetchMissionsMock.mockResolvedValue({
+      items: [
+        makeMission({ id: 11, surgeon, startAt: "2026-07-24T07:45:00+02:00", endAt: "2026-07-24T13:00:00+02:00", allowedActions: ["edit_encoding"], prestation }),
+        makeMission({ id: 12, surgeon, startAt: "2026-07-24T07:45:00+02:00", endAt: "2026-07-24T18:00:00+02:00", allowedActions: ["edit_encoding"], prestation }),
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const rows = await screen.findAllByText(/— 2 missions/);
+    expect(rows).toHaveLength(1);
+    expect(screen.getAllByText("CHU Brugmann")).toHaveLength(1);
+    await user.click(rows[0]);
+    expect(mockNavigate).toHaveBeenCalledWith("/app/i/missions/11/encoding");
+  });
+
+  it("le conflit affiché vient du serveur : deux salles du même chirurgien ne sont pas un conflit", async () => {
+    fetchMissionsMock.mockResolvedValue({
+      items: [
+        makeMission({ id: 11, surgeon, startAt: "2026-07-24T07:45:00+02:00", endAt: "2026-07-24T13:00:00+02:00", allowedActions: ["edit_encoding"], prestation, scheduleConflictMissionIds: [] }),
+        makeMission({ id: 12, surgeon, startAt: "2026-07-24T07:45:00+02:00", endAt: "2026-07-24T18:00:00+02:00", allowedActions: ["edit_encoding"], prestation, scheduleConflictMissionIds: [] }),
+      ],
+    });
+    renderPage("/planning?view=month&date=2026-07-24");
+
+    await screen.findAllByText(/— 2 missions/);
+    expect(screen.queryByTitle("Conflit potentiel")).not.toBeInTheDocument();
+  });
+
+  it("un vrai conflit signalé par le serveur reste affiché", async () => {
+    fetchMissionsMock.mockResolvedValue({
+      items: [makeMission({ id: 21, startAt: "2026-07-24T08:00:00+02:00", allowedActions: ["edit_encoding"], scheduleConflictMissionIds: [22] })],
+    });
+    renderPage("/planning?view=month&date=2026-07-24");
+
+    expect(await screen.findByTitle("Conflit potentiel")).toBeInTheDocument();
+  });
+});

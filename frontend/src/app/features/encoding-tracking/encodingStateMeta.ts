@@ -35,6 +35,8 @@ export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
   PLANNED: "Planifié",
   ACTUAL_TIMES: "Heures prestées",
   ACTUAL_EXPLICIT: "Heures explicites",
+  // D-156 — part imputée de la présence commune d'une prestation multi-salles.
+  PRESENCE_SHARE: "Part de la présence commune",
 };
 
 /**

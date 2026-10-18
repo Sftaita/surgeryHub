@@ -173,7 +173,8 @@ export default function MissionsListPage() {
         headerName: "Site",
         flex: 1,
         sortable: false,
-        valueGetter: (_, row) => row.site?.name ?? "—",
+        // D-156 — libellé de salle facultatif à côté du site.
+        valueGetter: (_, row) => `${row.site?.name ?? "—"}${row.roomLabel ? ` · ${row.roomLabel}` : ""}`,
       },
       {
         field: "type",

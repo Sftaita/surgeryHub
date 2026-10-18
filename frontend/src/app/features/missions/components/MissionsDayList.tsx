@@ -64,7 +64,7 @@ function MissionRow({ mission, onOpen }: { mission: Mission; onOpen: (m: Mission
       </Typography>
 
       <Box sx={{ minWidth: 0, gridColumn: { xs: "1 / 2", md: "auto" } }}>
-        <Typography variant="body2" fontWeight={600} noWrap>{mission.site?.name ?? "—"}</Typography>
+        <Typography variant="body2" fontWeight={600} noWrap>{mission.site?.name ?? "—"}{mission.roomLabel ? ` · ${mission.roomLabel}` : ""}</Typography>
         <Typography variant="caption" color="text.secondary">
           {formatMissionType(mission.type)} · #{mission.id}
         </Typography>

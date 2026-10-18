@@ -119,3 +119,17 @@ describe("EncodingTrackingTable — colonne Finance (D-138)", () => {
     expect(screen.getByText("À calculer")).toBeInTheDocument();
   });
 });
+
+// D-156 — heures planifiées du jour : une prestation multi-salles compte une fois (union).
+describe("EncodingTrackingTable — prestation multi-salles", () => {
+  it("compte l'union planifiée d'une prestation une seule fois, jamais la somme des salles", () => {
+    const a = { ...item(1, "2026-11-04T07:45:00+01:00", "Sophie Colette"), hours: { ...item(1, "", "").hours, plannedMinutes: 315 }, prestation: { key: "p1-2", missionIds: [1, 2], plannedUnionMinutes: 615 } };
+    const b = { ...item(2, "2026-11-04T07:45:00+01:00", "Sophie Colette"), hours: { ...item(2, "", "").hours, plannedMinutes: 615 }, prestation: { key: "p1-2", missionIds: [1, 2], plannedUnionMinutes: 615 } };
+    const other = { ...item(3, "2026-11-04T08:00:00+01:00", "Salve Decorte"), hours: { ...item(3, "", "").hours, plannedMinutes: 240 } };
+    renderTable([a, b, other]);
+
+    // 10h15 (prestation) + 4h (autre) = 14h15 → arrondi 14h ; la somme brute aurait donné 19h.
+    expect(screen.getByText("14h planifiées")).toBeInTheDocument();
+    expect(screen.queryByText("19h planifiées")).not.toBeInTheDocument();
+  });
+});

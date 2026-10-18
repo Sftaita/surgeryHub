@@ -4219,3 +4219,46 @@ D-114   : ABSENCE_CREATED → SURGEON_ABSENCE_COMMUNICATION_RECORDED (← absenc
 
   `EmailThroughDispatcherTest`, `ActivityJournalIntegrationTest` (append-only).
 
+
+
+## 31. Planning opérationnel unique et prestations regroupées multi-salles (D-156)
+
+**Trois responsabilités, jamais fusionnées.** `Mission` = planning opérationnel (source de
+vérité de tous les écrans : Missions, Planning V2, plannings personnels, fiches, tableaux
+de bord) ; `SurgeonSchedulePost` = postes récurrents et génération ; `PlanningVersion` =
+génération, publication, historique. Toute mutation de mission passe par le service
+applicatif (D-056) et invalide côté client l'ensemble des vues opérationnelles
+(`invalidateOperationalPlanning`, `frontend/src/app/features/missions/dispatch`). Les vues
+manager se rafraîchissent au retour du focus et toutes les 60 s quand l'onglet est visible
+(`liveQueryOptions.ts`) : pas de push temps réel.
+
+**Prestation regroupée = regroupement dérivé, présence persistée.**
+
+```
+Mission A (07:45–13:00) ─┐                       ┌─ MissionExecution A  (presence_id → P, part 5h15)
+Mission B (07:45–18:00) ─┴─ PrestationGrouping ──┤
+     (dérivé, jamais persisté)                   └─ MissionExecution B  (presence_id → P, part 5h00)
+                                                          │
+                                                   WorkedPresence P (07:45–18:00, révision n)
+```
+
+- `backend/src/Service/Prestation/` :
+  - `PrestationGrouping` : la règle, en fonctions pures (BLOC, instrumentiste, chirurgien,
+    site, date locale, chevauchement strict, composantes connexes) ;
+  - `PrestationGroupResolver` : groupes depuis la base, par lot ;
+  - `PresenceAllocator` : ventilation EARLIEST_END_FIRST et répartition au centime ;
+  - `WorkedPresenceService` : seul écrivain des présences et des parts imputées
+    (transactions, verrous, audit) ;
+  - `PrestationEncodingService` : vue, empreinte, soumission commune ;
+  - `MissionEncodingDataGuard` : aucune mutation implicite d'une mission encodée ;
+  - `MissionListAnnotator` : prestation et vrais conflits pour une page de missions.
+- Durées : `MissionExecutionService::resolveDuration()` reste le point d'entrée unique
+  (`PRESENCE_SHARE` pour une mission liée). La valorisation (`FinancialCalculationService`)
+  valorise la présence une fois et la répartit ; la facturation firmes ne change pas.
+- Conflits : la même règle (`PrestationGrouping::isMultiRoomSlot()` / `isMultiRoomPair()`)
+  est appliquée dans l'éligibilité, le moteur central de conflits, l'aperçu Planning V2,
+  la revalidation au déploiement et les alertes — jamais réécrite ailleurs, jamais côté client.
+- Frontend : `frontend/src/app/features/prestations/` (panneau de prestation, saisie unique
+  des heures, soumission commune, confirmation des réaffectations, carte manager) ; le
+  planning instrumentiste réunit une prestation en une ligne à partir de la clé fournie par
+  le serveur.

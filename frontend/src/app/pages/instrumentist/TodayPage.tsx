@@ -14,6 +14,7 @@ import {
 import type { Mission, MissionStatus } from "../../features/missions/api/missions.types";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { SPECIALTIES } from "../../features/planning-manager/api/planning.api";
+import { collapsePrestations } from "../../features/prestations/utils/collapsePrestations";
 
 dayjs.extend(calendar);
 dayjs.locale("fr");
@@ -602,9 +603,13 @@ export default function TodayPage() {
   // consulte via "Voir tout" (redirige vers Offres, décision produit explicite).
   const upcomingMissions = React.useMemo(
     () =>
-      (upcomingData?.items ?? [])
-        .slice()
-        .sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? ""))
+      // D-156 — une prestation multi-salles n'occupe qu'une ligne de l'aperçu.
+      collapsePrestations(
+        (upcomingData?.items ?? [])
+          .slice()
+          .sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? "")),
+      )
+        .map((row) => row.mission)
         .slice(0, 3),
     [upcomingData],
   );
@@ -613,7 +618,10 @@ export default function TodayPage() {
 
   const toEncodeMission = React.useMemo(() => {
     const candidates = (pendingEncodingData?.items ?? [])
-      .filter((m) => m.id !== mainMission?.id && m.allowedActions?.some((a) => a === "encoding" || a === "edit_encoding"))
+      // D-156 — une mission sœur de la mission du jour (même prestation multi-salles) n'est
+      // pas une seconde demande d'encodage : la prestation s'encode en une fois.
+      .filter((m) => m.id !== mainMission?.id && !(m.prestation && m.prestation.key === mainMission?.prestation?.key))
+      .filter((m) => m.allowedActions?.some((a) => a === "encoding" || a === "edit_encoding"))
       .sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? ""));
     return candidates[0] ?? null;
   }, [pendingEncodingData, mainMission]);

@@ -470,8 +470,20 @@ export async function cancelMission(id: number, reason?: string): Promise<void> 
   await apiClient.post(`/api/missions/${id}/cancel`, reason ? { reason } : {});
 }
 
-export async function reassignMission(id: number, instrumentistId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${id}/reassign`, { instrumentistId });
+/**
+ * D-156 — `confirmEncodingData` + motif : correction contrôlée d'une mission qui porte déjà
+ * des interventions / du matériel (le serveur répond 409 MISSION_HAS_ENCODING_DATA sinon,
+ * `confirmable: true` quand cette confirmation suffit).
+ */
+export async function reassignMission(
+  id: number,
+  instrumentistId: number,
+  confirmation?: { encodingDataReason: string },
+): Promise<void> {
+  await apiClient.post(`/api/missions/${id}/reassign`, {
+    instrumentistId,
+    ...(confirmation ? { confirmEncodingData: true, encodingDataReason: confirmation.encodingDataReason } : {}),
+  });
 }
 
 export async function fetchMissionAudit(id: number): Promise<MissionAuditEvent[]> {
