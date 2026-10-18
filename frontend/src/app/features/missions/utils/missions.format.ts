@@ -137,6 +137,13 @@ export function formatMissionStatus(value?: string | null): string {
       return "Validée";
     case "CLOSED":
       return "Clôturée";
+    // Recette D-156 — statuts backend existants qui s'affichaient bruts (« CANCELLED »).
+    case "CANCELLED":
+      return "Annulée";
+    case "DECLARED":
+      return "Déclarée";
+    case "REJECTED":
+      return "Rejetée";
     default:
       return value; // fallback volontaire, aucune correction frontend
   }

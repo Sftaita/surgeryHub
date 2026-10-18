@@ -593,7 +593,10 @@ export default function TodayPage() {
   });
 
   const { data: offersData, isLoading: loadingOffers } = useQuery({
-    queryKey: ["missions", "offers"],
+    // Clé propre à l'aperçu (4 offres) : partager ["missions","offers"] avec la liste
+    // complète (100) faisait afficher 4 offres sur l'écran Offres (recette D-156). Le
+    // préfixe commun garde les invalidations ["missions","offers"] existantes.
+    queryKey: ["missions", "offers", "today-preview"],
     queryFn: () => fetchInstrumentistOffersWithFallback(1, 4),
     refetchInterval: 60_000,
   });
