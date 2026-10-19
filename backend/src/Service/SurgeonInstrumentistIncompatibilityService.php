@@ -172,7 +172,8 @@ class SurgeonInstrumentistIncompatibilityService
 
     /**
      * D-152 — whom a surgeon may block from his profile: active instrumentists of one of his
-     * sites, or active freelancers (eligible on every site, D-057). Not already blocked.
+     * sites, or active freelancers (eligible on every site, D-057). Those he already blocks stay
+     * in the results (shown « Bloqué », never offered a second block): see activeBlocksAmong().
      *
      * @return User[]
      */
@@ -184,10 +185,6 @@ class SurgeonInstrumentistIncompatibilityService
             ->andWhere('u.employmentType = :freelancer OR EXISTS (
                 SELECT smi.id FROM App\Entity\SiteMembership smi, App\Entity\SiteMembership sms
                 WHERE smi.user = u AND sms.user = :surgeon AND sms.site = smi.site
-            )')
-            ->andWhere('NOT EXISTS (
-                SELECT b.id FROM App\Entity\SurgeonInstrumentistIncompatibility b
-                WHERE b.surgeon = :surgeon AND b.instrumentist = u AND b.liftedAt IS NULL
             )')
             ->setParameter('role', '%ROLE_INSTRUMENTIST%')
             ->setParameter('freelancer', EmploymentType::FREELANCER)
@@ -204,11 +201,12 @@ class SurgeonInstrumentistIncompatibilityService
     }
 
     /**
-     * D-152 (réserve 1) — manager search of the counterparts that may be declared incompatible
-     * with $person: active instrumentists for a surgeon's file, active surgeons for an
-     * instrumentist's file, never one already actively incompatible with $person. Paginated
-     * on the server (the browser never loads the whole list); every term of $query must match
-     * the first name, last name or e-mail. Same population create() accepts from a manager.
+     * D-152 (réserve 1) — manager search of the counterparts of $person: active instrumentists
+     * for a surgeon's file, active surgeons for an instrumentist's file. Those already actively
+     * incompatible with $person stay in the results (shown « Bloqué », with the lift action,
+     * never a second creation): see activeBlocksAmong(). Paginated on the server (the browser
+     * never loads the whole list); every term of $query must match the first name, last name or
+     * e-mail.
      *
      * @return array{items: User[], total: int}
      */
@@ -217,9 +215,6 @@ class SurgeonInstrumentistIncompatibilityService
         $qb = $this->em->createQueryBuilder()
             ->from(User::class, 'u')
             ->where('u.active = true AND u.roles LIKE :role AND u <> :person')
-            ->andWhere($personIsSurgeon
-                ? 'NOT EXISTS (SELECT b.id FROM App\Entity\SurgeonInstrumentistIncompatibility b WHERE b.surgeon = :person AND b.instrumentist = u AND b.liftedAt IS NULL)'
-                : 'NOT EXISTS (SELECT b.id FROM App\Entity\SurgeonInstrumentistIncompatibility b WHERE b.instrumentist = :person AND b.surgeon = u AND b.liftedAt IS NULL)')
             ->setParameter('role', $personIsSurgeon ? '%ROLE_INSTRUMENTIST%' : '%ROLE_SURGEON%')
             ->setParameter('person', $person);
 
@@ -236,6 +231,34 @@ class SurgeonInstrumentistIncompatibilityService
             ->getQuery()->getResult();
 
         return ['items' => $items, 'total' => $total];
+    }
+
+    /**
+     * D-152 — the active incompatibilities between $person and these counterparts, in one query:
+     * counterpartId → incompatibility. Lets the searches above show who is already blocked.
+     *
+     * @param User[] $counterparts
+     * @return array<int, SurgeonInstrumentistIncompatibility>
+     */
+    public function activeBlocksAmong(User $person, bool $personIsSurgeon, array $counterparts): array
+    {
+        if ($counterparts === []) {
+            return [];
+        }
+
+        $rows = $this->em->createQuery($personIsSurgeon
+            ? 'SELECT b FROM App\Entity\SurgeonInstrumentistIncompatibility b WHERE b.surgeon = :person AND b.instrumentist IN (:others) AND b.liftedAt IS NULL'
+            : 'SELECT b FROM App\Entity\SurgeonInstrumentistIncompatibility b WHERE b.instrumentist = :person AND b.surgeon IN (:others) AND b.liftedAt IS NULL')
+            ->setParameter('person', $person)
+            ->setParameter('others', $counterparts)
+            ->getResult();
+
+        $byCounterpart = [];
+        foreach ($rows as $b) {
+            $byCounterpart[(int) ($personIsSurgeon ? $b->getInstrumentist() : $b->getSurgeon())->getId()] = $b;
+        }
+
+        return $byCounterpart;
     }
 
     public function isBlockableBy(User $surgeon, User $instrumentist): bool

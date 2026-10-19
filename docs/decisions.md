@@ -13698,6 +13698,58 @@ refonte de L3 tant qu'aucun contournement actif n'est trouvé.
 3. **Vérification navigateur et tests sur une copie de production** (données réelles :
    incompatibilités, conflits, alertes) obligatoires avant tout déploiement.
 
+### Ajustement du 2026-10-18 — les personnes bloquées restent visibles dans les recherches
+
+Demandé par le métier avant la fusion. Les règles d'incompatibilité ci-dessus sont inchangées :
+seul l'affichage des recherches change, et le défaut de l'aperçu V2 relevé à la recette est
+corrigé.
+
+- **Recherches.** Un instrumentiste bloqué ne disparaît plus des résultats : recherche paginée
+  du manager (`GET /api/incompatibilities/candidates`, fiches chirurgien et instrumentiste) et
+  recherche du chirurgien (`GET /api/me/blockable-instrumentists`) le renvoient avec
+  `blocked: true` et l'incompatibilité active (`incompatibilityId`). Il est affiché grisé avec la
+  mention texte « Bloqué » (libellé accessible, pas seulement la couleur) et n'est jamais
+  proposé à une deuxième création : chez le chirurgien, l'option n'est pas sélectionnable ; chez
+  le manager, la choisir affiche le blocage (origine, date, auteur) et l'action « Lever le
+  blocage » à la place d'« Ajouter ». Pagination côté serveur inchangée (au-delà de 500 comptes).
+  Après un ajout ou une levée, le champ de recherche et la sélection sont réinitialisés.
+- **Contextes d'affectation (manager).** Le motif d'éligibilité `SURGEON_INCOMPATIBILITY` est
+  libellé « Bloqué par le chirurgien » dans tous les sélecteurs manager (planning vivant,
+  éditeur V2, réaffectation, attribution directe), où la personne reste listée, grisée et non
+  sélectionnable tant que l'incompatibilité est active. Dans l'éditeur V2, aucune option n'est
+  sélectionnable tant que le roster du créneau n'est pas chargé, et les « libérés disponibles »
+  sont filtrés par ce roster. Le libellé est le même quelle que soit l'origine de
+  l'incompatibilité (chirurgien ou manager).
+- **Planning V2.** L'aperçu lit une fois les paires incompatibles des chirurgiens des postes
+  (une requête constante de plus : 6 pour un site, 7 pour un groupe). Une ligne dont
+  l'instrumentiste est incompatible avec le chirurgien est `CONFLICT` avec
+  `blockedReason = SURGEON_INCOMPATIBILITY`, affichée « Bloqué — instrumentiste incompatible »,
+  jamais « OK » ; elle garde l'instrumentiste du poste pour rester identifiable et ne lui
+  réserve pas le créneau. La seconde passe « instrumentistes libérés » ne propose jamais une
+  personne incompatible. La génération applique toujours `guardInstrumentist()` : mission créée
+  sans instrumentiste, refus listé dans `rejectedAssignments` — exactement les lignes bloquées de
+  l'aperçu. L'onglet Postes signale le poste (`instrumentistBlocked`) ; le manager le corrige en
+  changeant ou retirant l'instrumentiste (le garder reste refusé, 422). L'empreinte d'aperçu
+  (`previewVersion`) n'inclut pas les incompatibilités : un blocage créé entre l'aperçu et la
+  génération est rattrapé par `guardInstrumentist()`.
+- **Confidentialité.** Inchangée : ces informations ne sont servies qu'au manager et au
+  chirurgien concerné ; toutes les routes qui les exposent répondent 403 à un instrumentiste,
+  et un claim refusé pour ce motif reste `MISSION_UNAVAILABLE`.
+- **Tests.** `IncompatibilityCandidatesSearchTest` (520 instrumentistes, personne bloquée en
+  page 11 avec son incompatibilité, recherche, levée, droits et confidentialité),
+  `SurgeonInstrumentistIncompatibilityFunctionalTest` (recherche du chirurgien),
+  `PlanningV2IncompatiblePostTest` (aperçu, postes, génération et correction du poste sur base
+  réelle), `PlanningGeneratorServiceV2Test` (ligne bloquée, pas de réservation, libérés, mission
+  publiée, budget de requêtes) ; frontend `Incompatibilities.test.tsx`,
+  `GeneratePlanningTab.test.tsx`, `generatePreviewGrouping.test.ts`, `PostCard.test.tsx`.
+- **Recette navigateur du 2026-10-19** (base isolée, données fictives) : deux corrections
+  d'affichage, sans changement de règle. (1) Formulaire de poste (Postes → Ajouter / Modifier) :
+  les instrumentistes bloqués pour le chirurgien choisi y sont aussi listés grisés « Bloqué par
+  le chirurgien » et non sélectionnables (lecture de `GET /api/surgeons/{id}/incompatibilities`,
+  rien de sélectionnable avant qu'elle soit connue) ; le serveur refuse toujours un tel poste
+  (422). (2) Aperçu V2 : le libellé « Bloqué — instrumentiste incompatible » passe à la ligne au
+  lieu de recouvrir le nom de l'instrumentiste. Test : `PostFormDialog.test.tsx`.
+
 ---
 
 ## D-153 — Correction de l'encodage par le manager depuis « Suivi des encodages » (2026-10-15)

@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Autocomplete, Box, Button, CircularProgress, Paper, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Autocomplete, Box, Button, Chip, CircularProgress, Paper, Stack, TextField, Typography } from "@mui/material";
 import dayjs from "dayjs";
 
 import {
@@ -10,6 +10,7 @@ import {
   fetchMyBlockedInstrumentists,
   liftIncompatibility,
   ORIGIN_LABELS,
+  type BlockStatus,
   type PersonOption,
 } from "../api/incompatibilities.api";
 import { useToast } from "../../../ui/toast/useToast";
@@ -19,13 +20,15 @@ const MY_BLOCKS_KEY = ["incompatibilities", "me"];
 /**
  * D-152 — « Instrumentistes bloqués » on the surgeon's profile: who, since when, why the block
  * matters, add one (active instrumentists of his sites + freelancers, filtered by the backend)
- * and lift the ones he created. Everything decided server-side (canLift, blockable list).
+ * and lift the ones he created. Those he already blocks stay in the search, greyed and marked
+ * « Bloqué », never selectable for a second block. Everything decided server-side (canLift,
+ * blockable list, blocked flag).
  */
 export default function BlockedInstrumentistsCard() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [search, setSearch] = React.useState("");
-  const [selected, setSelected] = React.useState<PersonOption | null>(null);
+  const [selected, setSelected] = React.useState<(PersonOption & BlockStatus) | null>(null);
 
   const blocks = useQuery({ queryKey: MY_BLOCKS_KEY, queryFn: fetchMyBlockedInstrumentists });
   const blockable = useQuery({
@@ -112,7 +115,23 @@ export default function BlockedInstrumentistsCard() {
           onInputChange={(_e, value) => setSearch(value)}
           getOptionLabel={(o) => o.name}
           isOptionEqualToValue={(a, b) => a.id === b.id}
+          getOptionDisabled={(o) => o.blocked}
           filterOptions={(x) => x}
+          renderOption={(props, o) => (
+            <li
+              {...props}
+              key={o.id}
+              aria-label={o.blocked ? `${o.name} — Bloqué` : o.name}
+              data-testid={`blockable-option-${o.id}`}
+            >
+              <Stack direction="row" alignItems="center" spacing={1} sx={{ width: "100%", opacity: o.blocked ? 0.5 : 1 }}>
+                <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }} noWrap>
+                  {o.name}
+                </Typography>
+                {o.blocked && <Chip size="small" label="Bloqué" />}
+              </Stack>
+            </li>
+          )}
           noOptionsText="Aucun instrumentiste"
           renderInput={(params) => <TextField {...params} label="Bloquer un instrumentiste" />}
         />

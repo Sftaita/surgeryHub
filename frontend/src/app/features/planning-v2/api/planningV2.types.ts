@@ -84,6 +84,8 @@ export interface SurgeonSchedulePostV2 {
   type: MissionType;
   period: ShiftPeriod;
   instrumentist: UserRefV2 | null;
+  /** D-152 — the default instrumentist has since become incompatible with the surgeon: correct the post. */
+  instrumentistBlocked?: boolean;
   startDate: string;
   endDate: string | null;
   active: boolean;
@@ -370,6 +372,13 @@ export interface PreviewLineV2 {
   /** D-125 — Modification: nominative request state of the mission (backend `targetedOffer`). */
   pendingOfferName?: string | null;
   offerDeclinedByName?: string | null;
+  /**
+   * D-152 — SURGEON_INCOMPATIBILITY: the line's instrumentist (the post's default) is
+   * incompatible with the surgeon. Status CONFLICT, shown « Bloqué — instrumentiste
+   * incompatible »; generate() never persists the pair. Cleared as soon as the manager
+   * picks someone else.
+   */
+  blockedReason?: "SURGEON_INCOMPATIBILITY" | null;
 }
 
 export interface PreviewSummaryV2 {

@@ -150,10 +150,24 @@ export function PostCard({ post, variant = "card", onEdit, onToggleActive, onMan
         <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0 }}>
           {post.instrumentist ? (
             <>
-              <PersonAvatar name={post.instrumentist.name ?? post.instrumentist.email} size="xs" />
-              <Typography noWrap sx={{ fontSize: 12.5, fontWeight: 600, color: planningV2Colors.textStrong }}>
-                {post.instrumentist.name ?? post.instrumentist.email}
-              </Typography>
+              <Stack
+                direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0, opacity: post.instrumentistBlocked ? 0.5 : 1 }}
+                aria-label={post.instrumentistBlocked ? `${post.instrumentist.name ?? post.instrumentist.email} — Bloqué, instrumentiste incompatible` : undefined}
+              >
+                <PersonAvatar name={post.instrumentist.name ?? post.instrumentist.email} size="xs" />
+                <Typography noWrap sx={{ fontSize: 12.5, fontWeight: 600, color: planningV2Colors.textStrong }}>
+                  {post.instrumentist.name ?? post.instrumentist.email}
+                </Typography>
+              </Stack>
+              {post.instrumentistBlocked && (
+                <Chip
+                  size="small"
+                  label="Bloqué — instrumentiste incompatible"
+                  data-testid={`post-${post.id}-blocked`}
+                  title="Cet instrumentiste est incompatible avec le chirurgien : la génération laisse ce poste à pourvoir. Modifiez le poste pour choisir un autre instrumentiste."
+                  sx={{ height: 20, fontSize: 10.5, fontWeight: 700, bgcolor: "#FBF2F1", color: "#A8554F", flex: "none" }}
+                />
+              )}
             </>
           ) : (
             <Chip

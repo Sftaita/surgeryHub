@@ -27,7 +27,9 @@ type Props = {
  * D-152 — manager view of the incompatibilities on a surgeon's or an instrumentist's file:
  * active ones with their origin, date and author, the future missions still affected to the
  * pair (conflicts to resolve — never modified silently), the history of lifted ones, and the
- * add / lift actions. All rights and conflicts come from the backend.
+ * add / lift actions. The search keeps those already blocked: greyed, marked « Bloqué »;
+ * picking one shows the active block and its lift action, never a second creation. All
+ * rights, block flags and conflicts come from the backend.
  */
 export default function IncompatibilitiesSection({ mode, personId }: Props) {
   const queryClient = useQueryClient();
@@ -62,11 +64,16 @@ export default function IncompatibilitiesSection({ mode, personId }: Props) {
     queryClient.invalidateQueries({ queryKey: ["planning-v2"] });
   };
 
+  const resetSearch = () => {
+    setOther(null);
+    setSearch("");
+  };
+
   const create = useMutation({
     mutationFn: (otherId: number) =>
       mode === "surgeon" ? createIncompatibility(personId, otherId) : createIncompatibility(otherId, personId),
     onSuccess: (created) => {
-      setOther(null);
+      resetSearch();
       refresh();
       const conflicts = created.conflicts?.length ?? 0;
       toast.success(
@@ -81,6 +88,7 @@ export default function IncompatibilitiesSection({ mode, personId }: Props) {
   const lift = useMutation({
     mutationFn: (id: number) => liftIncompatibility(id),
     onSuccess: () => {
+      resetSearch();
       refresh();
       toast.success("Incompatibilité levée.");
     },
@@ -91,7 +99,13 @@ export default function IncompatibilitiesSection({ mode, personId }: Props) {
   const active = items.filter((i) => i.active);
   const history = items.filter((i) => !i.active);
   const counterpart = (i: Incompatibility) => (mode === "surgeon" ? i.instrumentist.name : `Dr ${i.surgeon.name}`);
-  const blocked = new Set(active.map((i) => (mode === "surgeon" ? i.instrumentist.id : i.surgeon.id)));
+  const counterpartId = (i: Incompatibility) => (mode === "surgeon" ? i.instrumentist.id : i.surgeon.id);
+  // The backend flag, kept in step with the active list just refetched after an add / lift.
+  const activeByCounterpart = new Map(active.map((i) => [counterpartId(i), i]));
+  const isBlocked = (o: CandidateOption) => o.blocked || activeByCounterpart.has(o.id);
+  const selectedBlock = other && isBlocked(other)
+    ? (activeByCounterpart.get(other.id) ?? active.find((i) => i.id === other.incompatibilityId) ?? null)
+    : null;
 
   if (list.isLoading) return <CircularProgress size={20} />;
 
@@ -146,7 +160,7 @@ export default function IncompatibilitiesSection({ mode, personId }: Props) {
         <Autocomplete
           sx={{ flex: 1 }}
           size="small"
-          options={options.filter((o) => !blocked.has(o.id))}
+          options={options}
           value={other}
           onChange={(_e, value) => setOther(value)}
           inputValue={search}
@@ -157,11 +171,19 @@ export default function IncompatibilitiesSection({ mode, personId }: Props) {
           getOptionLabel={(o) => o.name}
           isOptionEqualToValue={(a, b) => a.id === b.id}
           renderOption={(props, o) => (
-            <li {...props} key={o.id}>
-              <Box>
-                <Typography variant="body2">{o.name}</Typography>
-                <Typography variant="caption" color="text.secondary">{o.email}</Typography>
-              </Box>
+            <li
+              {...props}
+              key={o.id}
+              aria-label={isBlocked(o) ? `${o.name} — Bloqué` : o.name}
+              data-testid={`incompatibility-candidate-${o.id}`}
+            >
+              <Stack direction="row" alignItems="center" spacing={1} sx={{ width: "100%", opacity: isBlocked(o) ? 0.5 : 1 }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2">{o.name}</Typography>
+                  <Typography variant="caption" color="text.secondary">{o.email}</Typography>
+                </Box>
+                {isBlocked(o) && <Chip size="small" label="Bloqué" />}
+              </Stack>
             </li>
           )}
           loading={candidates.isFetching}
@@ -177,10 +199,28 @@ export default function IncompatibilitiesSection({ mode, personId }: Props) {
             />
           )}
         />
-        <Button variant="outlined" disabled={!other || create.isPending} onClick={() => other && create.mutate(other.id)}>
-          Ajouter l'incompatibilité
-        </Button>
+        {!selectedBlock && (
+          <Button variant="outlined" disabled={!other || (other !== null && isBlocked(other)) || create.isPending} onClick={() => other && create.mutate(other.id)}>
+            Ajouter l'incompatibilité
+          </Button>
+        )}
       </Stack>
+
+      {other && selectedBlock && (
+        <Alert
+          severity="info"
+          data-testid="incompatibility-selected-blocked"
+          action={selectedBlock.canLift ? (
+            <Button color="inherit" size="small" onClick={() => lift.mutate(selectedBlock.id)} disabled={lift.isPending}>
+              Lever le blocage
+            </Button>
+          ) : undefined}
+        >
+          {other.name} est déjà bloqué·e : {ORIGIN_LABELS[selectedBlock.origin].toLowerCase()}, depuis le{" "}
+          {dayjs(selectedBlock.createdAt).format("DD/MM/YYYY")}
+          {selectedBlock.createdByName ? ` (${selectedBlock.createdByName})` : ""}.
+        </Alert>
+      )}
 
       {history.length > 0 && (
         <>

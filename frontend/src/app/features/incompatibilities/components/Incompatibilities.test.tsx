@@ -95,6 +95,31 @@ describe("D-152 — surgeon profile « Instrumentistes bloqués »", () => {
     await userEvent.click(within(screen.getByTestId("block-5")).getByRole("button", { name: "Débloquer" }));
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/incompatibilities/5/lift"));
   });
+
+  it("keeps an already-blocked instrumentist in his search, greyed, labelled « Bloqué » and not selectable", async () => {
+    apiGetMock.mockImplementation((url: string) => {
+      if (url === "/api/me/blocked-instrumentists") return Promise.resolve({ data: { items: [incompatibility()] } });
+      if (url === "/api/me/blockable-instrumentists") {
+        return Promise.resolve({ data: { items: [
+          { id: 7, name: "Iris Martin", blocked: true, incompatibilityId: 5 },
+          { id: 9, name: "Sacha Libre", blocked: false, incompatibilityId: null },
+        ] } });
+      }
+      return Promise.reject(new Error(url));
+    });
+    renderWith(<BlockedInstrumentistsCard />);
+
+    await userEvent.click(await screen.findByLabelText("Bloquer un instrumentiste"));
+    const blocked = await screen.findByRole("option", { name: "Iris Martin — Bloqué" });
+    expect(blocked).toHaveAttribute("aria-disabled", "true");
+    expect(within(blocked).getByText("Bloqué")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Sacha Libre" })).not.toHaveAttribute("aria-disabled", "true");
+
+    // A disabled option cannot even be clicked (MUI: pointer-events none) — the block button stays off.
+    await expect(userEvent.click(blocked)).rejects.toThrow(/pointer-events: none/);
+    expect(screen.getByRole("button", { name: "Bloquer" })).toBeDisabled();
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("D-152 — manager files « Incompatibilités »", () => {
@@ -136,6 +161,57 @@ describe("D-152 — manager files « Incompatibilités »", () => {
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/incompatibilities", { surgeonId: 2, instrumentistId: 7 }));
     expect(toastSuccess).toHaveBeenCalledWith("Incompatibilité créée.");
     expect(apiGetMock).toHaveBeenCalledWith("/api/incompatibilities/candidates", { params: { instrumentistId: 7, q: "", page: 1, limit: 20 } });
+  });
+
+  it("clears the search field and the selection after an incompatibility is added", async () => {
+    apiGetMock.mockImplementation((url: string) => {
+      if (url === "/api/surgeons/2/incompatibilities") return Promise.resolve({ data: { items: [] } });
+      if (url === "/api/incompatibilities/candidates") {
+        return Promise.resolve({ data: { items: [{ id: 7, name: "Iris Martin", email: "i@x", blocked: false, incompatibilityId: null }], page: 1, limit: 20, total: 1, hasMore: false } });
+      }
+      return Promise.reject(new Error(url));
+    });
+    apiPostMock.mockResolvedValue({ data: incompatibility({ origin: "MANAGER", conflicts: [] }) });
+    renderWith(<IncompatibilitiesSection mode="surgeon" personId={2} />);
+
+    const input = await screen.findByLabelText("Instrumentiste incompatible");
+    await userEvent.type(input, "iris");
+    await userEvent.click(await screen.findByRole("option", { name: "Iris Martin" }));
+    expect(input).toHaveValue("Iris Martin");
+    await userEvent.click(screen.getByRole("button", { name: "Ajouter l'incompatibilité" }));
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/incompatibilities", { surgeonId: 2, instrumentistId: 7 }));
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(screen.getByRole("button", { name: "Ajouter l'incompatibilité" })).toBeDisabled();
+  });
+
+  it("keeps a blocked person searchable, shows the block and offers to lift it instead of a second creation", async () => {
+    apiGetMock.mockImplementation((url: string) => {
+      if (url === "/api/surgeons/2/incompatibilities") return Promise.resolve({ data: { items: [incompatibility({ origin: "MANAGER", createdByName: "Manon", conflicts: [] })] } });
+      if (url === "/api/incompatibilities/candidates") {
+        return Promise.resolve({ data: { items: [
+          { id: 7, name: "Iris Martin", email: "i@x", blocked: true, incompatibilityId: 5 },
+          { id: 9, name: "Sacha Libre", email: "s@x", blocked: false, incompatibilityId: null },
+        ], page: 1, limit: 20, total: 2, hasMore: false } });
+      }
+      return Promise.reject(new Error(url));
+    });
+    apiPostMock.mockResolvedValue({ data: incompatibility({ active: false }) });
+    renderWith(<IncompatibilitiesSection mode="surgeon" personId={2} />);
+
+    await userEvent.click(await screen.findByLabelText("Instrumentiste incompatible"));
+    const blocked = await screen.findByRole("option", { name: "Iris Martin — Bloqué" });
+    expect(within(blocked).getByText("Bloqué")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Sacha Libre" })).toBeInTheDocument();
+
+    await userEvent.click(blocked);
+    const panel = await screen.findByTestId("incompatibility-selected-blocked");
+    expect(panel).toHaveTextContent("Iris Martin est déjà bloqué·e : décision manager, depuis le 01/10/2026 (Manon).");
+    expect(screen.queryByRole("button", { name: "Ajouter l'incompatibilité" })).not.toBeInTheDocument();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "Lever le blocage" }));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/incompatibilities/5/lift"));
+    expect(apiPostMock).not.toHaveBeenCalledWith("/api/incompatibilities", expect.anything());
   });
 
   it("searches the candidates on the server and loads the next page on scroll, never the whole account list", async () => {

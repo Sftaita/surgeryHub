@@ -13,7 +13,8 @@ export const ELIGIBILITY_REASON_LABELS: Record<EligibilityReason, string> = {
   // D-151 — manager-facing pickers only (the instrumentist never sees this reason).
   REFUSED_FOR_MISSION: "Refusée par le chirurgien pour cette mission",
   MISSION_ALREADY_STARTED: "Mission déjà commencée",
-  SURGEON_INCOMPATIBILITY: "Incompatible avec le chirurgien",
+  // D-152 — manager-facing: shown greyed, never selectable, as long as the block is active.
+  SURGEON_INCOMPATIBILITY: "Bloqué par le chirurgien",
 };
 
 export function eligibilityReasonLabel(reason: EligibilityReason | string): string {

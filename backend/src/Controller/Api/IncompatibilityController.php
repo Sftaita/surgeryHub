@@ -48,9 +48,18 @@ final class IncompatibilityController extends AbstractController
     {
         $this->denyAccessUnlessGranted(SurgeonInstrumentistIncompatibilityVoter::SELF_MANAGE);
 
+        // D-152 — those he already blocks stay listed, flagged (shown « Bloqué », not blockable twice).
+        $found = $this->incompatibilities->blockableInstrumentists($user, (string) $request->query->get('q', ''));
+        $blocks = $this->incompatibilities->activeBlocksAmong($user, true, $found);
+
         return $this->json(['items' => array_map(
-            static fn (User $u) => ['id' => $u->getId(), 'name' => SurgeonInstrumentistIncompatibilityService::name($u)],
-            $this->incompatibilities->blockableInstrumentists($user, (string) $request->query->get('q', '')),
+            static fn (User $u) => [
+                'id'                => $u->getId(),
+                'name'              => SurgeonInstrumentistIncompatibilityService::name($u),
+                'blocked'           => isset($blocks[$u->getId()]),
+                'incompatibilityId' => isset($blocks[$u->getId()]) ? $blocks[$u->getId()]->getId() : null,
+            ],
+            $found,
         )]);
     }
 
@@ -88,9 +97,10 @@ final class IncompatibilityController extends AbstractController
     }
 
     /**
-     * D-152 (réserve 1) — paginated server-side search of whom a manager may declare
-     * incompatible: `surgeonId` (→ instrumentists) or `instrumentistId` (→ surgeons), `q`,
-     * `page` (≥ 1), `limit` (1–50, default 20).
+     * D-152 (réserve 1) — paginated server-side search of a manager's incompatibility
+     * counterparts: `surgeonId` (→ instrumentists) or `instrumentistId` (→ surgeons), `q`,
+     * `page` (≥ 1), `limit` (1–50, default 20). Each item says whether the pair is already
+     * blocked (`blocked`, `incompatibilityId`): never created twice, lifted from there.
      */
     #[Route('/api/incompatibilities/candidates', name: 'api_incompatibilities_candidates', methods: ['GET'])]
     public function candidates(Request $request): JsonResponse
@@ -115,12 +125,15 @@ final class IncompatibilityController extends AbstractController
         }
 
         $result = $this->incompatibilities->managerCandidates($person, $personIsSurgeon, (string) $request->query->get('q', ''), $page, $limit);
+        $blocks = $this->incompatibilities->activeBlocksAmong($person, $personIsSurgeon, $result['items']);
 
         return $this->json([
             'items'   => array_map(static fn (User $u) => [
-                'id'    => $u->getId(),
-                'name'  => SurgeonInstrumentistIncompatibilityService::name($u),
-                'email' => $u->getEmail(),
+                'id'                => $u->getId(),
+                'name'              => SurgeonInstrumentistIncompatibilityService::name($u),
+                'email'             => $u->getEmail(),
+                'blocked'           => isset($blocks[$u->getId()]),
+                'incompatibilityId' => isset($blocks[$u->getId()]) ? $blocks[$u->getId()]->getId() : null,
             ], $result['items']),
             'page'    => $page,
             'limit'   => $limit,

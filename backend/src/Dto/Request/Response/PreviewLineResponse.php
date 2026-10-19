@@ -30,6 +30,11 @@ final class PreviewLineResponse
          * line as the existing reality and locks it. Additive field, null otherwise.
          */
         public ?string $existingMissionStatus = null,
+        /**
+         * D-152 — SURGEON_INCOMPATIBILITY when the line's instrumentist is incompatible with its
+         * surgeon (status CONFLICT, « Bloqué — instrumentiste incompatible »). Additive, null otherwise.
+         */
+        public ?string $blockedReason = null,
     ) {
     }
 
@@ -56,6 +61,7 @@ final class PreviewLineResponse
             surgeonPhotoPath: $line['surgeonPhotoPath'] ?? null,
             instrumentistPhotoPath: $line['instrumentistPhotoPath'] ?? null,
             existingMissionStatus: $line['existingMissionStatus'] ?? null,
+            blockedReason: $line['blockedReason'] ?? null,
         );
     }
 }

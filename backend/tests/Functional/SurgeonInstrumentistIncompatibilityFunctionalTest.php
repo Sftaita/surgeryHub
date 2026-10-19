@@ -248,7 +248,10 @@ final class SurgeonInstrumentistIncompatibilityFunctionalTest extends WebTestCas
         self::assertSame([$this->iris->getId()], array_column(array_column($mine, 'instrumentist'), 'id'));
         self::assertSame('SURGEON', $mine[0]['origin']);
         self::assertTrue($mine[0]['canLift']);
-        self::assertNotContains($this->iris->getId(), array_column($this->json($this->get($this->surgeon, '/api/me/blockable-instrumentists'))['items'], 'id'));
+        // Still found by the search, flagged as blocked (never offered a second block).
+        $listed = array_column($this->json($this->get($this->surgeon, '/api/me/blockable-instrumentists'))['items'], null, 'id');
+        self::assertTrue($listed[$this->iris->getId()]['blocked']);
+        self::assertSame($mine[0]['id'], $listed[$this->iris->getId()]['incompatibilityId']);
 
         $refused = $this->post($this->surgeon, '/api/me/blocked-instrumentists', ['instrumentistId' => $this->stranger->getId()]);
         self::assertSame(422, $refused->getStatusCode());

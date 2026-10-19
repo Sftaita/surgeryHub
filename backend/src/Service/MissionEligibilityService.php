@@ -211,6 +211,31 @@ class MissionEligibilityService
     }
 
     /**
+     * D-152 — every active incompatible pair of these surgeons, in one query, as
+     * "surgeonId-instrumentistId" keys (the table's active_pair_key). For bulk readers that
+     * must not query per line (planning V2 preview, recurring posts list).
+     *
+     * @param int[] $surgeonIds
+     * @return array<string, true>
+     */
+    public function activeIncompatiblePairs(array $surgeonIds): array
+    {
+        $surgeonIds = array_values(array_unique(array_map('intval', array_filter($surgeonIds))));
+        if ($surgeonIds === []) {
+            return [];
+        }
+
+        $keys = $this->em->getConnection()->fetchFirstColumn(
+            'SELECT CONCAT(surgeon_id, \'-\', instrumentist_id) FROM surgeon_instrumentist_incompatibility
+              WHERE lifted_at IS NULL AND surgeon_id IN (?)',
+            [$surgeonIds],
+            [ArrayParameterType::INTEGER],
+        );
+
+        return array_fill_keys(array_map('strval', $keys), true);
+    }
+
+    /**
      * D-152 — same question as isIncompatible(), as a LOCKING read (FOR SHARE) on the
      * (surgeon, instrumentist) index range, for callers inside a transaction that are about to
      * affect this instrumentist (claim, assignments). A concurrent creation of the

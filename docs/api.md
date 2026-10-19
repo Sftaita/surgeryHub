@@ -425,11 +425,11 @@ affectées à la paire.
 | Méthode et route | AuthZ | Effet |
 |---|---|---|
 | `GET /api/me/blocked-instrumentists` | `ROLE_SURGEON` | ses incompatibilités actives |
-| `GET /api/me/blockable-instrumentists?q=` | `ROLE_SURGEON` | instrumentistes qu'il peut bloquer : actifs de ses sites + freelances, non déjà bloqués |
+| `GET /api/me/blockable-instrumentists?q=` | `ROLE_SURGEON` | instrumentistes qu'il peut bloquer : actifs de ses sites + freelances ; ceux qu'il bloque déjà restent listés → `{items: [{id, name, blocked, incompatibilityId}]}` (affichés « Bloqué », non sélectionnables) |
 | `POST /api/me/blocked-instrumentists` `{instrumentistId}` | `ROLE_SURGEON` | crée (origine `SURGEON`) → 201 ; `422 INSTRUMENTIST_NOT_BLOCKABLE` hors périmètre ; `409 INCOMPATIBILITY_ALREADY_ACTIVE` |
 | `GET /api/surgeons/{id}/incompatibilities` | manager | actives + historique, avec conflits |
 | `GET /api/instrumentists/{id}/incompatibilities` | manager | idem côté instrumentiste |
-| `GET /api/incompatibilities/candidates?surgeonId=\|instrumentistId=&q=&page=&limit=` | manager | recherche paginée côté serveur des personnes déclarables incompatibles : instrumentistes (fiche chirurgien) ou chirurgiens (fiche instrumentiste) actifs, jamais une personne déjà incompatible ; chaque terme de `q` sur prénom, nom ou e-mail ; `limit` 1–50 (défaut 20) → `{items: [{id, name, email}], page, limit, total, hasMore}` ; un seul des deux identifiants (sinon 422), personne inconnue 404, mauvais rôle 422 |
+| `GET /api/incompatibilities/candidates?surgeonId=\|instrumentistId=&q=&page=&limit=` | manager | recherche paginée côté serveur des contreparties : instrumentistes (fiche chirurgien) ou chirurgiens (fiche instrumentiste) actifs, y compris ceux déjà incompatibles (`blocked: true`, `incompatibilityId` de l'incompatibilité active à lever — jamais une deuxième création) ; chaque terme de `q` sur prénom, nom ou e-mail ; `limit` 1–50 (défaut 20) → `{items: [{id, name, email, blocked, incompatibilityId}], page, limit, total, hasMore}` ; un seul des deux identifiants (sinon 422), personne inconnue 404, mauvais rôle 422 |
 | `POST /api/incompatibilities` `{surgeonId, instrumentistId}` | manager | crée (origine `MANAGER`) → 201 ; `422 INCOMPATIBILITY_INVALID_PAIR` |
 | `POST /api/incompatibilities/{id}/lift` | manager, ou le chirurgien pour ses propres blocages | lève (une fois, `409 INCOMPATIBILITY_ALREADY_LIFTED`), ferme ses conflits ouverts |
 
@@ -8126,6 +8126,22 @@ DRAFT). La réponse gagne `createdMissionStatus`.
 mission préexistante reflétée, sinon `null`). Une mission préexistante **publiée** occupant le
 créneau d'un poste est montrée telle qu'elle est (son instrumentiste, ses heures,
 `COVERED`/`UNCOVERED`) — `generate()` ne la modifie jamais (R-01).
+
+### Preview V2 — champ additif `blockedReason` (D-152)
+
+`POST /api/planning/v2/preview` : `blockedReason` vaut `SURGEON_INCOMPATIBILITY` quand
+l'instrumentiste de la ligne (instrumentiste par défaut du poste, remplacement d'occurrence ou
+mission publiée existante) est incompatible avec le chirurgien ; la ligne est alors `CONFLICT`
+(« Bloqué — instrumentiste incompatible »), jamais `COVERED`, et garde `instrumentistId` pour que
+le poste reste identifiable. `generate()` ne persiste jamais la paire (mission sans
+instrumentiste, motif `SURGEON_INCOMPATIBILITY` dans `rejectedAssignments`). La seconde passe
+« instrumentistes libérés » ne propose jamais une personne incompatible avec le chirurgien de la
+ligne. `null` sinon.
+
+`GET /api/planning/surgeon-posts` (et `GET/POST/PATCH` d'un poste) : champ additif
+`instrumentistBlocked` (booléen) — l'instrumentiste par défaut du poste est devenu incompatible
+avec son chirurgien ; le manager corrige le poste (`PATCH` avec un autre instrumentiste ou
+aucun ; garder l'instrumentiste incompatible → 422).
 
 ## Intégration MedVue — liaison des comptes et lecture des congés (D-140)
 

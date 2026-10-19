@@ -28,6 +28,12 @@ export type Incompatibility = {
 
 export type PersonOption = { id: number; name: string };
 
+/**
+ * D-152 — a search result: those already blocked stay listed (`blocked`, with the active
+ * incompatibility to lift), shown « Bloqué » and never offered a second block.
+ */
+export type BlockStatus = { blocked: boolean; incompatibilityId: number | null };
+
 export const ORIGIN_LABELS: Record<IncompatibilityOrigin, string> = {
   SURGEON_REFUSAL: "Refus durable du chirurgien",
   SURGEON: "Blocage par le chirurgien",
@@ -41,9 +47,9 @@ export async function fetchMyBlockedInstrumentists(): Promise<Incompatibility[]>
   return (res.data?.items ?? []) as Incompatibility[];
 }
 
-export async function fetchBlockableInstrumentists(q: string): Promise<PersonOption[]> {
+export async function fetchBlockableInstrumentists(q: string): Promise<Array<PersonOption & BlockStatus>> {
   const res = await apiClient.get("/api/me/blockable-instrumentists", { params: { q } });
-  return (res.data?.items ?? []) as PersonOption[];
+  return (res.data?.items ?? []) as Array<PersonOption & BlockStatus>;
 }
 
 export async function blockInstrumentist(instrumentistId: number): Promise<Incompatibility> {
@@ -58,7 +64,7 @@ export async function fetchIncompatibilitiesOf(mode: "surgeon" | "instrumentist"
   return (res.data?.items ?? []) as Incompatibility[];
 }
 
-export type CandidateOption = PersonOption & { email: string };
+export type CandidateOption = PersonOption & BlockStatus & { email: string };
 
 export type CandidatePage = {
   items: CandidateOption[];
@@ -69,8 +75,8 @@ export type CandidatePage = {
 };
 
 /**
- * D-152 (réserve 1) — whom the manager may declare incompatible with this file's person,
- * searched and paged by the backend (never the whole list of accounts in the browser).
+ * D-152 (réserve 1) — the counterparts of this file's person, searched and paged by the
+ * backend (never the whole list of accounts in the browser), those already blocked included.
  */
 export async function searchIncompatibilityCandidates(
   mode: "surgeon" | "instrumentist",

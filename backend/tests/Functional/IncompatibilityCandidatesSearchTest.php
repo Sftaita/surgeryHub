@@ -14,9 +14,9 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 /**
  * D-152 (réserve 1) — `GET /api/incompatibilities/candidates`: the manager's incompatibility
- * picker searches and pages on the server, beyond 500 accounts (520 instrumentists here), with
- * the population create() accepts from a manager (active, right role, not already
- * incompatible), and the incompatibility rights (MANAGE).
+ * picker searches and pages on the server, beyond 500 accounts (520 instrumentists here), over
+ * active accounts of the right role; those already incompatible stay listed, flagged `blocked`
+ * with the incompatibility to lift; and the incompatibility rights (MANAGE).
  */
 final class IncompatibilityCandidatesSearchTest extends WebTestCase
 {
@@ -35,6 +35,7 @@ final class IncompatibilityCandidatesSearchTest extends WebTestCase
     private User $blocked;
     private User $inactive;
     private User $instrumentistFile;
+    private int $incompatibilityId;
 
     protected function setUp(): void
     {
@@ -62,6 +63,7 @@ final class IncompatibilityCandidatesSearchTest extends WebTestCase
         $incompatibility = new SurgeonInstrumentistIncompatibility($this->surgeon, $this->blocked, IncompatibilityOrigin::MANAGER, $this->manager, new \DateTimeImmutable());
         $this->em->persist($incompatibility);
         $this->em->flush();
+        $this->incompatibilityId = (int) $incompatibility->getId();
     }
 
     protected function tearDown(): void
@@ -69,6 +71,7 @@ final class IncompatibilityCandidatesSearchTest extends WebTestCase
         $this->em->clear();
         $conn = $this->em->getConnection();
         $conn->executeStatement('DELETE FROM surgeon_instrumentist_incompatibility WHERE surgeon_id IN (SELECT id FROM `user` WHERE lastname LIKE ?)', [$this->tag . '%']);
+        $conn->executeStatement('DELETE FROM audit_event WHERE actor_id = ?', [$this->manager->getId()]);
         $conn->executeStatement('DELETE FROM refresh_tokens WHERE username IN (SELECT email FROM `user` WHERE lastname LIKE ? OR id = ?)', [$this->tag . '%', $this->manager->getId()]);
         $conn->executeStatement('DELETE FROM `user` WHERE lastname LIKE ? OR id = ?', [$this->tag . '%', $this->manager->getId()]);
         parent::tearDown();
@@ -97,14 +100,14 @@ final class IncompatibilityCandidatesSearchTest extends WebTestCase
         return $u;
     }
 
-    private function get(User $as, string $uri): Response
+    private function get(User $as, string $uri, string $method = 'GET'): Response
     {
         $this->client->request('POST', '/api/auth/login',
             server: ['CONTENT_TYPE' => 'application/json'],
             content: json_encode(['email' => $as->getEmail(), 'password' => self::PASSWORD]),
         );
         $token = json_decode((string) $this->client->getResponse()->getContent(), true)['token'] ?? '';
-        $this->client->request('GET', $uri, server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+        $this->client->request($method, $uri, server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
 
         return $this->client->getResponse();
     }
@@ -122,15 +125,22 @@ final class IncompatibilityCandidatesSearchTest extends WebTestCase
         $base = '/api/incompatibilities/candidates?surgeonId=' . $this->surgeon->getId() . '&q=' . $this->tag;
 
         $first = $this->data($this->get($this->manager, $base . '&limit=50'));
-        self::assertSame(self::COUNT + 1, $first['total'], '520 + the instrumentist of the other file; blocked and inactive excluded');
+        self::assertSame(self::COUNT + 2, $first['total'], '520 + the blocked one + the instrumentist of the other file; inactive excluded');
         self::assertCount(50, $first['items'], 'one page only, never the whole list');
         self::assertTrue($first['hasMore']);
         self::assertSame('Inst ' . $this->tag . '-001', $first['items'][0]['name']);
+        self::assertSame([false], array_values(array_unique(array_column($first['items'], 'blocked'))));
 
-        // Page 11 (offset 500): accounts beyond the old 500 limit are reachable.
+        // Page 11 (offset 500): accounts beyond the old 500 limit are reachable, the blocked one
+        // among them — flagged, with the incompatibility to lift, never hidden.
         $page11 = $this->data($this->get($this->manager, $base . '&limit=50&page=11'));
         self::assertSame(['Inst ' . $this->tag . '-501', 'Inst ' . $this->tag . '-520'], [$page11['items'][0]['name'], $page11['items'][19]['name']]);
-        self::assertSame('Iris ' . $this->tag . '-zz-fiche', $page11['items'][20]['name']);
+        self::assertSame('Bloque ' . $this->tag . '-zz-bloque', $page11['items'][20]['name']);
+        self::assertTrue($page11['items'][20]['blocked']);
+        self::assertSame($this->incompatibilityId, $page11['items'][20]['incompatibilityId']);
+        self::assertSame('Iris ' . $this->tag . '-zz-fiche', $page11['items'][21]['name']);
+        self::assertFalse($page11['items'][21]['blocked']);
+        self::assertNull($page11['items'][21]['incompatibilityId']);
         self::assertFalse($page11['hasMore']);
 
         // Search narrows on the server: the 517th account found directly, several terms combined.
@@ -138,17 +148,26 @@ final class IncompatibilityCandidatesSearchTest extends WebTestCase
         self::assertSame(1, $one['total']);
         self::assertSame('Inst ' . $this->tag . '-517', $one['items'][0]['name']);
 
-        $names = array_column($this->data($this->get($this->manager, $base . '&q=' . urlencode($this->tag . '-zz') . '&limit=50'))['items'], 'name');
-        self::assertNotContains('Bloque ' . $this->tag . '-zz-bloque', $names, 'already incompatible with this surgeon');
-        self::assertNotContains('Inactif ' . $this->tag . '-zz-inactif', $names);
+        $found = array_column($this->data($this->get($this->manager, $base . '&q=' . urlencode($this->tag . '-zz') . '&limit=50'))['items'], 'blocked', 'name');
+        self::assertSame(['Bloque ' . $this->tag . '-zz-bloque' => true, 'Iris ' . $this->tag . '-zz-fiche' => false], $found, 'the blocked one stays searchable; inactive excluded');
         self::assertSame(20, $this->data($this->get($this->manager, $base))['limit'], 'default page size');
+
+        // Lifted: still listed, no longer blocked.
+        $this->data($this->get($this->manager, '/api/incompatibilities/' . $this->incompatibilityId . '/lift', 'POST'));
+        $after = array_column($this->data($this->get($this->manager, $base . '&q=' . urlencode($this->tag . '-zz-bloque')))['items'], null, 'name');
+        self::assertFalse($after['Bloque ' . $this->tag . '-zz-bloque']['blocked']);
+        self::assertNull($after['Bloque ' . $this->tag . '-zz-bloque']['incompatibilityId']);
     }
 
     public function test_instrumentist_file_searches_surgeons(): void
     {
         $data = $this->data($this->get($this->manager, '/api/incompatibilities/candidates?instrumentistId=' . $this->blocked->getId() . '&q=' . $this->tag));
 
-        self::assertSame(['Sarah ' . $this->tag . '-chirurgienne'], array_column($data['items'], 'name'), 'surgeons only, the one already incompatible excluded');
+        self::assertSame(
+            ['Simon ' . $this->tag . '-chirurgien' => true, 'Sarah ' . $this->tag . '-chirurgienne' => false],
+            array_column($data['items'], 'blocked', 'name'),
+            'surgeons only; the one already incompatible stays listed, flagged',
+        );
     }
 
     public function test_rights_and_validation(): void
@@ -158,6 +177,10 @@ final class IncompatibilityCandidatesSearchTest extends WebTestCase
         self::assertSame(401, $this->client->getResponse()->getStatusCode());
         self::assertSame(403, $this->get($this->surgeon, $uri)->getStatusCode(), 'a surgeon uses /api/me/blockable-instrumentists');
         self::assertSame(403, $this->get($this->instrumentistFile, $uri)->getStatusCode(), 'never visible to an instrumentist');
+        // Confidentiality: no route tells an instrumentist who blocked her (or that anyone did).
+        foreach (['/api/me/blockable-instrumentists', '/api/me/blocked-instrumentists', '/api/instrumentists/' . $this->instrumentistFile->getId() . '/incompatibilities'] as $private) {
+            self::assertSame(403, $this->get($this->instrumentistFile, $private)->getStatusCode(), $private);
+        }
 
         foreach ([
             '/api/incompatibilities/candidates' => 422,

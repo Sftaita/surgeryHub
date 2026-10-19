@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Box, Button, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, Stack, TextField, Typography } from "@mui/material";
 import CloseOutlinedIcon from "@mui/icons-material/CloseOutlined";
 import DeleteOutlineOutlinedIcon from "@mui/icons-material/DeleteOutlineOutlined";
 import UnpublishedOutlinedIcon from "@mui/icons-material/UnpublishedOutlined";
@@ -233,6 +233,13 @@ export function Inspector({
                   <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
                     Vérification des disponibilités…
                   </Typography>
+                )}
+                {line.blockedReason && (
+                  <Alert severity="error" sx={{ mt: 1, py: 0, fontSize: 12 }} data-testid="inspector-blocked">
+                    Bloqué — instrumentiste incompatible : {line.instrumentistName} ne sera pas affecté·e à
+                    cette mission. Choisissez un autre instrumentiste, ou corrigez le poste récurrent dans
+                    l'onglet Postes.
+                  </Alert>
                 )}
               </Box>
             )}

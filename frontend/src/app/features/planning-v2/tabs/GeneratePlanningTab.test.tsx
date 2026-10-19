@@ -259,7 +259,9 @@ describe("GeneratePlanningTab — réaffectation d'instrumentiste (Preview Edito
     const popoverLabel = await screen.findByText("Instrumentiste");
     const input = popoverLabel.closest("div")!.querySelector("input")!;
     await user.click(input);
-    await user.click(await screen.findByText("Diane Lefebvre"));
+    // D-152 — options stay disabled until the backend roster of this slot is known.
+    await waitFor(() => expect(screen.getByRole("option", { name: /Diane Lefebvre/ })).not.toHaveAttribute("aria-disabled", "true"));
+    await user.click(screen.getByRole("option", { name: /Diane Lefebvre/ }));
 
     // The line now shows the new instrumentist and an "Édité" badge instead of the popover trigger text.
     await waitFor(() => expect(screen.queryByText("À pourvoir")).not.toBeInTheDocument());
@@ -273,6 +275,49 @@ describe("GeneratePlanningTab — réaffectation d'instrumentiste (Preview Edito
     expect(call.previewVersion).toBe("v-1");
     expect(call.lines).toHaveLength(1);
     expect(call.lines[0]).toMatchObject({ instrumentistId: 9, instrumentistName: "Diane Lefebvre", status: "COVERED" });
+  });
+
+  it("D-152 — un poste dont l'instrumentiste par défaut est incompatible s'affiche « Bloqué », jamais « OK », et se corrige", async () => {
+    const user = userEvent.setup();
+    const now = new Date();
+    const currentMonthDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const preview: PreviewResponseV2 = {
+      lines: [line({ date: currentMonthDate, status: "CONFLICT", blockedReason: "SURGEON_INCOMPATIBILITY", instrumentistId: 9, instrumentistName: "Diane Lefebvre" })],
+      summary: { total: 1, covered: 0, uncovered: 0, skipped: 0, conflict: 1, modified: 0 },
+      previewVersion: "v-1",
+      generatedAt: "2026-06-01T00:00:00Z",
+    };
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue(preview);
+    (planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      policy: "STRICT_ASSIGNMENT",
+      candidates: [
+        { id: 9, name: "Diane Lefebvre", email: "diane@test.com", eligible: false, selectable: false, reasons: ["SURGEON_INCOMPATIBILITY"], unavailability: null, conflict: null },
+        { id: 10, name: "Marc Petit", email: "marc@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+      ],
+    });
+
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+
+    expect(await screen.findByText("Bloqué — instrumentiste incompatible")).toBeInTheDocument();
+    expect(screen.getByLabelText("Diane Lefebvre — Bloqué, instrumentiste incompatible avec le chirurgien")).toBeInTheDocument();
+    const okBefore = screen.getAllByText("OK").length; // the « OK » filter chip only — never the line
+
+    // The inspector explains it; the blocked person is greyed « Bloqué par le chirurgien », not selectable.
+    await user.click(screen.getByText("Diane Lefebvre"));
+    expect(await screen.findByTestId("inspector-blocked")).toHaveTextContent("Bloqué — instrumentiste incompatible");
+    const popoverLabel = await screen.findByText("Instrumentiste");
+    await user.click(popoverLabel.closest("div")!.querySelector("input")!);
+    await waitFor(() => expect(screen.getByRole("option", { name: /Marc Petit/ })).not.toHaveAttribute("aria-disabled", "true"));
+    const blockedOption = screen.getByRole("option", { name: /Diane Lefebvre/ });
+    expect(blockedOption).toHaveAttribute("aria-disabled", "true");
+    expect(within(blockedOption).getByText("Bloqué par le chirurgien")).toBeInTheDocument();
+
+    // Another instrumentist: the line is no longer blocked.
+    await user.click(screen.getByRole("option", { name: /Marc Petit/ }));
+    await waitFor(() => expect(screen.queryByText("Bloqué — instrumentiste incompatible")).not.toBeInTheDocument());
+    expect(screen.getAllByText("OK")).toHaveLength(okBefore + 1);
   });
 
   it("D-101 — signale explicitement au manager une affectation refusée par le backend (jamais silencieuse)", async () => {

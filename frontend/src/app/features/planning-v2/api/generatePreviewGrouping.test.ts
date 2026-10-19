@@ -196,6 +196,14 @@ describe("getFreedInstrumentists()", () => {
     expect(getFreedInstrumentists([freedLine, busyLine, target], target)).toEqual([]);
   });
 
+  it("D-152 — a blocked line (instrumentist incompatible with its surgeon) never holds its instrumentist", () => {
+    const freedLine = line({ date: "2026-06-01", postId: 1, status: "SKIPPED", instrumentistId: 7, instrumentistName: "Diane", startTime: "08:00", endTime: "13:00" });
+    const blockedLine = line({ date: "2026-06-01", postId: 3, status: "CONFLICT", blockedReason: "SURGEON_INCOMPATIBILITY", instrumentistId: 7, startTime: "09:00", endTime: "11:00" });
+    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED", startTime: "10:00", endTime: "12:00" });
+
+    expect(getFreedInstrumentists([freedLine, blockedLine, target], target).map((f) => f.id)).toEqual([7]);
+  });
+
   it("ignores freed instrumentists from a different day", () => {
     const freedLine = line({ date: "2026-06-02", postId: 1, status: "SKIPPED", instrumentistId: 7, instrumentistName: "Diane", startTime: "08:00", endTime: "13:00" });
     const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED", startTime: "08:00", endTime: "13:00" });

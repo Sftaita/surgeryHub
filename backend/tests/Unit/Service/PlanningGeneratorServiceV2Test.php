@@ -36,6 +36,9 @@ class PlanningGeneratorServiceV2Test extends TestCase
     private array $shiftConfigRows   = [];
     private array $groupMembershipRows = [];
     private array $occurrenceExceptions = [];
+    /** D-152 — active incompatible pairs returned by MissionEligibilityService::activeIncompatiblePairs(). */
+    private array $blockedPairs = [];
+    private array $blockedPairsCalls = [];
 
     private array $queryCounts = [];
 
@@ -50,6 +53,8 @@ class PlanningGeneratorServiceV2Test extends TestCase
         $this->shiftConfigRows      = [];
         $this->groupMembershipRows  = [];
         $this->occurrenceExceptions = [];
+        $this->blockedPairs         = [];
+        $this->blockedPairsCalls    = [];
         $this->queryCounts          = [];
 
         $this->em->method('createQuery')
@@ -87,10 +92,19 @@ class PlanningGeneratorServiceV2Test extends TestCase
     {
         // D-091 — conflict-alert sync is a discarded-return-value side effect of generate();
         // an unconfigured mock (returns null) is sufficient for these unit tests.
+        // D-152 — the incompatible pairs come from one constant query of the eligibility
+        // service, counted in the preview's query budget like the five queries above.
+        $eligibility = $this->createMock(\App\Service\MissionEligibilityService::class);
+        $eligibility->method('activeIncompatiblePairs')->willReturnCallback(function (array $surgeonIds): array {
+            $this->blockedPairsCalls[] = $surgeonIds;
+            $this->queryCounts['incompatibilities'] = ($this->queryCounts['incompatibilities'] ?? 0) + 1;
+            return $this->blockedPairs;
+        });
+
         return new PlanningGeneratorServiceV2(
             $this->em,
             $this->createMock(\App\Service\PlanningConflictDetectionService::class),
-            $this->createMock(\App\Service\MissionEligibilityService::class),
+            $eligibility,
             $this->createMock(\App\Activity\Recorder\PlanningActivityRecorder::class),
         );
     }
@@ -482,6 +496,99 @@ class PlanningGeneratorServiceV2Test extends TestCase
         $this->assertSame('/uploads/profile-pictures/freed.jpg', $covered[0]['instrumentistPhotoPath']);
     }
 
+    // ── D-152 — incompatible surgeon–instrumentist pairs ─────────────────────
+
+    public function test_post_whose_default_instrumentist_is_incompatible_is_a_blocked_conflict_never_ok(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com');
+        $other   = $this->makeUser('other-surgeon@test.com');
+        $blocked = $this->makeUser('blocked-inst@test.com');
+        $fine    = $this->makeUser('fine-inst@test.com');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, ShiftPeriod::MATIN, '08:00:00', '13:00:00');
+        $this->blockedPairs = [$surgeon->getId() . '-' . $blocked->getId() => true];
+
+        $recurrence  = $this->makeRecurrence(RecurrenceFrequency::WEEKLY, 1, [1], new \DateTimeImmutable('2026-01-05'));
+        $this->posts = [
+            $this->makePost($surgeon, $site, $recurrence, $blocked, startDate: '2026-01-05', endDate: '2026-01-05'),
+            $this->makePost($other, $site, $recurrence, $fine, startDate: '2026-01-05', endDate: '2026-01-05'),
+        ];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+
+        $this->assertCount(2, $lines);
+        $this->assertSame('CONFLICT', $lines[0]['status']);
+        $this->assertSame('SURGEON_INCOMPATIBILITY', $lines[0]['blockedReason']);
+        $this->assertSame($blocked->getId(), $lines[0]['instrumentistId'], 'the post stays identifiable: its default instrumentist is shown, blocked');
+        $this->assertSame('COVERED', $lines[1]['status']);
+        $this->assertNull($lines[1]['blockedReason']);
+        $this->assertSame([[$surgeon->getId(), $other->getId()]], $this->blockedPairsCalls, 'one lookup for every post surgeon');
+    }
+
+    public function test_a_blocked_line_never_reserves_its_instrumentist(): void
+    {
+        $surgeonA = $this->makeUser('surgeon-a@test.com');
+        $surgeonB = $this->makeUser('surgeon-b@test.com');
+        $shared   = $this->makeUser('shared-inst@test.com');
+        $site     = $this->makeSite();
+        $this->addShiftConfig($site, ShiftPeriod::MATIN, '08:00:00', '13:00:00');
+        $this->blockedPairs = [$surgeonA->getId() . '-' . $shared->getId() => true];
+
+        $recurrence  = $this->makeRecurrence(RecurrenceFrequency::WEEKLY, 1, [1], new \DateTimeImmutable('2026-01-05'));
+        $this->posts = [
+            $this->makePost($surgeonA, $site, $recurrence, $shared, startDate: '2026-01-05', endDate: '2026-01-05'),
+            $this->makePost($surgeonB, $site, $recurrence, $shared, startDate: '2026-01-05', endDate: '2026-01-05'),
+        ];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+
+        $this->assertSame(['CONFLICT', 'COVERED'], array_column($lines, 'status'), 'surgeon B keeps her: a blocked line never causes a double-booking conflict');
+        $this->assertSame(['SURGEON_INCOMPATIBILITY', null], array_column($lines, 'blockedReason'));
+    }
+
+    public function test_freed_instrumentist_is_never_suggested_to_a_surgeon_incompatible_with_her(): void
+    {
+        $absentSurgeon    = $this->makeUser('absent-surgeon@test.com');
+        $uncoveredSurgeon = $this->makeUser('uncovered-surgeon@test.com');
+        $freed            = $this->makeUser('freed-inst@test.com');
+        $site             = $this->makeSite();
+        $this->addShiftConfig($site, ShiftPeriod::MATIN, '08:00:00', '13:00:00');
+        $this->markAbsent($absentSurgeon, '2026-01-05');
+        $this->blockedPairs = [$uncoveredSurgeon->getId() . '-' . $freed->getId() => true];
+
+        $recurrence  = $this->makeRecurrence(RecurrenceFrequency::WEEKLY, 1, [1], new \DateTimeImmutable('2026-01-05'));
+        $this->posts = [
+            $this->makePost($absentSurgeon, $site, $recurrence, $freed, startDate: '2026-01-05', endDate: '2026-01-05'),
+            $this->makePost($uncoveredSurgeon, $site, $recurrence, null, startDate: '2026-01-05', endDate: '2026-01-05'),
+        ];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+
+        $this->assertSame(['SKIPPED', 'UNCOVERED'], array_column($lines, 'status'));
+        $this->assertNull($lines[1]['instrumentistId'], 'never an automatic assignment of an incompatible person');
+        $this->assertFalse($lines[1]['freedFrom']);
+    }
+
+    public function test_published_mission_still_affected_to_an_incompatible_pair_is_not_shown_ok(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com');
+        $blocked = $this->makeUser('blocked-inst@test.com');
+        $site    = $this->makeSite();
+        $this->addShiftConfig($site, ShiftPeriod::MATIN, '08:00:00', '13:00:00');
+        $this->blockedPairs = [$surgeon->getId() . '-' . $blocked->getId() => true];
+        $this->addExistingMission($surgeon, $site, '2026-01-05', '08:00', '13:00', $blocked, MissionStatus::ASSIGNED);
+
+        $recurrence  = $this->makeRecurrence(RecurrenceFrequency::WEEKLY, 1, [1], new \DateTimeImmutable('2026-01-05'));
+        $this->posts = [$this->makePost($surgeon, $site, $recurrence, $blocked, startDate: '2026-01-05', endDate: '2026-01-05')];
+
+        $lines = $this->makeService()->preview(self::MONTH, $site->getId(), null, null);
+
+        $this->assertCount(1, $lines);
+        $this->assertSame('CONFLICT', $lines[0]['status']);
+        $this->assertSame('SURGEON_INCOMPATIBILITY', $lines[0]['blockedReason']);
+        $this->assertSame('ASSIGNED', $lines[0]['existingMissionStatus'], 'still the existing reality, never modified by generate()');
+    }
+
     // ── Query budget (D-036 carried over) ────────────────────────────────────
 
     public function test_single_site_preview_uses_exactly_five_queries(): void
@@ -500,9 +607,10 @@ class PlanningGeneratorServiceV2Test extends TestCase
         $this->assertSame(1, $this->queryCounts['pool'] ?? 0);
         $this->assertSame(1, $this->queryCounts['shiftConfig'] ?? 0);
         $this->assertSame(1, $this->queryCounts['exceptions'] ?? 0);
+        $this->assertSame(1, $this->queryCounts['incompatibilities'] ?? 0);
         $this->assertArrayNotHasKey('groupMembers', $this->queryCounts);
         $totalQueries = array_sum($this->queryCounts);
-        $this->assertSame(5, $totalQueries, 'Single-site preview must use exactly 5 DB queries, never proportional to days/posts (this is the originally-designed budget, reached now that occurrence exceptions are wired in)');
+        $this->assertSame(6, $totalQueries, 'Single-site preview must use exactly 6 DB queries, never proportional to days/posts (the 5 originally-designed ones + the D-152 incompatible pairs)');
     }
 
     public function test_site_group_preview_uses_exactly_six_queries(): void
@@ -518,7 +626,7 @@ class PlanningGeneratorServiceV2Test extends TestCase
         $this->makeService()->preview(self::MONTH, null, 77, null);
 
         $totalQueries = array_sum($this->queryCounts);
-        $this->assertSame(6, $totalQueries, 'Site-group preview must use exactly 6 DB queries (5 + 1 group-resolution)');
+        $this->assertSame(7, $totalQueries, 'Site-group preview must use exactly 7 DB queries (6 + 1 group-resolution)');
     }
 
     // ── Mutually exclusive siteId / siteGroupId validation ───────────────────
