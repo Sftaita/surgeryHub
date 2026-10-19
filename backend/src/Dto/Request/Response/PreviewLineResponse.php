@@ -36,6 +36,13 @@ final class PreviewLineResponse
          * null when alone. Never a validation step; additive field.
          */
         public ?int $multiRoomCount = null,
+        /** D-156 — key of that group (composition + times); null when alone. */
+        public ?string $multiRoomGroupKey = null,
+        /**
+         * D-156 — 'REQUIRED': assignment proposed by the posts, to confirm or reorganise
+         * before deploy; 'CONFIRMED': confirmed in this draft; null when not multi-room.
+         */
+        public ?string $multiRoomConfirmation = null,
     ) {
     }
 
@@ -63,6 +70,8 @@ final class PreviewLineResponse
             instrumentistPhotoPath: $line['instrumentistPhotoPath'] ?? null,
             existingMissionStatus: $line['existingMissionStatus'] ?? null,
             multiRoomCount: $line['multiRoomCount'] ?? null,
+            multiRoomGroupKey: $line['multiRoomGroupKey'] ?? null,
+            multiRoomConfirmation: $line['multiRoomConfirmation'] ?? null,
         );
     }
 }

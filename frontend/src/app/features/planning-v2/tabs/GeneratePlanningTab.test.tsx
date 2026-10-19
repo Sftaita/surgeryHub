@@ -421,7 +421,8 @@ describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le s
     const preview: PreviewResponseV2 = {
       lines: [
         line({ postId: 1, status: "COVERED", instrumentistId: 9, instrumentistName: "Diane Lefebvre", startTime: "08:00", endTime: "13:00" }),
-        line({ postId: 2, status: "UNCOVERED", startTime: "14:00", endTime: "18:00" }),
+        // Overlapping slot of another surgeon — a real "elsewhere" (D-156: consecutive slots no longer are).
+        line({ postId: 2, surgeonId: 2, surgeonName: "Dr Autre", status: "UNCOVERED", startTime: "10:00", endTime: "12:00" }),
       ],
       summary: { total: 2, covered: 1, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
       previewVersion: "v-1",
@@ -1366,5 +1367,87 @@ describe("GeneratePlanningTab — indication multi-salles (D-156)", () => {
     expect(chips[0]).toHaveTextContent("Multi-salles · 2 missions");
     expect(chips[0]).toHaveAttribute("title", expect.stringContaining("2 missions simultanées confiées à la même personne"));
     expect(screen.getByRole("button", { name: "Générer les missions" })).toBeEnabled();
+  });
+});
+
+describe("GeneratePlanningTab — confirmation ciblée multi-salles (D-156)", () => {
+  function draftWithGroups(date1: string, date2: string, confirmation: "REQUIRED" | "CONFIRMED" = "REQUIRED") {
+    const g = (date: string, key: string, mission: number, startTime: string, endTime: string) => line({
+      date, postId: mission, existingMissionId: mission, startTime, endTime, instrumentistId: 9, instrumentistName: "Diane Lefebvre",
+      multiRoomCount: 2, multiRoomGroupKey: key, multiRoomConfirmation: confirmation,
+    });
+    return {
+      version: { id: 91, status: "DRAFT" as const, periodStart: "2026-06-01", periodEnd: "2026-06-30", siteId: 1, siteName: "Delta", generatedAt: "2026-06-01T00:00:00Z", scopeSource: null, scopeSiteIds: null },
+      lines: [g(date1, "k1", 701, "07:45", "18:00"), g(date1, "k1", 702, "07:45", "13:00"), g(date2, "k2", 703, "07:45", "18:00"), g(date2, "k2", 704, "07:45", "13:00")],
+      summary: { total: 4, covered: 4, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "h", divergent: false, generatedAt: "2026-06-02T00:00:00Z",
+    };
+  }
+
+  async function generateInto(draft: ReturnType<typeof draftWithGroups>) {
+    const user = userEvent.setup();
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({ ...draft, lines: draft.lines.map((l) => ({ ...l, existingMissionId: null })) });
+    (planningV2Api.generatePlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({ versionId: 91, created: 4, updated: 0, skipped: 0, rejectedAssignments: [] });
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(draft);
+    (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue({ created: 0, updated: 4, removed: 0, skipped: 0, rejectedAssignments: [] });
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await user.click(await screen.findByRole("button", { name: "Générer les missions" }));
+    await waitFor(() => expect(planningV2Api.reopenDraft).toHaveBeenCalledWith(91));
+    return user;
+  }
+
+  const now = new Date();
+  const d1 = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-03`;
+  const d2 = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-10`;
+
+  it("bloque le déploiement tant que les affectations multi-salles proposées par les postes ne sont pas confirmées", async () => {
+    await generateInto(draftWithGroups(d1, d2));
+    expect(await screen.findAllByText("Multi-salles — affectation à confirmer")).toHaveLength(4);
+    expect(await screen.findByTestId("multi-room-pending")).toHaveTextContent("2 affectation(s) multi-salles");
+    expect(screen.getByRole("button", { name: /Déployer le planning/ })).toBeDisabled();
+  });
+
+  it("« Confirmer » sur une ligne confirme son seul groupe, enregistré avec sa clé dans le brouillon", async () => {
+    const user = await generateInto(draftWithGroups(d1, d2));
+    const confirms = await screen.findAllByTestId("multi-room-confirm");
+    await user.click(confirms[0]);
+    expect(screen.getAllByText("Multi-salles — affectation à confirmer")).toHaveLength(2);
+    expect(screen.getByTestId("multi-room-pending")).toHaveTextContent("1 affectation(s)");
+
+    await user.click(screen.getByTestId("save-draft-before-deploy"));
+    await waitFor(() => expect(planningV2Api.updateDraft).toHaveBeenCalledTimes(1));
+    const sent = (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mock.calls[0][1] as PreviewLineV2[];
+    expect(sent.filter((l) => l.multiRoomConfirmedKey === "k1").map((l) => l.existingMissionId)).toEqual([701, 702]);
+    expect(sent.filter((l) => l.multiRoomGroupKey === "k2").every((l) => !l.multiRoomConfirmedKey)).toBe(true);
+  });
+
+  it("confirme plusieurs dates sélectionnées en une fois, et autorise le déploiement une fois confirmées côté serveur", async () => {
+    const user = await generateInto(draftWithGroups(d1, d2));
+    await screen.findAllByTestId("multi-room-confirm");
+    for (const checkbox of screen.getAllByRole("checkbox").slice(0, 4)) {
+      await user.click(checkbox);
+    }
+    await user.click(screen.getByTestId("bulk-confirm-multi-room"));
+    expect(screen.queryByText("Multi-salles — affectation à confirmer")).not.toBeInTheDocument();
+
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockResolvedValue(draftWithGroups(d1, d2, "CONFIRMED"));
+    await user.click(screen.getByTestId("save-draft-before-deploy"));
+    await waitFor(() => expect(planningV2Api.reopenDraft).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: /Déployer le planning/ })).toBeEnabled();
+    expect(screen.queryByTestId("multi-room-pending")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("multi-room-chip")[0]).toHaveTextContent("Multi-salles · 2 missions · confirmée");
+  });
+
+  it("affiche le refus serveur (409 MULTI_ROOM_CONFIRMATION_REQUIRED) avec les dates concernées", async () => {
+    toastError.mockClear();
+    const user = await generateInto(draftWithGroups(d1, d2, "CONFIRMED"));
+    (planningV2Api.deployPlanningV2 as ReturnType<typeof vi.fn>).mockReset().mockRejectedValueOnce({
+      response: { status: 409, data: { code: "MULTI_ROOM_CONFIRMATION_REQUIRED", groups: [{ date: d1, instrumentistName: "Diane Lefebvre", surgeonName: "Dr Martin", slots: ["07:45–18:00", "07:45–13:00"] }] } },
+    });
+    await user.click(await screen.findByRole("button", { name: /Déployer le planning/ }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastError.mock.calls.at(-1)?.[0]).toContain(`${d1} · Diane Lefebvre · Dr Martin (07:45–18:00, 07:45–13:00)`);
   });
 });

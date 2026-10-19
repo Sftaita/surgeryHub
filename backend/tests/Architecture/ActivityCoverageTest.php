@@ -40,6 +40,7 @@ final class ActivityCoverageTest extends TestCase
         'MissionPublication'                  => 'AuditEvent MISSION_PUBLISHED_TO_POOL / MISSION_OFFERED_TO_INSTRUMENTIST / MISSION_ASSIGNED_DIRECTLY (D-125)',
         'MissionCommunication'                => 'ActivityJournal direct — MISSION_COMMUNICATION_* (H4, D-130)',
         'MissionExecution'                    => 'AuditEvent MISSION_EXECUTION_CREATED / _UPDATED / _DURATION_CHANGED',
+        'WorkedPresence'                      => 'AuditEvent MISSION_EXECUTION_PRESENCE_DECLARED / _UPDATED / _LINKED / _DETACHED on each mission of the prestation (D-156)',
         'MissionExecutionDispute'             => 'AuditEvent MISSION_EXECUTION_DISPUTE_OPENED / _RESOLVED / _REJECTED',
         'MissionEncodingComment'              => 'part of the encoding transition it annotates (AuditEvent MISSION_ENCODING_REJECTED / _REOPENED, hasReason only)',
         'MissionInterventionDraft'            => 'AuditEvent MISSION_INTERVENTION_DRAFT_CREATED / _RESOLVED / _IGNORED_AS_HISTORY / _MATERIAL_REASSIGNED',
@@ -80,6 +81,7 @@ final class ActivityCoverageTest extends TestCase
         'ImplantSubMission'            => 'legacy: never created by current code, only read / purged by PlanningDraftService',
         'MissingMaterialReport'        => 'legacy: never created by current code, only read / purged by PlanningDraftService',
         'WeeklyTemplate'               => 'legacy: superseded by SurgeonSchedulePost (Planning V2), no writer left',
+        'PlanningMultiRoomConfirmation' => 'draft-only decision record that is its own trace (confirmedBy, confirmedAt, source, mission ids); deleted with its DRAFT, never outlives a deploy (D-156)',
     ];
 
     public function test_every_entity_has_a_decided_history(): void

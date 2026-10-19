@@ -263,12 +263,14 @@ export function getFreedInstrumentists(lines: PreviewLineV2[], target: PreviewLi
  * The other active line (if any) on the same day where `instrumentistId` is already
  * assigned — the reciprocal of getFreedInstrumentists(): picking this person for a new
  * slot the same day means removing them from wherever they were already placed, since
- * a person can't be in two places on the same day.
+ * a person can't be in two places at the same time.
  *
- * D-156 — except a simultaneous room of the SAME surgeon on the SAME site (BLOC, strict
- * overlap): that is one multi-room prestation, never "elsewhere", so it is neither flagged
- * nor freed. Mirrors the server rule (PrestationGrouping); the server stays the authority
- * (multiRoomCount after saving, deploy revalidation).
+ * D-156 (recette 2026-10-19) — only an OVERLAPPING slot is "elsewhere": consecutive slots
+ * the same day (Matin 07:45–13:00 then Après-midi 13:00–18:00) are legitimate and the first
+ * one is no longer freed when the second is assigned. A simultaneous room of the SAME
+ * surgeon on the SAME site (BLOC) is one multi-room prestation, never "elsewhere" either.
+ * Mirrors the server rules (conflict detection, PrestationGrouping); the server stays the
+ * authority (reopen statuses, deploy revalidation).
  */
 export function findSameDayAssignmentElsewhere(
   lines: PreviewLineV2[],
@@ -282,6 +284,7 @@ export function findSameDayAssignmentElsewhere(
         l.instrumentistId === instrumentistId &&
         l.status !== "SKIPPED" &&
         lineKeyV2(l) !== lineKeyV2(target) &&
+        l.startTime < target.endTime && target.startTime < l.endTime &&
         !isSameMultiRoomPrestation(l, target),
     ) ?? null
   );

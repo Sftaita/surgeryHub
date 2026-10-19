@@ -267,8 +267,10 @@ describe("findSameDayAssignmentElsewhere()", () => {
     expect(findSameDayAssignmentElsewhere([{ ...journee, surgeonId: 2 }, matin], matin, 7)?.postId).toBe(3);
     expect(findSameDayAssignmentElsewhere([{ ...journee, siteId: 2 }, matin], matin, 7)?.postId).toBe(3);
     expect(findSameDayAssignmentElsewhere([{ ...journee, missionType: "CONSULTATION" }, matin], matin, 7)?.postId).toBe(3);
+    // Consecutive slots the same day are legitimate (Matin then Après-midi): never "elsewhere".
     const apm = line({ postId: 5, startTime: "13:00", endTime: "18:00", instrumentistId: 7 });
-    expect(findSameDayAssignmentElsewhere([apm, matin], matin, 7)?.postId).toBe(5);
+    expect(findSameDayAssignmentElsewhere([apm, matin], matin, 7)).toBeNull();
+    expect(findSameDayAssignmentElsewhere([{ ...apm, surgeonId: 2 }, matin], matin, 7)).toBeNull();
   });
 
   it("never matches the target line itself", () => {

@@ -4664,6 +4664,29 @@ existant — sans bloquer le reste du déploiement : ce cas ne produit jamais de
 D-090 (`docs/decisions.md`) pour le détail complet et la cause racine de ces deux
 anomalies.
 
+**Réponse — 409 `MULTI_ROOM_CONFIRMATION_REQUIRED`** (D-156, vérifiée après les conflits) :
+le brouillon contient encore des affectations multi-salles proposées par les postes (même
+instrumentiste sur plusieurs missions BLOC simultanées du même chirurgien, même site, même
+jour) ni confirmées ni réorganisées. Rien n'est publié.
+
+```json
+{
+  "code": "MULTI_ROOM_CONFIRMATION_REQUIRED",
+  "message": "Déploiement bloqué : 1 affectation(s) multi-salles à confirmer ou à réorganiser.",
+  "groups": [{
+    "date": "2027-02-03", "instrumentistId": 19, "instrumentistName": "Sophie Collette",
+    "surgeonId": 8, "surgeonName": "Arnaud Deltour", "siteId": 1, "siteName": "CHIREC - Hôpital Delta",
+    "missionIds": [1244, 1243, 1245], "slots": ["07:45–13:00", "07:45–18:00", "13:00–18:00"],
+    "groupKey": "8debe8c7…"
+  }]
+}
+```
+
+Résolution : confirmer le groupe (ligne `multiRoomConfirmedKey` = `multiRoomGroupKey` dans
+`PATCH /api/planning/v2/drafts/{id}` ou dans `lines` de `generate`), ou le réorganiser
+(autre instrumentiste, mission laissée à pourvoir). Une confirmation ne vaut que pour la
+composition et les horaires confirmés : toute modification la rend caduque.
+
 **Conflit `CROSS_SITE_CONFLICT` (D-091, corrigé D-119)** — même revalidation, un second
 type de `conflicts[]` : même personne (chirurgien ou instrumentiste) sur deux missions
 actives qui se chevauchent dans le temps. Champ additionnel `waivable: boolean` sur chaque
@@ -7953,14 +7976,23 @@ mission préexistante reflétée, sinon `null`). Une mission préexistante **pub
 créneau d'un poste est montrée telle qu'elle est (son instrumentiste, ses heures,
 `COVERED`/`UNCOVERED`) — `generate()` ne la modifie jamais (R-01).
 
-### Preview V2 — champ additif `multiRoomCount` (D-156)
+### Preview V2 — confirmation ciblée multi-salles (D-156)
 
 `POST /api/planning/v2/preview` et `GET /api/planning/v2/drafts/{id}` : chaque ligne porte
-`multiRoomCount` — taille de la prestation multi-salles qu'elle forme avec d'autres lignes de
-la même personne (BLOC, même chirurgien, même site, même jour, chevauchement strict,
-transitif), sinon `null`. Les lignes `SKIPPED` et `CONFLICT` n'en font jamais partie.
-**Purement informatif** : aucune validation supplémentaire, aucun effet sur `generate()`,
-`PATCH` ou le déploiement (le champ renvoyé dans `lines` est ignoré).
+`multiRoomCount` (taille du groupe multi-salles : même personne, BLOC, même chirurgien, même
+site, même jour, chevauchement strict, transitif), `multiRoomGroupKey` (empreinte du groupe :
+composition et horaires) et `multiRoomConfirmation` (`REQUIRED` : proposé par les postes, à
+confirmer avant déploiement ; `CONFIRMED` : confirmé dans ce brouillon ; `null` : pas de
+groupe). Les lignes `SKIPPED`, `CONFLICT` et celles d'une mission déjà publiée n'en font
+jamais partie. Pour une ligne liée à une mission du brouillon, le groupe est celui des
+missions elles-mêmes (horaires réels de la mission), comme au déploiement.
+
+Champ **envoyé** par l'éditeur : `multiRoomConfirmedKey` (dans `lines` de
+`POST /api/planning/v2/generate` et de `PATCH /api/planning/v2/drafts/{id}`) — le manager a
+confirmé le groupe de cette clé ; enregistré seulement si la clé correspond encore au groupe
+au moment de l'enregistrement. Une ligne dont le manager a lui-même choisi l'instrumentiste
+(différent de celui du poste, ou modifié dans le brouillon) confirme son groupe sans action
+supplémentaire. Voir le 409 `MULTI_ROOM_CONFIRMATION_REQUIRED` de `POST /api/planning/v2/deploy`.
 
 ## Intégration MedVue — liaison des comptes et lecture des congés (D-140)
 

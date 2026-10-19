@@ -13392,21 +13392,38 @@ financière 0h00 (heures comptées sur une autre mission de la prestation) » ; 
 encodable, soumise, validée et valorisée normalement (interventions et matériel facturés aux
 firmes), suivi « Validé / Calculé » avec heures réelles (source `PRESENCE_SHARE`).
 
-**Générateur et postes à instrumentiste unique — décision (2026-10-19).** Le fonctionnement
-du Planning V2 est conservé : les affectations prévues sur les postes sont appliquées
-automatiquement et le manager peut les modifier librement ; plusieurs missions simultanées
-confiées à la même personne se regroupent automatiquement (aucune validation
-supplémentaire). C'est le **paramétrage** qui est corrigé, pour les seules générations
-futures : poste #3 Journée → Sophie, postes #4 Matin et #5 Après-midi → « à assigner »
-(`PATCH /api/planning/surgeon-posts/{id}` avec `instrumentistId: null`, écran Postes ;
-journalisé `SURGEON_SCHEDULE_POST_UPDATED` ; ne touche aucune mission existante). Non
-appliqué en production sans autorisation explicite. Indication **informative** dans
-l'aperçu : `multiRoomCount` sur chaque ligne d'aperçu formant une prestation multi-salles
-avec d'autres lignes de la même personne (`PrestationGrouping::annotatePreviewLines()`,
-même règle que les missions), affichée « Multi-salles · N missions » sous l'horaire —
-jamais un blocage. L'éditeur ne traite plus une salle simultanée du même chirurgien sur le
-même site comme « déjà affectée ailleurs » (il libérait la Journée quand on affectait le
-Matin à la même personne).
+**Confirmation ciblée des affectations multi-salles à la génération — décision (2026-10-19).**
+Les postes récurrents gardent leurs affectations habituelles (les postes #3, #4 et #5 du
+Dr Deltour ne sont pas modifiés : l'organisation change d'une semaine à l'autre). Quand les
+postes proposent la même instrumentiste sur plusieurs missions BLOC simultanées du même
+chirurgien, même site, même jour, l'aperçu et le brouillon l'affichent « Multi-salles —
+affectation à confirmer » ; le manager confirme l'affectation commune (bouton « Confirmer »
+sur la ligne, ou « Confirmer les affectations multi-salles » sur une sélection de plusieurs
+dates), répartit les missions entre plusieurs instrumentistes ou en laisse à pourvoir
+(« Laisser à pourvoir », aussi en sélection). Une affectation que le manager fait lui-même
+dans l'éditeur vaut confirmation (jamais redemandée). **Contrôle serveur :** table
+`planning_multi_room_confirmation` (migration `Version20261019090000`, additive), une ligne
+par groupe confirmé d'un brouillon, identifiée par une empreinte (instrumentiste, chirurgien,
+site, date, horaires de chaque mission — `PrestationGrouping::multiRoomFingerprint()`) ;
+`deploy()` refuse (409 `MULTI_ROOM_CONFIRMATION_REQUIRED`, après les vrais conflits) tout
+groupe de missions DRAFT de la version sans confirmation à son empreinte **actuelle** : un
+changement de composition ou d'horaire rend la confirmation caduque. Seules les missions
+DRAFT du brouillon sont concernées : missions publiées et réaffectations après déploiement
+ne sont jamais soumises à ce workflow (le regroupement s'y fait automatiquement).
+L'éditeur ne traite plus comme « déjà affectée ailleurs » une salle simultanée du même
+chirurgien sur le même site, ni un créneau consécutif du même jour (Matin puis Après-midi) :
+seul un vrai chevauchement l'est.
+
+**Défauts corrigés pendant la recette (2026-10-19).** (1) Deux salles commençant à la même
+heure (Journée 07:45–18:00 et Matin 07:45–13:00) : la réouverture d'un brouillon associait la
+ligne d'un poste à la mission de l'autre salle (`claimMission()` ne regardait que l'heure de
+début), si bien qu'une modification de la ligne Journée changeait le Matin — l'association
+privilégie désormais la mission dont le début ET la fin sont les plus proches du créneau du
+poste (l'instrumentiste ne départage que des horaires identiques). (2) `PATCH` d'un brouillon
+refusait une affectation légitime selon l'ordre des lignes (contrôle en base d'une mission déjà
+modifiée en mémoire) — chaque changement accepté est écrit avant de contrôler le suivant.
+(3) Les disponibilités du sélecteur étaient gardées en cache après enregistrement du brouillon
+— rafraîchies au rechargement.
 
 **Historique du constat (2026-10-18).**
 Le générateur ne choisit aucun candidat : il applique l'instrumentiste configuré sur chaque

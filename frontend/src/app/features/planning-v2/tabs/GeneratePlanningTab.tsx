@@ -359,6 +359,8 @@ export function GeneratePlanningTab() {
       setDraftVersionId(data.version.id);
       setDraftScopeSource(data.version.scopeSource);
       setDraftScopeSiteIds(data.version.scopeSiteIds);
+      // The draft's missions just changed: availabilities computed against the old ones are stale.
+      void queryClient.invalidateQueries({ queryKey: ["planning-v2", "roster-eligibility"] });
       return true;
     } catch {
       toast.warning("Brouillon enregistré, mais l'affichage n'a pas pu être rechargé — ouvrez le brouillon avant toute nouvelle modification.");
@@ -515,6 +517,12 @@ export function GeneratePlanningTab() {
       void invalidateOperationalPlanning(queryClient);
     },
     onError: (err: any) => {
+      if (err?.response?.status === 409 && err?.response?.data?.code === "MULTI_ROOM_CONFIRMATION_REQUIRED") {
+        const groups: Array<{ date: string; instrumentistName: string | null; surgeonName: string | null; slots: string[] }> = err.response.data.groups ?? [];
+        toast.error(`Déploiement bloqué — ${groups.length} affectation(s) multi-salles à confirmer : ${groups
+          .map((g) => `${g.date} · ${g.instrumentistName ?? "—"} · ${g.surgeonName ?? "—"} (${g.slots.join(", ")})`).join(" ; ")}`);
+        return;
+      }
       if (err?.response?.status === 409 && err?.response?.data?.code === "DRAFT_CONFLICTS") {
         setDraftConflicts(err.response.data.conflicts ?? []);
         setSelectedWaivableKeys(new Set());
@@ -671,6 +679,15 @@ export function GeneratePlanningTab() {
   // A9 — edits made once the missions exist (draft generated or reopened) that are not yet
   // saved onto the draft: deploy() would publish the draft without them.
   const pendingDraftEdits = generated && !isModification ? dirtyCount + newLines.length : 0;
+  // D-156 — multi-room groups proposed by the posts and still to confirm (server state of the
+  // draft, minus what the manager has just confirmed or reassigned locally). Deploy is also
+  // refused server-side (409 MULTI_ROOM_CONFIRMATION_REQUIRED); this only explains it upfront.
+  const pendingMultiRoomGroups = isModification ? 0 : new Set(
+    effectiveLines
+      .filter((l) => multiRoomPending(l) && !("instrumentistId" in (editedLines.get(lineKeyV2(l)) ?? {})))
+      .map((l) => l.multiRoomGroupKey),
+  ).size;
+  const deployBlockedByMultiRoom = !!generated && draftVersionId !== null && pendingDraftEdits === 0 && pendingMultiRoomGroups > 0;
 
   // ── Line edit helpers ──────────────────────────────────────────────────────
 
@@ -746,6 +763,54 @@ export function GeneratePlanningTab() {
     });
     setSelectedKeys(new Set());
     setBulkInstrumentistId("");
+  }
+
+  // ── D-156 — targeted confirmation of the multi-room assignments proposed by the posts ──
+  // The server computes the groups (multiRoomGroupKey) and their state; the editor only
+  // records "confirmed this exact group" (multiRoomConfirmedKey), saved with the draft and
+  // checked again by deploy() — a group whose composition or times changed no longer matches.
+
+  /** Still to confirm: proposed by the posts, not confirmed in the draft nor locally. */
+  function multiRoomPending(line: PreviewLineV2): boolean {
+    return line.multiRoomConfirmation === "REQUIRED"
+      && !(line.multiRoomGroupKey && line.multiRoomConfirmedKey === line.multiRoomGroupKey);
+  }
+
+  function confirmMultiRoomGroups(keys: string[]) {
+    const wanted = new Set(keys);
+    setEditedLines((prev) => {
+      const next = new Map(prev);
+      for (const line of effectiveLines) {
+        if (line.multiRoomGroupKey && wanted.has(line.multiRoomGroupKey)) {
+          const k = lineKeyV2(line);
+          next.set(k, { ...(next.get(k) ?? {}), multiRoomConfirmedKey: line.multiRoomGroupKey });
+        }
+      }
+      return next;
+    });
+  }
+
+  /** Applies "confirm the common assignment" to every group touched by the selection (several dates at once). */
+  function handleBulkConfirmMultiRoom() {
+    const keys = effectiveLines
+      .filter((l) => selectedKeys.has(lineKeyV2(l)) && multiRoomPending(l))
+      .map((l) => l.multiRoomGroupKey!);
+    confirmMultiRoomGroups(keys);
+    setSelectedKeys(new Set());
+  }
+
+  /** "Laisser à pourvoir" for the selection — the post keeps its usual instrumentist. */
+  function handleBulkLeaveOpen() {
+    setEditedLines((prev) => {
+      const next = new Map(prev);
+      for (const key of selectedKeys) {
+        const line = effectiveLines.find((l) => lineKeyV2(l) === key);
+        if (!line || line.status === "SKIPPED") continue;
+        next.set(key, { ...(next.get(key) ?? {}), instrumentistId: null, instrumentistName: null, status: "UNCOVERED" });
+      }
+      return next;
+    });
+    setSelectedKeys(new Set());
   }
 
   function handleBulkSkip() {
@@ -1648,6 +1713,15 @@ export function GeneratePlanningTab() {
               >
                 Assigner
               </Button>
+              {effectiveLines.some((l) => selectedKeys.has(lineKeyV2(l)) && multiRoomPending(l)) && (
+                <Button size="small" variant="outlined" onClick={handleBulkConfirmMultiRoom} data-testid="bulk-confirm-multi-room"
+                  sx={{ height: 36, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600 }}>
+                  Confirmer les affectations multi-salles
+                </Button>
+              )}
+              <Button size="small" color="inherit" onClick={handleBulkLeaveOpen} data-testid="bulk-leave-open" sx={{ textTransform: "none", fontWeight: 600 }}>
+                Laisser à pourvoir
+              </Button>
               <Button size="small" color="inherit" onClick={handleBulkSkip} sx={{ textTransform: "none", fontWeight: 600 }}>
                 Ignorer la sélection
               </Button>
@@ -1734,19 +1808,41 @@ export function GeneratePlanningTab() {
                               />
                               <Box sx={{ width: 6, height: 6, borderRadius: "999px", bgcolor: tokens.dot, flex: "none" }} />
                               <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textBody, minWidth: 90 }} noWrap>{line.siteName ?? "—"}</Typography>
-                              <Box sx={{ minWidth: 100, flex: "none" }}>
+                              <Box sx={{ minWidth: 100, maxWidth: 128, flex: "none" }}>
                                 <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong, fontVariantNumeric: "tabular-nums" }}>
                                   {line.startTime}–{line.endTime}
                                 </Typography>
-                                {/* D-156 — informative only (server-computed, no validation); hidden once edited locally. */}
-                                {!dirty && line.multiRoomCount != null && line.multiRoomCount > 1 && (
-                                  <Typography
-                                    data-testid="multi-room-chip"
-                                    title={`${line.multiRoomCount} missions simultanées confiées à la même personne : une seule prestation (présence et encodage communs). Information seulement.`}
-                                    sx={{ fontSize: 10.5, fontWeight: 700, color: planningV2Colors.brand, lineHeight: 1.2 }}
-                                  >
-                                    Multi-salles · {line.multiRoomCount} missions
-                                  </Typography>
+                                {/* D-156 — server-computed multi-room group; once the instrumentist is
+                                    edited locally the server decides again on save (an explicit
+                                    assignment counts as confirmation). */}
+                                {!("instrumentistId" in (editedLines.get(key) ?? {})) && line.multiRoomCount != null && line.multiRoomCount > 1 && (
+                                  multiRoomPending(line) ? (
+                                    <Box data-testid="multi-room-required" sx={{ lineHeight: 1.2 }}>
+                                      <Typography
+                                        title={`Les postes proposent la même personne sur ${line.multiRoomCount} missions simultanées : confirmez cette affectation commune, ou répartissez / laissez à pourvoir certaines missions, avant de déployer.`}
+                                        component="span"
+                                        sx={{ fontSize: 10.5, fontWeight: 700, color: planningV2Colors.warnFg, lineHeight: 1.2 }}
+                                      >
+                                        Multi-salles — affectation à confirmer
+                                      </Typography>{" "}
+                                      <Box
+                                        component="button" type="button" data-testid="multi-room-confirm"
+                                        onClick={(e: React.MouseEvent) => { e.stopPropagation(); confirmMultiRoomGroups([line.multiRoomGroupKey!]); }}
+                                        sx={{ border: 0, background: "none", p: 0, cursor: "pointer", fontFamily: "inherit", fontSize: 10.5, fontWeight: 800, color: planningV2Colors.brand, textDecoration: "underline" }}
+                                      >
+                                        Confirmer
+                                      </Box>
+                                    </Box>
+                                  ) : (
+                                    <Typography
+                                      data-testid="multi-room-chip"
+                                      title={`${line.multiRoomCount} missions simultanées confiées à la même personne : une seule prestation (présence et encodage communs).`}
+                                      sx={{ fontSize: 10.5, fontWeight: 700, color: planningV2Colors.brand, lineHeight: 1.2 }}
+                                    >
+                                      Multi-salles · {line.multiRoomCount} missions
+                                      {line.multiRoomConfirmation === "CONFIRMED" || line.multiRoomConfirmedKey === line.multiRoomGroupKey ? " · confirmée" : ""}
+                                    </Typography>
+                                  )
                                 )}
                               </Box>
                               <Stack
@@ -1888,7 +1984,7 @@ export function GeneratePlanningTab() {
                 </Button>
               ) : (
                 <Button
-                  variant="contained" disableElevation disabled={deployMutation.isPending || pendingDraftEdits > 0} onClick={() => deployMutation.mutate()}
+                  variant="contained" disableElevation disabled={deployMutation.isPending || pendingDraftEdits > 0 || deployBlockedByMultiRoom} onClick={() => deployMutation.mutate()}
                   startIcon={<RocketLaunchOutlinedIcon />}
                   sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
                 >
@@ -1897,6 +1993,12 @@ export function GeneratePlanningTab() {
               )}
             </Stack>
           </Stack>
+
+          {pendingMultiRoomGroups > 0 && (
+            <Typography data-testid="multi-room-pending" sx={{ mt: 1.5, fontSize: 12.5, fontWeight: 600, color: planningV2Colors.warnFg }}>
+              {`${pendingMultiRoomGroups} affectation(s) multi-salles proposée(s) par les postes à confirmer, répartir ou laisser à pourvoir avant de déployer (« Confirmer » sur la ligne, ou sélectionnez plusieurs dates).`}
+            </Typography>
+          )}
 
           {pendingDraftEdits > 0 && (
             <Typography data-testid="pending-draft-edits" sx={{ mt: 1.5, fontSize: 12.5, fontWeight: 600, color: planningV2Colors.warnFg }}>

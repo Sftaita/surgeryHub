@@ -40,6 +40,7 @@ use App\Enum\SchedulePrecision;
 use App\Exception\PlanningDraftScopeAlreadyConfirmedException;
 use App\Exception\PlanningDraftScopeConfirmationRequiredException;
 use App\Exception\PlanningVersionNotDraftException;
+use App\Service\Prestation\MultiRoomConfirmationService;
 use App\Service\Prestation\PrestationGrouping;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
@@ -66,6 +67,7 @@ final class PlanningDraftService
         private readonly MissionEligibilityService $eligibilityService,
         private readonly PlanningActivityRecorder $activity,
         private readonly PlanningDraftRevalidationService $revalidation,
+        private readonly MultiRoomConfirmationService $multiRoom,
     ) {
     }
 
@@ -88,8 +90,10 @@ final class PlanningDraftService
         $this->normalizeForDraftEditing($lines);
         $this->appendAdHocMissions($version, $lines);
         $this->flagBlockingConflicts($version, $lines);
-        // Statuses may have changed above (CONFLICT, UNCOVERED, ad-hoc lines): recompute.
+        // Statuses may have changed above (CONFLICT, UNCOVERED, ad-hoc lines): recompute,
+        // then read the draft's own multi-room confirmations (D-156).
         PrestationGrouping::annotatePreviewLines($lines);
+        $this->multiRoom->annotateConfirmation($lines, $version);
 
         return [
             'lines'          => $lines,
@@ -202,10 +206,16 @@ final class PlanningDraftService
         $removed = 0;
         $skipped = 0;
         $rejected = [];
+        // D-156 — multi-room confirmations decided in the editor (see generate()).
+        $confirmedKeys    = [];
+        $explicitMissions = [];
 
         foreach ($lines as $line) {
             $existingMissionId = $line['existingMissionId'] ?? null;
             $status            = $line['status'] ?? null;
+            if (is_string($line['multiRoomConfirmedKey'] ?? null) && $status !== 'SKIPPED') {
+                $confirmedKeys[$line['multiRoomConfirmedKey']] = true;
+            }
 
             if ($existingMissionId !== null) {
                 $mission = $this->em->find(Mission::class, $existingMissionId);
@@ -244,7 +254,16 @@ final class PlanningDraftService
                 $newInstrumentist   = $newInstrumentistId !== null
                     ? $this->em->find(User::class, $newInstrumentistId)
                     : null;
-                $mission->setInstrumentist($this->guardInstrumentist($mission, $newInstrumentist, $rejected));
+                $accepted = $this->guardInstrumentist($mission, $newInstrumentist, $rejected);
+                $mission->setInstrumentist($accepted);
+                // Written at once: the next line's check reads the database, and would otherwise
+                // see this mission with its old instrumentist (recette D-156: Journée moved to
+                // Sophie, then Salve refused on the simultaneous Matin because of the Journée).
+                $this->em->flush();
+                // The manager changed this mission's instrumentist himself: an explicit choice.
+                if ($accepted !== null) {
+                    $explicitMissions[] = $mission;
+                }
                 $updated++;
                 continue;
             }
@@ -273,10 +292,14 @@ final class PlanningDraftService
                 continue;
             }
             $this->em->persist($mission);
+            if ($mission->getInstrumentist() !== null && $this->generator->isExplicitAssignment($line)) {
+                $explicitMissions[] = $mission;
+            }
             $created++;
         }
 
         $this->em->flush();
+        $this->multiRoom->recordFromSave($version, $confirmedKeys, $explicitMissions, $actor);
 
         return [
             'created'             => $created,

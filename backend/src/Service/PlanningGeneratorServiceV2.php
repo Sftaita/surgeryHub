@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\MultiRoomConfirmationService;
 use App\Service\Prestation\PrestationGrouping;
 
 use App\Activity\Recorder\PlanningActivityRecorder;
@@ -39,6 +40,7 @@ class PlanningGeneratorServiceV2
         private readonly PlanningConflictDetectionService $conflictDetection,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly PlanningActivityRecorder $activity,
+        private readonly ?MultiRoomConfirmationService $multiRoom = null,
     ) {}
 
     /**
@@ -156,8 +158,14 @@ class PlanningGeneratorServiceV2
         }
 
         $lines = $this->resolveFreedInstrumentists($lines);
-        // D-156 — informative "Multi-salles · N missions" marker, never a validation step.
+        // D-156 — multi-room groups proposed by the posts: to confirm (or reorganise) before
+        // deploy. A fresh preview has no draft, hence no confirmation yet; reopen() re-annotates
+        // against the draft's own confirmations (MultiRoomConfirmationService).
         PrestationGrouping::annotatePreviewLines($lines);
+        foreach ($lines as &$line) {
+            $line['multiRoomConfirmation'] = $line['multiRoomGroupKey'] !== null ? 'REQUIRED' : null;
+        }
+        unset($line);
 
         return $lines;
     }
@@ -220,7 +228,7 @@ class PlanningGeneratorServiceV2
 
         $existingMission = $this->claimMission(
             $existingMissionsPool, $claimedMissionIds,
-            $surgeon, $site, $current, $startTime, $slotInstrumentist,
+            $surgeon, $site, $current, $startTime, $slotInstrumentist, $endTime,
         );
 
         // D-125 — a pre-existing Mission that is already published/operational (created
@@ -453,8 +461,16 @@ class PlanningGeneratorServiceV2
         $updated  = 0;
         $skipped  = 0;
         $rejected = [];
+        // D-156 — multi-room confirmations decided in the editor: groups confirmed there
+        // (multiRoomConfirmedKey) and missions the manager staffed himself (never asked to
+        // confirm a decision he just took). Recorded once the missions exist.
+        $confirmedKeys    = [];
+        $explicitMissions = [];
 
         foreach ($lines as $line) {
+            if (is_string($line['multiRoomConfirmedKey'] ?? null) && $line['status'] !== 'SKIPPED') {
+                $confirmedKeys[$line['multiRoomConfirmedKey']] = true;
+            }
             if ($line['status'] === 'SKIPPED') {
                 $skipped++;
                 continue;
@@ -473,6 +489,9 @@ class PlanningGeneratorServiceV2
                     : null;
                 $newInstrumentist = $this->guardInstrumentist($mission, $newInstrumentist, $rejected);
                 $mission->setInstrumentist($newInstrumentist);
+                if ($newInstrumentist !== null && $this->isExplicitAssignment($line)) {
+                    $explicitMissions[] = $mission;
+                }
                 $updated++;
                 continue;
             }
@@ -518,6 +537,9 @@ class PlanningGeneratorServiceV2
             if ($mission === null) { $skipped++; continue; }
 
             $this->em->persist($mission);
+            if ($mission->getInstrumentist() !== null && $this->isExplicitAssignment($line)) {
+                $explicitMissions[] = $mission;
+            }
             $created++;
         }
 
@@ -537,6 +559,7 @@ class PlanningGeneratorServiceV2
         $connection->beginTransaction();
         try {
             $this->em->flush();
+            $this->multiRoom?->recordFromSave($version, $confirmedKeys, $explicitMissions, $generatedBy);
             $result['versionId'] = $version->getId();
             $this->activity->generated($version, array_values($lines), $result, $overrideLines !== null, $generatedBy);
             $connection->commit();
@@ -604,6 +627,28 @@ class PlanningGeneratorServiceV2
      * (caller counts as skipped) when the post/surgeon/site referenced by the line can no
      * longer be resolved — never throws, matching generate()'s existing defensive style.
      */
+    /**
+     * D-156 — the line's instrumentist is the manager's own choice in the editor, not the
+     * one its recurring post proposes (an ad-hoc line, postId <= 0, always is).
+     *
+     * @param array<string, mixed> $line
+     */
+    public function isExplicitAssignment(array $line): bool
+    {
+        $instrumentistId = $line['instrumentistId'] ?? null;
+        // A "freed" instrumentist is proposed by the generator itself (second pass), not chosen.
+        if ($instrumentistId === null || ($line['freedFrom'] ?? false) === true) {
+            return false;
+        }
+        $postId = (int) ($line['postId'] ?? 0);
+        if ($postId <= 0) {
+            return true;
+        }
+        $post = $this->em->find(SurgeonSchedulePost::class, $postId);
+
+        return $post === null || $post->getInstrumentist()?->getId() !== (int) $instrumentistId;
+    }
+
     public function createMissionFromLine(array $line, PlanningVersion $version, User $actor, array &$rejected): ?Mission
     {
         $post = $this->em->find(SurgeonSchedulePost::class, $line['postId']);
@@ -1014,6 +1059,12 @@ class PlanningGeneratorServiceV2
      * Same multi-room claim priority as V1 (D-035): exact instrumentist match first,
      * then any unclaimed mission within ±30 minutes of the post's start time.
      *
+     * D-156 (recette 2026-10-19) — among those, the mission whose start AND end are closest
+     * to the post's slot comes first: two rooms of the same surgeon starting at the same time
+     * (Journée 07:45–18:00 and Matin 07:45–13:00, same instrumentist) used to be claimed in
+     * pool order, so a reopened draft showed the Journée line on the Matin mission — and an
+     * edit of that line changed the other room.
+     *
      * @param array<string, Mission[]> $pool
      * @param array<int, true>         $claimedIds
      */
@@ -1025,6 +1076,7 @@ class PlanningGeneratorServiceV2
         \DateTimeImmutable $day,
         \DateTimeImmutable $slotStart,
         ?User $slotInstrumentist,
+        ?\DateTimeImmutable $slotEnd = null,
     ): ?Mission {
         if ($surgeon === null || $site === null) {
             return null;
@@ -1043,6 +1095,22 @@ class PlanningGeneratorServiceV2
             $mMins = (int) $m->getStartAt()->format('H') * 60 + (int) $m->getStartAt()->format('i');
             return abs($mMins - $slotStartMins) <= 30;
         });
+        if ($slotEnd !== null) {
+            $slotEndMins = $this->hhmm2mins($slotEnd->format('H:i'));
+            $distance = static fn (Mission $m): int => abs(((int) $m->getStartAt()->format('H') * 60 + (int) $m->getStartAt()->format('i')) - $slotStartMins)
+                + abs(((int) $m->getEndAt()->format('H') * 60 + (int) $m->getEndAt()->format('i')) - $slotEndMins);
+            // Closest slot first; the same instrumentist only breaks ties (identical times).
+            uasort($nearby, static fn (Mission $a, Mission $b) => [$distance($a), (int) ($a->getInstrumentist()?->getId() !== $slotInstId)]
+                <=> [$distance($b), (int) ($b->getInstrumentist()?->getId() !== $slotInstId)]);
+            foreach ($nearby as $mission) {
+                if (!isset($claimedIds[$mission->getId()])) {
+                    $claimedIds[$mission->getId()] = true;
+                    return $mission;
+                }
+            }
+
+            return null;
+        }
 
         foreach ($nearby as $mission) {
             if (isset($claimedIds[$mission->getId()])) {

@@ -243,12 +243,44 @@ final class PrestationGrouping
     }
 
     /**
-     * D-156 — informative only (no validation, no status change): marks each Planning V2
-     * preview line that forms, with other lines of the same person, one multi-room
-     * prestation (same rule as isMultiRoomPair(), on preview lines: BLOC, same
-     * instrumentist, surgeon, site and date, strict overlap, transitive). Sets
-     * `multiRoomCount` to the size of the group (null when alone). SKIPPED and CONFLICT
-     * lines never join a group. Idempotent: recomputed from scratch on every call.
+     * D-156 — fingerprint of one multi-room group (instrumentist, surgeon, site, local date and
+     * every member's planned times, order-independent). Computable alike from preview lines
+     * and from persisted missions, so a confirmation given on preview lines still matches the
+     * missions generated from them, and any change of composition or schedule changes it.
+     *
+     * @param list<array{0:string,1:string}> $times "HH:MM" local start/end of each member
+     */
+    public static function multiRoomFingerprint(int $instrumentistId, int $surgeonId, int $siteId, string $date, array $times): string
+    {
+        $slots = array_map(static fn (array $t) => $t[0] . '-' . $t[1], $times);
+        sort($slots);
+
+        return hash('sha256', implode('|', [$instrumentistId, $surgeonId, $siteId, $date, implode(',', $slots)]));
+    }
+
+    /** @param list<Mission> $missions one multi-room group */
+    public static function missionGroupFingerprint(array $missions): string
+    {
+        $tz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
+        $first = $missions[0];
+
+        return self::multiRoomFingerprint(
+            (int) $first->getInstrumentist()->getId(),
+            (int) $first->getSurgeon()->getId(),
+            (int) $first->getSite()->getId(),
+            self::localDate($first),
+            array_map(static fn (Mission $m) => [$m->getStartAt()->setTimezone($tz)->format('H:i'), $m->getEndAt()->setTimezone($tz)->format('H:i')], $missions),
+        );
+    }
+
+    /**
+     * D-156 — marks each Planning V2 preview/draft line that forms, with other lines of the
+     * same person, one multi-room prestation (same rule as isMultiRoomPair(), on lines: BLOC,
+     * same instrumentist, surgeon, site and date, strict overlap, transitive). Sets
+     * `multiRoomCount` (group size) and `multiRoomGroupKey` (multiRoomFingerprint()), both null
+     * when alone. SKIPPED and CONFLICT lines never join a group, nor lines mirroring an
+     * already published mission (never subject to the draft confirmation, never retroactive).
+     * Idempotent: recomputed from scratch on every call.
      *
      * @param array<int, array<string, mixed>> &$lines
      */
@@ -257,10 +289,13 @@ final class PrestationGrouping
         $buckets = [];
         foreach ($lines as $i => $line) {
             $lines[$i]['multiRoomCount'] = null;
+            $lines[$i]['multiRoomGroupKey'] = null;
+            $existingStatus = $line['existingMissionStatus'] ?? null;
             if (($line['instrumentistId'] ?? null) === null
                 || ($line['missionType'] ?? null) !== MissionType::BLOCK->value
                 || in_array($line['status'] ?? null, ['SKIPPED', 'CONFLICT'], true)
-                || ($line['siteId'] ?? null) === null) {
+                || ($line['siteId'] ?? null) === null
+                || ($existingStatus !== null && $existingStatus !== MissionStatus::DRAFT->value)) {
                 continue;
             }
             $buckets[implode('|', [$line['instrumentistId'], $line['date'], $line['surgeonId'], $line['siteId']])][] = $i;
@@ -284,10 +319,17 @@ final class PrestationGrouping
                 }
             }
             foreach ($groups as $group) {
-                if (count($group) > 1) {
-                    foreach ($group as $i) {
-                        $lines[$i]['multiRoomCount'] = count($group);
-                    }
+                if (count($group) < 2) {
+                    continue;
+                }
+                $first = $lines[$group[0]];
+                $key = self::multiRoomFingerprint(
+                    (int) $first['instrumentistId'], (int) $first['surgeonId'], (int) $first['siteId'], (string) $first['date'],
+                    array_map(static fn (int $i) => [(string) $lines[$i]['startTime'], (string) $lines[$i]['endTime']], $group),
+                );
+                foreach ($group as $i) {
+                    $lines[$i]['multiRoomCount'] = count($group);
+                    $lines[$i]['multiRoomGroupKey'] = $key;
                 }
             }
         }

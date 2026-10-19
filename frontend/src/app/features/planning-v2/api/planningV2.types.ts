@@ -370,6 +370,12 @@ export interface PreviewLineV2 {
    * forms with simultaneous lines of the same instrumentist; null when alone.
    */
   multiRoomCount?: number | null;
+  /** D-156 — key of that group (composition + times), computed by the backend. */
+  multiRoomGroupKey?: string | null;
+  /** D-156 — "REQUIRED": proposed by the posts, to confirm before deploy; "CONFIRMED" in this draft. */
+  multiRoomConfirmation?: "REQUIRED" | "CONFIRMED" | null;
+  /** D-156 — sent back by the editor: the manager confirmed the group with this key. */
+  multiRoomConfirmedKey?: string | null;
   /** D-125 — Modification: nominative request state of the mission (backend `targetedOffer`). */
   pendingOfferName?: string | null;
   offerDeclinedByName?: string | null;

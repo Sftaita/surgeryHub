@@ -11,8 +11,10 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningDeploymentStatus;
 use App\Enum\PlanningVersionStatus;
+use App\Exception\MultiRoomConfirmationRequiredException;
 use App\Exception\PlanningDraftConflictException;
 use App\Message\PlanningDeployPdfsMessage;
+use App\Service\Prestation\MultiRoomConfirmationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -23,6 +25,7 @@ class PlanningDeploymentService
         private readonly MessageBusInterface $bus,
         private readonly PlanningDraftRevalidationService $draftRevalidation,
         private readonly PlanningActivityRecorder $activity,
+        private readonly MultiRoomConfirmationService $multiRoom,
     ) {}
 
     /**
@@ -71,6 +74,12 @@ class PlanningDeploymentService
             $revalidation = $this->draftRevalidation->revalidate($version);
             if (!empty($revalidation['blockingConflicts'])) {
                 throw new PlanningDraftConflictException($revalidation['blockingConflicts']);
+            }
+            // D-156 — multi-room assignments proposed by the posts must be confirmed (or
+            // reorganised) by the manager first: checked here, server-side, never only in UI.
+            $unconfirmed = $this->multiRoom->unconfirmedGroups($version);
+            if ($unconfirmed !== []) {
+                throw new MultiRoomConfirmationRequiredException(MultiRoomConfirmationService::describe($unconfirmed));
             }
             if (!empty($revalidation['neutralized'])) {
                 $this->draftRevalidation->neutralize($revalidation['neutralized'], $deployedBy);
