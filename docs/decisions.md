@@ -13271,3 +13271,874 @@ aucune seconde notification. C'est prouvé sur base réelle par
   est un audit séparé, à exécuter seulement sur accord explicite.
 - Les notifications ciblant une personne précise (instrumentiste, chirurgien, manager
   émetteur d'une offre) sont inchangées.
+
+
+## D-150 — Socle d'affectation : `MissionAssignment`, écrit par un seul service explicite (2026-10-14)
+
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L1) ; non fusionné dans `main`, non déployé.**
+
+### Contexte
+
+Le refus d'affectation par le chirurgien (lot L2) doit reposer sur un horodatage propre à
+chaque affectation, jamais sur la date de création de la mission. Or rien ne l'enregistrait :
+`Mission.instrumentist` ne garde que l'état courant, et `MissionClaim` ne trace que les claims
+du pool et ne doit jamais servir de règle métier (D-117). L'instrumentiste d'une mission était
+écrit à 21 endroits, dont 11 sur des missions DRAFT (planning en préparation), et `release`,
+`assign`, `reassign`, `cancel`, `restoreAfterCancellation` ne prenaient aucun verrou.
+
+### Décision 1 — une ligne `mission_assignment` par affectation d'une mission publiée
+
+`MissionAssignment` : `mission`, `instrumentist`, `source`, `assignedAt`, `assignedBy`, puis,
+une seule fois, `endedAt`, `endReason`, `endedBy`. Aucune ligne n'est jamais supprimée.
+
+- `source` (`MissionAssignmentSource`) est toujours passée explicitement par le service
+  appelant : `POOL_CLAIM`, `OFFER_ACCEPTED` (claim d'une offre nominative TARGETED active,
+  D-125), `DIRECT_ASSIGNMENT`, `MANAGER_ASSIGNMENT`, `PLANNING_DEPLOYMENT`,
+  `POST_DEPLOY_ADDITION`, `RESTORED_AFTER_ABSENCE`, `DECLARED`, `LEGACY`. Seules
+  `POOL_CLAIM` et `OFFER_ACCEPTED` sont des acceptations volontaires
+  (`isVoluntaryAcceptance()`).
+- `endReason` (`MissionAssignmentEndReason`) : `RELEASED`, `REPLACED`, `CANCELLED`,
+  `REJECTED` (déclaration refusée), `CLOSED` (reprise uniquement : aucun code ne pose ce
+  statut).
+- Réaffecter la personne déjà affectée ne crée rien : son affectation continue, son
+  `assignedAt` est conservé.
+- **Une mission DRAFT n'a jamais d'affectation.** L'instrumentiste d'un brouillon de planning
+  (éditeur, générateur V2, création manuelle, `assignInstrumentistDraft`) reste écrit
+  directement. L'affectation commence à la publication.
+- **Au plus une affectation ouverte par mission, garanti par la base** : colonne générée
+  `active_mission_key` (= `mission_id` tant que `ended_at IS NULL`) avec index UNIQUE.
+  Générée plutôt qu'écrite par l'application, car l'id d'une mission neuve n'existe pas
+  encore quand son affectation est créée.
+- FK sans `ON DELETE` vers `mission` et `user`, comme `audit_event` et `mission_claim` :
+  l'historique n'est jamais effacé en silence.
+
+### Décision 2 — `MissionAssignmentService`, seul écrivain, appelé explicitement
+
+Aucun listener Doctrine : le service est appelé par les services applicatifs qui portent déjà
+chaque transition (D-056) ; ceux-ci gardent statut, AuditEvent, flush et message.
+
+| Appelant | Source |
+|---|---|
+| `MissionPostDeployService::claim()` | `POOL_CLAIM` / `OFFER_ACCEPTED` |
+| `assign()`, `reassign()` | `MANAGER_ASSIGNMENT` (l'ancienne se termine en `REPLACED`) |
+| `assignDirectly()` (DRAFT ou OPEN → ASSIGNED) | `DIRECT_ASSIGNMENT` |
+| `createPostDeploy()` avec instrumentiste | `POST_DEPLOY_ADDITION` |
+| `restoreAfterCancellation()` | `RESTORED_AFTER_ABSENCE` |
+| `release()` / `cancel()` | fin `RELEASED` / `CANCELLED` |
+| `MissionService::declareMission()` | `DECLARED` |
+| `MissionService::rejectDeclared()` (DECLARED → REJECTED) | fin `REJECTED`, instrumentiste conservé (`endOnFinalStatus()`) |
+| `PlanningAlertActionService` (statuts publiés non verrouillés) | `MANAGER_ASSIGNMENT` / fin `RELEASED` |
+| `PlanningDeploymentService::deploy()` | `PLANNING_DEPLOYMENT`, en masse |
+
+- **Déploiement** : les deux UPDATE en masse (DRAFT → ASSIGNED / OPEN) et l'insertion en masse
+  des affectations (`INSERT … SELECT` des missions ASSIGNED de la version sans affectation
+  ouverte) sont désormais dans une même transaction. Le résultat ASSIGNED / OPEN est inchangé.
+- **`PlanningAlertActionService`** : ses branches « DRAFT » s'appliquaient aussi aux statuts
+  publiés non verrouillés (DECLARED, IN_PROGRESS, ENCODING_IN_PROGRESS, CANCELLED, REJECTED).
+  Leur comportement est conservé à l'identique ; seule l'affectation est désormais tracée.
+- **Garde-fou** : `MissionInstrumentistWriteArchitectureTest` fige la liste nominative des
+  fichiers autorisés à appeler `->setInstrumentist(` (nombre exact d'appels et raison) et
+  interdit toute écriture DQL/SQL en masse de l'instrumentiste.
+
+### Décision 3 — concurrence
+
+- `release`, `cancel`, `assign`, `reassign` et `restoreAfterCancellation` s'exécutent sous
+  `MissionAssignmentService::inLockedChange()` : transaction (ou celle de l'appelant) et
+  lecture verrouillante `SELECT status, instrumentist_id … FOR UPDATE`. Si l'état validé
+  diffère de celui que la requête a chargé, réponse **409** au lieu d'écraser la modification
+  d'un autre. Pas de `refresh()`, qui effacerait les changements non flushés d'un appelant en
+  lot. `claim()` et `assignDirectly()` gardent leur verrou + `refresh` existant (D-124).
+- La fin d'une affectation déjà en base est écrite immédiatement et conditionnellement
+  (`… WHERE id = ? AND ended_at IS NULL`) : deux fins concurrentes de la même affectation
+  donnent 409, jamais une double fin.
+
+### Décision 4 — invariant d'affectation (validé le 2026-10-17)
+
+1. Une mission a au plus une affectation ouverte (garanti par la base).
+2. L'affectation ouverte désigne `mission.instrumentist`.
+3. Elle n'existe que pour les statuts actifs : `DECLARED`, `ASSIGNED`, `IN_PROGRESS`,
+   `ENCODING_IN_PROGRESS`, `SUBMITTED`, `VALIDATED` (une mission validée reste rouvrable,
+   D-148 : son affectation reste ouverte).
+4. `CANCELLED`, `REJECTED`, `CLOSED` n'ont jamais d'affectation ouverte ; `OPEN` et `DRAFT`
+   non plus.
+5. Une affectation fermée n'est jamais rouverte : une réaffectation crée une nouvelle ligne.
+
+Sur un statut définitif, `mission.instrumentist` n'est **pas** effacé : encodage, calculs
+financiers, facturation firmes, relevés et consultations continuent d'y lire qui a travaillé
+sur la mission. L'annulation (`cancel()`) retirait déjà l'instrumentiste avant D-150 et le
+retire toujours ; le refus d'une déclaration (`rejectDeclared()`) ferme l'affectation
+(`REJECTED`) et garde l'instrumentiste, qui consulte toujours sa mission complète (la vue
+« Affectation annulée » exclut toujours l'instrumentiste encore enregistrée sur la mission).
+
+### Décision 5 — reprise de l'existant (migration `Version20261014090000`)
+
+Toutes les lignes reprises ont `source = LEGACY` (jamais refusables) et `ended_by_id = NULL`.
+
+| Mission (avec instrumentiste) | Ligne reprise |
+|---|---|
+| `DECLARED` … `VALIDATED` (statuts actifs) | ouverte |
+| `CANCELLED`, `REJECTED`, `CLOSED` | **fermée**, `end_reason` = statut de la mission |
+| `DRAFT`, `OPEN`, ou sans instrumentiste | aucune (`OPEN` avec instrumentiste = anomalie relevée par le protocole de migration) |
+
+Dates — aucune n'est présentée comme certaine :
+
+- `assigned_at` : dernier AuditEvent d'affectation de la mission, sinon date de déploiement
+  de sa version, sinon création de la mission ;
+- `ended_at` : date de l'AuditEvent qui a rendu la mission définitive
+  (`MISSION_CANCELLED_POST_DEPLOY`, `MISSION_DECLARED_REJECTED`) s'il existe et n'est pas
+  antérieur à `assigned_at` ; **sinon `ended_at = assigned_at`**. Règle identifiable :
+  `source = 'LEGACY' AND ended_by_id IS NULL AND ended_at = assigned_at` signifie « fin non
+  datée, seulement constatée à la reprise » (durée nulle conventionnelle, jamais une durée
+  réelle). Aucun code ne lit `ended_at` pour une règle métier.
+
+Aucune donnée existante n'est modifiée (`mission`, `audit_event` identiques avant/après,
+vérifié sur base de travail, aller-retour `down`/`up` compris). Rollback :
+`DROP TABLE mission_assignment`.
+
+### Décision 6 — réalignement après un retour arrière du code (`app:mission-assignment:resync`, 2026-10-17)
+
+**Quand l'exécuter : uniquement** après un retour du code seul (`production.md` §Rollback A)
+qui a fait tourner du code antérieur à D-150 sur un schéma déjà migré
+(`Version20261014090000` exécutée), **juste avant** de réactiver le code D-150. L'ancien code
+modifie `mission.instrumentist` / `mission.status` sans tenir `mission_assignment`. Jamais
+après un déploiement normal, un `down()` (la table n'existe plus) ou une restauration de
+base (l'état restauré est cohérent avec lui-même) : la vérification y répondrait « aucune
+correction », sans effet.
+
+Sans `--apply`, la commande **n'écrit rien** : invariants, chaque correction prévue avec
+l'origine de ses dates, calculs rouverts par l'ancien code sans marqueur D-153 (listés, jamais
+modifiés). Code de sortie 0 = aligné, 1 = corrections à faire. `--apply` écrit exactement la
+liste vérifiée dans une transaction, revérifie les invariants dans cette transaction et
+annule tout si l'un reste faux ou si une ligne a changé entre-temps (sortie 1, rien
+d'écrit). `--mission <id>` (répétable) limite à des missions. Idempotente : un second passage
+ne trouve rien.
+
+| Écart laissé par l'ancien code | Correction |
+|---|---|
+| affectation ouverte dont la mission a changé de titulaire, n'en a plus, ou n'est plus active | **fermée** ; `ended_by_id` NULL ; `ended_at` et `end_reason` = premier AuditEvent d'affectation de la mission après son début (libération → `RELEASED`, annulation → `CANCELLED`, refus de déclaration → `REJECTED`, autre titulaire → `REPLACED`) ; sans AuditEvent : instant de la reprise (**borne supérieure**, signalée comme telle) et motif déduit du statut ; alerte `SURGEON_INCOMPATIBILITY` ouverte de la mission résolue, comme `close()` |
+| mission active avec instrumentiste sans affectation ouverte de cet instrumentiste | ligne `LEGACY` **ouverte**, `assigned_at` selon la règle de la Décision 5 |
+| mission définitive avec instrumentiste sans aucune ligne de cet instrumentiste | ligne `LEGACY` **fermée**, dates selon la Décision 5 (« fin non datée » si aucun AuditEvent) |
+
+Jamais modifiés : `mission`, une ligne déjà fermée, les calculs financiers. Écrivain de
+maintenance de `mission_assignment` à côté de `MissionAssignmentService`, comme la reprise de
+la migration (`MissionAssignmentResyncService`, appelé seulement par la commande). Limite :
+une affectation ouverte puis terminée entièrement pendant la période de l'ancien code (ex.
+prise du pool puis libération) ne laisse aucune trace à reprendre.
+
+### Complète D-117
+
+`MissionClaim` reste l'historique des claims du pool, jamais une règle. Toute règle métier qui
+a besoin de la date d'une affectation lit `MissionAssignment.assignedAt`.
+
+### Limites connues
+
+- Le déploiement « legacy » sans version (`deploy()` sans `versionId`, V1) passe ses DRAFT en
+  OPEN sans toucher l'instrumentiste ; il n'ouvre aucune affectation (comportement inchangé).
+- Aucun changement d'API ni d'écran dans ce lot : l'affectation n'est pas encore exposée.
+- Les branches « statut publié » de `PlanningAlertActionService` n'écrivaient aucun AuditEvent
+  et n'en écrivent toujours pas (comportement conservé) ; seule leur affectation est tracée.
+
+### Tests
+
+`MissionAssignmentIntegrationTest` (base réelle : chaque source et chaque fin, invariant
+« mission active couverte ⇔ une affectation ouverte du même instrumentiste ; statut définitif,
+OPEN, DRAFT ⇒ aucune », refus d'une déclaration, DRAFT sans affectation, déploiement, unicité
+garantie par la base, requête périmée refusée après un release commité),
+`MissionFinalStatusAffectationD150Test` (endpoints `reject-declared` puis consultation par
+l'instrumentiste) et `MissionInstrumentistWriteArchitectureTest`.
+`MissionAssignmentResyncIntegrationTest` (Décision 6 : neuf écarts d'ancien code, vérification
+sans écriture, `--apply`, idempotence, alerte résolue, annulation complète si une ligne a
+changé, codes de sortie) ; commande jouée sur la copie assainie de production après de vraies
+opérations de l'ancien code `574d8c8` (6 corrections, invariants à 0, missions inchangées). Reprise : base de travail
+migrée à `Version20261012090000`, une mission par cas de statut, résultat comparé ligne à
+ligne à l'attendu, contrôles d'invariant, aller-retour `down`/`up`.
+
+
+## D-151 — Refus d'affectation par le chirurgien (refus ponctuel), demande d'intervention du manager, missions commencées non claimables (2026-10-14)
+
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L2) ; non fusionné dans `main`, non déployé.**
+
+### Contexte
+
+L'acceptation d'une mission par un instrumentiste reste immédiate (claim, D-117 / D-125). Le
+chirurgien doit pouvoir refuser, pendant un temps limité, l'instrumentiste qui a accepté une de
+ses missions — sans jamais qu'une validation préalable soit exigée. Décisions du métier
+(2026-10-14) : refus uniquement des acceptations volontaires ; fenêtre de 24 h au plus tard
+jusqu'au début ; à moins de 12 h du début, jamais de désaffectation automatique ; formulation
+neutre pour toute désaffectation organisationnelle ; vue minimale de l'ancienne affectation ;
+interdire le claim d'une mission déjà commencée.
+
+### Décision 1 — qui, quoi, jusqu'à quand (`MissionAssignmentRefusalPolicy`)
+
+- Seul le chirurgien de la mission (`ROLE_SURGEON`) peut refuser
+  (`MissionVoter::REFUSE_ASSIGNMENT`) ; un confrère, l'instrumentiste, le manager : `403`.
+- Seule une acceptation volontaire est refusable : `MissionAssignment.source` ∈
+  {`POOL_CLAIM`, `OFFER_ACCEPTED`} (D-150). Une attribution manager, un déploiement de
+  planning, une affectation LEGACY : `ASSIGNMENT_NOT_REFUSABLE`.
+- Fenêtre : jusqu'à `min(assignedAt + 24 h, début de la mission)`, sur l'horodatage propre de
+  l'affectation (D-150), jamais sur la date de création de la mission.
+- Moins de 12 h avant le début, ou dès qu'existent des données d'encodage (encodage démarré,
+  soumis, verrouillé, heures réelles, interventions, matériel) ou un calcul financier non
+  remplacé : `REFUSAL_REQUIRES_MANAGER`.
+- L'absence de refus n'appelle aucun traitement : l'affectation existe déjà.
+- La règle est lue par le service (sous verrou), `allowedActions` et le DTO — jamais par le
+  frontend.
+
+### Décision 2 — refus ponctuel = release du chirurgien
+
+`MissionPostDeployService::refuseAssignment()` : sous `inLockedChange()` (D-150), vérifie que
+l'affectation refusée est toujours l'affectation courante (`ASSIGNMENT_SUPERSEDED` sinon,
+`ASSIGNMENT_ALREADY_ENDED` si plus aucune), applique la politique, puis `ASSIGNED → OPEN`,
+termine l'affectation `REFUSED_BY_SURGEON` (portée `PUNCTUAL`), retire la communication,
+réinitialise l'escalade J-14 (D-110), écrit `MISSION_ASSIGNMENT_REFUSED_BY_SURGEON` et envoie
+`RELEASED` avec `origin = SURGEON_REFUSAL`. La mission n'est jamais annulée. Le pool est
+sollicité comme pour tout release (D-129).
+
+### Décision 3 — l'instrumentiste refusée ne reprend jamais cette mission
+
+Nouveau motif `EligibilityReason::REFUSED_FOR_MISSION`, lu depuis
+`MissionAssignment.endReason` (une requête, indexée `(mission_id, end_reason)`), **bloquant sous
+toutes les politiques** (`STRICT_ASSIGNMENT`, `PLANNING_MODIFICATION`) : `evaluate()` (claim),
+`evaluateForReassignment()` / `evaluateForOffer()` (attribution, réaffectation, ajout,
+demande nominative, générateur, restauration après absence), `findEligibleByMission()`
+(sollicitation du pool), `evaluateAllCandidates()` (sélecteurs manager, motif affiché),
+`MissionService::list(eligibleToMe)` et `offersUnreadCount` (NOT EXISTS), `allowedActions`.
+Côté instrumentiste, ce motif ne sort jamais : l'erreur de claim porte le code neutre
+`MISSION_UNAVAILABLE` et le libellé « Cette mission n'est plus disponible pour vous ».
+
+**Amende D-036** : `findEligibleByMission()` et `evaluateAllCandidates()` font une requête
+de plus (toujours constante, aucun N+1). *Précisé par D-152 : c'est une seule requête DBAL
+(UNION refus + incompatibilité), les 3 requêtes DQL d'origine sont inchangées.*
+
+### Décision 4 — une mission commencée n'est plus claimable
+
+Nouveau motif `EligibilityReason::MISSION_ALREADY_STARTED` (`startAt ≤ maintenant`) dans
+`evaluate()` (claim) et `findEligibleByMission()` (pool), filtre `m.startAt > maintenant` dans
+la liste des offres, `claim` retiré d'`allowedActions`. **Jamais** dans
+`evaluateForReassignment()` : un manager peut toujours affecter ou corriger une mission
+commencée, et la déclaration d'une activité réellement exécutée (lot L6) n'est pas concernée.
+
+### Décision 5 — demande d'intervention du manager
+
+`POST /api/missions/{id}/assignment-review-request` (`MissionVoter::REQUEST_ASSIGNMENT_REVIEW`) :
+aucun changement d'état, une fois par affectation (`MissionAssignment.reviewRequestedAt/By`),
+`MISSION_ASSIGNMENT_REVIEW_REQUESTED`, notification `ASSIGNMENT_REVIEW_REQUESTED` aux managers
+opérationnels (D-149). Proposée (`request_assignment_review`) dès que le refus direct n'est pas
+possible.
+
+### Décision 6 — notifications
+
+| Destinataire | Événement | Type | Contenu |
+|---|---|---|---|
+| Chirurgien | claim (acceptation volontaire) | `SURGEON_POST_COVERED` | « Instrumentiste affecté à votre mission » — « [Prénom Nom] a accepté votre mission du [date] à [heure], à [établissement]. Vous pouvez signaler un refus d'affectation jusqu'au [date/heure limite]. » (deuxième phrase seulement si le refus direct est encore possible) ; ouvre `/app/s/missions/{id}` |
+| Instrumentiste | refus du chirurgien, release manager, réaffectation (ancienne) | `PLANNING_MISSION_RELEASED` / `PLANNING_MISSION_REASSIGNED` | in-app « Affectation annulée » ; e-mail imposé « SurgicalHub — Mise à jour de votre mission » (`emails/assignment_not_maintained.html.twig`) ; jamais l'auteur, le motif, le remplaçant ni « annulée » ; ouvre la vue minimale |
+| Managers opérationnels | refus du chirurgien | `ASSIGNMENT_REFUSED_BY_SURGEON` | origine réelle (chirurgien, instrumentiste) |
+| Managers opérationnels | demande d'intervention | `ASSIGNMENT_REVIEW_REQUESTED` | chirurgien, instrumentiste, raison (délai, imminence, non refusable) |
+| Chirurgien | son propre refus | — | aucune notification (`SURGEON_POST_UNCOVERED` supprimée dans ce cas) |
+
+Les désaffectations liées aux absences gardent leurs types et textes (D-127). Les deux nouveaux
+types ont l'e-mail activé par défaut (même urgence que `MISSION_OFFER_DECLINED`, D-125).
+Dispatcher unique, idempotence par épisode, `MAIL_SAFE_MODE` : inchangés (D-128, D-144, D-061).
+
+### Décision 7 — vue minimale de l'ancienne affectation
+
+`MissionVoter::VIEW_FORMER_ASSIGNMENT` : une instrumentiste dont une affectation à la mission a
+pris fin, et qui n'a plus d'autre droit de lecture, reçoit une vue minimale
+(`MissionMapper::toFormerAssigneeDetailDto`) : date, horaire, site, type, chirurgien,
+`myAssignmentStatus: "ENDED"` — ni instrumentiste, ni action, ni motif. Le frontend affiche
+« Affectation annulée ». `NotificationTargetResolver` envoie désormais
+`PLANNING_MISSION_RELEASED` vers cette vue (avant : `/app/i/planning`).
+
+### Hors périmètre de ce lot
+
+- Refus durable et incompatibilités (lot L3) : `MissionAssignmentRefusalScope` n'a que `PUNCTUAL`.
+- Aucun changement des parcours d'absence (D-127, D-130).
+
+### Tests
+
+`SurgeonAssignmentRefusalFunctionalTest` (HTTP + base réelle, 12 scénarios du cahier : acceptation
+immédiate, notification et délai, refus, reprise interdite par toutes les voies, autre
+instrumentiste, après délai, imminente, commencée, non volontaire, encodage, chirurgien
+confrère, affectation remplacée, refus répété, demande idempotente, confidentialité des
+notifications, vue minimale), `MissionAssignmentIntegrationTest` (refus concurrent d'une
+réaffectation manager, deux connexions), `MissionAssignmentRefusalPolicyTest`,
+`MissionLifecycleChangedMessageHandlerTest`, tests frontend (`MissionDetailPage.assignment`,
+`notificationFormat`).
+
+
+## D-152 — Incompatibilités chirurgien–instrumentiste, refus durable, conflits sur les missions futures (2026-10-15)
+
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L3) ; non fusionné dans `main`, non déployé.**
+
+### Contexte
+
+Un chirurgien doit pouvoir refuser durablement un instrumentiste (« Refuser et bloquer pour mes
+futures missions », D-151) ou le bloquer depuis son profil ; le manager doit pouvoir consulter
+et gérer ces incompatibilités des deux côtés. Arbitrages métier (2026-10-14) : le chirurgien
+lève ses propres blocages, le manager tous ; il bloque les instrumentistes actifs de ses
+établissements et les freelances ; un blocage n'annule jamais une affectation existante mais
+crée des conflits à traiter explicitement ; **aucun « maintenir l'affectation »** : un conflit
+reste ouvert jusqu'à sa résolution effective ; postes récurrents incompatibles refusés.
+
+### Décision 1 — modèle (`SurgeonInstrumentistIncompatibility`)
+
+`surgeon`, `instrumentist`, `origin` (`SURGEON_REFUSAL`, `SURGEON`, `MANAGER`),
+`sourceAssignment` (refus durable), `createdBy`, `createdAt`, puis une seule fois `liftedAt`,
+`liftedBy`. Jamais supprimée (historique). Au plus une incompatibilité **active** par paire,
+garanti par MySQL (colonne générée `active_pair_key` + UNIQUE) : une double création
+concurrente donne 409 `INCOMPATIBILITY_ALREADY_ACTIVE`. Seul écrivain :
+`SurgeonInstrumentistIncompatibilityService`.
+
+### Décision 2 — application : `MissionEligibilityService`, source unique
+
+Nouveau motif `EligibilityReason::SURGEON_INCOMPATIBILITY`, **bloquant sous toutes les
+politiques** (aucune exception manager). Il est lu, avec `REFUSED_FOR_MISSION` (D-151), par une
+seule requête UNION : `exclusionReasons()` (une mission × une personne) et
+`exclusionsByMission()` (lots). L'incompatibilité étant lue par chirurgien, elle s'applique
+aussi à une mission pas encore persistée. Voies couvertes : claim (`evaluate()`), liste des
+offres et compteur (`MissionService::list(eligibleToMe)`, NOT EXISTS), sollicitation du pool et
+notifications (`findEligibleByMission()`), demande nominative (`evaluateForOffer()`),
+attribution directe, affectation, réaffectation, ajout après déploiement, générateur V2,
+éditeur de planning, restauration après absence (`evaluateForReassignment()`), sélecteurs
+manager (`evaluateAllCandidates()`), roster de l'éditeur de planning (`evaluateRoster()`, avec
+le chirurgien de la ligne ou de la mission éditée), `allowedActions` (`claim` masqué). Hors du
+service d'éligibilité, trois gardes appellent `isIncompatible()` : postes récurrents
+(`SurgeonSchedulePostService`, 422), branche DRAFT des actions d'alerte, revalidation au
+déploiement (conflit bloquant `INCOMPATIBILITY` : un brouillon préparé avant le blocage n'est
+jamais publié tel quel). Les comptages de requêtes DQL de D-036 reviennent à leurs valeurs
+d'origine (3) : l'exclusion est une requête DBAL de plus, constante.
+
+### Décision 3 — confidentialité
+
+L'instrumentiste n'en sait jamais rien : aucune notification, aucun écran, aucune route
+(`SurgeonInstrumentistIncompatibilityVoter` : `MANAGE` manager, `SELF_MANAGE` chirurgien,
+`LIFT`). Un claim refusé pour ce motif répond le code neutre `MISSION_UNAVAILABLE` et le libellé
+« Cette mission n'est plus disponible pour vous ».
+
+### Décision 4 — concurrence
+
+Le claim (sous verrou de la mission) et toute affectation par `MissionPostDeployService`
+(`guardEligibility()`, dans la transaction) relisent l'incompatibilité par une **lecture
+verrouillante** (`isIncompatibleLocked()`, `FOR SHARE` sur l'index
+`(surgeon_id, instrumentist_id, lifted_at)`). La création insère puis cherche les conflits par
+une lecture verrouillante des missions. MySQL sérialise donc les deux : soit la création est
+vue par l'affectation (refus), soit elle attend l'affectation et la trouve comme conflit —
+jamais une affectation incompatible silencieuse (prouvé par `IncompatibilityConcurrencyTest`).
+
+### Décision 5 — conflits sur les missions futures
+
+À la création, chaque mission **future** du chirurgien encore `ASSIGNED` à l'instrumentiste
+devient une `PlanningAlert` `SURGEON_INCOMPATIBILITY` (une par mission), notifiée aux managers
+opérationnels par le circuit existant (`PlanningAlertRaisedMessage` → `PLANNING_ALERT`, D-149).
+Les missions ne sont pas modifiées. L'alerte n'est **ni ignorable** (`ignore()` → 409) **ni
+résolue à la main** tant que la paire est toujours affectée et l'incompatibilité active
+(`resolve()` → 409, `canIgnore`/`canResolve` à false). Elle se ferme d'elle-même dès la
+résolution effective : fin de l'affectation (réaffectation, ouverture au pool, annulation,
+refus — `MissionAssignmentService::close()`), ou levée de l'incompatibilité.
+
+### Décision 6 — refus durable
+
+`refuseAssignment(..., DURABLE)` : le refus ponctuel (D-151) plus, dans la même transaction,
+l'incompatibilité d'origine `SURGEON_REFUSAL` liée à l'affectation refusée (sauf si une
+incompatibilité active existe déjà). Ses autres missions futures avec l'instrumentiste
+deviennent des conflits, notifiés après le commit.
+
+### Décision 7 — écrans et API
+
+- Chirurgien : boîte de refus « Refuser pour cette mission » / « Refuser et bloquer pour mes
+  futures missions » ; profil « Instrumentistes bloqués » (explication, ajout parmi
+  `GET /api/me/blockable-instrumentists`, déblocage de ses propres blocages).
+- Manager : section « Incompatibilités » des fiches chirurgien et instrumentiste (actives avec
+  origine, date, auteur et missions futures en conflit ; historique ; ajout ; levée).
+- Alerte planning « Incompatibilité chirurgien–instrumentiste » (actions : réaffecter, ouvrir
+  au pool).
+- Audit : `SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED` / `_LIFTED` (`recordGlobal`, reflétés
+  dans le journal d'activité), refus durable tracé dans `MISSION_ASSIGNMENT_REFUSED_BY_SURGEON`
+  (`incompatibilityId`).
+
+### Tests
+
+`SurgeonInstrumentistIncompatibilityFunctionalTest` (7 scénarios HTTP + base réelle),
+`IncompatibilityConcurrencyTest` (deux connexions réelles), tests frontend
+`Incompatibilities.test.tsx` et refus durable (`MissionDetailPage.assignment.test.tsx`).
+
+### Réserves de validation (suivi technique, 2026-10-15)
+
+Lot L3 validé par le métier avec les réserves suivantes, à lever avant tout déploiement ; aucune
+refonte de L3 tant qu'aucun contournement actif n'est trouvé.
+
+1. **Sélecteur d'instrumentistes du manager limité à 500 comptes.** Les écrans manager
+   (incompatibilités, attribution) chargent la liste des instrumentistes en une page de 500 ;
+   au-delà, un compte n'est pas sélectionnable. À remplacer par une recherche paginée côté
+   serveur (aucun impact sur la règle : l'éligibilité reste décidée par le backend).
+   **Levée le 2026-10-17.** Constat : `/api/instrumentists` et `/api/surgeons` ne paginent pas
+   (le `limit: 500` du frontend était ignoré) — le navigateur chargeait **tous** les comptes.
+   Fiches chirurgien et instrumentiste : `GET /api/incompatibilities/candidates`, recherche
+   paginée côté serveur (voter `MANAGE`, comptes actifs du bon rôle, jamais une personne déjà
+   incompatible, 20 par page, page suivante au défilement). Planning vivant : la cellule
+   d'attribution ne propose que le roster d'éligibilité du backend ; pendant son chargement ou
+   s'il échoue, seulement l'instrumentiste actuel, plus jamais la liste complète (requête
+   `/api/instrumentists` retirée de l'écran). Tests : `IncompatibilityCandidatesSearchTest`
+   (520 instrumentistes, pages au-delà de 500, recherche, exclusions, droits),
+   `Incompatibilities.test.tsx`, `PlanningSchedulePage.test.tsx`. Hors périmètre, inchangé :
+   l'éditeur de génération V2 charge encore la liste des instrumentistes actifs pour afficher
+   ses lignes ; ses sélecteurs d'affectation utilisent le roster du backend.
+2. **Déploiement Planning V1.** Vérifié le 2026-10-15 : la seule route qui déploie
+   (`PlanningV2GenerationController::deploy`) passe toujours un `versionId` à
+   `PlanningDeploymentService::deploy()` ; la branche historique sans version n'est plus
+   atteignable par HTTP et ne crée aucune affectation. Aucun contournement actif des
+   incompatibilités. Si cette branche redevenait atteignable, elle devrait passer par
+   `MissionEligibilityService` ou être neutralisée.
+   **Revérifié le 2026-10-17** : toujours aucune voie active, branche laissée en l'état (pas de
+   refonte V1). Non-régression : `PlanningDeployAlwaysVersionedArchitectureTest` (seul
+   `PlanningV2GenerationController` utilise le service, un seul appel, toujours avec la
+   version chargée) et `PlanningLegacyDeployUnreachableTest` (requête au format V1 → 400,
+   brouillon avec paire incompatible resté DRAFT, aucune affectation, une seule route de
+   déploiement).
+3. **Vérification navigateur et tests sur une copie de production** (données réelles :
+   incompatibilités, conflits, alertes) obligatoires avant tout déploiement.
+
+### Ajustement du 2026-10-18 — les personnes bloquées restent visibles dans les recherches
+
+Demandé par le métier avant la fusion. Les règles d'incompatibilité ci-dessus sont inchangées :
+seul l'affichage des recherches change, et le défaut de l'aperçu V2 relevé à la recette est
+corrigé.
+
+- **Recherches.** Un instrumentiste bloqué ne disparaît plus des résultats : recherche paginée
+  du manager (`GET /api/incompatibilities/candidates`, fiches chirurgien et instrumentiste) et
+  recherche du chirurgien (`GET /api/me/blockable-instrumentists`) le renvoient avec
+  `blocked: true` et l'incompatibilité active (`incompatibilityId`). Il est affiché grisé avec la
+  mention texte « Bloqué » (libellé accessible, pas seulement la couleur) et n'est jamais
+  proposé à une deuxième création : chez le chirurgien, l'option n'est pas sélectionnable ; chez
+  le manager, la choisir affiche le blocage (origine, date, auteur) et l'action « Lever le
+  blocage » à la place d'« Ajouter ». Pagination côté serveur inchangée (au-delà de 500 comptes).
+  Après un ajout ou une levée, le champ de recherche et la sélection sont réinitialisés.
+- **Contextes d'affectation (manager).** Le motif d'éligibilité `SURGEON_INCOMPATIBILITY` est
+  libellé « Bloqué par le chirurgien » dans tous les sélecteurs manager (planning vivant,
+  éditeur V2, réaffectation, attribution directe), où la personne reste listée, grisée et non
+  sélectionnable tant que l'incompatibilité est active. Dans l'éditeur V2, aucune option n'est
+  sélectionnable tant que le roster du créneau n'est pas chargé, et les « libérés disponibles »
+  sont filtrés par ce roster. Le libellé est le même quelle que soit l'origine de
+  l'incompatibilité (chirurgien ou manager).
+- **Planning V2.** L'aperçu lit une fois les paires incompatibles des chirurgiens des postes
+  (une requête constante de plus : 6 pour un site, 7 pour un groupe). Une ligne dont
+  l'instrumentiste est incompatible avec le chirurgien est `CONFLICT` avec
+  `blockedReason = SURGEON_INCOMPATIBILITY`, affichée « Bloqué — instrumentiste incompatible »,
+  jamais « OK » ; elle garde l'instrumentiste du poste pour rester identifiable et ne lui
+  réserve pas le créneau. La seconde passe « instrumentistes libérés » ne propose jamais une
+  personne incompatible. La génération applique toujours `guardInstrumentist()` : mission créée
+  sans instrumentiste, refus listé dans `rejectedAssignments` — exactement les lignes bloquées de
+  l'aperçu. L'onglet Postes signale le poste (`instrumentistBlocked`) ; le manager le corrige en
+  changeant ou retirant l'instrumentiste (le garder reste refusé, 422). L'empreinte d'aperçu
+  (`previewVersion`) n'inclut pas les incompatibilités : un blocage créé entre l'aperçu et la
+  génération est rattrapé par `guardInstrumentist()`.
+- **Confidentialité.** Inchangée : ces informations ne sont servies qu'au manager et au
+  chirurgien concerné ; toutes les routes qui les exposent répondent 403 à un instrumentiste,
+  et un claim refusé pour ce motif reste `MISSION_UNAVAILABLE`.
+- **Tests.** `IncompatibilityCandidatesSearchTest` (520 instrumentistes, personne bloquée en
+  page 11 avec son incompatibilité, recherche, levée, droits et confidentialité),
+  `SurgeonInstrumentistIncompatibilityFunctionalTest` (recherche du chirurgien),
+  `PlanningV2IncompatiblePostTest` (aperçu, postes, génération et correction du poste sur base
+  réelle), `PlanningGeneratorServiceV2Test` (ligne bloquée, pas de réservation, libérés, mission
+  publiée, budget de requêtes) ; frontend `Incompatibilities.test.tsx`,
+  `GeneratePlanningTab.test.tsx`, `generatePreviewGrouping.test.ts`, `PostCard.test.tsx`.
+- **Recette navigateur du 2026-10-19** (base isolée, données fictives) : deux corrections
+  d'affichage, sans changement de règle. (1) Formulaire de poste (Postes → Ajouter / Modifier) :
+  les instrumentistes bloqués pour le chirurgien choisi y sont aussi listés grisés « Bloqué par
+  le chirurgien » et non sélectionnables (lecture de `GET /api/surgeons/{id}/incompatibilities`,
+  rien de sélectionnable avant qu'elle soit connue) ; le serveur refuse toujours un tel poste
+  (422). (2) Aperçu V2 : le libellé « Bloqué — instrumentiste incompatible » passe à la ligne au
+  lieu de recouvrir le nom de l'instrumentiste. Test : `PostFormDialog.test.tsx`.
+
+---
+
+## D-153 — Correction de l'encodage par le manager depuis « Suivi des encodages » (2026-10-15)
+
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L4) ; non fusionné dans `main`, non déployé.**
+Amende D-070 (droit d'encodage du manager « toujours »), D-143 (voter des heures) et complète
+D-148 (renvoi / réouverture) et D-136.
+
+### Contexte
+
+Le manager doit pouvoir corriger lui-même les heures réelles, les interventions et le matériel
+d'une mission depuis le tiroir du suivi des encodages, avec un historique lisible (date,
+auteur, type, ancienne et nouvelle valeur), sans jamais modifier silencieusement un montant
+verrouillé ni déclencher de facturation. Jusqu'ici, `MissionVoter::EDIT_ENCODING` accordait
+au manager l'écriture **dans tous les statuts** (y compris `DRAFT`, `OPEN`, `CANCELLED`) et
+`MissionExecutionVoter::UPDATE` dans tous les statuts non verrouillés, alors que
+`allowedActions` ne proposait jamais `edit_encoding` / `edit_hours` au manager : droits réels
+et droits annoncés divergeaient.
+
+### Décision 1 — une seule politique, appliquée aux voters et à `allowedActions`
+
+`MissionEncodingCorrectionPolicy::managerCanEditEncoding()` : statut `DECLARED`, `ASSIGNED`,
+`IN_PROGRESS`, `ENCODING_IN_PROGRESS` ou `SUBMITTED` ; encodage ni verrouillé ni facturé
+(`encodingLockedAt`, `invoiceGeneratedAt`) ; aucun calcul financier `LOCKED`.
+`managerCanEditHours()` : la même chose et une instrumentiste affectée (les heures sont les
+siennes). Ces deux méthodes sont l'unique source de `MissionVoter::EDIT_ENCODING` (branche
+manager), de `MissionExecutionVoter::UPDATE` (branche manager) et des actions
+`edit_encoding` / `edit_hours` du manager : un appel direct à l'API est refusé exactement
+quand l'action n'est pas proposée (test de cohérence sur tous les statuts). Une mission
+`VALIDATED` se **rouvre d'abord** (D-148) ; `CLOSED` et un calcul `LOCKED` ne se corrigent
+jamais. Conséquence assumée : la création d'une demande de catalogue
+(`InterventionTypeRequest`, `MaterialItemRequest`) par un manager suit la même règle. La
+branche instrumentiste est inchangée.
+
+### Décision 2 — aucun nouvel endpoint d'écriture
+
+Les corrections passent par les endpoints, services et règles existants :
+`PATCH /api/missions/{id}/execution` (heures, `hoursSource = MANAGER`),
+`/interventions` et `/material-lines` (ajout, modification, suppression ; règles
+obligatoires / exclusives / conditionnelles, choix obligatoires et tarification existants,
+`MissionEncodingGuard` inchangé). Une correction ne change ni le statut ni l'affectation.
+
+### Décision 3 — historique sans événement dupliqué
+
+- `MissionExecutionService::updateActuals()` ajoute aux audits existants
+  `MISSION_EXECUTION_UPDATED` / `MISSION_EXECUTION_DURATION_CHANGED` les valeurs avant / après
+  (`previousActualStartAt`, `actualStartAt`, `previousActualEndAt`, `actualEndAt`,
+  `previousActualDurationMinutes`, `actualDurationMinutes`, `previousHoursSource`,
+  `hoursSource`) ; ces clés sont ajoutées à la liste blanche du miroir
+  (`ActivityPayloadPolicy::MIRROR_KEYS`) et le résumé du journal devient « X a corrigé les
+  heures réelles de la mission #N : 08:00–11:30 (210 min) → 08:00–12:15 (255 min) ».
+- Interventions et matériel : rien d'ajouté, le listener gouverné (H5b) journalise déjà
+  chaque champ modifié (`from` / `to`, commentaire masqué).
+- Lecture : `GET /api/missions/{id}/encoding/history` (`MissionVoter::VIEW_ENCODING_HISTORY`,
+  managers) lit le journal d'activité de la mission (heures, interventions, matériel, étapes
+  du cycle d'encodage), au plus 200 lignes, les plus récentes d'abord. Aucun événement n'est
+  produit par cette lecture.
+
+### Décision 4 — conséquences financières
+
+| État du calcul | Correction | Conséquence |
+|---|---|---|
+| aucun / `SUPERSEDED` | possible | rien à faire |
+| `CALCULATED` / `APPROVED` actif | possible (après réouverture si validée) | le calcul reflète l'encodage validé : à recalculer depuis la fiche mission après revalidation |
+| `LOCKED` (intégré à un document) | impossible | montant figé ; régularisation par les procédures financières existantes |
+
+Le cas `CALCULATED` / `APPROVED` est annoncé au manager (`encodingCorrectionFinancialNotice`
+du détail de mission, servi par le backend). Aucun recalcul et aucune facturation ne sont
+déclenchés par une correction ou par la revalidation (vérifié : `validate()` n'en déclenche
+aucun).
+
+### Décision 6 — un calcul rendu obsolète n'est jamais facturé (vérification résiduelle, 2026-10-16)
+
+**Défaut constaté.** `reopen()` laissait le calcul actif (`CALCULATED` / `APPROVED`) intact ;
+après correction et revalidation, la mission redevenait `VALIDATED` et ce calcul, calculé
+sur l'ancien encodage, redevenait sélectionnable sans aucun signal : lignes éligibles d'une
+facture firme, génération d'un brouillon qui le contenait déjà, verrouillage, relevé
+instrumentiste (qui ne contrôlait même pas le statut de la mission pendant la réouverture).
+La liste de travail le présentait comme « Facturable ».
+
+**Décision.** `reopen()` pose `FinancialCalculation.encodingReopenedAt` sur le calcul actif
+`CALCULATED` / `APPROVED` (migration `Version20261016090000`, colonne nullable) et liste ces
+calculs dans l'audit `MISSION_ENCODING_REOPENED` (`obsoleteFinancialCalculationIds`). Un
+calcul ainsi marqué (`isObsolete()`) :
+
+- n'est plus approuvé ni verrouillé (`FinancialCalculationService::approve()` / `lock()`
+  refusent, message « Ce calcul est obsolète… ») ;
+- n'apparaît plus dans les lignes éligibles d'une facture firme ni d'un relevé instrumentiste ;
+- est refusé à l'ajout dans un brouillon et dans un relevé (`FINANCIAL_CALCULATION_OBSOLETE`)
+  et à la génération d'un brouillon qui le contient (`FINANCIAL_LINE_STALE`, ligne signalée
+  comme obsolète dans le brouillon) ;
+- apparaît dans « Facturation firmes » avec le motif `CALCULATION_OBSOLETE` (« Calcul
+  obsolète », à vérifier) et l'action « Recalculer », jamais « Approuver » ;
+- est signalé sur la carte « Calcul financier » de la mission (`obsolete`,
+  `encodingReopenedAt` dans l'API), sans bouton Approuver ni Verrouiller.
+
+Son statut et ses montants ne changent pas ; rien n'est recalculé ni annulé automatiquement.
+Seul `recalculate()`, explicite, en produit une version à jour (l'ancien passe `SUPERSEDED`,
+le nouveau n'est pas marqué). Un calcul `LOCKED` n'est jamais concerné (la réouverture reste
+refusée). Les calculs actifs de missions rouvertes avant cette migration ne sont pas marqués
+rétroactivement. Seuls ces contrôles de facturation sont ajoutés : aucun autre workflow de
+facturation n'est modifié.
+
+### Décision 5 — écran
+
+Tiroir « Suivi des encodages » : « Corriger les heures » (fenêtre des heures existante,
+`EditServiceHoursDialog`), « Corriger l'encodage » (section d'encodage existante,
+`InterventionsSection`, sans soumission), avertissement financier, carte « Historique des
+corrections ». Les boutons n'apparaissent que si `allowedActions` les contient ; après chaque
+correction, mission, heures, encodage, historique et liste sont relus.
+
+### Limites
+
+- Les corrections d'heures antérieures à D-153 n'ont pas de valeurs avant / après dans le
+  journal (seul leur résumé générique est affiché).
+- `hoursSource` reste déclaré par le client (comportement antérieur, hors périmètre).
+
+### Tests
+
+`ManagerEncodingCorrectionD153Test` (heures, interventions, matériel, historique avant / après
+sans doublon, refus sur mission validée puis correction après réouverture sans recalcul,
+refus `CLOSED` / `OPEN` / `DRAFT` / calcul `LOCKED`, historique réservé aux managers),
+`MissionActionsServiceTest` (cohérence `allowedActions` ↔ voters sur tous les statuts),
+`MissionTrackingDrawer.test.tsx` (actions servies par le backend, heures `MANAGER`, section
+d'encodage sans soumission, avertissement financier, historique).
+Décision 6 : `FirmInvoiceFinancialCalculationControllerTest::test_calculation_made_obsolete_by_a_reopen_is_never_billed_silently`
+(calcul approuvé dans un brouillon → réouverture, correction des heures, revalidation → ni
+ligne éligible firme ni instrumentiste, génération refusée, verrouillage refusé → recalcul
+explicite, de nouveau facturable), `FirmBillingWorklistControllerTest` (motif
+`CALCULATION_OBSOLETE`, action « Recalculer », ajout refusé), `FinancialCalculationCard.test.tsx`.
+
+## D-154 — Encodage des interventions et du matériel par le chirurgien sur sa mission avec instrumentiste (2026-10-16)
+
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L5) ; non fusionné dans `main`, non déployé.**
+Amende D-100 (consultation chirurgien strictement en lecture) et D-143 ; complète D-153.
+
+### Contexte
+
+Le chirurgien doit pouvoir compléter ou corriger les interventions et le matériel de ses
+propres missions, sans jamais toucher aux heures de l'instrumentiste, en respectant
+verrouillages, règles tarifaires et contrôles existants, avec un auteur tracé, et sans
+qu'une modification de l'un écrase en silence celle de l'autre (rien ne protégeait jusqu'ici
+deux encodages concurrents : le dernier PATCH gagnait).
+
+### Décision 1 — une seule politique (`SurgeonEncodingPolicy`)
+
+`canEditEncoding()` : chirurgien de **cette** mission (`ROLE_SURGEON`, jamais un confrère) ;
+une instrumentiste affectée (L5 ; les missions réalisées sans instrumentiste relèvent de L6) ;
+statut `DECLARED`, `ASSIGNED`, `IN_PROGRESS`, `ENCODING_IN_PROGRESS` ou `SUBMITTED` (mêmes
+statuts que l'instrumentiste) ; mission commencée ; encodage ni verrouillé ni facturé ; aucun
+calcul `LOCKED`. C'est l'unique source de `MissionVoter::EDIT_ENCODING` (branche chirurgien)
+et de l'action `edit_encoding` : un appel direct est refusé exactement quand l'action n'est
+pas proposée (test de cohérence sur tous les statuts × instrumentiste × début × calcul).
+`MissionEncodingGuard` applique aussi au chirurgien la règle « pas avant le début ».
+Une mission `VALIDATED` reste à rouvrir par un manager (D-148).
+
+### Décision 2 — jamais les heures, jamais une transition
+
+`MissionExecutionVoter::UPDATE` est inchangé (le chirurgien n'y figure pas) : ni
+`edit_hours`, ni `start_encoding`, ni `submit` ne lui sont proposés, et les endpoints
+correspondants lui répondent `403`. Le statut de la mission n'est jamais modifié par ses
+corrections. Les demandes de catalogue créées depuis la section d'encodage suivent la même
+règle (`EDIT_ENCODING`).
+
+### Décision 3 — réutilisation, aucun nouvel endpoint
+
+`SurgeonEncodingPage` affiche, quand `allowedActions` contient `edit_encoding`, la section
+d'encodage de l'instrumentiste (`InterventionsSection`, `MaterialWizard`,
+`EditMaterialLineDialog`, mêmes endpoints, services, règles obligatoires / exclusives /
+conditionnelles, choix et tarification), sans soumission ; la synthèse des heures reste en
+lecture. Sans ce droit (confrère, mission verrouillée, pas commencée…) la page reste
+strictement en lecture (D-100). La lecture chirurgien n'expose toujours aucune donnée
+financière (`billingStatus` omis, aucun montant).
+
+### Décision 4 — écrasements concurrents : version optimiste
+
+`MissionIntervention.version` et `MaterialLine.version` (Doctrine `#[ORM\Version]`,
+migration `Version20261016100000`, défaut 1) sont servis par `GET .../encoding` (`version`
+de chaque intervention réelle et de chaque ligne de matériel) et par les réponses
+`POST` / `PATCH .../material-lines`. Toute modification ou suppression d'intervention ou de
+ligne de matériel renvoie la version lue en `If-Match: "N"` (`EncodingVersionGuard`) :
+
+- version différente → `409 ENCODING_CONCURRENT_MODIFICATION`, rien n'est écrit ; l'écran
+  affiche le message et relit l'encodage (aucune donnée de l'autre personne perdue) ;
+- course entre ce contrôle et l'écriture → `OptimisticLockException` Doctrine, même `409` ;
+- `If-Match` absent : `428 ENCODING_VERSION_REQUIRED` pour le chirurgien ; toléré pour
+  l'instrumentiste et le manager uniquement pour un client plus ancien en cache — les
+  écrans actuels (instrumentiste, manager D-153, chirurgien) l'envoient toujours.
+
+`InterventionsSection` sérialise ses modifications / suppressions (même `scope` TanStack
+Query) et lit la version au moment de l'envoi : un ±1 rapide n'entre jamais en conflit avec
+la requête précédente du même utilisateur. Les créations ne sont pas versionnées (aucun
+écrasement possible).
+
+### Décision 5 — traçabilité
+
+Rien d'ajouté : le listener gouverné (H5b) journalise déjà chaque ajout / modification /
+suppression d'intervention et de matériel avec l'auteur réel (le chirurgien) et les valeurs
+avant / après ; l'historique manager (D-153) l'affiche.
+
+### Préparation de L6
+
+La seule condition propre à L5 est `SurgeonEncodingPolicy::hasEncodableActivity()`
+(« une instrumentiste est affectée ») ; L6 l'étendra aux missions réalisées sans
+instrumentiste. Écran (`edit_encoding` seul pilote le mode édition), endpoints, contrôle de
+version et journal sont réutilisés tels quels.
+
+### Décision 6 — auteur réel des demandes de catalogue
+
+`CATALOGUE_REQUEST_CREATED` (push et e-mail aux managers) n'annonce plus systématiquement
+« Un instrumentiste a proposé… » : l'auteur est lu sur la demande (`createdBy`) —
+« Un instrumentiste », « Le chirurgien de la mission » (ou « Un chirurgien »), « Un manager »
+— et « Demandé par » porte son nom (auparavant l'instrumentiste de la mission, quel que soit
+l'auteur). Auteur introuvable : formulation neutre, jamais supposé. Message Messenger
+inchangé.
+
+### Décision 7 — l'instrumentiste est prévenue, une fois par série de modifications
+
+Nouveau type `ENCODING_UPDATED_BY_SURGEON` (instrumentiste affectée ; in-app par défaut, push
+et e-mail selon ses préférences ; lien vers son encodage). Chaque écriture réussie du
+chirurgien de la mission sur une intervention ou une ligne de matériel émet
+`SurgeonEncodingChangedMessage` (async ; jamais pour un manager ni pour l'instrumentiste
+elle-même). Le handler regroupe : la première écriture d'une série notifie, toute écriture
+suivante du chirurgien sur la mission dans les **2 heures** est couverte par cette
+notification (une dispatch existante du même type, destinataire et mission dans la fenêtre ⇒
+rien de nouveau) ; l'épisode est l'instant de la première écriture, un rejeu Messenger ne
+notifie donc jamais deux fois (idempotence du `NotificationDispatcher`). Le contenu reste
+générique (chirurgien, mission, date, site) : aucun détail d'encodage ni montant dans la
+notification ; le détail est dans son encodage et dans l'historique manager (D-153).
+
+### Limites
+
+- Deux workers traitant en même temps deux écritures de la même série pourraient produire
+  deux notifications (le regroupement lit les dispatches existantes, sans verrou) ; sans
+  conséquence au-delà d'un doublon.
+- `If-Match` reste facultatif pour l'instrumentiste et le manager (compatibilité) ;
+  le rendre obligatoire est possible une fois les anciens clients disparus.
+
+### Tests
+
+`SurgeonEncodingD154Test` (ajout / modification / suppression d'intervention et de matériel,
+jamais les heures ni les transitions, auteur tracé ; refus sur la mission d'un confrère,
+validée, clôturée, pas commencée, sans instrumentiste ; conflit chirurgien ↔ instrumentiste
+sur matériel et intervention, rien d'écrasé ni supprimé, `428` sans version ; versions servies
+sans champ financier), `MissionActionsServiceTest` (cohérence `allowedActions` ↔ voters pour
+le chirurgien), `MissionViewEncodingTest` (amendé), `InterventionsSection.test.tsx` (`If-Match`,
+version suivante après ±1, conflit), `SurgeonEncodingPage.test.tsx` (mode édition servi par le
+backend, lecture seule sinon). Décisions 6-7 : `CatalogueRequestCreatedMessageHandlerTest`
+(auteur réel par rôle, formulation neutre), `SurgeonEncodingD154Test::test_the_instrumentist_is_notified_once_per_burst_of_surgeon_changes`
+(événement émis pour le chirurgien seulement, une notification par rafale, rejeu idempotent,
+nouvelle série après la fenêtre), `notificationFormat.test.ts`.
+
+## D-155 — Activité opératoire réalisée sans instrumentiste (2026-10-16)
+
+**Statut : commité sur `feat/surgeon-refusal-compat` (lot L6) ; non fusionné dans `main`, non déployé.**
+Amende D-070 (seule l'instrumentiste démarre l'encodage), D-143 (heures obligatoires à la
+soumission et à la validation), D-148 (le renvoi en correction notifie l'instrumentiste) et
+D-073 (`assertEligible` exige une instrumentiste). Complète D-154.
+
+### Contexte
+
+Une mission OPEN que personne n'a couverte reste OPEN, non encodable, jamais calculée. Quand
+l'intervention a pourtant eu lieu (le chirurgien a opéré sans instrumentiste), l'activité
+réelle — interventions, matériel, prestations firme — doit être encodée, contrôlée et
+facturée, sans jamais inventer d'heures ni de prestation d'instrumentiste.
+
+### Décision 1 — un fait, jamais un statut
+
+`Mission.executedWithoutInstrumentistAt` / `executedWithoutInstrumentistBy` (migration
+`Version20261016110000`), prédicats `isExecutedWithoutInstrumentist()` et
+`hasEncodableActivity()` (une instrumentiste affectée **ou** ce fait). Aucun nouveau statut :
+la mission suit le cycle d'encodage existant (ENCODING_IN_PROGRESS → SUBMITTED → VALIDATED).
+
+### Décision 2 — déclaration (`ExecutedWithoutInstrumentistPolicy`, une seule règle)
+
+`POST /api/missions/{id}/declare-executed-without-instrumentist` : chirurgien de **cette**
+mission ou manager ; mission OPEN, sans instrumentiste, **commencée** (une mission à venir reste
+disponible dans le pool, jamais déclarable). Sous le verrou de la mission (`inLockedChange`,
+D-150) : OPEN → ENCODING_IN_PROGRESS, `encodingStartedAt`, le fait, remise à zéro du marqueur
+d'escalade, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED`. La mission quitte
+immédiatement le pool : plus OPEN, donc ni claim, ni offre, ni affectation (toutes exigent OPEN
+ou ASSIGNED). Même règle pour le voter (`DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST`) et l'action
+`declare_executed_without_instrumentist` (cohérence testée sur tous les cas).
+
+### Décision 3 — encodage et soumission sans heures
+
+Interventions et matériel : endpoints, règles tarifaires, contrôles de contenu et version
+(D-154) existants — `SurgeonEncodingPolicy` accepte désormais `hasEncodableActivity()`. Le
+chirurgien soumet (`submit`, `MissionVoter::SUBMIT`) ; le manager aussi. Aucune heure n'existe
+dans ce mode : `EncodingCompletenessService` ne les exige ni à la soumission ni à la validation,
+aucune `MissionExecution` n'est créée, `edit_hours` n'est jamais proposé (les heures restent
+réservées à une instrumentiste, `MissionExecutionVoter` inchangé). La justification « BLOCK sans
+matériel » (D-080) et la complétude du contenu (D-146 bis) s'appliquent comme toujours.
+
+### Décision 4 — contrôle manager
+
+Valider, renvoyer en correction, rouvrir : inchangés. Le renvoi / la réouverture notifie **le
+chirurgien** (`ENCODING_CORRECTION_REQUESTED`, lien vers son encodage) ; il n'est jamais
+notifié de sa propre soumission (`ENCODING_SUBMITTED` sauté quand il en est l'auteur). Les
+corrections directes du manager (D-153) s'appliquent, sans heures.
+
+### Décision 5 — finances : firme uniquement
+
+`FinancialCalculationService::assertEligible`, le recalcul groupé et l'action « Calculer » du
+suivi acceptent une mission sans instrumentiste **seulement** si le fait est posé. Le moteur ne
+produit la ligne instrumentiste que si une instrumentiste est affectée : seules les lignes
+FIRM_* réellement applicables existent. Facturation firme, calcul obsolète (D-153), verrous
+LOCKED : inchangés. Une mission classique sans instrumentiste reste refusée au calcul.
+
+### Décision 6 — correction d'une déclaration erronée
+
+`POST /api/missions/{id}/cancel-executed-without-instrumentist` (manager, motif obligatoire),
+tant que l'encodage n'est pas soumis (le renvoyer d'abord en correction) : ENCODING_IN_PROGRESS
+→ OPEN, fait effacé, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED` (motif, déclarant,
+nombre d'interventions / lignes conservées — rien n'est supprimé en silence). La mission
+commencée reste non prenable depuis le pool (D-151).
+
+### Décision 7 — écrans
+
+Détail de mission (chirurgien) : « Déclarer l'activité réalisée » (confirmation), puis
+encodage et soumission dans `SurgeonEncodingPage` ; « Sans instrumentiste — activité déclarée
+par … », heures « Aucune ». `SubmitDialog` ne montre ni ne réclame d'heures dans ce mode.
+Manager : déclarer / annuler la déclaration (motif) sur le détail de mission ; « Suivi des
+encodages » affiche « Sans instrumentiste » et le déclarant. Toutes les actions sont pilotées
+par `allowedActions` et `executedWithoutInstrumentist` servis par le backend.
+
+### Correctif L5 relevé pendant L6
+
+Sur le détail de mission, « Encoder la mission » / « Gérer » envoyaient toujours vers
+`/app/i/missions/{id}/encoding` (écran instrumentiste), y compris pour le chirurgien qui a
+`edit_encoding` (D-154) : chaque espace mène désormais à son propre écran
+(`/app/s/...` pour le chirurgien). Testé.
+
+### Limites
+
+- Une offre nominative encore en attente sur la mission n'est pas close explicitement par la
+  déclaration ; elle n'est plus visible (mission non OPEN) et, la mission ayant commencé, ne
+  pourrait de toute façon plus être acceptée (D-151).
+- Les rappels d'encodage (D-143) ne concernent que les missions avec instrumentiste : le
+  chirurgien déclarant n'est pas relancé.
+
+### Tests
+
+`ActivityWithoutInstrumentistD155Test` (parcours complet : déclaration, sortie du pool,
+encodage sans heures, soumission, renvoi → chirurgien notifié, re-soumission, validation,
+calcul firme seul, éligibilité facture firme, aucune `MissionExecution` ni ligne
+instrumentiste ; règles de déclaration ; annulation auditée ; mission classique refusée au
+calcul), `MissionActionsServiceTest` (cohérence actions ↔ voter : déclarer, annuler, soumettre,
+tous statuts × rôles × instrumentiste × début × fait), frontend (détail chirurgien et manager,
+`SubmitDialog`, `SurgeonEncodingPage`, suivi).
+
+### Correctifs de recette navigateur (2026-10-16)
+
+Trois défauts relevés en recette, corrigés sans changement métier :
+
+1. **Heures d'une activité sans instrumentiste.** « Suivi des encodages » (liste et tiroir) et
+   la fiche mission manager n'affichent plus « Heures prestées non renseignées », « repli sur
+   le planifié » ni une durée effective tirée du planifié : à la place, « Activité réalisée
+   sans instrumentiste — aucune prestation horaire attendue », sans barres planifié / réel ni
+   actions de rappel ou de correction des heures. Piloté par `executedWithoutInstrumentist`
+   (servi par le backend) ; missions classiques inchangées ; moteur financier non modifié.
+2. **Renvoi en correction / réouverture.** Pour une activité sans instrumentiste, les fenêtres
+   (tiroir et fiche manager) désignent le chirurgien comme destinataire, annoncent le renvoi au
+   chirurgien et proposent des exemples de motifs de contenu (intervention manquante, matériel
+   incorrect, quantité à vérifier, mauvaise firme), jamais d'horaires. Aucune nouvelle
+   notification : le backend notifiait déjà le chirurgien (décision 4).
+3. **Préférences de notification selon le rôle.** `NotificationType::audienceRoles()` déclare,
+   pour chaque type, les rôles qui le reçoivent réellement (établis depuis le code d'envoi ;
+   ROLE_ADMIN compte comme manager) ; `GET /api/me/notification-preferences` ne propose plus
+   que les types configurables qui concernent les rôles de la personne (union pour plusieurs
+   rôles). Le `PATCH`, les préférences enregistrées et la distribution des notifications sont
+   inchangés : aucune ligne n'est supprimée, un type non proposé garde sa préférence.
+
+Tests : `NotificationTypeAudienceTest`, `MeNotificationPreferencesControllerTest` (par rôle,
+admin, multi-rôles, préférence enregistrée conservée), `EncodingTrackingTable.test.tsx`,
+`MissionTrackingDrawer.test.tsx`, `MissionDetailPage.test.tsx` (manager).
+
+Finitions (2026-10-16) :
+
+- **Types sans producteur masqués.** Audit du code d'envoi : aucun producteur actif pour
+  `PLANNING_MISSION_ADDED` / `_UPDATED` (remplacés par `PLANNING_CHANGE_SUMMARY`, H3),
+  `ABSENCE_INSTRUMENTIST_RELEASED` (plus jamais envoyé à la personne absente, H4) ni
+  `ABSENCE_OCCURRENCE_CANCELLED_MGR` / `ABSENCE_OCCURRENCE_RESTORED_MGR` / `MISSION_RESTORED_MGR`
+  (remplacés par `ABSENCE_IMPACT_SUMMARY`, D-105). Ils rejoignent `NotificationType::isRetired()`
+  (mécanisme H3) : absents de la liste des préférences et refusés par le `PATCH`, comme les
+  autres types retirés. Les cas backend, les préférences enregistrées et la distribution restent
+  inchangés.
+- **Libellés.** Tout type proposé dans les préférences a un libellé français
+  (`notificationTypeLabels.ts`, contrôlé par `notificationTypeLabels.test.ts`), dont
+  `MISSION_RESTORED`, `SURGEON_MISSION_REQUEST_ACCEPTED` / `_REJECTED`,
+  `ENCODING_ANOMALY_RESOLVED`, `ABSENCE_INSTRUMENTIST_REASSIGNED`, `ABSENCE_OCCURRENCE_RESTORED`,
+  `ABSENCE_SELF_DECLARED` et `ABSENCE_IMPACT_SUMMARY`.

@@ -483,6 +483,14 @@ class InstrumentistStatementService
                 $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_CALCULATION_NOT_APPROVED', sprintf('Le calcul de la ligne #%d n\'est ni APPROVED ni LOCKED.', $line->getId()), $context);
                 continue;
             }
+            // D-153 — calcul rendu obsolète par une réouverture de l'encodage : ses montants
+            // ne reflètent plus l'encodage revalidé. Jamais facturé ; recalculer d'abord.
+            if ($line->getFinancialCalculation()->isObsolete()) {
+                $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_CALCULATION_OBSOLETE', sprintf(
+                    'Le calcul de la ligne #%d est obsolète : l\'encodage de sa mission a été rouvert depuis. Recalculez la mission, puis ajoutez la ligne à jour.', $line->getId(),
+                ), $context);
+                continue;
+            }
             if ($this->isLineAlreadyAssigned($line)) {
                 $anomalies[] = new DocumentLineSelectionAnomaly('FINANCIAL_LINE_ALREADY_ASSIGNED', sprintf('La ligne #%d est déjà rattachée à un document.', $line->getId()), $context);
             }
@@ -516,6 +524,7 @@ class InstrumentistStatementService
             ->andWhere('l.beneficiaryInstrumentist = :instrumentist')
             ->andWhere('l.currency = :currency')
             ->andWhere('fc.status IN (:statuses)')
+            ->andWhere('fc.encodingReopenedAt IS NULL') // D-153 — jamais un calcul obsolète
             ->andWhere('sl.id IS NULL')
             ->andWhere('l.effectiveAt >= :start')
             ->andWhere('l.effectiveAt <= :end')

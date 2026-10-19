@@ -170,6 +170,7 @@ final class FinancialCalculationService
         if ($calculation->getStatus() !== FinancialCalculationStatus::CALCULATED) {
             throw new FinancialCalculationIneligibleException('Only a CALCULATED calculation can be approved.');
         }
+        $this->assertNotObsolete($calculation);
 
         $calculation->setStatus(FinancialCalculationStatus::APPROVED);
         $calculation->setApprovedAt(new \DateTimeImmutable());
@@ -187,6 +188,7 @@ final class FinancialCalculationService
         if ($calculation->getStatus() !== FinancialCalculationStatus::APPROVED) {
             throw new FinancialCalculationIneligibleException('Only an APPROVED calculation can be locked.');
         }
+        $this->assertNotObsolete($calculation);
 
         $calculation->setStatus(FinancialCalculationStatus::LOCKED);
         $calculation->setLockedAt(new \DateTimeImmutable());
@@ -216,6 +218,16 @@ final class FinancialCalculationService
         return $calculation;
     }
 
+    public const OBSOLETE_MESSAGE = "Ce calcul est obsolète : l'encodage de la mission a été rouvert depuis. Recalculez-le après revalidation de l'encodage.";
+
+    /** D-153 — un calcul rendu obsolète par une réouverture n'avance plus dans le workflow. */
+    private function assertNotObsolete(FinancialCalculation $calculation): void
+    {
+        if ($calculation->isObsolete()) {
+            throw new FinancialCalculationIneligibleException(self::OBSOLETE_MESSAGE);
+        }
+    }
+
     /**
      * §20 — exposée pour les consommateurs API/UI qui doivent savoir si une réouverture
      * est possible avant de l'offrir. MissionEncodingWorkflowService::reopen() applique
@@ -238,7 +250,11 @@ final class FinancialCalculationService
         if ($mission->getStatus() !== MissionStatus::VALIDATED) {
             throw new FinancialCalculationIneligibleException('Mission must be VALIDATED to be financially calculated.');
         }
-        if ($mission->getInstrumentist() === null) {
+        // D-155 — sans instrumentiste, seule une activité déclarée exécutée sans instrumentiste
+        // est valorisable (lignes firme uniquement : evaluate() ne produit la ligne
+        // instrumentiste que si une instrumentiste est affectée). Une mission classique reste
+        // refusée comme avant.
+        if (!$mission->hasEncodableActivity()) {
             throw new FinancialCalculationIneligibleException('Mission has no assigned instrumentist.');
         }
     }

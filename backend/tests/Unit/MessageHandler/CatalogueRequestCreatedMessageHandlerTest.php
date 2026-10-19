@@ -3,6 +3,7 @@
 namespace App\Tests\Unit\MessageHandler;
 
 use App\Entity\Hospital;
+use App\Entity\MaterialItemRequest;
 use App\Entity\Mission;
 use App\Entity\NotificationDispatch;
 use App\Entity\User;
@@ -65,13 +66,27 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
         return $this->id((new User())->setEmail('mgr' . self::$nextId . '@test.com')->setFirstname('Max')->setRoles(['ROLE_MANAGER']));
     }
 
-    private function mission(): Mission
+    /** @param string|null $author 'instrumentist' | 'surgeon' | 'colleague' | 'manager' | null (demande introuvable) */
+    private function mission(?string $author = 'instrumentist'): Mission
     {
         $instr = $this->id((new User())->setEmail('i@test.com')->setFirstname('Jane')->setLastname('Doe')->setRoles(['ROLE_INSTRUMENTIST']));
+        $surgeon = $this->id((new User())->setEmail('s@test.com')->setFirstname('Paul')->setLastname('Martin')->setRoles(['ROLE_SURGEON']));
         $m = $this->id((new Mission())->setStatus(MissionStatus::ASSIGNED)->setType(MissionType::BLOCK)
-            ->setSite($this->id((new Hospital())->setName('Site Test')))->setInstrumentist($instr)
+            ->setSite($this->id((new Hospital())->setName('Site Test')))->setInstrumentist($instr)->setSurgeon($surgeon)
             ->setStartAt(new \DateTimeImmutable('2026-08-10 08:00'))->setEndAt(new \DateTimeImmutable('2026-08-10 10:00')));
-        $this->em->method('find')->willReturnCallback(fn ($class, $id) => $class === Mission::class && $id === $m->getId() ? $m : null);
+        $creator = match ($author) {
+            'instrumentist' => $instr,
+            'surgeon' => $surgeon,
+            'colleague' => $this->id((new User())->setEmail('c@test.com')->setFirstname('Marc')->setLastname('Dubois')->setRoles(['ROLE_SURGEON'])),
+            'manager' => $this->id((new User())->setEmail('m@test.com')->setFirstname('Sophie')->setLastname('Leroy')->setRoles(['ROLE_MANAGER'])),
+            default => null,
+        };
+        $request = $creator !== null ? (new MaterialItemRequest())->setCreatedBy($creator) : null;
+        $this->em->method('find')->willReturnCallback(fn ($class, $id) => match (true) {
+            $class === Mission::class && $id === $m->getId() => $m,
+            $class === MaterialItemRequest::class && $id === 55 => $request,
+            default => null,
+        });
 
         return $m;
     }
@@ -130,9 +145,36 @@ final class CatalogueRequestCreatedMessageHandlerTest extends TestCase
         $this->handler()($this->message($m));
 
         self::assertSame(
-            ['firstname', 'requesterName', 'label', 'kindLabel', 'siteName', 'requestsUrl', 'missionUrl', 'notificationPreferencesUrl'],
+            ['firstname', 'requesterName', 'requesterRole', 'label', 'kindLabel', 'siteName', 'requestsUrl', 'missionUrl', 'notificationPreferencesUrl'],
             array_keys($this->intents[0]->email->context),
         );
+    }
+
+    /** D-154 — l'auteur annoncé est l'auteur réel de la demande, jamais « un instrumentiste » par défaut. */
+    public function test_the_announced_author_is_the_real_requester(): void
+    {
+        $cases = [
+            'instrumentist' => ['Un instrumentiste a proposé', 'Jane Doe'],
+            'surgeon' => ['Le chirurgien de la mission a proposé', 'Paul Martin'],
+            'colleague' => ['Un chirurgien a proposé', 'Marc Dubois'],
+            'manager' => ['Un manager a proposé', 'Sophie Leroy'],
+            null => ["n'existe pas encore dans le catalogue a été proposé(e)", null],
+        ];
+        foreach ($cases as $author => [$sentence, $name]) {
+            $this->setUp();
+            $this->intents = [];
+            $m = $this->mission($author === '' ? null : $author);
+            $this->users->method('findOperationalManagers')->willReturn([$this->manager()]);
+
+            $this->handler()($this->message($m));
+
+            $intent = $this->intents[0];
+            self::assertStringContainsString($sentence, $intent->push->body, (string) $author);
+            if ($author !== 'instrumentist') {
+                self::assertStringNotContainsString('instrumentiste', $intent->push->body, (string) $author);
+            }
+            self::assertSame($name, $intent->email->context['requesterName'], (string) $author);
+        }
     }
 
     public function test_unknown_mission_dispatches_nothing(): void

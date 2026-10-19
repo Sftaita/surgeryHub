@@ -4219,3 +4219,88 @@ D-114   : ABSENCE_CREATED → SURGEON_ABSENCE_COMMUNICATION_RECORDED (← absenc
 
   `EmailThroughDispatcherTest`, `ActivityJournalIntegrationTest` (append-only).
 
+## 31. Affectations d'instrumentistes (D-150)
+
+`mission_assignment` enregistre chaque affectation d'un instrumentiste à une mission
+**publiée** : source métier, `assignedAt` propre à l'affectation, puis fin (`endedAt`,
+`endReason`, `endedBy`). Une mission DRAFT n'en a jamais : l'affectation commence à la
+publication.
+
+- **Seul écrivain** : `App\Service\MissionAssignmentService` (`assign`, `unassign`,
+  `findCurrent`, `inLockedChange`, `openForDeployedVersion`), appelé explicitement par
+  `MissionPostDeployService`, `MissionService::declareMission()`, `PlanningAlertActionService`
+  et `PlanningDeploymentService`. Statuts, AuditEvents et messages restent chez ces appelants.
+- **Unicité** : colonne générée `active_mission_key` + index UNIQUE → au plus une affectation
+  ouverte par mission, garanti par MySQL.
+- **Concurrence** : `inLockedChange()` = transaction + `SELECT … FOR UPDATE` comparant le
+  statut et l'instrumentiste validés à l'état chargé ; écart → 409.
+- **Garde-fou** : `tests/Architecture/MissionInstrumentistWriteArchitectureTest` (liste
+  nominative des écritures directes autorisées : DRAFT ou autres entités).
+- **Affectation courante** : `MissionAssignmentService::findCurrent($mission)`.
+- **Invariant** (D-150 Décision 4) : affectation ouverte seulement pour DECLARED … VALIDATED,
+  et pour `mission.instrumentist` ; un statut définitif ferme l'affectation
+  (`endOnFinalStatus()`, refus d'une déclaration) sans retirer l'instrumentiste.
+
+### 31.1 Refus d'affectation par le chirurgien (D-151)
+
+- **Règle unique** : `App\Service\MissionAssignmentRefusalPolicy` (acceptation volontaire,
+  `min(assignedAt + 24 h, début)`, jamais à moins de 12 h du début ni avec des données
+  d'encodage / financières). Lue par `MissionPostDeployService::refuseAssignment()` sous verrou,
+  `MissionActionsService` (`refuse_assignment` / `request_assignment_review`) et `MissionMapper`
+  (`currentAssignment`).
+- **Effet durable sur la mission** : `MissionAssignment.endReason = REFUSED_BY_SURGEON` →
+  `EligibilityReason::REFUSED_FOR_MISSION` sur toutes les voies de `MissionEligibilityService`
+  et dans `MissionService::list(eligibleToMe)`.
+- **Notifications** : `RELEASED` + `origin = SURGEON_REFUSAL` ; formulation neutre côté
+  instrumentiste (`MissionLifecycleNotificationFactory::isNeutralRemoval()`), origine réelle
+  côté managers.
+
+### 31.2 Incompatibilités chirurgien–instrumentiste (D-152)
+
+- **Écrivain unique** : `App\Service\SurgeonInstrumentistIncompatibilityService` (création,
+  levée, conflits, périmètre « bloquable »). Unicité de l'incompatibilité active garantie par
+  MySQL (`active_pair_key`).
+- **Application** : `MissionEligibilityService::exclusionReasons()` / `exclusionsByMission()`
+  (une requête UNION avec le refus D-151) sur toutes les voies ; `isIncompatibleLocked()`
+  (lecture `FOR SHARE`) dans les transactions d'affectation pour la sérialisation.
+- **Conflits** : `PlanningAlert` `SURGEON_INCOMPATIBILITY` (non ignorable), fermée par
+  `MissionAssignmentService::close()` ou par la levée.
+- **Droits** : `SurgeonInstrumentistIncompatibilityVoter` ; l'instrumentiste n'a aucun accès.
+
+### 31.3 Correction de l'encodage par le manager (D-153)
+
+- **Politique unique** : `MissionEncodingCorrectionPolicy::managerCanEditEncoding()` /
+  `managerCanEditHours()`, lues par `MissionVoter::EDIT_ENCODING`,
+  `MissionExecutionVoter::UPDATE` et `MissionActionsService` (`edit_encoding`, `edit_hours`).
+- **Écritures** : endpoints et services d'encodage existants, aucun nouveau chemin.
+- **Historique** : `MissionEncodingHistoryService` lit `activity_event` (listener gouverné
+  pour interventions / matériel, miroir d'audit pour les heures avec valeurs avant / après) ;
+  `GET /api/missions/{id}/encoding/history`, `MissionVoter::VIEW_ENCODING_HISTORY`.
+- **Finances** : `financialImpactNotice()` annonce un calcul actif à relancer ; aucun recalcul
+  automatique, calcul `LOCKED` bloquant. La réouverture marque le calcul actif obsolète
+  (`FinancialCalculation.encodingReopenedAt`) : refusé par `approve()` / `lock()`, exclu des
+  lignes éligibles et des documents (`FirmInvoiceService`, `InstrumentistStatementService`),
+  motif `CALCULATION_OBSOLETE` dans la worklist, jusqu'au recalcul explicite.
+
+### 31.4 Encodage par le chirurgien (D-154)
+
+- **Politique unique** : `SurgeonEncodingPolicy::canEditEncoding()`, lue par
+  `MissionVoter::EDIT_ENCODING` et `MissionActionsService` (`edit_encoding`) ; heures et
+  transitions inchangées (instrumentiste / manager).
+- **Écran** : `SurgeonEncodingPage` réutilise `InterventionsSection` quand `edit_encoding`
+  est servi ; lecture seule sinon.
+- **Concurrence** : `MissionIntervention.version` / `MaterialLine.version` (`#[ORM\Version]`),
+  `If-Match` contrôlé par `EncodingVersionGuard`, `EncodingConcurrencyException` (409 / 428),
+  `OptimisticLockException` → 409 dans `ApiExceptionSubscriber`.
+- **L6** : seule `hasEncodableActivity()` est à étendre (missions sans instrumentiste).
+
+### 31.5 Activité réalisée sans instrumentiste (D-155)
+
+- **Fait, pas statut** : `Mission.executedWithoutInstrumentistAt/By`, `hasEncodableActivity()`.
+- **Règle unique** : `ExecutedWithoutInstrumentistPolicy` (déclarer, annuler, soumission par le
+  chirurgien), lue par `MissionVoter`, `MissionActionsService` et, sous verrou,
+  `MissionPostDeployService::declareExecutedWithoutInstrumentist()` /
+  `cancelExecutedWithoutInstrumentistDeclaration()`.
+- **Verrous levés dans ce mode seulement** : heures (`EncodingCompletenessService`), calcul
+  (`assertEligible`), recalcul groupé, action « Calculer » du suivi.
+- **Notifications** : renvoi / réouverture → chirurgien ; jamais d'auto-notification de soumission.

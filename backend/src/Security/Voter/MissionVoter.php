@@ -7,8 +7,13 @@ use App\Entity\User;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
+use App\Service\MissionAssignmentService;
 use App\Service\MissionDispatchService;
+use App\Service\MissionEncodingCorrectionPolicy;
 use App\Service\MissionHoursReminderPolicy;
+use App\Service\ExecutedWithoutInstrumentistPolicy;
+use App\Service\SurgeonEncodingPolicy;
+use Symfony\Component\Clock\Clock;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\Voter;
 
@@ -66,6 +71,29 @@ class MissionVoter extends Voter
     // ENCODING_REMIND : condition unique dans MissionHoursReminderPolicy.
     public const HOURS_REMIND = 'MISSION_HOURS_REMIND';
 
+    // D-151 — the mission's own surgeon (ROLE_SURGEON): refuse the instrumentist who accepted
+    // it / ask the managers to intervene. The business conditions (refusal window, imminent
+    // mission, financial guards) are decided by MissionAssignmentRefusalPolicy under the lock.
+    public const REFUSE_ASSIGNMENT         = 'MISSION_REFUSE_ASSIGNMENT';
+    public const REQUEST_ASSIGNMENT_REVIEW = 'MISSION_REQUEST_ASSIGNMENT_REVIEW';
+
+    // D-151 — an instrumentist whose affectation to this mission ended keeps a minimal,
+    // read-only view of it ("Affectation annulée"), never anything about why.
+    public const VIEW_FORMER_ASSIGNMENT = 'MISSION_VIEW_FORMER_ASSIGNMENT';
+
+    // D-153 — the encoding correction history (hours, interventions, material): managers only.
+    public const VIEW_ENCODING_HISTORY = 'MISSION_VIEW_ENCODING_HISTORY';
+
+    // D-155 — activity executed without instrumentist: declared by the mission's surgeon or a
+    // manager (ExecutedWithoutInstrumentistPolicy), an erroneous declaration cancelled by a manager.
+    public const DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST = 'MISSION_DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST';
+    public const CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST  = 'MISSION_CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST';
+
+    public function __construct(
+        // Optional only so plain unit tests can build the voter; always autowired.
+        private readonly ?MissionAssignmentService $assignments = null,
+    ) {}
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -93,6 +121,12 @@ class MissionVoter extends Voter
             self::ENCODING_REOPEN,
             self::ENCODING_REMIND,
             self::HOURS_REMIND,
+            self::REFUSE_ASSIGNMENT,
+            self::REQUEST_ASSIGNMENT_REVIEW,
+            self::VIEW_FORMER_ASSIGNMENT,
+            self::VIEW_ENCODING_HISTORY,
+            self::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST,
+            self::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST,
         ], true)) {
             return false;
         }
@@ -151,8 +185,23 @@ class MissionVoter extends Voter
             self::ENCODING_REOPEN             => $isManager && $mission->getStatus() === MissionStatus::VALIDATED,
             self::ENCODING_REMIND             => $isManager && $this->canEncodingRemind($mission),
             self::HOURS_REMIND                => $isManager && MissionHoursReminderPolicy::isReminderRelevant($mission),
-            default                           => false,
+            self::REFUSE_ASSIGNMENT,
+            self::REQUEST_ASSIGNMENT_REVIEW   => $this->isMissionSurgeon($mission, $user),
+            self::VIEW_FORMER_ASSIGNMENT      => in_array('ROLE_INSTRUMENTIST', $roles, true)
+                && $mission->getInstrumentist()?->getId() !== $user->getId()
+                && ($this->assignments?->hasEndedAffectationOf($mission, $user) ?? false),
+            self::VIEW_ENCODING_HISTORY       => $isManager,
+            self::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST => ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $user, Clock::get()->now()),
+            self::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST  => ExecutedWithoutInstrumentistPolicy::canCancel($mission, $user),
+            default                          => false,
         };
+    }
+
+    /** D-151 — the surgeon of THIS mission (a colleague's mission is never his to refuse). */
+    private function isMissionSurgeon(Mission $mission, User $user): bool
+    {
+        return in_array('ROLE_SURGEON', $user->getRoles(), true)
+            && $mission->getSurgeon()?->getId() === $user->getId();
     }
 
     private function canView(Mission $mission, User $user, bool $managerContext): bool
@@ -214,6 +263,11 @@ class MissionVoter extends Voter
             return true;
         }
 
+        // D-155 — activité déclarée sans instrumentiste : le chirurgien de la mission la soumet.
+        if (ExecutedWithoutInstrumentistPolicy::surgeonCanSubmit($mission, $user, Clock::get()->now())) {
+            return true;
+        }
+
         // SUBMIT = action instrumentiste
         if (!in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true)) {
             return false;
@@ -271,8 +325,15 @@ class MissionVoter extends Voter
 
     private function canEditEncoding(Mission $mission, User $user, bool $managerContext): bool
     {
-        // manager/admin: OK (support / correction)
+        // manager/admin: correction (D-153) in the correctable statuses, never on a locked
+        // encoding (a validated one is reopened first) — same rule as 'edit_encoding'.
         if ($managerContext) {
+            return MissionEncodingCorrectionPolicy::managerCanEditEncoding($mission);
+        }
+
+        // D-154 — the mission's surgeon (own mission, started, open encoding) — interventions
+        // and material only: hours (MissionExecutionVoter) and transitions stay unchanged.
+        if (SurgeonEncodingPolicy::canEditEncoding($mission, $user, Clock::get()->now())) {
             return true;
         }
 

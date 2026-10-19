@@ -115,6 +115,12 @@ describe("D-143 — notifications d'encodage", () => {
     expect(formatNotificationBody(reopened as any)).toContain("a été rouvert pour correction");
   });
 
+  it("D-154 — encodage complété par le chirurgien : une notification lisible, sans détail d'encodage", () => {
+    const n = { eventType: "ENCODING_UPDATED_BY_SURGEON", payload: { missionId: 501, missionDate: "15/10/2026", surgeonName: "Paul Martin" } };
+    expect(formatNotificationTitle(n)).toBe("Encodage complété par le chirurgien");
+    expect(formatNotificationBody(n as any)).toBe("Paul Martin a complété ou corrigé les interventions / le matériel de votre mission du 15/10/2026. Consultez votre encodage.");
+  });
+
   it("signalement côté instrumentiste : catégorie seulement, jamais le commentaire", () => {
     const body = formatNotificationBody({ eventType: "ENCODING_ANOMALY_INSTRUMENTIST", payload: { missionDate: "14/07/2026", type: "HOURS_INCORRECT", comment: "secret" } } as any);
     expect(body).toContain("(horaires)");
@@ -122,13 +128,45 @@ describe("D-143 — notifications d'encodage", () => {
   });
 });
 
-describe("formatNotificationBody — PLANNING_MISSION_RELEASED (H2, D-127)", () => {
-  it("dit que la mission ne fait plus partie du planning, sans jamais la proposer", () => {
-    const n = { eventType: "PLANNING_MISSION_RELEASED", payload: { missionDate: "13/11/2026", siteName: "Delta" } };
-    expect(formatNotificationTitle(n)).toBe("Mission retirée de votre planning");
+describe("formatNotificationBody — PLANNING_MISSION_RELEASED (H2, D-127 ; formulation neutre D-151)", () => {
+  it("dit seulement que l'affectation n'a pas pu être maintenue : jamais qui, jamais pourquoi, jamais une offre", () => {
+    const n = { eventType: "PLANNING_MISSION_RELEASED", payload: { missionDate: "13/11/2026", startTime: "08:00", siteName: "Delta", assignmentEnded: true } };
+    expect(formatNotificationTitle(n)).toBe("Affectation annulée");
     const body = formatNotificationBody(n);
-    expect(body).toBe("13/11/2026 — Delta — cette mission ne fait plus partie de votre planning.");
-    expect(body).not.toMatch(/disponible|reprendre|offre/i);
+    expect(body).toBe("Votre affectation à la mission du 13/11/2026 à 08:00, prévue à Delta, n'a pas pu être maintenue.");
+    expect(body).not.toMatch(/disponible|reprendre|offre|chirurgien|refus|annulée/i);
+  });
+
+  it("donne la même formulation à l'ancienne instrumentiste d'une réaffectation, et garde le texte d'ajout pour la nouvelle", () => {
+    const ended = { eventType: "PLANNING_MISSION_REASSIGNED", payload: { missionDate: "13/11/2026", startTime: "08:00", siteName: "Delta", assignmentEnded: true } };
+    expect(formatNotificationTitle(ended)).toBe("Affectation annulée");
+    expect(formatNotificationBody(ended)).toContain("n'a pas pu être maintenue");
+    expect(formatNotificationTitle({ eventType: "PLANNING_MISSION_REASSIGNED", payload: { siteName: "Delta" } })).toBe("Mission réassignée");
+  });
+});
+
+describe("D-151 — acceptation volontaire et origine réelle côté managers", () => {
+  it("dit au chirurgien qui a accepté et jusqu'à quand il peut refuser", () => {
+    const n = {
+      eventType: "SURGEON_POST_COVERED",
+      payload: { acceptedVoluntarily: true, instrumentistName: "Iris Martin", missionDate: "20/07/2030", startTime: "08:00", siteName: "Delta", refusalDeadlineAt: "2030-07-16T09:30:00+02:00" },
+    };
+    expect(formatNotificationTitle(n)).toBe("Instrumentiste affecté à votre mission");
+    expect(formatNotificationBody(n)).toMatch(/^Iris Martin a accepté votre mission du 20\/07\/2030 à 08:00, à Delta\. Vous pouvez signaler un refus d'affectation jusqu'au 16\/07\/2030 à \d\d:30\.$/);
+  });
+
+  it("garde le titre historique pour une couverture décidée par le manager", () => {
+    expect(formatNotificationTitle({ eventType: "SURGEON_POST_COVERED", payload: { instrumentistName: "Iris" } })).toBe("Poste couvert");
+  });
+
+  it("dit aux managers l'origine réelle du refus et de la demande d'intervention", () => {
+    const refused = { eventType: "ASSIGNMENT_REFUSED_BY_SURGEON", payload: { surgeonName: "Simon Chirurgien", fromInstrumentistName: "Iris Martin", missionDate: "20/07/2030", siteName: "Delta" } };
+    expect(formatNotificationTitle(refused)).toBe("Refus d'affectation par le chirurgien");
+    expect(formatNotificationBody(refused)).toBe("Dr Simon Chirurgien a refusé l'affectation de Iris Martin (mission du 20/07/2030 — Delta). La mission est remise à disposition des autres instrumentistes.");
+
+    const review = { eventType: "ASSIGNMENT_REVIEW_REQUESTED", payload: { surgeonName: "Simon Chirurgien", instrumentistName: "Iris Martin", missionDate: "20/07/2030", siteName: "Delta" } };
+    expect(formatNotificationTitle(review)).toBe("Intervention demandée sur une affectation");
+    expect(formatNotificationBody(review)).toBe("Dr Simon Chirurgien demande votre intervention sur l'affectation de Iris Martin (mission du 20/07/2030 — Delta).");
   });
 });
 

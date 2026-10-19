@@ -65,6 +65,7 @@ final class EncodingCorrectionFromTrackingD148Test extends WebTestCase
             $c->executeStatement("DELETE FROM material_line WHERE mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM mission_intervention WHERE mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM mission_execution WHERE mission_id IN ($missions)");
+            $c->executeStatement("DELETE FROM mission_assignment WHERE mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM mission WHERE id IN ($missions)");
             foreach ($this->created['items'] as $id) { $c->executeStatement('DELETE FROM material_item WHERE id = ?', [$id]); }
             foreach ($this->created['firms'] as $id) { $c->executeStatement('DELETE FROM firm WHERE id = ?', [$id]); }
@@ -388,11 +389,13 @@ final class EncodingCorrectionFromTrackingD148Test extends WebTestCase
         self::assertSame(210, $this->realMinutes($reloaded), "08:00 → 11:30 conservés (fin − début, aucune pause)");
         self::assertCount(1, $reloaded->getMaterialLines());
         self::assertNotNull($this->em->find(MissionIntervention::class, $intervention->getId()));
-        self::assertSame(
-            $calcBefore,
-            $this->em->getConnection()->fetchAssociative('SELECT * FROM financial_calculation WHERE id = ?', [$calc->getId()]),
-            'aucun recalcul, aucune altération du calcul financier',
-        );
+        // D-153 (décision 6) — seul le marqueur d'obsolescence est posé : ni statut, ni
+        // montant, ni recalcul ne changent.
+        $calcAfter = $this->em->getConnection()->fetchAssociative('SELECT * FROM financial_calculation WHERE id = ?', [$calc->getId()]);
+        self::assertNotNull($calcAfter['encoding_reopened_at'], 'calcul marqué obsolète par la réouverture');
+        // updated_at suit la pose du marqueur (horodatage technique, à la seconde près).
+        unset($calcBefore['encoding_reopened_at'], $calcAfter['encoding_reopened_at'], $calcBefore['updated_at'], $calcAfter['updated_at']);
+        self::assertSame($calcBefore, $calcAfter, 'aucun recalcul, aucune altération du calcul financier');
         self::assertSame(1, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM financial_calculation WHERE mission_id = ?', [$id]));
     }
 

@@ -166,6 +166,10 @@ final class EncodingTrackingController extends AbstractController
             'instrumentist' => $item->instrumentistId !== null
                 ? ['id' => $item->instrumentistId, 'name' => $item->instrumentistName, 'photoPath' => $item->instrumentistPhotoPath]
                 : null,
+            // D-155 — « Sans instrumentiste — activité déclarée par … » (null pour une mission classique).
+            'executedWithoutInstrumentist' => $item->executedWithoutInstrumentist
+                ? ['declaredByName' => $item->executedWithoutInstrumentistByName]
+                : null,
             'surgeon' => $item->surgeonId !== null
                 ? ['id' => $item->surgeonId, 'name' => $item->surgeonName, 'photoPath' => $item->surgeonPhotoPath]
                 : null,

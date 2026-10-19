@@ -138,6 +138,12 @@ final class MissionExecutionService
     ): MissionExecution {
         $execution = $this->findOrCreateExecution($mission, $actor);
 
+        // D-153 — the values before this call, for the before/after of the audit trail.
+        $previousStart    = $execution->getActualStartAt();
+        $previousEnd      = $execution->getActualEndAt();
+        $previousDuration = $execution->getActualDurationMinutes();
+        $previousSource   = $execution->getHoursSource();
+
         $resultStart = $actualStartAt ?? $execution->getActualStartAt();
         $resultEnd   = $actualEndAt ?? $execution->getActualEndAt();
         $explicitDurationThisCall = $actualDurationMinutes !== null;
@@ -175,17 +181,29 @@ final class MissionExecutionService
         }
 
         if ($anythingChanged) {
+            // D-153 — before/after of every hours field, whoever corrects them (instrumentist,
+            // manager): the correction history reads it as is, never recomputed.
+            $beforeAfter = [
+                'previousActualStartAt'         => $previousStart?->format(\DateTimeInterface::ATOM),
+                'actualStartAt'                 => $resultStart?->format(\DateTimeInterface::ATOM),
+                'previousActualEndAt'           => $previousEnd?->format(\DateTimeInterface::ATOM),
+                'actualEndAt'                   => $resultEnd?->format(\DateTimeInterface::ATOM),
+                'previousActualDurationMinutes' => $previousDuration,
+                'previousHoursSource'           => $previousSource?->value,
+            ];
             if ($durationChanged) {
                 $this->audit->record($mission, $actor, AuditEventType::MISSION_EXECUTION_DURATION_CHANGED, [
                     'actualDurationMinutes' => $resultDuration,
                     'effectiveDurationSource' => ($resultStart !== null && $resultEnd !== null)
                         ? EffectiveDurationSource::ACTUAL_TIMES->value
                         : EffectiveDurationSource::ACTUAL_EXPLICIT->value,
-                ]);
+                    'hoursSource' => $execution->getHoursSource()?->value,
+                ] + $beforeAfter);
             } else {
                 $this->audit->record($mission, $actor, AuditEventType::MISSION_EXECUTION_UPDATED, [
                     'hoursSource' => $hoursSource?->value,
-                ]);
+                    'actualDurationMinutes' => $resultDuration,
+                ] + $beforeAfter);
             }
             $this->em->flush();
         }

@@ -501,6 +501,7 @@ export async function fetchRosterEligibility(params: {
   startTime: string;
   endTime: string;
   excludeMissionId?: number | null;
+  surgeonId?: number | null;
   policy?: EligibilityEnforcementPolicy;
 }): Promise<RosterEligibilityResponse> {
   const res = await apiClient.get(`/api/planning/v2/eligible-instrumentists`, {
@@ -510,6 +511,7 @@ export async function fetchRosterEligibility(params: {
       startTime: params.startTime,
       endTime: params.endTime,
       excludeMissionId: params.excludeMissionId ?? undefined,
+      surgeonId: params.surgeonId ?? undefined,
       policy: params.policy,
     },
   });

@@ -49,14 +49,15 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
     }
 
     /** @return array{user: User, token: string} */
-    private function authenticate(KernelBrowser $client, string $role): array
+    /** @param string|list<string> $role un rôle, ou plusieurs (utilisateur multi-rôles) */
+    private function authenticate(KernelBrowser $client, string|array $role): array
     {
         /** @var UserPasswordHasherInterface $hasher */
         $hasher = static::getContainer()->get(UserPasswordHasherInterface::class);
 
         $user = new User();
         $user->setEmail('me-notif-pref-' . bin2hex(random_bytes(4)) . '@surgicalhub.test');
-        $user->setRoles([$role]);
+        $user->setRoles((array) $role);
         $user->setActive(true);
         $user->setPassword($hasher->hashPassword($user, self::PASSWORD));
         $this->em->persist($user);
@@ -108,7 +109,8 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
 
         self::assertSame(200, $client->getResponse()->getStatusCode());
         $body = $this->json($client->getResponse());
-        $configurable = array_filter(NotificationType::cases(), static fn (NotificationType $t) => $t->isConfigurable());
+        // Préférences selon le rôle : uniquement les types configurables qu'une instrumentiste reçoit.
+        $configurable = array_filter(NotificationType::cases(), static fn (NotificationType $t) => $t->isConfigurable() && $t->concernsRoles(['ROLE_INSTRUMENTIST']));
         self::assertCount(count($configurable), $body['items']);
         self::assertNotContains('ACCOUNT_INVITATION', array_column($body['items'], 'type'), 'H5a: mandatory email, never offered as a switch');
         self::assertNotContains('ABSENCE_POOL_MISSION_AVAILABLE', array_column($body['items'], 'type'), 'H3: retired type, never offered as a switch');
@@ -118,11 +120,8 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
         self::assertNotContains('ENCODING_ESCALATION', array_column($body['items'], 'type'));
         self::assertNotContains('ENCODING_REMINDER_D1', array_column($body['items'], 'type'));
 
-        $planningAlert = current(array_filter($body['items'], fn ($i) => $i['type'] === 'PLANNING_ALERT'));
-        self::assertNotFalse($planningAlert);
-        self::assertTrue($planningAlert['inAppEnabled']);
-        self::assertTrue($planningAlert['emailEnabled'], 'PLANNING_ALERT defaults to email=true per DefaultNotificationPreferenceResolver');
-        self::assertFalse($planningAlert['pushEnabled']);
+        // PLANNING_ALERT ne concerne que les managers : jamais proposé à une instrumentiste.
+        self::assertNotContains('PLANNING_ALERT', array_column($body['items'], 'type'));
 
         $openMission = current(array_filter($body['items'], fn ($i) => $i['type'] === 'OPEN_MISSION_AVAILABLE'));
         // H3 (D-129) — a mission becoming available is actionable: every channel on by default.
@@ -284,5 +283,110 @@ final class MeNotificationPreferencesControllerTest extends WebTestCase
         $row = $this->em->getRepository(NotificationPreference::class)->findOneBy(['user' => $user->getId(), 'notificationType' => NotificationType::PLANNING_ALERT]);
         self::assertNotNull($row);
         $this->createdIds['preferences'][] = $row->getId();
+    }
+
+    // ── Préférences selon le rôle (types réellement reçus, NotificationType::audienceRoles()) ──
+
+    /** @return list<string> */
+    private function listedTypes(KernelBrowser $client, string $token): array
+    {
+        $client->request('GET', '/api/me/notification-preferences', server: $this->auth($token));
+        self::assertSame(200, $client->getResponse()->getStatusCode());
+        return array_column($this->json($client->getResponse())['items'], 'type');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_each_role_only_sees_the_types_it_actually_receives(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+
+        $surgeon = $this->listedTypes($client, $this->authenticate($client, 'ROLE_SURGEON')['token']);
+        foreach (['ENCODING_SUBMITTED', 'ENCODING_CORRECTION_REQUESTED', 'SURGEON_POST_COVERED', 'ENCODING_ANOMALY_RESOLVED'] as $type) {
+            self::assertContains($type, $surgeon, "chirurgien : $type");
+        }
+        foreach (['ENCODING_UPDATED_BY_SURGEON', 'ASSIGNMENT_REFUSED_BY_SURGEON', 'ASSIGNMENT_REVIEW_REQUESTED', 'PLANNING_ALERT', 'OPEN_MISSION_AVAILABLE'] as $type) {
+            self::assertNotContains($type, $surgeon, "chirurgien : jamais $type");
+        }
+
+        $instrumentist = $this->listedTypes($client, $this->authenticate($client, 'ROLE_INSTRUMENTIST')['token']);
+        foreach (['ENCODING_UPDATED_BY_SURGEON', 'ENCODING_CORRECTION_REQUESTED', 'OPEN_MISSION_AVAILABLE', 'PLANNING_MISSION_RELEASED'] as $type) {
+            self::assertContains($type, $instrumentist, "instrumentiste : $type");
+        }
+        foreach (['ASSIGNMENT_REFUSED_BY_SURGEON', 'ENCODING_SUBMITTED', 'PLANNING_ALERT'] as $type) {
+            self::assertNotContains($type, $instrumentist, "instrumentiste : jamais $type");
+        }
+
+        $manager = $this->listedTypes($client, $this->authenticate($client, 'ROLE_MANAGER')['token']);
+        foreach (['ASSIGNMENT_REFUSED_BY_SURGEON', 'ASSIGNMENT_REVIEW_REQUESTED', 'PLANNING_ALERT', 'CATALOGUE_REQUEST_CREATED', 'CATALOGUE_REQUEST_RESOLVED'] as $type) {
+            self::assertContains($type, $manager, "manager : $type");
+        }
+        foreach (['ENCODING_UPDATED_BY_SURGEON', 'ENCODING_SUBMITTED', 'OPEN_MISSION_AVAILABLE'] as $type) {
+            self::assertNotContains($type, $manager, "manager : jamais $type");
+        }
+
+        $admin = $this->listedTypes($client, $this->authenticate($client, 'ROLE_ADMIN')['token']);
+        self::assertSame($manager, $admin, 'un admin voit exactement les types manager');
+    }
+
+    #[WithoutErrorHandler]
+    public function test_a_person_with_several_roles_sees_the_union_and_stored_preferences_are_kept(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+
+        ['token' => $multiToken] = $this->authenticate($client, ['ROLE_SURGEON', 'ROLE_MANAGER']);
+        $multi = $this->listedTypes($client, $multiToken);
+        $expected = array_values(array_map(static fn (NotificationType $t) => $t->value, array_filter(
+            NotificationType::cases(),
+            static fn (NotificationType $t) => $t->isConfigurable() && ($t->concernsRoles(['ROLE_SURGEON']) || $t->concernsRoles(['ROLE_MANAGER'])),
+        )));
+        self::assertSame($expected, $multi, 'union des types chirurgien et manager, dans l\'ordre du catalogue');
+        self::assertContains('ENCODING_SUBMITTED', $multi);
+        self::assertContains('ASSIGNMENT_REFUSED_BY_SURGEON', $multi);
+
+        // Une préférence déjà enregistrée sur un type désormais non proposé n'est ni supprimée ni modifiée.
+        ['user' => $user, 'token' => $token] = $this->authenticate($client, 'ROLE_SURGEON');
+        $pref = (new NotificationPreference())->setUser($this->em->getReference(User::class, $user->getId()))->setNotificationType(NotificationType::OPEN_MISSION_AVAILABLE)
+            ->setInAppEnabled(false)->setEmailEnabled(false)->setPushEnabled(false);
+        $this->em->persist($pref);
+        $this->em->flush();
+        $this->createdIds['preferences'][] = $pref->getId();
+
+        self::assertNotContains('OPEN_MISSION_AVAILABLE', $this->listedTypes($client, $token));
+        $this->em->clear();
+        $kept = $this->em->find(NotificationPreference::class, $pref->getId());
+        self::assertNotNull($kept, 'préférence enregistrée conservée');
+        self::assertFalse($kept->isInAppEnabled());
+    }
+
+    #[WithoutErrorHandler]
+    public function test_types_no_code_produces_any_more_are_hidden_for_every_role_and_their_stored_preferences_kept(): void
+    {
+        $client = static::createClient();
+        $client->disableReboot();
+        $this->em = static::getContainer()->get(EntityManagerInterface::class);
+        $retired = ['PLANNING_MISSION_ADDED', 'PLANNING_MISSION_UPDATED', 'ABSENCE_INSTRUMENTIST_RELEASED',
+            'ABSENCE_OCCURRENCE_CANCELLED_MGR', 'ABSENCE_OCCURRENCE_RESTORED_MGR', 'MISSION_RESTORED_MGR'];
+
+        ['user' => $user, 'token' => $token] = $this->authenticate($client, ['ROLE_SURGEON', 'ROLE_INSTRUMENTIST', 'ROLE_MANAGER']);
+        $pref = (new NotificationPreference())->setUser($user)->setNotificationType(NotificationType::PLANNING_MISSION_ADDED)
+            ->setInAppEnabled(false)->setEmailEnabled(true)->setPushEnabled(false);
+        $this->em->persist($pref);
+        $this->em->flush();
+        $this->createdIds['preferences'][] = $pref->getId();
+
+        $listed = $this->listedTypes($client, $token);
+        self::assertSame([], array_values(array_intersect($retired, $listed)), 'aucun type sans producteur proposé, même à tous les rôles');
+        self::assertContains('PLANNING_CHANGE_SUMMARY', $listed);
+        self::assertContains('ABSENCE_IMPACT_SUMMARY', $listed);
+
+        $this->em->clear();
+        $kept = $this->em->find(NotificationPreference::class, $pref->getId());
+        self::assertNotNull($kept, 'préférence historique conservée en base');
+        self::assertFalse($kept->isInAppEnabled());
+        self::assertTrue($kept->isEmailEnabled());
     }
 }

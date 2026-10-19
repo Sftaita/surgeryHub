@@ -7,6 +7,7 @@ use App\Entity\MissionExecution;
 use App\Entity\MissionExecutionDispute;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Service\MissionEncodingCorrectionPolicy;
 use App\Service\MissionEncodingGuard;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\Voter;
@@ -26,8 +27,9 @@ use Symfony\Component\Security\Core\Authorization\Voter\Voter;
  *  - instrumentiste assignée : uniquement tant que l'encodage est modifiable par elle
  *    (mêmes statuts que 'edit_hours' de MissionActionsService, même garde
  *    MissionEncodingGuard : jamais avant le début, jamais verrouillé/facturé) ;
- *  - manager/admin : toujours, sauf encodage verrouillé (VALIDATED) ou facturé — une
- *    correction après validation passe par reopen(), jamais par une écriture silencieuse.
+ *  - manager/admin (D-153) : MissionEncodingCorrectionPolicy::managerCanEditHours() —
+ *    statuts corrigeables, jamais verrouillé/facturé/calcul LOCKED ; une correction après
+ *    validation passe par reopen(), jamais par une écriture silencieuse.
  */
 class MissionExecutionVoter extends Voter
 {
@@ -82,7 +84,8 @@ class MissionExecutionVoter extends Voter
             return false;
         }
         if ($isManager) {
-            return true;
+            // D-153 — same rule as 'edit_hours' (MissionEncodingCorrectionPolicy).
+            return MissionEncodingCorrectionPolicy::managerCanEditHours($mission);
         }
         if ($mission->getInstrumentist()?->getId() !== $user->getId()) {
             return false;

@@ -6,6 +6,8 @@ use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningAlert;
 use App\Entity\User;
+use App\Enum\MissionAssignmentEndReason;
+use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionStatus;
 use App\Enum\OpenEpisodeCause;
 use App\Message\OpenMissionPoolMessage;
@@ -34,13 +36,22 @@ class PlanningAlertActionService
         MissionStatus::CLOSED,
     ];
 
+    /** D-150 — writer of the instrumentist (and affectation history) of a published mission. */
+    private readonly MissionAssignmentService $assignments;
+
     public function __construct(
         private readonly EntityManagerInterface    $em,
         private readonly PlanningAlertService      $alertService,
         private readonly MissionPostDeployService  $missionPostDeployService,
         private readonly PlanningConflictDetectionService $conflictDetection,
         private readonly MessageBusInterface $bus,
-    ) {}
+        ?MissionAssignmentService $assignments = null,
+        // D-152 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionEligibilityService $eligibility = null,
+    ) {
+        // D-150 — always autowired; a plain unit test that omits it still gets the real writer.
+        $this->assignments = $assignments ?? new MissionAssignmentService($em);
+    }
 
     /** @return array{mission: Mission, alert: PlanningAlert} */
     public function reassign(PlanningAlert $alert, int $instrumentistId, ?User $actor, ?string $note): array
@@ -64,10 +75,19 @@ class PlanningAlertActionService
                 throw new \LogicException('Actor must not be null for post-deploy mission mutation');
             }
             $this->missionPostDeployService->assign($mission, $actor, $instrumentistId);
-        } else {
+        } elseif ($mission->getStatus() === MissionStatus::DRAFT) {
             // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
             $mission->setInstrumentist($instrumentist);
             $mission->setStatus(MissionStatus::ASSIGNED);
+        } else {
+            // D-150 — the other non-locked statuses (DECLARED, IN_PROGRESS, ENCODING_IN_PROGRESS,
+            // CANCELLED, REJECTED) keep their existing behaviour, but the mission is published:
+            // its affectation history follows, under the mission lock.
+            $this->assignments->inLockedChange($mission, function () use ($mission, $instrumentist, $actor): void {
+                $this->assignments->assign($mission, $instrumentist, MissionAssignmentSource::MANAGER_ASSIGNMENT, $actor);
+                $mission->setStatus(MissionStatus::ASSIGNED);
+                $this->em->flush();
+            });
         }
 
         $resolvedNote = $note ?? sprintf('Réassigné à %s.', $instrumentist->getEmail());
@@ -95,10 +115,18 @@ class PlanningAlertActionService
                 throw new \LogicException('Actor must not be null for post-deploy mission mutation');
             }
             $this->missionPostDeployService->release($mission, $actor);
-        } elseif ($mission->getStatus() !== MissionStatus::OPEN) {
+        } elseif ($mission->getStatus() === MissionStatus::DRAFT) {
             // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
             $mission->setInstrumentist(null);
             $mission->setStatus(MissionStatus::OPEN);
+        } elseif ($mission->getStatus() !== MissionStatus::OPEN) {
+            // D-150 — same as reassign(): published non-locked statuses keep their behaviour,
+            // the affectation history follows, under the mission lock.
+            $this->assignments->inLockedChange($mission, function () use ($mission, $actor): void {
+                $this->assignments->unassign($mission, MissionAssignmentEndReason::RELEASED, $actor);
+                $mission->setStatus(MissionStatus::OPEN);
+                $this->em->flush();
+            });
         }
         // OPEN → already in the target state; no mutation needed.
         // ASSIGNED → the RELEASED lifecycle message solicits the pool (OpenMissionPoolNotifier).
@@ -164,6 +192,11 @@ class PlanningAlertActionService
         }
         if ($this->hasConflict($instrumentist, $mission)) {
             throw new UnprocessableEntityHttpException("L'instrumentiste a déjà une mission en conflit sur ce créneau.");
+        }
+        // D-152 — never re-affect an instrumentist incompatible with the mission's surgeon
+        // (the DRAFT branch does not go through MissionPostDeployService's eligibility gate).
+        if ($mission->getSurgeon() !== null && $this->eligibility?->isIncompatible($mission->getSurgeon(), $instrumentist)) {
+            throw new UnprocessableEntityHttpException("Cet instrumentiste est incompatible avec le chirurgien de cette mission.");
         }
     }
 

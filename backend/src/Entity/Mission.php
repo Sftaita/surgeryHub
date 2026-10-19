@@ -103,6 +103,20 @@ class Mission
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     private ?\DateTimeImmutable $encodingReminderSentAt = null;
 
+    /**
+     * D-155 — activité réellement exécutée sans instrumentiste : un FAIT posé sur la mission
+     * (jamais un statut), par le chirurgien de la mission ou un manager, quand une mission
+     * OPEN commencée n'a été couverte par personne. Ouvre l'encodage interventions / matériel
+     * sans heures ; le calcul ne porte que sur la firme. Effacé seulement par l'annulation
+     * auditée de la déclaration (manager).
+     */
+    #[ORM\Column(name: 'executed_without_instrumentist_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $executedWithoutInstrumentistAt = null;
+
+    #[ORM\ManyToOne(targetEntity: User::class)]
+    #[ORM\JoinColumn(name: 'executed_without_instrumentist_by_id', nullable: true, onDelete: 'SET NULL')]
+    private ?User $executedWithoutInstrumentistBy = null;
+
     // ✅ Lot B1 — mission_declared fields (modèle uniquement)
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
@@ -277,6 +291,31 @@ class Mission
     public function isEncodingLocked(): bool
     {
         return $this->encodingLockedAt !== null || $this->invoiceGeneratedAt !== null;
+    }
+
+    public function getExecutedWithoutInstrumentistAt(): ?\DateTimeImmutable { return $this->executedWithoutInstrumentistAt; }
+    public function getExecutedWithoutInstrumentistBy(): ?User { return $this->executedWithoutInstrumentistBy; }
+
+    /** D-155 — pose (ou efface, $at = null) le fait « activité exécutée sans instrumentiste ». */
+    public function setExecutedWithoutInstrumentist(?\DateTimeImmutable $at, ?User $by): static
+    {
+        $this->executedWithoutInstrumentistAt = $at;
+        $this->executedWithoutInstrumentistBy = $at !== null ? $by : null;
+        return $this;
+    }
+
+    public function isExecutedWithoutInstrumentist(): bool
+    {
+        return $this->executedWithoutInstrumentistAt !== null;
+    }
+
+    /**
+     * D-155 — y a-t-il une activité à encoder et à valoriser : une instrumentiste affectée, ou
+     * une activité déclarée exécutée sans instrumentiste (calcul firme uniquement).
+     */
+    public function hasEncodableActivity(): bool
+    {
+        return $this->instrumentist !== null || $this->isExecutedWithoutInstrumentist();
     }
 
     /** @return Collection<int, MissionIntervention> */

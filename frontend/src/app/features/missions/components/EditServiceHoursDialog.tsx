@@ -28,6 +28,9 @@ type Props = {
   onSaved?: () => void;
   /** Topic d'aide contextuel — omis par défaut, ce composant est réutilisé hors encodage. */
   helpTopicId?: string;
+  /** D-153 — qui saisit : l'instrumentiste (défaut) ou un manager qui corrige depuis le suivi. */
+  hoursSource?: "INSTRUMENTIST" | "MANAGER";
+  title?: string;
 };
 
 /** endUnknown (D-143) : journée en cours — seul le début est enregistré, en brouillon. */
@@ -123,7 +126,7 @@ function toActualBody(mission: Mission, draft: HoursDraft): { actualStartAt: str
  * clavier. À la réouverture, la modale repart de la valeur enregistrée (initialDraft()),
  * l'horaire prévu ne servant qu'à une première saisie.
  */
-export default function EditServiceHoursDialog({ open, onClose, mission, onSaved, helpTopicId }: Props) {
+export default function EditServiceHoursDialog({ open, onClose, mission, onSaved, helpTopicId, hoursSource = "INSTRUMENTIST", title = "Heures prestées" }: Props) {
   const queryClient = useQueryClient();
   const toast = useToast();
 
@@ -196,7 +199,7 @@ export default function EditServiceHoursDialog({ open, onClose, mission, onSaved
   function handleSave() {
     // D-143 / D-146 bis — début et fin réels ; la durée est dérivée par le serveur (fin −
     // début), jamais envoyée séparément. « Fin pas encore connue » n'envoie que le début.
-    mutation.mutate({ ...toActualBody(mission, draft), hoursSource: "INSTRUMENTIST" });
+    mutation.mutate({ ...toActualBody(mission, draft), hoursSource });
   }
 
   const plannedLabel =
@@ -205,7 +208,7 @@ export default function EditServiceHoursDialog({ open, onClose, mission, onSaved
       : "—";
 
   return (
-    <SheetModal open={open} title="Heures prestées" onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
+    <SheetModal open={open} title={title} onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
       <Box sx={{ display: "flex", alignItems: "center", gap: "10px", background: "#F5F7FA", borderRadius: "12px", padding: "12px 14px", mt: "14px" }}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={GRAY_500} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
           <rect x="3" y="4" width="18" height="17" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" />

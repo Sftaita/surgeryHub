@@ -18,12 +18,19 @@ use Symfony\Component\Messenger\MessageBusInterface;
 
 class PlanningDeploymentService
 {
+    /** D-150 — opens the affectations of the missions this deploy publishes as ASSIGNED. */
+    private readonly MissionAssignmentService $assignments;
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MessageBusInterface $bus,
         private readonly PlanningDraftRevalidationService $draftRevalidation,
         private readonly PlanningActivityRecorder $activity,
-    ) {}
+        ?MissionAssignmentService $assignments = null,
+    ) {
+        // Always autowired; a plain unit test that omits it still gets the real writer.
+        $this->assignments = $assignments ?? new MissionAssignmentService($em);
+    }
 
     /**
      * Deploy a PlanningVersion — only fast DB operations run synchronously:
@@ -107,29 +114,45 @@ class PlanningDeploymentService
         // ── 4. Publish missions — two targeted bulk UPDATEs ──────────────────
         $openMissionIds = [];
         if ($version !== null) {
-            // 4a. Pre-assigned missions (instrumentist already set) → ASSIGNED.
-            //     These instrumentists own their mission immediately; no pool claim needed.
-            $assignedCount = (int) $this->em->createQuery(
-                'UPDATE App\Entity\Mission m SET m.status = :assigned
-                 WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NOT NULL'
-            )
-                ->setParameter('assigned', MissionStatus::ASSIGNED)
-                ->setParameter('v',        $version)
-                ->setParameter('draft',    MissionStatus::DRAFT)
-                ->execute();
+            // D-150 — publishing and opening the affectations of the published missions commit
+            // together: a mission is never ASSIGNED without its MissionAssignment.
+            $publication = $this->em->getConnection();
+            $publication->beginTransaction();
+            try {
+                // 4a. Pre-assigned missions (instrumentist already set) → ASSIGNED.
+                //     These instrumentists own their mission immediately; no pool claim needed.
+                $assignedCount = (int) $this->em->createQuery(
+                    'UPDATE App\Entity\Mission m SET m.status = :assigned
+                     WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NOT NULL'
+                )
+                    ->setParameter('assigned', MissionStatus::ASSIGNED)
+                    ->setParameter('v',        $version)
+                    ->setParameter('draft',    MissionStatus::DRAFT)
+                    ->execute();
 
-            // 4b. V2 rule (Batch 15A): ALL uncovered DRAFT missions → OPEN automatically.
-            //     No manual selection required — the manager already reviewed assignments
-            //     in the Preview Editor. Every DRAFT without an instrumentist goes to pool.
-            //     $selectedUncoveredMissionIds is intentionally ignored for V2 path.
-            $poolCount = (int) $this->em->createQuery(
-                'UPDATE App\Entity\Mission m SET m.status = :open
-                 WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NULL'
-            )
-                ->setParameter('open',  MissionStatus::OPEN)
-                ->setParameter('v',     $version)
-                ->setParameter('draft', MissionStatus::DRAFT)
-                ->execute();
+                // 4a'. D-150 — their affectations start now (source PLANNING_DEPLOYMENT).
+                $this->assignments->openForDeployedVersion((int) $version->getId(), $deployedBy);
+
+                // 4b. V2 rule (Batch 15A): ALL uncovered DRAFT missions → OPEN automatically.
+                //     No manual selection required — the manager already reviewed assignments
+                //     in the Preview Editor. Every DRAFT without an instrumentist goes to pool.
+                //     $selectedUncoveredMissionIds is intentionally ignored for V2 path.
+                $poolCount = (int) $this->em->createQuery(
+                    'UPDATE App\Entity\Mission m SET m.status = :open
+                     WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NULL'
+                )
+                    ->setParameter('open',  MissionStatus::OPEN)
+                    ->setParameter('v',     $version)
+                    ->setParameter('draft', MissionStatus::DRAFT)
+                    ->execute();
+
+                $publication->commit();
+            } catch (\Throwable $e) {
+                if ($publication->isTransactionActive()) {
+                    $publication->rollBack();
+                }
+                throw $e;
+            }
 
             $this->em->clear(Mission::class);
             $missionCount = $assignedCount + $poolCount;

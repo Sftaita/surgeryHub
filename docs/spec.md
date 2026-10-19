@@ -106,6 +106,49 @@ cannot publish missions
 
 cannot approve declared missions
 
+
+Surgeons (D-151):
+
+refuse, within 24 h of a voluntary acceptance (pool / nominative offer) and at the latest before
+the mission starts, the instrumentist who accepted one of their own missions — never less than
+12 h before the start (they ask the managers to intervene instead); no prior approval is ever
+required: an acceptance nobody refuses simply stands
+
+ask the managers to intervene on the current affectation of one of their missions
+
+block an instrumentist (active on one of their sites, or a freelancer) for all their missions,
+from their profile or with a durable refusal, and lift the blocks they created (D-152); a
+blocked instrumentist never sees, is never notified of, can never accept nor be assigned to
+those missions, and is never told about the block
+
+Managers (D-152): view, create and lift any surgeon–instrumentist incompatibility; resolve
+every conflict it raises on already-assigned future missions (reassign, open to the pool or
+lift) — a conflict can never be ignored
+
+Managers (D-153): correct a mission's real hours, interventions and material directly from
+the encoding tracking drawer while its encoding is still open (declared, assigned, in
+progress, being encoded or submitted); a validated encoding is reopened first; a closed
+mission or a financially locked calculation is never corrected; every correction is kept in
+a readable history (date, author, what changed, before → after); a correction never
+recalculates nor invoices anything — an existing calculation is flagged for recalculation
+after revalidation, and an obsolete calculation can never be approved, locked or invoiced
+until it is recalculated
+
+Surgeons (D-154): add, edit and remove the interventions and material of their own started
+mission with an instrumentist while its encoding is open, from their encoding screen —
+never a colleague's mission, never the instrumentist's hours, never a submission or
+validation; every change is recorded under their name, and a change made meanwhile by the
+instrumentist (or a manager) is never overwritten: the screen reloads and says so; the
+assigned instrumentist is told once per series of changes (never once per click)
+
+Surgeons and managers (D-155): when a started mission was never covered but the operation
+really took place, declare the activity executed without instrumentist; the mission leaves
+the pool, the surgeon (or a manager) encodes the interventions and material and submits them
+without any hours; the manager corrects, validates or sends it back (the surgeon is told); only
+the services really applicable to the firm are calculated and invoiced — never an
+instrumentist's hours or fee; a manager can cancel an erroneous declaration, with a reason,
+before submission
+
 Managers/Admins:
 
 control planning

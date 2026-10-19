@@ -307,13 +307,36 @@ class NotificationService
     }
 
     /** D-113 (amends D-094) — a new catalogue proposal awaits a manager. */
-    public function catalogueRequestCreatedEmail(Mission $mission, User $manager, int $requestId, string $label, string $kindLabel, CatalogueRequestKind $kind): EmailContent
+    /**
+     * D-154 — qui a proposé, d'après l'auteur RÉEL de la demande (`createdBy`) : depuis D-153 /
+     * D-154 un manager ou le chirurgien encodent aussi. Jamais déduit de l'instrumentiste de la
+     * mission ; null (formulation neutre) si l'auteur n'est plus connu.
+     */
+    public static function catalogueRequesterRole(?User $requester, Mission $mission): ?string
+    {
+        if ($requester === null) {
+            return null;
+        }
+        $roles = $requester->getRoles();
+        if (in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true)) {
+            return 'Un manager';
+        }
+        if (in_array('ROLE_SURGEON', $roles, true)) {
+            return $mission->getSurgeon()?->getId() === $requester->getId() ? 'Le chirurgien de la mission' : 'Un chirurgien';
+        }
+
+        return in_array('ROLE_INSTRUMENTIST', $roles, true) ? 'Un instrumentiste' : null;
+    }
+
+    public function catalogueRequestCreatedEmail(Mission $mission, User $manager, int $requestId, string $label, string $kindLabel, CatalogueRequestKind $kind, ?User $requester = null): EmailContent
     {
         $requestsUrl = sprintf('%s/app/m/catalogue/requests?kind=%s&requestId=%d', $this->frontendUrl, $kind->value, $requestId);
+        $requesterName = trim(($requester?->getFirstname() ?? '') . ' ' . ($requester?->getLastname() ?? ''));
 
         return new EmailContent('SurgicalHub — Nouvelle demande Catalogue à valider', 'emails/catalogue_request_created.html.twig', [
             'firstname'     => $manager->getFirstname(),
-            'requesterName' => trim(($mission->getInstrumentist()?->getFirstname() ?? '') . ' ' . ($mission->getInstrumentist()?->getLastname() ?? '')),
+            'requesterName' => $requesterName !== '' ? $requesterName : null,
+            'requesterRole' => self::catalogueRequesterRole($requester, $mission),
             'label'         => $label,
             'kindLabel'     => $kindLabel,
             'siteName'      => $mission->getSite()?->getName(),

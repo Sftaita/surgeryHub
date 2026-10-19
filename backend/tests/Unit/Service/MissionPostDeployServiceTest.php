@@ -1022,8 +1022,13 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->setId($version, 700);
 
         // Mimic Doctrine assigning the auto-increment PK on persist (unit test, no real EM).
-        $this->em->expects($this->once())->method('persist')
-            ->willReturnCallback(fn (object $m) => $this->setId($m, self::$nextId++));
+        // D-150 — two persists: the instrumentist's affectation, then the Mission itself.
+        $persisted = [];
+        $this->em->expects($this->exactly(2))->method('persist')
+            ->willReturnCallback(function (object $m) use (&$persisted): void {
+                $persisted[] = $m;
+                $this->setId($m, self::$nextId++);
+            });
         $this->em->method('flush');
 
         $mission = $this->service->createPostDeploy(
@@ -1036,6 +1041,11 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
         $this->assertSame($instrumentist, $mission->getInstrumentist());
         $this->assertSame($version, $mission->getPlanningVersion());
+
+        $assignments = array_values(array_filter($persisted, static fn (object $o) => $o instanceof \App\Entity\MissionAssignment));
+        $this->assertCount(1, $assignments);
+        $this->assertSame($mission, $assignments[0]->getMission());
+        $this->assertSame(\App\Enum\MissionAssignmentSource::POST_DEPLOY_ADDITION, $assignments[0]->getSource());
     }
 
     /** D-101 — an "ajout post-deploy" mission must never be created ASSIGNED to an ineligible candidate. */

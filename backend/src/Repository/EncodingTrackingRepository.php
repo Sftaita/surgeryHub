@@ -53,10 +53,11 @@ final class EncodingTrackingRepository
         }
 
         $missions = $this->em->createQueryBuilder()
-            ->select('m', 'surgeon', 'instrumentist', 'site', 'execution')
+            ->select('m', 'surgeon', 'instrumentist', 'site', 'execution', 'declaredBy')
             ->from(Mission::class, 'm')
             ->leftJoin('m.surgeon', 'surgeon')
             ->leftJoin('m.instrumentist', 'instrumentist')
+            ->leftJoin('m.executedWithoutInstrumentistBy', 'declaredBy') // D-155
             ->leftJoin('m.site', 'site')
             ->leftJoin('m.execution', 'execution')
             ->where('m.id IN (:ids)')

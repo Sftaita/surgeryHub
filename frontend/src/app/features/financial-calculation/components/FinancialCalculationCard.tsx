@@ -217,6 +217,13 @@ export default function FinancialCalculationCard({ missionId }: Props) {
 
       {active && (
         <Stack spacing={1.5}>
+          {active.obsolete && (
+            <Alert severity="warning" data-testid="calculation-obsolete">
+              <strong>Calcul obsolète</strong> — l'encodage de la mission a été rouvert après ce calcul. Ses montants ne
+              reflètent plus l'encodage revalidé : il ne peut être ni approuvé, ni verrouillé, ni facturé. Recalculez-le
+              une fois l'encodage revalidé.
+            </Alert>
+          )}
           <Table size="small">
             <TableHead>
               <TableRow>
@@ -276,12 +283,12 @@ export default function FinancialCalculationCard({ missionId }: Props) {
           </Box>
 
           <Stack direction="row" spacing={1} flexWrap="wrap">
-            {active.status === "CALCULATED" && (
+            {active.status === "CALCULATED" && !active.obsolete && (
               <Button size="small" variant="contained" disableElevation onClick={() => approveMutation.mutate(active.id)} disabled={approveMutation.isPending}>
                 {approveMutation.isPending ? <CircularProgress size={16} /> : "Approuver"}
               </Button>
             )}
-            {active.status === "APPROVED" && (
+            {active.status === "APPROVED" && !active.obsolete && (
               <Button size="small" variant="contained" disableElevation color="success" onClick={() => lockMutation.mutate(active.id)} disabled={lockMutation.isPending}>
                 {lockMutation.isPending ? <CircularProgress size={16} /> : "Verrouiller"}
               </Button>

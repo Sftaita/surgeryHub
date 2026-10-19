@@ -75,6 +75,7 @@ final class OpenMissionPoolNotifierIntegrationTest extends KernelTestCase
             $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($users)");
             $conn->executeStatement("DELETE FROM notification_event WHERE user_id IN ($users) OR mission_id IN ($missions)");
             $conn->executeStatement('DELETE FROM absence WHERE id IN (' . (implode(',', $this->created['absences']) ?: '0') . ')');
+            $conn->executeStatement("DELETE FROM mission_assignment WHERE mission_id IN ($missions)");
             $conn->executeStatement("DELETE FROM mission WHERE id IN ($missions)");
             $conn->executeStatement('DELETE FROM site_membership WHERE id IN (' . (implode(',', $this->created['memberships']) ?: '0') . ')');
             $conn->executeStatement("DELETE FROM user WHERE id IN ($users)");

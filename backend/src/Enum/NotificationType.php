@@ -239,9 +239,24 @@ enum NotificationType: string
     //                       l'a rouvert (VALIDATED), avec le motif. Mêmes canaux que
     //                       ENCODING_ANOMALY_INSTRUMENTIST (in-app + push selon préférences).
     case ENCODING_CORRECTION_REQUESTED = 'ENCODING_CORRECTION_REQUESTED'; // 29 chars
+    // D-154 — instrumentiste : le chirurgien de la mission a complété ou corrigé les
+    //                       interventions / le matériel de son encodage. Une notification par
+    //                       série de modifications (regroupées, jamais une par clic) ; in-app
+    //                       par défaut, push et e-mail selon ses préférences.
+    case ENCODING_UPDATED_BY_SURGEON = 'ENCODING_UPDATED_BY_SURGEON'; // 27 chars
     // D-136 — « Rappeler les heures » (manager → instrumentiste), auparavant une chaîne libre
     // sur les lignes outbound ; même valeur pour que l'historique existant garde son type.
     case MISSION_HOURS_REMINDER = 'MISSION_HOURS_REMINDER';
+
+    // ── Refus d'affectation par le chirurgien (D-151) ─────────────────────────
+    // ASSIGNMENT_REFUSED_BY_SURGEON → managers opérationnels : la véritable origine d'une
+    //                       désaffectation (le chirurgien), que l'instrumentiste ne voit jamais
+    //                       (elle reçoit PLANNING_MISSION_RELEASED, formulation neutre).
+    // ASSIGNMENT_REVIEW_REQUESTED   → managers opérationnels : le chirurgien demande une
+    //                       intervention sur l'affectation (délai de refus écoulé, mission
+    //                       imminente ou affectation non refusable). Aucun changement d'état.
+    case ASSIGNMENT_REFUSED_BY_SURGEON = 'ASSIGNMENT_REFUSED_BY_SURGEON'; // 29 chars
+    case ASSIGNMENT_REVIEW_REQUESTED   = 'ASSIGNMENT_REVIEW_REQUESTED';   // 27 chars
 
     /**
      * H5a — types whose email is sent whatever the recipient's preferences
@@ -265,6 +280,69 @@ enum NotificationType: string
         return in_array($this, [self::ENCODING_REMINDER, self::ENCODING_ESCALATION, self::MISSION_HOURS_REMINDER], true);
     }
 
+    public const AUDIENCE_SURGEON = 'ROLE_SURGEON';
+    public const AUDIENCE_INSTRUMENTIST = 'ROLE_INSTRUMENTIST';
+    public const AUDIENCE_MANAGER = 'ROLE_MANAGER';
+
+    /**
+     * Roles that actually RECEIVE this type, as decided by the code that sends it (recipient
+     * chosen as the mission's surgeon / instrumentist, the operational managers, the creator of
+     * a catalogue request…). Drives which switches the preferences screen offers to a person
+     * (MeController) — never who receives a notification. ROLE_ADMIN counts as a manager.
+     * Types no code produces any more keep the audience their name and history describe.
+     *
+     * @return list<string>
+     */
+    public function audienceRoles(): array
+    {
+        $s = self::AUDIENCE_SURGEON;
+        $i = self::AUDIENCE_INSTRUMENTIST;
+        $m = self::AUDIENCE_MANAGER;
+
+        return match ($this) {
+            self::PLANNING_ALERT, self::PLANNING_DEPLOYED_MANAGER, self::MISSION_OFFER_DECLINED,
+            self::ABSENCE_SELF_DECLARED, self::ABSENCE_OCCURRENCE_CANCELLED_MGR, self::ABSENCE_OCCURRENCE_RESTORED_MGR,
+            self::MISSION_RESTORED_MGR, self::ABSENCE_IMPACT_SUMMARY, self::CATALOGUE_REQUEST_CREATED,
+            self::SURGEON_MISSION_REQUEST_CREATED, self::ENCODING_ANOMALY_REPORTED, self::MISSION_DECLARED,
+            self::ENCODING_ESCALATION, self::ASSIGNMENT_REFUSED_BY_SURGEON, self::ASSIGNMENT_REVIEW_REQUESTED => [$m],
+
+            self::PLANNING_DEPLOYED_SURGEON, self::SURGEON_POST_COVERED, self::SURGEON_POST_UNCOVERED,
+            self::ABSENCE_SURGEON_MISSION_OPENED, self::ABSENCE_OCCURRENCE_UNCOVERED, self::MISSION_UNCOVERED_ESCALATION,
+            self::SURGEON_MISSION_OPEN_PUBLISHED, self::SURGEON_MISSION_REQUEST_ACCEPTED, self::SURGEON_MISSION_REQUEST_REJECTED,
+            self::ENCODING_ANOMALY_RESOLVED, self::ENCODING_SUBMITTED => [$s],
+
+            self::PLANNING_DEPLOYED_INSTRUMENTIST, self::OPEN_MISSION_AVAILABLE, self::PLANNING_MISSION_REASSIGNED,
+            self::PLANNING_MISSION_RELEASED, self::MISSION_OFFERED, self::MISSION_ASSIGNED_DIRECTLY,
+            self::ABSENCE_INSTRUMENTIST_RELEASED, self::ABSENCE_MISSION_CANCELLED, self::ABSENCE_INSTRUMENTIST_REASSIGNED,
+            self::ABSENCE_OCCURRENCE_CANCELLED, self::ABSENCE_POOL_MISSION_AVAILABLE, self::ABSENCE_OCCURRENCE_RESTORED,
+            self::ROOM_TAKEOVER_MISSION_OFFER, self::ENCODING_REMINDER_D1, self::MISSION_DECLARED_APPROVED,
+            self::MISSION_DECLARED_REJECTED, self::ENCODING_REMINDER, self::ENCODING_ANOMALY_INSTRUMENTIST,
+            self::ENCODING_UPDATED_BY_SURGEON, self::MISSION_HOURS_REMINDER => [$i],
+
+            self::PLANNING_MISSION_CANCELLED, self::PLANNING_CHANGE_SUMMARY, self::PLANNING_MISSION_ADDED,
+            self::PLANNING_MISSION_UPDATED, self::MISSION_RESTORED, self::PLANNING_RESENT_MANUAL,
+            self::ABSENCE_REQUEST_MISSING, self::ABSENCE_ENCODED_RECAP => [$s, $i],
+
+            // D-155 — the surgeon of an activity executed without instrumentist encodes it.
+            self::ENCODING_CORRECTION_REQUESTED => [$i, $s],
+
+            // The creator of the request: an instrumentist, the mission's surgeon (D-154) or a manager (D-153).
+            self::CATALOGUE_REQUEST_RESOLVED, self::CATALOGUE_REQUEST_IGNORED => [$i, $s, $m],
+
+            self::ACCOUNT_INVITATION, self::ACCOUNT_EMAIL_CHANGED => [$s, $i, $m],
+        };
+    }
+
+    /** Does a person with these roles receive this type (ROLE_ADMIN counts as a manager)? */
+    public function concernsRoles(array $roles): bool
+    {
+        if (in_array('ROLE_ADMIN', $roles, true)) {
+            $roles[] = self::AUDIENCE_MANAGER;
+        }
+
+        return array_intersect($this->audienceRoles(), $roles) !== [];
+    }
+
     /** Offered in the person's notification preferences (a switch must change something). */
     public function isConfigurable(): bool
     {
@@ -275,9 +353,17 @@ enum NotificationType: string
      * H3 (D-129) — types no code produces any more, kept only so historical rows stay
      * readable. Never offered as a preference (a switch that changes nothing would lie).
      * D-143 — ENCODING_REMINDER_D1 replaced by ENCODING_REMINDER.
+     * D-155 (recette) — audited: no active producer for PLANNING_MISSION_ADDED / _UPDATED
+     * (superseded by PLANNING_CHANGE_SUMMARY, H3), ABSENCE_INSTRUMENTIST_RELEASED (never sent
+     * to the absent person, H4) nor the three *_MGR types (replaced by ABSENCE_IMPACT_SUMMARY,
+     * D-105). Hidden from the preferences only: stored rows stay, distribution is unchanged.
      */
     public function isRetired(): bool
     {
-        return in_array($this, [self::ABSENCE_POOL_MISSION_AVAILABLE, self::ENCODING_REMINDER_D1], true);
+        return in_array($this, [
+            self::ABSENCE_POOL_MISSION_AVAILABLE, self::ENCODING_REMINDER_D1,
+            self::PLANNING_MISSION_ADDED, self::PLANNING_MISSION_UPDATED, self::ABSENCE_INSTRUMENTIST_RELEASED,
+            self::ABSENCE_OCCURRENCE_CANCELLED_MGR, self::ABSENCE_OCCURRENCE_RESTORED_MGR, self::MISSION_RESTORED_MGR,
+        ], true);
     }
 }

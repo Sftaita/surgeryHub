@@ -28,6 +28,8 @@ import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import {
   approveDeclaredMission,
   cancelMission,
+  declareExecutedWithoutInstrumentist,
+  cancelExecutedWithoutInstrumentist,
   fetchMissionById,
   getMissionExecution,
   rejectDeclaredMission,
@@ -42,6 +44,7 @@ import {
 } from "../../features/missions/utils/missions.format";
 
 import EditMissionDialog from "../../features/missions/components/EditMissionDialog";
+import { NO_HOURS_WITHOUT_INSTRUMENTIST } from "../../features/encoding-tracking/encodingStateMeta";
 import PublishMissionDialog from "../../features/missions/components/PublishMissionDialog";
 import FinancialCalculationCard from "../../features/financial-calculation/components/FinancialCalculationCard";
 import {
@@ -136,6 +139,10 @@ export function MissionDetailContent({
   const [reopenComment, setReopenComment] = React.useState("");
   const [cancelConfirmOpen, setCancelConfirmOpen] = React.useState(false);
   const [cancelReason, setCancelReason] = React.useState("");
+  // D-155 — activité exécutée sans instrumentiste : déclarer / annuler une déclaration erronée.
+  const [declareOpen, setDeclareOpen] = React.useState(false);
+  const [cancelDeclarationOpen, setCancelDeclarationOpen] = React.useState(false);
+  const [cancelDeclarationReason, setCancelDeclarationReason] = React.useState("");
 
   async function refreshAfterAction() {
     await queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
@@ -230,6 +237,27 @@ export function MissionDetailContent({
     },
   });
 
+  const declareMutation = useMutation({
+    mutationFn: async () => declareExecutedWithoutInstrumentist(missionId),
+    onSuccess: async () => {
+      await refreshAfterAction();
+      setDeclareOpen(false);
+      toast.success("Activité déclarée réalisée sans instrumentiste.");
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? (err?.response?.status === 403 ? "Accès interdit." : "Déclaration impossible.")),
+  });
+
+  const cancelDeclarationMutation = useMutation({
+    mutationFn: async (reason: string) => cancelExecutedWithoutInstrumentist(missionId, reason),
+    onSuccess: async () => {
+      await refreshAfterAction();
+      setCancelDeclarationOpen(false);
+      setCancelDeclarationReason("");
+      toast.success("Déclaration annulée : la mission est de nouveau ouverte.");
+    },
+    onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? (err?.response?.status === 403 ? "Accès interdit." : "Annulation impossible.")),
+  });
+
   if (!Number.isFinite(missionId)) return <Typography sx={{ p: 3 }}>ID invalide</Typography>;
   if (isLoading) return <Typography sx={{ p: 3 }} color="text.secondary">Chargement…</Typography>;
 
@@ -254,6 +282,8 @@ export function MissionDetailContent({
   const canValidateEncoding = allowed.includes("validate");
   const canReopenEncoding = allowed.includes("reopen");
   const canCancel = allowed.includes("cancel");
+  const canDeclareWithoutInstrumentist = allowed.includes("declare_executed_without_instrumentist");
+  const canCancelDeclaration = allowed.includes("cancel_executed_without_instrumentist");
 
   const anyLoading =
     approveMutation.isPending ||
@@ -261,7 +291,9 @@ export function MissionDetailContent({
     validateEncodingMutation.isPending ||
     rejectEncodingMutation.isPending ||
     reopenEncodingMutation.isPending ||
-    cancelMutation.isPending;
+    cancelMutation.isPending ||
+    declareMutation.isPending ||
+    cancelDeclarationMutation.isPending;
 
   const cancelEffectMessage =
     data.status === "DRAFT"
@@ -311,8 +343,26 @@ export function MissionDetailContent({
       )}
 
       {/* Actions */}
-      {(canEdit || canPublish || canApprove || canReject || canValidateEncoding || canRejectEncoding || canReopenEncoding || canCancel) && (
+      {data.executedWithoutInstrumentist && (
+        <Alert severity="info" variant="outlined" sx={{ mb: 2 }} data-testid="manager-without-instrumentist">
+          Activité réalisée sans instrumentiste
+          {data.executedWithoutInstrumentist.declaredByName ? ` — déclarée par ${data.executedWithoutInstrumentist.declaredByName}` : ""}.
+          Aucune heure ni prestation d'instrumentiste : seules les prestations applicables à la firme sont valorisées.
+        </Alert>
+      )}
+
+      {(canEdit || canPublish || canApprove || canReject || canValidateEncoding || canRejectEncoding || canReopenEncoding || canCancel || canDeclareWithoutInstrumentist || canCancelDeclaration) && (
         <Stack direction="row" spacing={1} mb={3} flexWrap="wrap">
+          {canDeclareWithoutInstrumentist && (
+            <Button variant="outlined" size="small" disabled={anyLoading} onClick={() => setDeclareOpen(true)} data-testid="manager-declare-without-instrumentist">
+              Déclarer l'activité réalisée sans instrumentiste
+            </Button>
+          )}
+          {canCancelDeclaration && (
+            <Button color="warning" variant="outlined" size="small" disabled={anyLoading} onClick={() => setCancelDeclarationOpen(true)} data-testid="manager-cancel-declaration">
+              Annuler la déclaration
+            </Button>
+          )}
           {canCancel && (
             <Button color="error" variant="outlined" size="small" disabled={anyLoading}
               onClick={() => setCancelConfirmOpen(true)}>
@@ -402,7 +452,19 @@ export function MissionDetailContent({
         </Paper>
 
         {/* Exécution réelle (EPIC Exécution & Valorisation, Lot 1) — seule source des heures prestées ; l'ancien champ mission.service?.hours n'est plus jamais renseigné par le backend depuis le renommage InstrumentistService -> MissionExecution (D-071), voir formatExecutionHours(). */}
-        {executionQuery.data && (
+        {/* D-155 — activité réalisée sans instrumentiste (servi par le backend) : aucune heure
+            n'existe ni n'est attendue — jamais « repli sur le planifié » ni durée effective. */}
+        {data.executedWithoutInstrumentist && (
+          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }} data-testid="manager-hours-without-instrumentist">
+            <Stack direction="row" spacing={1} alignItems="center">
+              <AccessTimeIcon fontSize="small" color="action" />
+              <Typography variant="subtitle2" fontWeight={600}>Exécution — heures prestées</Typography>
+            </Stack>
+            <Divider sx={{ my: 1.5 }} />
+            <Typography variant="body2">{NO_HOURS_WITHOUT_INSTRUMENTIST}</Typography>
+          </Paper>
+        )}
+        {executionQuery.data && !data.executedWithoutInstrumentist && (
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
             <Stack direction="row" spacing={1} alignItems="center" mb={1.5}>
               <AccessTimeIcon fontSize="small" color="action" />
@@ -593,10 +655,10 @@ export function MissionDetailContent({
       <Dialog open={rejectEncodingOpen} onClose={() => setRejectEncodingOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Rejeter l'encodage</DialogTitle>
         <DialogContent dividers>
-          <Typography variant="body2" color="text.secondary" mb={1.5}>
-            L'encodage repart chez l'instrumentiste pour correction. Le commentaire est
-            obligatoire (ex : matériel manquant, quantité incorrecte, mauvaise firme,
-            intervention incomplète...).
+          <Typography variant="body2" color="text.secondary" mb={1.5} data-testid="reject-encoding-intro">
+            {data.executedWithoutInstrumentist
+              ? "Activité réalisée sans instrumentiste : l'encodage est renvoyé au chirurgien pour correction. Le commentaire est obligatoire (ex : intervention manquante, matériel incorrect, quantité à vérifier, mauvaise firme…)."
+              : "L'encodage repart chez l'instrumentiste pour correction. Le commentaire est obligatoire (ex : matériel manquant, quantité incorrecte, mauvaise firme, intervention incomplète...)."}
           </Typography>
           <TextField
             autoFocus
@@ -618,12 +680,57 @@ export function MissionDetailContent({
         </DialogActions>
       </Dialog>
 
+      <Dialog open={declareOpen} onClose={() => setDeclareOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Déclarer l'activité réalisée sans instrumentiste</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary">
+            La mission a commencé sans être couverte. Si l'intervention a bien eu lieu, elle quitte le pool et
+            devient encodable (interventions, matériel) par le chirurgien ou un manager, sans aucune heure ni
+            prestation d'instrumentiste. Le calcul ne portera que sur la firme.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeclareOpen(false)} disabled={anyLoading}>Annuler</Button>
+          <Button variant="contained" disableElevation disabled={anyLoading} onClick={() => declareMutation.mutate()}>
+            Confirmer la déclaration
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={cancelDeclarationOpen} onClose={() => setCancelDeclarationOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Annuler la déclaration « sans instrumentiste »</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" mb={1.5}>
+            La mission redevient ouverte. Les interventions et le matériel déjà encodés sont conservés et tracés.
+            Motif obligatoire.
+          </Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            multiline
+            minRows={3}
+            required
+            label="Motif de l'annulation"
+            value={cancelDeclarationReason}
+            onChange={(e) => setCancelDeclarationReason(e.target.value)}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCancelDeclarationOpen(false)} disabled={anyLoading}>Fermer</Button>
+          <Button color="warning" variant="contained" disabled={anyLoading || cancelDeclarationReason.trim() === ""}
+            onClick={() => cancelDeclarationMutation.mutate(cancelDeclarationReason.trim())}>
+            Annuler la déclaration
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog open={reopenOpen} onClose={() => setReopenOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Rouvrir l'encodage</DialogTitle>
         <DialogContent dividers>
-          <Typography variant="body2" color="text.secondary" mb={1.5}>
-            La mission repasse en encodage modifiable côté instrumentiste. Motif
-            obligatoire (D-148).
+          <Typography variant="body2" color="text.secondary" mb={1.5} data-testid="reopen-encoding-intro">
+            {data.executedWithoutInstrumentist
+              ? "Activité réalisée sans instrumentiste : la mission repasse en encodage modifiable par le chirurgien. Motif obligatoire (D-148)."
+              : "La mission repasse en encodage modifiable côté instrumentiste. Motif obligatoire (D-148)."}
           </Typography>
           <TextField
             autoFocus

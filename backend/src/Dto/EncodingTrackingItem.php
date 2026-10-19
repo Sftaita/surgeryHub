@@ -91,6 +91,13 @@ final readonly class EncodingTrackingItem
          * notification a été lue. null sinon.
          */
         public ?\DateTimeImmutable $escalatedAt = null,
+
+        /**
+         * D-155 — activité exécutée sans instrumentiste : qui l'a déclarée (chirurgien de la
+         * mission ou manager). null pour une mission classique.
+         */
+        public bool $executedWithoutInstrumentist = false,
+        public ?string $executedWithoutInstrumentistByName = null,
     ) {}
 
     /** L'écart entre planifié et réel n'a de sens que si le réel existe. */

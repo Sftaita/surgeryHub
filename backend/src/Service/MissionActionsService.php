@@ -7,11 +7,15 @@ use App\Entity\User;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
+use Symfony\Component\Clock\Clock;
 
 final class MissionActionsService
 {
     public function __construct(
         private readonly MissionEncodingGuard $encodingGuard,
+        // D-151 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionAssignmentService $assignments = null,
+        private readonly ?MissionEligibilityService $eligibility = null,
     ) {}
 
     /**
@@ -67,6 +71,29 @@ final class MissionActionsService
             // même condition exactement que MissionVoter::HOURS_REMIND.
             if (MissionHoursReminderPolicy::isReminderRelevant($mission)) {
                 $actions[] = 'remind_hours';
+            }
+
+            // D-153 — corrections directes du manager : mêmes règles exactement que
+            // MissionVoter::EDIT_ENCODING et MissionExecutionVoter::UPDATE (une mission
+            // validée se rouvre d'abord, jamais une mission clôturée ou verrouillée).
+            if (MissionEncodingCorrectionPolicy::managerCanEditEncoding($mission)) {
+                $actions[] = 'edit_encoding';
+            }
+            if (MissionEncodingCorrectionPolicy::managerCanEditHours($mission)) {
+                $actions[] = 'edit_hours';
+            }
+
+            // D-155 — same rules exactly as MissionVoter::DECLARE_ / CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST.
+            if (ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $viewer, Clock::get()->now())) {
+                $actions[] = 'declare_executed_without_instrumentist';
+            }
+            if (ExecutedWithoutInstrumentistPolicy::canCancel($mission, $viewer)) {
+                $actions[] = 'cancel_executed_without_instrumentist';
+            }
+            // D-155 — the manager may submit a declared activity himself (MissionVoter::SUBMIT
+            // already grants it); offered only in this mode, where no instrumentist will.
+            if ($mission->isExecutedWithoutInstrumentist() && $mission->getStatus() === MissionStatus::ENCODING_IN_PROGRESS) {
+                $actions[] = 'submit';
             }
 
             return $actions;
@@ -127,6 +154,34 @@ final class MissionActionsService
             $actions[] = 'view_encoding';
         }
 
+        // D-151 — the mission's surgeon: refuse the instrumentist who accepted it while the
+        // policy allows it, otherwise ask the managers to intervene (once per affectation).
+        if ($isSurgeon && in_array('ROLE_SURGEON', $roles, true)
+            && in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)) {
+            $current = $this->assignments?->findCurrent($mission);
+            if ($current !== null) {
+                if (MissionAssignmentRefusalPolicy::blockedReason($mission, $current, Clock::get()->now()) === null) {
+                    $actions[] = 'refuse_assignment';
+                } elseif (!$current->isReviewRequested()) {
+                    $actions[] = 'request_assignment_review';
+                }
+            }
+        }
+
+        // D-154 — the mission's surgeon encodes interventions and material (never the hours,
+        // never start / submit): same rule exactly as MissionVoter::EDIT_ENCODING.
+        if (SurgeonEncodingPolicy::canEditEncoding($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'edit_encoding';
+        }
+        // D-155 — an activity he declared executed without instrumentist: he also submits it.
+        if (ExecutedWithoutInstrumentistPolicy::surgeonCanSubmit($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'submit';
+        }
+        // D-155 — declare his own started, uncovered OPEN mission executed without instrumentist.
+        if (ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'declare_executed_without_instrumentist';
+        }
+
         // Chirurgien : uniquement view sur DECLARED (contrat)
         if ($isSurgeon && $mission->getStatus() !== MissionStatus::DECLARED) {
             $actions[] = 'rate_instrumentist';
@@ -174,6 +229,15 @@ final class MissionActionsService
 
         // Filet de sécurité: si un instrumentiste est déjà posé sur la mission, on n'affiche pas claim
         if ($mission->getInstrumentist() !== null) {
+            return false;
+        }
+
+        // D-151 / D-152 — same gate as claim(): never once started, never for someone its
+        // surgeon refused on it or is incompatible with.
+        if (MissionEligibilityService::hasStarted($mission, Clock::get()->now())) {
+            return false;
+        }
+        if ($this->eligibility !== null && $this->eligibility->exclusionReasons($mission, $instrumentist) !== []) {
             return false;
         }
 

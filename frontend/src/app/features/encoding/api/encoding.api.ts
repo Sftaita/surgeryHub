@@ -56,14 +56,31 @@ export async function createMissionIntervention(
   return data;
 }
 
+/**
+ * D-154 — protection contre les écrasements concurrents (instrumentiste, chirurgien,
+ * manager sur la même mission) : la version lue est renvoyée en `If-Match` ; le backend
+ * répond 409 ENCODING_CONCURRENT_MODIFICATION si l'élément a changé entre-temps.
+ */
+function ifMatch(expectedVersion?: number | null): [] | [{ headers: Record<string, string> }] {
+  return expectedVersion != null ? [{ headers: { "If-Match": `"${expectedVersion}"` } }] : [];
+}
+
+export const ENCODING_CONCURRENT_MODIFICATION = "ENCODING_CONCURRENT_MODIFICATION";
+
+export function isEncodingConcurrentModification(err: unknown): boolean {
+  return (err as { response?: { data?: { error?: { code?: string } } } })?.response?.data?.error?.code === ENCODING_CONCURRENT_MODIFICATION;
+}
+
 export async function patchMissionIntervention(
   missionId: number,
   interventionId: number,
   body: PatchInterventionBody,
+  expectedVersion?: number | null,
 ): Promise<MissionInterventionDto> {
   const { data } = await apiClient.patch<MissionInterventionDto>(
     `/api/missions/${missionId}/interventions/${interventionId}`,
     body,
+    ...ifMatch(expectedVersion),
   );
   return data;
 }
@@ -71,9 +88,11 @@ export async function patchMissionIntervention(
 export async function deleteMissionIntervention(
   missionId: number,
   interventionId: number,
+  expectedVersion?: number | null,
 ): Promise<void> {
   await apiClient.delete(
     `/api/missions/${missionId}/interventions/${interventionId}`,
+    ...ifMatch(expectedVersion),
   );
 }
 
@@ -98,10 +117,12 @@ export async function patchMissionMaterialLine(
   missionId: number,
   lineId: number,
   body: PatchMaterialLineBody,
+  expectedVersion?: number | null,
 ): Promise<MaterialLineDto> {
   const { data } = await apiClient.patch<MaterialLineDto>(
     `/api/missions/${missionId}/material-lines/${lineId}`,
     body,
+    ...ifMatch(expectedVersion),
   );
   return data;
 }
@@ -109,8 +130,9 @@ export async function patchMissionMaterialLine(
 export async function deleteMissionMaterialLine(
   missionId: number,
   lineId: number,
+  expectedVersion?: number | null,
 ): Promise<void> {
-  await apiClient.delete(`/api/missions/${missionId}/material-lines/${lineId}`);
+  await apiClient.delete(`/api/missions/${missionId}/material-lines/${lineId}`, ...ifMatch(expectedVersion));
 }
 
 /**

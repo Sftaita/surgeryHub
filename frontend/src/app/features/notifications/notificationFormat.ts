@@ -1,3 +1,4 @@
+import dayjs from "dayjs";
 import type { NotificationItem } from "./api/notifications.api";
 
 /**
@@ -48,7 +49,19 @@ const TITLES: Record<string, string> = {
   ENCODING_SUBMITTED: "Encodage disponible",
   ENCODING_ANOMALY_INSTRUMENTIST: "Point à vérifier sur votre encodage",
   ENCODING_CORRECTION_REQUESTED: "Correction de votre encodage demandée",
+  ENCODING_UPDATED_BY_SURGEON: "Encodage complété par le chirurgien",
+  // D-151
+  ASSIGNMENT_REFUSED_BY_SURGEON: "Refus d'affectation par le chirurgien",
+  ASSIGNMENT_REVIEW_REQUESTED: "Intervention demandée sur une affectation",
 };
+
+/**
+ * D-151 — une instrumentiste retirée d'une mission publiée (refus du chirurgien, libération ou
+ * réaffectation par le manager) ne lit qu'une formulation neutre : jamais qui, jamais pourquoi.
+ */
+function isAssignmentEnded(n: Pick<NotificationItem, "eventType"> & Partial<Pick<NotificationItem, "payload">>): boolean {
+  return n.eventType === "PLANNING_MISSION_RELEASED" || (n.eventType === "PLANNING_MISSION_REASSIGNED" && n.payload?.assignmentEnded === true);
+}
 
 const ANOMALY_TYPE_LABELS: Record<string, string> = {
   INTERVENTION_MISSING: "intervention manquante",
@@ -65,7 +78,9 @@ const ANOMALY_TYPE_LABELS: Record<string, string> = {
  * (jamais un écran cassé pour un eventType ajouté côté backend sans être
  * répercuté ici).
  */
-export function formatNotificationTitle(n: Pick<NotificationItem, "eventType">): string {
+export function formatNotificationTitle(n: Pick<NotificationItem, "eventType"> & Partial<Pick<NotificationItem, "payload">>): string {
+  if (isAssignmentEnded(n)) return "Affectation annulée";
+  if (n.eventType === "SURGEON_POST_COVERED" && n.payload?.acceptedVoluntarily === true) return "Instrumentiste affecté à votre mission";
   return TITLES[n.eventType] ?? "Notification";
 }
 
@@ -91,11 +106,35 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
     return where ? `${name} a refusé la mission du ${where}. Elle reste à couvrir.` : `${name} a refusé la mission. Elle reste à couvrir.`;
   }
 
-  // H2 (D-127) — a manager removed the instrumentist from a published mission: her planning
-  // changed. Never phrased as an offer to take the mission back.
-  if (n.eventType === "PLANNING_MISSION_RELEASED") {
-    const where = [missionDate, siteName].filter(Boolean).join(" — ");
-    return where ? `${where} — cette mission ne fait plus partie de votre planning.` : "Cette mission ne fait plus partie de votre planning.";
+  // H2 (D-127) / D-151 — removed from a published mission: the imposed neutral sentence,
+  // never who decided nor why, never an offer to take the mission back.
+  if (isAssignmentEnded(n)) {
+    const startTime = typeof payload.startTime === "string" ? payload.startTime : null;
+    const when = [missionDate, startTime].filter(Boolean).join(" à ");
+    if (when && siteName) return `Votre affectation à la mission du ${when}, prévue à ${siteName}, n'a pas pu être maintenue.`;
+    return "Votre affectation à cette mission n'a pas pu être maintenue.";
+  }
+
+  // D-151 — voluntary acceptance: who, when, and until when the surgeon may refuse.
+  if (n.eventType === "SURGEON_POST_COVERED" && payload.acceptedVoluntarily === true) {
+    const name = typeof payload.instrumentistName === "string" ? payload.instrumentistName : "Un instrumentiste";
+    const startTime = typeof payload.startTime === "string" ? payload.startTime : null;
+    const when = [missionDate, startTime].filter(Boolean).join(" à ");
+    const deadline = typeof payload.refusalDeadlineAt === "string" ? dayjs(payload.refusalDeadlineAt).format("DD/MM/YYYY [à] HH:mm") : null;
+    const head = `${name} a accepté votre mission${when ? ` du ${when}` : ""}${siteName ? `, à ${siteName}` : ""}.`;
+    return deadline ? `${head} Vous pouvez signaler un refus d'affectation jusqu'au ${deadline}.` : head;
+  }
+
+  // D-151 — managers: the real origin of the unassignment / the surgeon's request.
+  if (n.eventType === "ASSIGNMENT_REFUSED_BY_SURGEON" || n.eventType === "ASSIGNMENT_REVIEW_REQUESTED") {
+    const surgeon = typeof payload.surgeonName === "string" ? `Dr ${payload.surgeonName}` : "Le chirurgien";
+    const where = [missionDate ? `mission du ${missionDate}` : null, siteName].filter(Boolean).join(" — ");
+    if (n.eventType === "ASSIGNMENT_REFUSED_BY_SURGEON") {
+      const who = typeof payload.fromInstrumentistName === "string" ? payload.fromInstrumentistName : "l'instrumentiste";
+      return `${surgeon} a refusé l'affectation de ${who}${where ? ` (${where})` : ""}. La mission est remise à disposition des autres instrumentistes.`;
+    }
+    const who = typeof payload.instrumentistName === "string" ? payload.instrumentistName : "l'instrumentiste";
+    return `${surgeon} demande votre intervention sur l'affectation de ${who}${where ? ` (${where})` : ""}.`;
   }
 
   // H3 (D-129) — pool offer for ONE mission (payload from OpenMissionPoolNotifier):
@@ -206,6 +245,11 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
     const what = payload.action === "REOPENED" ? "a été rouvert" : "vous a été renvoyé";
     const reason = typeof payload.reason === "string" && payload.reason ? ` Motif : ${payload.reason}` : "";
     return `L'encodage de votre mission ${mission}du ${missionDate ?? "—"} ${what} pour correction.${reason}`;
+  }
+  // D-154 — une notification par série de modifications du chirurgien (regroupées).
+  if (n.eventType === "ENCODING_UPDATED_BY_SURGEON") {
+    const who = typeof payload.surgeonName === "string" && payload.surgeonName ? payload.surgeonName : "Le chirurgien";
+    return `${who} a complété ou corrigé les interventions / le matériel de votre mission du ${missionDate ?? "—"}. Consultez votre encodage.`;
   }
   if (n.eventType === "ENCODING_ANOMALY_INSTRUMENTIST") {
     const category = typeof payload.type === "string" && ANOMALY_TYPE_LABELS[payload.type] ? ` (${ANOMALY_TYPE_LABELS[payload.type]})` : "";

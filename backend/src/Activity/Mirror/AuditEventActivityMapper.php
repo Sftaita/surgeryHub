@@ -53,6 +53,12 @@ final class AuditEventActivityMapper
         'MISSION_OFFERED_TO_INSTRUMENTIST' => 'Mission proposée à une instrumentiste',
         'MISSION_ASSIGNED_DIRECTLY' => 'Mission attribuée directement',
         'MISSION_OFFER_DECLINED' => 'Proposition de mission refusée',
+        'MISSION_ASSIGNMENT_REFUSED_BY_SURGEON' => "Affectation refusée par le chirurgien",
+        'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED' => 'Activité déclarée sans instrumentiste',
+        'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED' => 'Déclaration sans instrumentiste annulée',
+        'MISSION_ASSIGNMENT_REVIEW_REQUESTED' => 'Intervention demandée sur une affectation',
+        'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED' => 'Incompatibilité chirurgien–instrumentiste créée',
+        'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED' => 'Incompatibilité chirurgien–instrumentiste levée',
         'PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE' => 'Occurrence neutralisée (absence chirurgien)',
         'PLANNING_OCCURRENCE_INSTRUMENTIST_ABSENCE_NOTICE' => 'Occurrence impactée (absence instrumentiste)',
         'PLANNING_OCCURRENCE_RESTORED_AFTER_ABSENCE' => 'Occurrence restaurée après absence',
@@ -224,6 +230,24 @@ final class AuditEventActivityMapper
                 $mission?->getId() ?? 0, $cause, $p['previousStatus'] ?? '?', $who, self::fromWhom($p)) . $site,
             AuditEventType::MISSION_CLAIMED_FROM_POOL => sprintf('%s a pris la %s depuis le pool',
                 $p['instrumentistName'] ?? $who, $m ?? 'mission') . $site,
+            // D-151 — the real origin, for the managers' journal (never shown to the instrumentist).
+            AuditEventType::MISSION_ASSIGNMENT_REFUSED_BY_SURGEON => sprintf("%s a refusé l'affectation de %s à la %s (refus ponctuel) — ASSIGNED → OPEN",
+                $who, $p['fromInstrumentistName'] ?? 'l\'instrumentiste', $m ?? 'mission') . $site,
+            // D-155 — activité exécutée sans instrumentiste.
+            AuditEventType::MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED => sprintf("%s a déclaré la %s réalisée sans instrumentiste — OPEN → ENCODING_IN_PROGRESS",
+                $who, $m ?? 'mission') . $site,
+            AuditEventType::MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED => sprintf("%s a annulé la déclaration « réalisée sans instrumentiste » de la %s — ENCODING_IN_PROGRESS → OPEN",
+                $who, $m ?? 'mission') . $site,
+            AuditEventType::MISSION_ASSIGNMENT_REVIEW_REQUESTED => sprintf("%s demande l'intervention du manager sur l'affectation de %s à la %s",
+                $who, $p['instrumentistName'] ?? 'l\'instrumentiste', $m ?? 'mission') . $site,
+            // D-152 — a pair of people, never a mission; the managers' journal only.
+            AuditEventType::SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED => sprintf('%s a rendu %s incompatible avec %s (%s)%s',
+                $who, $p['instrumentistName'] ?? 'un instrumentiste', $p['surgeonName'] ?? 'un chirurgien',
+                match ($p['origin'] ?? null) { 'SURGEON_REFUSAL' => 'refus durable', 'SURGEON' => 'blocage par le chirurgien', default => 'décision manager' },
+                is_array($p['conflictMissionIds'] ?? null) && $p['conflictMissionIds'] !== []
+                    ? sprintf(' — %d mission(s) future(s) à traiter', count($p['conflictMissionIds'])) : ''),
+            AuditEventType::SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED => sprintf("%s a levé l'incompatibilité entre %s et %s",
+                $who, $p['surgeonName'] ?? 'un chirurgien', $p['instrumentistName'] ?? 'un instrumentiste'),
             AuditEventType::MISSION_REASSIGNED_POST_DEPLOY => sprintf('%s a réassigné la %s : %s → %s%s',
                 $who, $m ?? 'mission', $p['fromInstrumentistName'] ?? 'personne', $p['toInstrumentistName'] ?? 'personne', $cause) . $site,
             AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY => sprintf('%s a modifié l\'horaire de la %s : %s → %s',
@@ -260,6 +284,13 @@ final class AuditEventActivityMapper
             AuditEventType::INSTRUMENTIST_STATEMENT_CANCELLED => sprintf('Décompte instrumentiste %s annulé (par %s)', self::docNumber($p, 'instrumentistStatementId'), $who),
             AuditEventType::DOCUMENT_PAYMENT_RECORDED => sprintf('Paiement du document %s enregistré (par %s)', self::docNumber($p, 'documentId'), $who),
             AuditEventType::REFUND_RECORDED => sprintf('Remboursement sur le document %s enregistré (par %s)', self::docNumber($p, 'documentId'), $who),
+            // D-153 — before → after of the real hours, when the payload carries them.
+            AuditEventType::MISSION_EXECUTION_UPDATED, AuditEventType::MISSION_EXECUTION_DURATION_CHANGED
+                => array_key_exists('previousActualStartAt', $p)
+                    ? sprintf('%s a corrigé les heures réelles de la %s : %s → %s', $who, $m ?? 'mission',
+                        self::hoursRange($p['previousActualStartAt'] ?? null, $p['previousActualEndAt'] ?? null, $p['previousActualDurationMinutes'] ?? null),
+                        self::hoursRange($p['actualStartAt'] ?? null, $p['actualEndAt'] ?? null, $p['actualDurationMinutes'] ?? null))
+                    : sprintf('%s%s (par %s)', self::LABELS[$type->value] ?? $type->value, $m !== null ? ' — ' . $m : '', $who),
             default => sprintf('%s%s%s (par %s)', self::LABELS[$type->value] ?? $type->value,
                 $m !== null ? ' — ' . $m : '', $cause, $who) . $site,
         };
@@ -343,6 +374,7 @@ final class AuditEventActivityMapper
     {
         return self::intOrNull(match ($type) {
             AuditEventType::MISSION_RELEASED_TO_POOL,
+            AuditEventType::MISSION_ASSIGNMENT_REFUSED_BY_SURGEON,
             AuditEventType::MISSION_CANCELLED_POST_DEPLOY => $p['fromInstrumentistId'] ?? null,
             AuditEventType::MISSION_REASSIGNED_POST_DEPLOY => $p['toInstrumentistId'] ?? $p['fromInstrumentistId'] ?? null,
             default => $p['instrumentistId'] ?? $p['originalSurgeonId'] ?? $p['surgeonId'] ?? null,
@@ -372,6 +404,32 @@ final class AuditEventActivityMapper
         $d = \DateTimeImmutable::createFromFormat('!Y-m-d', substr($date, 0, 10));
 
         return $d !== false ? $d->format('d/m/Y') : $date;
+    }
+
+    /** D-153 — "08:00–12:30 (270 min)", or "aucune" when nothing was encoded. */
+    private static function hoursRange(mixed $start, mixed $end, mixed $minutes): string
+    {
+        $time = static function (mixed $iso): ?string {
+            if (!is_string($iso) || $iso === '') {
+                return null;
+            }
+            try {
+                return (new \DateTimeImmutable($iso))->format('H:i');
+            } catch (\Exception) {
+                return $iso;
+            }
+        };
+        $s = $time($start);
+        $e = $time($end);
+        $range = $s !== null || $e !== null ? sprintf('%s–%s', $s ?? '?', $e ?? '?') : null;
+        $duration = is_int($minutes) ? sprintf('%d min', $minutes) : null;
+
+        return match (true) {
+            $range !== null && $duration !== null => sprintf('%s (%s)', $range, $duration),
+            $range !== null => $range,
+            $duration !== null => $duration,
+            default => 'aucune',
+        };
     }
 
     private static function hm(mixed $value): string

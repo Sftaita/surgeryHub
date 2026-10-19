@@ -4,6 +4,7 @@ namespace App\MessageHandler;
 
 use App\Entity\AuditEvent;
 use App\Entity\Mission;
+use App\Entity\MissionAssignment;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionChangeType;
@@ -23,13 +24,16 @@ use App\Notification\OpenEpisode;
 use App\Notification\OpenMissionPoolNotifier;
 use App\Enum\OpenEpisodeCause;
 use App\Enum\OpenPoolExclusionReason;
+use App\Service\MissionAssignmentRefusalPolicy;
 use App\Service\MissionEligibilityService;
+use App\Service\MissionPostDeployService;
 use App\Service\NotificationTargetResolver;
 use App\Repository\UserRepository;
 use App\Service\NotificationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
+use Symfony\Component\Clock\Clock;
 
 /**
  * Processes all side-effects after a Mission lifecycle transition (D-056 separation of concerns).
@@ -141,6 +145,7 @@ final class MissionLifecycleChangedMessageHandler
             MissionChangeType::ENCODING_COMPLETED => $this->handleEncodingCompleted($message),
             MissionChangeType::ENCODING_REJECTED,
             MissionChangeType::ENCODING_REOPENED => $this->handleEncodingCorrectionRequested($message),
+            MissionChangeType::ASSIGNMENT_REVIEW_REQUESTED => $this->handleAssignmentReviewRequested($message),
             default => $this->logger->info('MissionLifecycleChanged: unhandled changeType — forward-compatible skip', [
                 'changeType' => $message->changeType->value,
                 'missionId'  => $message->missionId,
@@ -162,6 +167,11 @@ final class MissionLifecycleChangedMessageHandler
         $mission = $this->em->find(Mission::class, $message->missionId);
         $surgeon = $mission?->getSurgeon();
         if (!$mission instanceof Mission || !$surgeon instanceof User) {
+            return;
+        }
+        // D-155 — le chirurgien qui soumet lui-même l'activité qu'il a déclarée n'est jamais
+        // notifié de sa propre action.
+        if (($message->payload['actorId'] ?? null) === $surgeon->getId()) {
             return;
         }
 
@@ -228,7 +238,9 @@ final class MissionLifecycleChangedMessageHandler
     private function handleEncodingCorrectionRequested(MissionLifecycleChangedMessage $message): void
     {
         $mission = $this->em->find(Mission::class, $message->missionId);
-        $instrumentist = $mission?->getInstrumentist();
+        // D-155 — activité déclarée sans instrumentiste : c'est le chirurgien de la mission qui
+        // a encodé, c'est donc lui que le renvoi en correction / la réouverture concerne.
+        $instrumentist = $mission?->isExecutedWithoutInstrumentist() ? $mission->getSurgeon() : $mission?->getInstrumentist();
         if (!$mission instanceof Mission || !$instrumentist instanceof User) {
             return;
         }
@@ -285,19 +297,37 @@ final class MissionLifecycleChangedMessageHandler
             return;
         }
 
+        // D-151 — a claim is always a voluntary acceptance: the surgeon is told until when he
+        // may refuse it — only while a direct refusal is still possible at handling time.
+        $assignment = isset($message->payload['assignmentId'])
+            ? $this->em->find(MissionAssignment::class, (int) $message->payload['assignmentId'])
+            : null;
+        $deadline = $assignment !== null
+            && MissionAssignmentRefusalPolicy::blockedReason($mission, $assignment, Clock::get()->now()) === null
+            ? MissionAssignmentRefusalPolicy::deadline($assignment, $mission)
+            : null;
+
         $payload = [
             'missionId'         => $mission->getId(),
             'dayLabel'          => $mission->getStartAt()?->format('l'),
             'missionDate'       => $mission->getStartAt()?->format('d/m/Y'),
+            'startTime'         => $mission->getStartAt()?->format('H:i'),
             'siteName'          => $mission->getSite()?->getName(),
             'periodLabel'       => $this->periodLabel($mission),
             'instrumentistId'   => $message->payload['instrumentistId'] ?? null,
             'instrumentistName' => $message->payload['instrumentistName'] ?? null,
             'coveredAt'         => $message->occurredAt->format(\DateTimeInterface::ATOM),
+            'assignmentId'      => $assignment?->getId(),
+            'acceptedVoluntarily' => true,
+            'refusalDeadlineAt' => $deadline?->format(\DateTimeInterface::ATOM),
         ];
 
         $this->notify($surgeon, NotificationType::SURGEON_POST_COVERED, MissionLifecycleNotificationFactory::ROLE_SURGEON,
-            $mission, $payload, ['instrumentistName' => $payload['instrumentistName']], $message, 'CLAIMED');
+            $mission, $payload, [
+                'instrumentistName'   => $payload['instrumentistName'],
+                'acceptedVoluntarily' => true,
+                'refusalDeadline'     => $deadline,
+            ], $message, 'CLAIMED');
     }
 
     // ── RELEASED → SURGEON_POST_UNCOVERED + PLANNING_MISSION_RELEASED + OPEN_MISSION_AVAILABLE ──
@@ -324,11 +354,25 @@ final class MissionLifecycleChangedMessageHandler
         ];
 
         $absenceDriven = ($message->payload['causedByAbsenceId'] ?? null) !== null;
+        // D-151 — the surgeon refused the instrumentist himself: he is not told about his own
+        // action; the operational managers are told the real origin.
+        $surgeonRefusal = ($message->payload['origin'] ?? null) === MissionPostDeployService::ORIGIN_SURGEON_REFUSAL;
+        if ($surgeonRefusal) {
+            $facts = ['instrumentistName' => $fromName];
+            foreach ($this->userRepository->findOperationalManagers() as $manager) {
+                $this->notify($manager, NotificationType::ASSIGNMENT_REFUSED_BY_SURGEON, MissionLifecycleNotificationFactory::ROLE_MANAGER,
+                    $mission, $payload + [
+                        'fromInstrumentistId' => $message->payload['fromInstrumentistId'] ?? null,
+                        'surgeonName'         => $message->payload['actorName'] ?? null,
+                        'refusalScope'        => $message->payload['refusalScope'] ?? null,
+                    ], $facts, $message, 'RELEASED');
+            }
+        }
 
         // H3 (D-127) — for an instrumentist-absence release the surgeon is told by the
         // absence recap (ABSENCE_SURGEON_MISSION_OPENED, AbsenceMissionsReactedMessageHandler):
         // SURGEON_POST_UNCOVERED would be a second notification about the same event.
-        if (!$absenceDriven && $surgeon !== null) {
+        if (!$absenceDriven && !$surgeonRefusal && $surgeon !== null) {
             $this->notify($surgeon, NotificationType::SURGEON_POST_UNCOVERED, MissionLifecycleNotificationFactory::ROLE_SURGEON,
                 $mission, $payload, ['fromInstrumentistName' => $fromName], $message, 'RELEASED');
         }
@@ -341,8 +385,10 @@ final class MissionLifecycleChangedMessageHandler
         if ($fromId !== null && !$absenceDriven) {
             $removed = $this->em->find(User::class, (int) $fromId);
             if ($removed !== null) {
+                // D-151 — neutral wording whatever the origin (manager or surgeon refusal): her
+                // payload never carries who decided nor why.
                 $this->notify($removed, NotificationType::PLANNING_MISSION_RELEASED, MissionLifecycleNotificationFactory::ROLE_INSTRUMENTIST,
-                    $mission, $payload + ['fromInstrumentistId' => (int) $fromId], [], $message, 'RELEASED');
+                    $mission, $payload + ['fromInstrumentistId' => (int) $fromId, 'startTime' => $mission->getStartAt()?->format('H:i'), 'assignmentEnded' => true], [], $message, 'RELEASED');
             }
             // …and is never offered back the very mission she was just removed from, for
             // this opening episode (she is a candidate again at the next one).
@@ -388,8 +434,15 @@ final class MissionLifecycleChangedMessageHandler
         if ($fromId !== null) {
             $fromInstrumentist = $this->em->find(User::class, $fromId);
             if ($fromInstrumentist !== null) {
+                // D-151 — neutral "affectation not maintained", never who replaces her.
                 $this->notify($fromInstrumentist, NotificationType::PLANNING_MISSION_REASSIGNED, MissionLifecycleNotificationFactory::ROLE_INSTRUMENTIST,
-                    $mission, $payload, [], $message, 'REASSIGNED');
+                    $mission, [
+                        'missionId'      => $mission->getId(),
+                        'missionDate'    => $mission->getStartAt()?->format('d/m/Y'),
+                        'startTime'      => $mission->getStartAt()?->format('H:i'),
+                        'siteName'       => $mission->getSite()?->getName(),
+                        'assignmentEnded' => true,
+                    ], [], $message, 'REASSIGNED');
             }
         }
 
@@ -788,6 +841,31 @@ final class MissionLifecycleChangedMessageHandler
                     'missionId' => $mission->getId(), 'userId' => $manager->getId(), 'error' => $e->getMessage(),
                 ]);
             }
+        }
+    }
+
+    // ── ASSIGNMENT_REVIEW_REQUESTED → operational managers (D-151) ─────────────
+
+    private function handleAssignmentReviewRequested(MissionLifecycleChangedMessage $message): void
+    {
+        $mission = $this->loadMission($message->missionId, 'ASSIGNMENT_REVIEW_REQUESTED');
+        if ($mission === null) {
+            return;
+        }
+
+        $payload = $this->dispatchPayload($mission, $message) + [
+            'assignmentId'         => $message->payload['assignmentId'] ?? null,
+            'surgeonName'          => $message->payload['actorName'] ?? null,
+            'refusalBlockedReason' => $message->payload['refusalBlockedReason'] ?? null,
+        ];
+        $facts = [
+            'instrumentistName'    => $message->payload['instrumentistName'] ?? null,
+            'refusalBlockedReason' => $message->payload['refusalBlockedReason'] ?? null,
+        ];
+
+        foreach ($this->userRepository->findOperationalManagers() as $manager) {
+            $this->notify($manager, NotificationType::ASSIGNMENT_REVIEW_REQUESTED, MissionLifecycleNotificationFactory::ROLE_MANAGER,
+                $mission, $payload, $facts, $message, 'ASSIGNMENT_REVIEW_REQUESTED');
         }
     }
 

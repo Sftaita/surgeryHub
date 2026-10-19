@@ -14,6 +14,7 @@ use App\Enum\SchedulePrecision;
 use App\Service\MissionEligibilityService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 /**
  * Real-DB test for RC1-D/RC1-E — MissionEligibilityService::findEligibleByMission()
@@ -32,6 +33,10 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
 {
+    // D-151 — "now" is frozen just before the fixture dates: a started mission is no
+    // longer claimable (MISSION_ALREADY_STARTED), so the fixtures must stay in the future.
+    use ClockSensitiveTrait;
+
     private EntityManagerInterface $em;
     private array $createdIds = [
         'missions' => [], 'memberships' => [], 'absences' => [], 'users' => [], 'sites' => [],
@@ -39,6 +44,7 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-08-01 00:00:00');
         self::bootKernel();
         $this->em = self::getContainer()->get(EntityManagerInterface::class);
     }
@@ -52,7 +58,7 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->em->flush();
         foreach ($this->createdIds['missions'] as $id) {
             $e = $this->em->find(Mission::class, $id);
-            if ($e !== null) { $this->em->remove($e); }
+            if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
         }
         $this->em->flush();
         foreach ($this->createdIds['memberships'] as $id) {

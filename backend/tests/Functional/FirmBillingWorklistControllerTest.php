@@ -68,6 +68,10 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
                     [$missionIds],
                     [\Doctrine\DBAL\ArrayParameterType::INTEGER],
                 );
+                // D-153 — une vraie réouverture laisse un commentaire et des notifications.
+                foreach (['mission_encoding_comment', 'notification_dispatch', 'notification_event', 'outbound_notification'] as $table) {
+                    $this->em->getConnection()->executeStatement("DELETE FROM $table WHERE mission_id IN (?)", [$missionIds], [\Doctrine\DBAL\ArrayParameterType::INTEGER]);
+                }
                 if ($this->created['users'] !== []) {
                     $this->em->getConnection()->executeStatement(
                         'DELETE FROM payment WHERE recorded_by_id IN (?)',
@@ -1100,6 +1104,38 @@ final class FirmBillingWorklistControllerTest extends WebTestCase
         self::assertSame('FREE', $fresh['invoiceState']);
         self::assertSame(200, $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/lines", ['financialLineIds' => [$fresh['financialLineId']]])->getStatusCode());
         self::assertSame(200, $this->post($client, $token, "/api/firm-invoices/{$draft['id']}/generate")->getStatusCode());
+    }
+
+    // ── D-153 : calcul rendu obsolète par une réouverture de l'encodage ──────────
+
+    public function test_calculation_made_obsolete_by_a_reopen_is_to_review_and_refused_after_revalidation(): void
+    {
+        $client = $this->boot();
+        $token = $this->login($client, $this->user('ROLE_MANAGER'));
+        $firm = $this->firm('Smith');
+        $type = $this->type('Arthroscopie');
+        $this->interventionRule($firm, $type, '200.00');
+        $mission = $this->mission(MissionStatus::VALIDATED, $firm, $type);
+        $this->calculateAndApprove($client, $token, $mission);
+
+        // Vraie réouverture (marque le calcul), puis revalidation sans recalcul.
+        self::assertSame(200, $this->post($client, $token, "/api/missions/{$mission->getId()}/encoding/reopen", ['comment' => 'Correction du matériel.'])->getStatusCode());
+        $this->em->clear();
+        $this->em->find(Mission::class, $mission->getId())->setStatus(MissionStatus::VALIDATED);
+        $this->em->flush();
+
+        $result = $this->worklist($client, $token, [$firm]);
+        $row = array_values(array_filter($result['rows'], static fn (array $r) => $r['mission']['id'] === $mission->getId()))[0];
+        self::assertSame(['TO_REVIEW', 'CALCULATION_OBSOLETE'], [$row['billingStatus'], $row['reasonCode']]);
+        self::assertFalse($row['canInvoice']);
+        $anomaly = array_values(array_filter($result['anomalies'], static fn (array $a) => $a['code'] === 'CALCULATION_OBSOLETE'))[0] ?? null;
+        self::assertNotNull($anomaly, 'action proposée : recalculer');
+        self::assertSame('RECALCULATE', $anomaly['action']['code']);
+        self::assertSame([], array_values(array_filter($result['anomalies'], static fn (array $a) => $a['code'] === 'CALCULATION_PENDING_APPROVAL' && $a['mission']['id'] === $mission->getId())));
+
+        $refused = $this->createDraft($client, $token, $firm, [$row['financialLineId']]);
+        self::assertSame(422, $refused->getStatusCode(), (string) $refused->getContent());
+        self::assertSame('FINANCIAL_CALCULATION_OBSOLETE', $this->json($refused)['error']['violations'][0]['code']);
     }
 
     // ── Revue PR #1 : la règle « non facturable » est appliquée par le backend ──

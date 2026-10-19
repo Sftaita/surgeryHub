@@ -1,5 +1,6 @@
+import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Box, Chip, CircularProgress, IconButton, Stack, Typography } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import dayjs from "dayjs";
@@ -7,6 +8,8 @@ import dayjs from "dayjs";
 import { fetchMissionById, getMissionExecution } from "../missions/api/missions.api";
 import { formatMissionStatus } from "../missions/utils/missions.format";
 import { fetchMissionEncoding } from "../encoding/api/encoding.api";
+import InterventionsSection from "../encoding/components/InterventionsSection";
+import SubmitDialog from "../missions/components/SubmitDialog";
 import { EncodingHoursSummary } from "./components/EncodingHoursSummary";
 import { ReadOnlyInterventionCard } from "./components/ReadOnlyInterventionCard";
 import { AnomalyReportSection } from "../encoding-anomaly-reports/components/AnomalyReportSection";
@@ -22,7 +25,17 @@ const IN_PROGRESS_STATUSES = ["ASSIGNED", "IN_PROGRESS", "ENCODING_IN_PROGRESS",
  * (provisoire), soumise (date), en cours de correction après une soumission (ne plus
  * s'y fier), validée. Dérivé du statut serveur et de submittedAt, rien d'autre.
  */
-export function encodingStateBanner(status: string, submittedAt: string | null | undefined): { severity: "info" | "success" | "warning"; text: string } | null {
+export function encodingStateBanner(
+  status: string,
+  submittedAt: string | null | undefined,
+  withoutInstrumentist = false,
+): { severity: "info" | "success" | "warning"; text: string } | null {
+  // D-155 — activité déclarée sans instrumentiste : c'est le chirurgien qui encode et soumet.
+  if (withoutInstrumentist && IN_PROGRESS_STATUSES.includes(status)) {
+    return submittedAt
+      ? { severity: "warning", text: "Encodage renvoyé en correction par la coordination : corrigez-le puis soumettez-le à nouveau." }
+      : { severity: "info", text: "Activité réalisée sans instrumentiste : encodez les interventions et le matériel, puis soumettez l'encodage." };
+  }
   if (status === "SUBMITTED") {
     return { severity: "success", text: submittedAt ? `Encodage soumis le ${dayjs(submittedAt).format("DD/MM/YYYY [à] HH[h]mm")}.` : "Encodage soumis." };
   }
@@ -40,8 +53,15 @@ export function encodingStateBanner(status: string, submittedAt: string | null |
 /**
  * Lot 6 (D-100) — consultation chirurgien de l'encodage réalisé par l'instrumentiste.
  * Réutilise GET /api/missions/{id}/encoding tel quel (VIEW_ENCODING, §3) : aucun
- * endpoint parallèle. Présentation strictement lecture — aucun composant d'édition
- * réutilisé avec ses boutons masqués (§8-9) : les cartes ci-dessous sont dédiées.
+ * endpoint parallèle. Sans droit d'écriture : présentation strictement lecture — aucun
+ * composant d'édition réutilisé avec ses boutons masqués (§8-9), cartes dédiées.
+ *
+ * D-154 — quand le backend sert `edit_encoding` (sa propre mission, commencée, encodage
+ * ouvert), le chirurgien ajoute, modifie et supprime interventions et matériel avec la
+ * section d'encodage de l'instrumentiste (mêmes endpoints, règles, verrous et contrôle
+ * de version). Jamais les heures (EncodingHoursSummary reste en lecture), jamais de
+ * démarrage ni de soumission. Seul `edit_encoding` pilote ce mode : la mission sans
+ * instrumentiste (L6) le réutilisera tel quel.
  */
 export default function SurgeonEncodingPage() {
   const { id } = useParams<{ id: string }>();
@@ -59,6 +79,12 @@ export default function SurgeonEncodingPage() {
   });
 
   const canView = mission?.allowedActions?.includes("view_encoding") ?? false;
+  const canEdit = mission?.allowedActions?.includes("edit_encoding") ?? false;
+  // D-155 — le chirurgien soumet lui-même l'activité qu'il a déclarée sans instrumentiste.
+  const canSubmit = mission?.allowedActions?.includes("submit") ?? false;
+  const withoutInstrumentist = mission?.executedWithoutInstrumentist != null;
+  const [submitOpen, setSubmitOpen] = React.useState(false);
+  const queryClient = useQueryClient();
 
   const {
     data: encoding,
@@ -74,7 +100,7 @@ export default function SurgeonEncodingPage() {
   const { data: execution } = useQuery({
     queryKey: ["mission-execution", missionId],
     queryFn: () => getMissionExecution(missionId),
-    enabled: isValidId && !!mission && canView,
+    enabled: isValidId && !!mission && canView && !withoutInstrumentist,
   });
 
   if (!isValidId) return <Typography>Identifiant invalide</Typography>;
@@ -120,9 +146,22 @@ export default function SurgeonEncodingPage() {
       ) : encoding ? (
         <>
           {(() => {
-            const banner = encodingStateBanner(mission.status ?? "", mission.submittedAt);
+            const banner = encodingStateBanner(mission.status ?? "", mission.submittedAt, withoutInstrumentist);
             return banner ? <Alert severity={banner.severity} data-testid="surgeon-encoding-state">{banner.text}</Alert> : null;
           })()}
+
+          {canEdit && !withoutInstrumentist && (
+            <Alert severity="info" variant="outlined" data-testid="surgeon-encoding-editable">
+              Vous pouvez compléter ou corriger les interventions et le matériel de votre mission. Les heures prestées
+              restent celles déclarées par l'instrumentiste. Chaque modification est enregistrée à votre nom.
+            </Alert>
+          )}
+          {withoutInstrumentist && (
+            <Alert severity="info" variant="outlined" data-testid="surgeon-encoding-without-instrumentist">
+              Aucune heure n'est déclarée pour cette activité et aucune prestation d'instrumentiste ne sera
+              enregistrée : seules les prestations réellement applicables à la firme seront facturées.
+            </Alert>
+          )}
 
           {/* L'essentiel en un coup d'œil, le détail ensuite (D-143). */}
           <Typography data-testid="surgeon-encoding-glance" sx={{ fontSize: 13, color: GRAY_500 }}>
@@ -133,9 +172,22 @@ export default function SurgeonEncodingPage() {
             })()}
           </Typography>
 
-          <EncodingHoursSummary execution={execution} plannedStartAt={mission.startAt} plannedEndAt={mission.endAt} />
+          {!withoutInstrumentist && (
+            <EncodingHoursSummary execution={execution} plannedStartAt={mission.startAt} plannedEndAt={mission.endAt} />
+          )}
 
-          {encoding.entries.length === 0 ? (
+          {canEdit ? (
+            <InterventionsSection
+              missionId={missionId}
+              canEdit
+              entries={encoding.entries ?? []}
+              legacyInterventions={encoding.interventions ?? []}
+              catalog={encoding.catalog}
+              canSubmit={canSubmit}
+              onValidate={() => setSubmitOpen(true)}
+              progress={encoding.progress}
+            />
+          ) : encoding.entries.length === 0 ? (
             <Box sx={{ background: "#fff", borderRadius: "18px", boxShadow: SHADOW_XS, px: 2, py: 3, textAlign: "center" }}>
               <Typography sx={{ fontSize: 14, fontWeight: 700, color: GRAY_900 }}>
                 Aucun encodage disponible pour l'instant
@@ -153,6 +205,19 @@ export default function SurgeonEncodingPage() {
           )}
 
           <AnomalyReportSection missionId={missionId} />
+
+          {canSubmit && (
+            <SubmitDialog
+              open={submitOpen}
+              mission={mission}
+              onClose={() => setSubmitOpen(false)}
+              onSubmitted={() => {
+                queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
+                queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
+                queryClient.invalidateQueries({ queryKey: ["missions"] });
+              }}
+            />
+          )}
         </>
       ) : null}
     </Stack>

@@ -10,6 +10,7 @@ use App\Entity\PlanningVersion;
 use App\Entity\SiteGroup;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
+use App\Enum\EligibilityReason;
 use App\Enum\MissionStatus;
 use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
@@ -75,6 +76,10 @@ class PlanningGeneratorServiceV2
         $postIds              = array_map(static fn (SurgeonSchedulePost $p) => $p->getId(), $allPosts);
         [$exceptionsByOriginal, $exceptionsByTargetDate] = $this->loadOccurrenceExceptions($postIds);
         // (+1 query already spent above, inside resolveSiteIds, only when siteGroupId was given)
+        // Query 6 (D-152): active incompatible surgeon–instrumentist pairs of these posts' surgeons
+        $blockedPairs = $this->eligibilityService->activeIncompatiblePairs(
+            array_map(static fn (SurgeonSchedulePost $p) => (int) $p->getSurgeon()->getId(), $allPosts),
+        );
 
         $claimedMissionIds  = [];
         $previewAssignments = []; // [instId => [[dateStr, startMins, endMins], ...]]
@@ -93,7 +98,7 @@ class PlanningGeneratorServiceV2
                     $this->emitOccurrenceLine(
                         $post, $current, $dayStr, $post->getInstrumentist(), null, null,
                         $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
-                        $previewAssignments, $missionsByInstrumentist, $lines,
+                        $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
                     );
                     continue;
                 }
@@ -124,7 +129,7 @@ class PlanningGeneratorServiceV2
                         $post, $current, $dayStr, $post->getInstrumentist(),
                         $exception->getOverrideStartTime(), $exception->getOverrideEndTime(),
                         $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
-                        $previewAssignments, $missionsByInstrumentist, $lines,
+                        $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
                     );
                     continue;
                 }
@@ -133,7 +138,7 @@ class PlanningGeneratorServiceV2
                 $this->emitOccurrenceLine(
                     $post, $current, $dayStr, $exception->getOverrideInstrumentist(), null, null,
                     $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
-                    $previewAssignments, $missionsByInstrumentist, $lines,
+                    $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
                 );
             }
 
@@ -145,14 +150,14 @@ class PlanningGeneratorServiceV2
                     $post, $current, $dayStr, $post->getInstrumentist(),
                     $exception->getOverrideStartTime(), $exception->getOverrideEndTime(),
                     $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
-                    $previewAssignments, $missionsByInstrumentist, $lines,
+                    $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
                 );
             }
 
             $current = $current->modify('+1 day');
         }
 
-        return $this->resolveFreedInstrumentists($lines);
+        return $this->resolveFreedInstrumentists($lines, $blockedPairs);
     }
 
     /**
@@ -176,6 +181,7 @@ class PlanningGeneratorServiceV2
         array &$previewAssignments,
         array $missionsByInstrumentist,
         array &$lines,
+        array $blockedPairs = [],
     ): void {
         $site = $post->getSite();
 
@@ -226,19 +232,33 @@ class PlanningGeneratorServiceV2
         // slot wanting the same person is still reported as CONFLICT by hasConflictFast().
         if ($existingMission !== null && self::isOperational($existingMission)) {
             $existingInst = $existingMission->getInstrumentist();
+            // D-152 — a published mission still affected to an incompatible pair (its open
+            // SURGEON_INCOMPATIBILITY alert is treated in the Alertes tab) is never shown "OK".
+            $existingBlocked = $existingInst !== null
+                && isset($blockedPairs[$surgeon->getId() . '-' . $existingInst->getId()]);
             $lines[] = $this->buildLine(
                 $current, $post, $site, $surgeonName,
                 $existingMission->getStartAt() ?? $startTime, $existingMission->getEndAt() ?? $endTime,
-                $existingInst, $existingInst !== null ? 'COVERED' : 'UNCOVERED', $existingMission->getId(),
+                $existingInst, $existingBlocked ? 'CONFLICT' : ($existingInst !== null ? 'COVERED' : 'UNCOVERED'), $existingMission->getId(),
                 null, $existingMission->getStatus(),
+                $existingBlocked ? EligibilityReason::SURGEON_INCOMPATIBILITY->value : null,
             );
             return;
         }
 
         $status                       = 'UNCOVERED';
         $existingMissionInstrumentist = null;
+        // D-152 — the post's (or override's) instrumentist is incompatible with its surgeon: the
+        // line is a CONFLICT tagged SURGEON_INCOMPATIBILITY, never "OK". The instrumentist stays
+        // on the line so the post is identifiable and the manager can correct it; generate()
+        // never persists the pair (guardInstrumentist() → mission without instrumentist,
+        // reported in rejectedAssignments) and the slot is never reserved for her below.
+        $blocked = $slotInstrumentist !== null
+            && isset($blockedPairs[$surgeon->getId() . '-' . $slotInstrumentist->getId()]);
 
-        if ($existingMission !== null) {
+        if ($blocked) {
+            $status = 'CONFLICT';
+        } elseif ($existingMission !== null) {
             $existingMissionInstrumentist = $existingMission->getInstrumentist();
 
             if ($existingMissionInstrumentist === null && $slotInstrumentist === null) {
@@ -284,6 +304,7 @@ class PlanningGeneratorServiceV2
             $slotInstrumentist, $status, $existingMission?->getId(),
             $status === 'MODIFIED' ? $existingMissionInstrumentist : null,
             $existingMission?->getStatus(),
+            $blocked ? EligibilityReason::SURGEON_INCOMPATIBILITY->value : null,
         );
     }
 
@@ -1053,7 +1074,8 @@ class PlanningGeneratorServiceV2
 
     // ── Second pass: freed-instrumentist auto-assignment (D-034, unchanged conceptually) ──
 
-    private function resolveFreedInstrumentists(array $lines): array
+    /** @param array<string, true> $blockedPairs D-152 — never suggest a freed instrumentist incompatible with the line's surgeon */
+    private function resolveFreedInstrumentists(array $lines, array $blockedPairs = []): array
     {
         $freedByDate = [];
         foreach ($lines as $line) {
@@ -1065,7 +1087,7 @@ class PlanningGeneratorServiceV2
             }
         }
         foreach ($lines as $line) {
-            if ($line['status'] !== 'SKIPPED' && $line['instrumentistId'] !== null) {
+            if ($line['status'] !== 'SKIPPED' && $line['instrumentistId'] !== null && ($line['blockedReason'] ?? null) === null) {
                 unset($freedByDate[$line['date']][$line['instrumentistId']]);
             }
         }
@@ -1097,12 +1119,16 @@ class PlanningGeneratorServiceV2
             $lineEnd   = $this->hhmm2mins($line['endTime']);
 
             foreach ($available as $instId => [$freedName, $freedPhotoPath]) {
+                if (isset($blockedPairs[$line['surgeonId'] . '-' . $instId])) {
+                    continue;
+                }
                 $hasOverlap = false;
                 foreach ($lines as $other) {
                     if (
                         $other['date'] === $date
                         && $other['instrumentistId'] === $instId
                         && $other['status'] !== 'SKIPPED'
+                        && ($other['blockedReason'] ?? null) === null
                         && $this->hhmm2mins($other['startTime']) < $lineEnd
                         && $this->hhmm2mins($other['endTime']) > $lineStart
                     ) {
@@ -1145,7 +1171,7 @@ class PlanningGeneratorServiceV2
      *   status: string, existingMissionId: int|null,
      *   existingInstrumentistId: int|null, existingInstrumentistName: string|null,
      *   freedFrom: bool, surgeonPhotoPath: string|null, instrumentistPhotoPath: string|null,
-     *   existingMissionStatus: string|null
+     *   existingMissionStatus: string|null, blockedReason: string|null
      * }
      */
     private function buildLine(
@@ -1160,6 +1186,7 @@ class PlanningGeneratorServiceV2
         ?int $existingMissionId,
         ?User $existingInstrumentist = null,
         ?MissionStatus $existingMissionStatus = null,
+        ?string $blockedReason = null,
     ): array {
         return [
             'date'                      => $day->format('Y-m-d'),
@@ -1183,6 +1210,9 @@ class PlanningGeneratorServiceV2
             // D-125 — lets the editor show (and lock) a line that mirrors a Mission which
             // already exists; anything but DRAFT is never modified by generate() (R-01).
             'existingMissionStatus'     => $existingMissionStatus?->value,
+            // D-152 — SURGEON_INCOMPATIBILITY when the line's instrumentist is incompatible with
+            // the surgeon (status CONFLICT): shown as « Bloqué — instrumentiste incompatible ».
+            'blockedReason'             => $blockedReason,
         ];
     }
 }

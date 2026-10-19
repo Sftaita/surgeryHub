@@ -5,6 +5,7 @@ namespace App\EventSubscriber;
 use App\Exception\InstrumentistIneligibleException;
 use App\Exception\InterventionTypeInactiveException;
 use App\Exception\InterventionTypeNotFoundException;
+use App\Enum\EligibilityReason;
 use App\Exception\MissionClaimIneligibleException;
 use App\Exception\MissionNotDraftException;
 use App\Exception\PlanningDraftScopeAlreadyConfirmedException;
@@ -39,6 +40,10 @@ use App\Exception\MaterialAttachmentTargetNotFoundException;
 use App\Exception\MaterialItemRequestAlreadyProcessedException;
 use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
+use App\Exception\AssignmentRefusalException;
+use App\Exception\IncompatibilityException;
+use App\Exception\EncodingConcurrencyException;
+use Doctrine\ORM\OptimisticLockException;
 use App\Exception\ReleasedRoomSlotConflictException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
@@ -119,11 +124,16 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = 'MISSION_CLAIM_INELIGIBLE';
             $primary = $e->getPrimaryReason();
             $message = $primary?->label() ?? $e->getMessage();
+            // D-151 / D-152 — the claimer never learns that a surgeon refused or blocked her:
+            // both reasons leave the API under a neutral code (labels already neutral).
+            $publicCode = static fn (EligibilityReason $r): string => in_array($r, [EligibilityReason::REFUSED_FOR_MISSION, EligibilityReason::SURGEON_INCOMPATIBILITY], true)
+                ? 'MISSION_UNAVAILABLE'
+                : $r->value;
             $violations = array_map(
-                static fn ($r) => ['field' => null, 'message' => $r->value],
+                static fn ($r) => ['field' => null, 'message' => $publicCode($r)],
                 $e->getReasons(),
             );
-            $extra['reason'] = $primary?->value;
+            $extra['reason'] = $primary !== null ? $publicCode($primary) : null;
             $extra['date'] = $e->getDate()?->format('Y-m-d');
             $absence = $e->getBlockingAbsence();
             if ($absence !== null) {
@@ -295,6 +305,26 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = $e->getErrorCode();
             $message = $e->getMessage();
             $extra = $e->getExtra();
+        } elseif ($e instanceof EncodingConcurrencyException) {
+            // D-154 — If-Match differs from the element's version, or is missing for the surgeon.
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+        } elseif ($e instanceof OptimisticLockException) {
+            // D-154 — a concurrent write won the race between the If-Match check and the flush.
+            $status = 409;
+            $code = EncodingConcurrencyException::CONCURRENT_MODIFICATION;
+            $message = EncodingConcurrencyException::modified(EncodingConcurrencyException::SUBJECT_INTERVENTION)->getMessage();
+        } elseif ($e instanceof IncompatibilityException) {
+            // D-152 — incompatibility creation / lifting refused.
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+        } elseif ($e instanceof AssignmentRefusalException) {
+            // D-151 — surgeon refusal / manager-intervention request refused under the lock.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
         } elseif ($e instanceof ReleasedRoomSlotConflictException) {
             $status = 409;
             $code = $e->getErrorCode();
@@ -324,6 +354,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             && !$e instanceof RefundExceedsOverpaidException
             && !$e instanceof EncodingIncompleteException
             && !$e instanceof CatalogueRequestException
+            && !$e instanceof IncompatibilityException
         ) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {

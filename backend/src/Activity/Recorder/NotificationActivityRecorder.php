@@ -39,6 +39,9 @@ class NotificationActivityRecorder
         'MISSION_OFFERED'             => 'Mission proposée',
         'MISSION_ASSIGNED_DIRECTLY'   => 'Mission attribuée',
         'MISSION_OFFER_DECLINED'      => 'Proposition refusée',
+        // D-151 — managers only (the instrumentist's own notification stays PLANNING_MISSION_RELEASED).
+        'ASSIGNMENT_REFUSED_BY_SURGEON' => "Refus d'affectation par le chirurgien",
+        'ASSIGNMENT_REVIEW_REQUESTED'   => 'Intervention demandée sur une affectation',
         'ABSENCE_MISSION_CANCELLED'   => 'Mission annulée (absence)',
         'PLANNING_CHANGE_SUMMARY'     => 'Modification de votre planning',
         // H4 / H5a — every type the dispatcher now carries reads as words in the timeline.
@@ -74,6 +77,7 @@ class NotificationActivityRecorder
         'MISSION_DECLARED_REJECTED'        => 'Mission déclarée refusée',
         'ENCODING_ANOMALY_REPORTED'        => 'Anomalie d\'encodage signalée',
         'ENCODING_CORRECTION_REQUESTED'    => 'Correction d\'encodage demandée',
+        'ENCODING_UPDATED_BY_SURGEON'      => 'Encodage complété par le chirurgien',
         'SURGEON_MISSION_REQUEST_CREATED'  => 'Nouvelle demande de mission',
         'ROOM_TAKEOVER_MISSION_OFFER'      => 'Salle reprise — mission disponible',
         // H5b — transactional deliveries on the common low-level layer (no user notification).

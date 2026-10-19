@@ -122,8 +122,9 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 
 ## En cas de problème — rollback
 
-- [ ] Restaurer le dump SQL (voir [`docs/backup-and-restore.md`](backup-and-restore.md))
-- [ ] Remettre l'ancienne version du code depuis `src_pre_deploy_*.tar.gz`
-- [ ] Rebuild + restart : `docker compose build --no-cache && docker compose up -d`
+- [ ] Choisir l'opération ([`docs/production.md`](production.md) §Rollback) : A. retour du code (par défaut, base inchangée), B. `down()` des migrations, C. restauration de la **seule** base `surgicalhub`
+- [ ] Jamais de rejeu complet du dump `all_*.sql.gz` : MedAtWork, MedClick et les comptes MySQL ne sont jamais touchés (voir [`docs/backup-and-restore.md`](backup-and-restore.md))
+- [ ] B ou C : instantané de sécurité de `surgicalhub` d'abord (Cas 0)
+- [ ] Remettre les images `surgicalhub-{php,nginx}:rollback-<commit>` (sinon code depuis `src_pre_deploy_*.tar.gz` + rebuild), restart php et worker, **puis nginx**
 - [ ] Vérifier les logs après restart
 - [ ] Ne pas créer de tag `*-prod` pour l'état restauré — documenter l'incident

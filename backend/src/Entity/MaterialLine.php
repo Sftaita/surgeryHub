@@ -22,6 +22,15 @@ class MaterialLine
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
+    /**
+     * D-154 — version optimiste (Doctrine, incrémentée à chaque modification) : renvoyée
+     * par le client en If-Match (EncodingVersionGuard) pour qu'une modification concurrente
+     * (instrumentiste, chirurgien, manager) ne soit jamais écrasée en silence.
+     */
+    #[ORM\Version]
+    #[ORM\Column(type: 'integer', options: ['default' => 1])]
+    private int $version = 1;
+
     #[ORM\ManyToOne(inversedBy: 'materialLines')]
     #[ORM\JoinColumn(nullable: false)]
     #[Groups(['mission:read', 'mission:read_manager'])]
@@ -78,6 +87,11 @@ class MaterialLine
     public function getId(): ?int
     {
         return $this->id;
+    }
+
+    public function getVersion(): int
+    {
+        return $this->version;
     }
 
     public function getMission(): ?Mission

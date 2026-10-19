@@ -47,6 +47,8 @@ export type EncodingMaterialLine = {
   item: EncodingMaterialItem;
   quantity: string; // backend: "1.00"
   comment: string; // backend: "Optionnel"
+  /** D-154 — version optimiste servie par le backend, renvoyée en If-Match à chaque modification / suppression. */
+  version?: number | null;
 };
 
 export type EncodingMaterialItemRequest = {
@@ -151,6 +153,8 @@ export type MissionEncodingInterventionEntry = {
   /** Tarification firme conditionnée à un choix obligatoire — donnée factuelle, jamais un montant. */
   selectedChoiceOptionId?: number | null;
   selectedChoiceOptionLabel?: string | null;
+  /** D-154 — version optimiste servie par le backend, renvoyée en If-Match à chaque modification / suppression. */
+  version?: number | null;
 };
 
 export type MissionEncodingDraftEntry = {
@@ -387,6 +391,8 @@ export type MaterialLineDto = {
   item: EncodingMaterialItem;
   quantity: string;
   comment: string;
+  /** D-154 — version optimiste servie par le backend, renvoyée en If-Match à chaque modification / suppression. */
+  version?: number | null;
 };
 
 /** Voir CreateMaterialLineBody — même exclusivité mutuelle. */

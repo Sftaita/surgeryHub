@@ -65,3 +65,6 @@ export function formatMinutes(minutes: number): string {
 }
 
 export const chipColorForFinancial = (state: EncodingFinancialState): ChipProps["color"] => FINANCIAL_STATE_CONFIG[state].color;
+
+/** D-155 — activité réalisée sans instrumentiste (servi par le backend) : aucune heure n'existe ni n'est attendue. */
+export const NO_HOURS_WITHOUT_INSTRUMENTIST = "Activité réalisée sans instrumentiste — aucune prestation horaire attendue";

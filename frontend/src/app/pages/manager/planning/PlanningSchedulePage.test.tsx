@@ -3,6 +3,7 @@ import { render, screen, waitFor, within, fireEvent } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import PlanningSchedulePage from "./PlanningSchedulePage";
+import { apiClient } from "../../../api/apiClient";
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -374,6 +375,22 @@ describe("PlanningSchedulePage — ScheduleInstrumentistCell D-102 ghost UX (OPE
 
     const claireOption = await screen.findByTestId("schedule-instrumentist-option-20");
     expect(claireOption).not.toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+describe("PlanningSchedulePage — attribution sans liste complète des comptes (D-152, réserve 1)", () => {
+  it("while the backend roster loads, offers only the current instrumentist, and never fetches /api/instrumentists", async () => {
+    vi.mocked(planningApi.fetchRosterEligibility).mockReturnValueOnce(new Promise(() => {}));
+    vi.mocked(apiClient.get).mockClear();
+    const user = await loadMissions([makeMission({ status: "OPEN" })]);
+
+    await waitFor(() => expect(screen.getByText("À réserver")).toBeInTheDocument());
+    await user.click(screen.getByText("Non assigné"));
+
+    const pending = await screen.findByTestId("schedule-instrumentist-roster-pending");
+    expect(pending).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Non assigné", "Chargement des instrumentistes…"]);
+    expect(vi.mocked(apiClient.get).mock.calls.map((c) => c[0])).not.toContain("/api/instrumentists");
   });
 });
 

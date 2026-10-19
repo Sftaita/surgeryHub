@@ -65,6 +65,9 @@ const STATUS_TOKENS: Record<PreviewLineStatus, { label: string; fg: string; bg: 
   SKIPPED:   { label: "Chirurgien absent",    fg: "#8A6420", bg: "#FAF5E9", dot: "#DBAB4E", icon: <EventBusyOutlinedIcon sx={{ fontSize: 14 }} /> },
 };
 
+// D-152 — a CONFLICT line whose instrumentist is incompatible with the surgeon.
+const BLOCKED_TOKENS = { ...STATUS_TOKENS.CONFLICT, label: "Bloqué — instrumentiste incompatible" };
+
 const FILTER_CHIPS: Array<{ key: SeverityFilter; label: string; dot: string }> = [
   { key: "all", label: "Tout", dot: "#98A2AE" },
   { key: "ok", label: "OK", dot: "#5BBE96" },
@@ -640,6 +643,7 @@ export function GeneratePlanningTab() {
       handleEditLine(key, {
         instrumentistId: null,
         instrumentistName: null,
+        blockedReason: null,
         status: line.status === "SKIPPED" ? "SKIPPED" : "UNCOVERED",
       });
     } else {
@@ -647,6 +651,7 @@ export function GeneratePlanningTab() {
       handleEditLine(key, {
         instrumentistId: newId,
         instrumentistName: inst?.displayName ?? null,
+        blockedReason: null,
         status: line.status === "SKIPPED" ? "UNCOVERED" : (line.status === "UNCOVERED" || line.status === "CONFLICT" ? "COVERED" : line.status),
       });
 
@@ -680,6 +685,7 @@ export function GeneratePlanningTab() {
           ...(next.get(key) ?? {}),
           instrumentistId: inst.id,
           instrumentistName: inst.displayName,
+          blockedReason: null,
           status: line.status === "UNCOVERED" || line.status === "CONFLICT" ? "COVERED" : line.status,
         });
       }
@@ -695,7 +701,7 @@ export function GeneratePlanningTab() {
       for (const key of selectedKeys) {
         // Clear the instrumentist together with the status — a SKIPPED line must never keep
         // showing a stale name/avatar as if still assigned (matches handleInstrumentistChange).
-        next.set(key, { ...(next.get(key) ?? {}), status: "SKIPPED" as PreviewLineStatus, instrumentistId: null, instrumentistName: null });
+        next.set(key, { ...(next.get(key) ?? {}), status: "SKIPPED" as PreviewLineStatus, instrumentistId: null, instrumentistName: null, blockedReason: null });
       }
       return next;
     });
@@ -726,7 +732,7 @@ export function GeneratePlanningTab() {
       return;
     }
     // Clear the instrumentist together with the status — see handleBulkSkip() for why.
-    handleEditLine(key, { status: "SKIPPED", instrumentistId: null, instrumentistName: null });
+    handleEditLine(key, { status: "SKIPPED", instrumentistId: null, instrumentistName: null, blockedReason: null });
   }
 
   function handleReleaseMission(line: PreviewLineV2) {
@@ -784,6 +790,7 @@ export function GeneratePlanningTab() {
         startTime: selectedLine.startTime,
         endTime: selectedLine.endTime,
         excludeMissionId: selectedLine.existingMissionId,
+        surgeonId: selectedLine.surgeonId,
       }
     : null;
   const selectedLineRosterQuery = useRosterEligibility(
@@ -799,7 +806,12 @@ export function GeneratePlanningTab() {
   // from the backend since these Preview lines aren't persisted Missions yet, so it stays
   // client-side, non-blocking, and doesn't override a harder backend-sourced ghost.
   const instrumentistOptionsForSelected: SearchableOption[] = React.useMemo(() => {
-    if (!selectedLine || !selectedLineRosterQuery.data) return instrumentistOptions;
+    if (!selectedLine) return instrumentistOptions;
+    // D-152 — until the backend roster for this slot is known, nobody is selectable: a
+    // blocked (or otherwise ineligible) person must never be picked unchecked.
+    if (!selectedLineRosterQuery.data) {
+      return instrumentistOptions.map((o) => ({ ...o, disabled: true, badge: "Vérification de l'éligibilité…" }));
+    }
     return selectedLineRosterQuery.data.candidates.map((c) => {
       const base = instrumentistOptions.find((o) => o.id === c.id);
       if (!c.selectable) {
@@ -817,7 +829,14 @@ export function GeneratePlanningTab() {
     });
   }, [instrumentistOptions, selectedLine, selectedLineRosterQuery.data, effectiveLines]);
 
-  const freedForSelected = selectedLine ? getFreedInstrumentists(effectiveLines, selectedLine) : [];
+  // D-152 — only freed instrumentists the backend roster accepts for this line (never one
+  // blocked by its surgeon, never before the roster is known).
+  const selectableForSelected = new Set(
+    (selectedLineRosterQuery.data?.candidates ?? []).filter((c) => c.selectable).map((c) => c.id),
+  );
+  const freedForSelected = selectedLine
+    ? getFreedInstrumentists(effectiveLines, selectedLine).filter((f) => selectableForSelected.has(f.id))
+    : [];
 
   // D-102 — bulk-assign bar: eligibility merged across every selected line's own slot
   // (conservative — a candidate must be selectable for all of them to appear selectable).
@@ -825,7 +844,7 @@ export function GeneratePlanningTab() {
     () => [...selectedKeys]
       .map((key) => effectiveLines.find((l) => lineKeyV2(l) === key))
       .filter((l): l is PreviewLineV2 => !!l && l.status !== "SKIPPED")
-      .map((l) => ({ siteId: l.siteId, date: l.date, startTime: l.startTime, endTime: l.endTime, excludeMissionId: l.existingMissionId })),
+      .map((l) => ({ siteId: l.siteId, date: l.date, startTime: l.startTime, endTime: l.endTime, excludeMissionId: l.existingMissionId, surgeonId: l.surgeonId })),
     [selectedKeys, effectiveLines],
   );
   const bulkRoster = useMergedRosterEligibility(bulkSlots, isModification ? "PLANNING_MODIFICATION" : "STRICT_ASSIGNMENT");
@@ -1644,7 +1663,7 @@ export function GeneratePlanningTab() {
                           </Typography>
                         </Stack>
                         {surgeon.lines.map((line, lIdx) => {
-                          const tokens = STATUS_TOKENS[line.status];
+                          const tokens = line.blockedReason ? BLOCKED_TOKENS : STATUS_TOKENS[line.status];
                           const key = lineKeyV2(line);
                           const dirty = editedLines.has(key);
                           const isSelectedInInspector = selectedLineKey === key;
@@ -1676,7 +1695,9 @@ export function GeneratePlanningTab() {
                                 {line.startTime}–{line.endTime}
                               </Typography>
                               <Stack
-                                direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0 }}
+                                direction="row" alignItems="center" spacing={0.9}
+                                // D-152 — a blocked line keeps its instrumentist's name visible (the post stays identifiable).
+                                sx={{ flex: line.blockedReason ? "1 1 auto" : 1, minWidth: 0, overflow: "hidden" }}
                               >
                                 {line.status === "SKIPPED" ? (
                                   // Chirurgien absent — there is no post to cover: never the old
@@ -1684,10 +1705,13 @@ export function GeneratePlanningTab() {
                                   // fill), never an assignment affordance. See docs/decisions.md.
                                   <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textSecondary }}>/</Typography>
                                 ) : line.instrumentistName ? (
-                                  <>
+                                  <Stack
+                                    direction="row" alignItems="center" spacing={0.9} sx={{ minWidth: 0, opacity: line.blockedReason ? 0.5 : 1 }}
+                                    aria-label={line.blockedReason ? `${line.instrumentistName} — Bloqué, instrumentiste incompatible avec le chirurgien` : undefined}
+                                  >
                                     <PersonAvatar name={line.instrumentistName} photoUrl={resolveApiAssetUrl(line.instrumentistPhotoPath)} size="xs" />
                                     <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong }} noWrap>{line.instrumentistName}</Typography>
-                                  </>
+                                  </Stack>
                                 ) : (
                                   <>
                                     <EmptyAvatar size={22} />
@@ -1730,6 +1754,8 @@ export function GeneratePlanningTab() {
                               <Box sx={{
                                 display: "inline-flex", alignItems: "center", gap: 0.6, fontSize: 11.5, fontWeight: 700,
                                 color: tokens.fg, bgcolor: tokens.bg, px: 1, py: 0.4, borderRadius: planningV2Radii.pill, width: "fit-content", flex: "none",
+                                // D-152 — the long blocked label wraps instead of covering the instrumentist's name.
+                                ...(line.blockedReason ? { flex: "0 1 auto", minWidth: 0, maxWidth: 135, lineHeight: 1.25 } : {}),
                               }}>
                                 <Box sx={{ width: 6, height: 6, borderRadius: "999px", bgcolor: tokens.dot }} />
                                 {tokens.label}

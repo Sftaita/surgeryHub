@@ -283,7 +283,25 @@ final class MissionEncodingWorkflowService
         $mission->setEncodingLockedAt(null);
         $this->addComment($mission, $actor, $comment);
 
+        // D-153 — le calcul encore actif reflète l'encodage qui va être corrigé : marqué
+        // obsolète (jamais approuvé, verrouillé ni facturé ensuite), statut et montants
+        // inchangés, aucun recalcul automatique. Seul recalculate() le remplace.
+        $obsoleteIds = [];
+        $now = new \DateTimeImmutable();
+        foreach ($this->em->getRepository(FinancialCalculation::class)->findBy([
+            'mission' => $mission,
+            'status' => [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED],
+        ]) as $calculation) {
+            if (!$calculation->isObsolete()) {
+                $calculation->setEncodingReopenedAt($now);
+            }
+            $obsoleteIds[] = $calculation->getId();
+        }
+
         $payload = array_merge($this->actorPayload($actor), ['comment' => $comment], $this->transitionPayload($from, $mission));
+        if ($obsoleteIds !== []) {
+            $payload['obsoleteFinancialCalculationIds'] = $obsoleteIds;
+        }
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_REOPENED, $payload);
         $this->em->flush();
 

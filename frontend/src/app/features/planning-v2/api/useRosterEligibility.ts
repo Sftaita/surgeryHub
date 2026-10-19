@@ -9,10 +9,12 @@ export interface RosterSlot {
   startTime: string;
   endTime: string;
   excludeMissionId?: number | null;
+  /** D-152 — the line's surgeon: his incompatible instrumentists come back flagged. */
+  surgeonId?: number | null;
 }
 
 function slotKey(slot: RosterSlot): string {
-  return `${slot.siteId ?? "null"}|${slot.date}|${slot.startTime}|${slot.endTime}|${slot.excludeMissionId ?? "null"}`;
+  return `${slot.siteId ?? "null"}|${slot.date}|${slot.startTime}|${slot.endTime}|${slot.excludeMissionId ?? "null"}|${slot.surgeonId ?? "null"}`;
 }
 
 function isCompleteSlot(slot: RosterSlot): boolean {

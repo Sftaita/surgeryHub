@@ -9,6 +9,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Security\Voter\MissionVoter;
 use App\Service\EncodingReminderService;
+use App\Service\MissionEncodingHistoryService;
 use App\Service\MissionEncodingWorkflowService;
 use App\Service\MissionMapper;
 use Doctrine\ORM\EntityManagerInterface;
@@ -134,6 +135,19 @@ final class MissionEncodingWorkflowController extends AbstractController
         $this->reminders->sendManualReminder($mission, $user, $batchId);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
+    }
+
+    /**
+     * D-153 — historique des corrections de l'encodage (heures, interventions, matériel,
+     * étapes du cycle) : lecture du journal d'activité existant, managers uniquement.
+     */
+    #[Route('/history', name: 'api_missions_encoding_history', methods: ['GET'])]
+    public function history(int $missionId, MissionEncodingHistoryService $history): JsonResponse
+    {
+        $mission = $this->getMissionOr404($missionId);
+        $this->denyAccessUnlessGranted(MissionVoter::VIEW_ENCODING_HISTORY, $mission);
+
+        return $this->json(['items' => $history->historyOf($mission)]);
     }
 
     private function getMissionOr404(int $id): Mission

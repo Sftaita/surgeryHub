@@ -246,3 +246,72 @@ describe("MissionDetailPage (manager) — heures prestées et matériel encodé 
     expect(screen.getByText("Aucun encodage disponible pour l'instant.")).toBeInTheDocument();
   });
 });
+
+describe("MissionDetailPage (manager) — activité réalisée sans instrumentiste (D-155)", () => {
+  it("propose la déclaration quand le backend la sert, et l'envoie après confirmation", async () => {
+    const user = userEvent.setup();
+    renderDetail(baseMission({ status: "OPEN", allowedActions: ["view", "cancel", "declare_executed_without_instrumentist"] }));
+
+    await user.click(await screen.findByTestId("manager-declare-without-instrumentist"));
+    await user.click(screen.getByRole("button", { name: "Confirmer la déclaration" }));
+
+    expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/declare-executed-without-instrumentist", {});
+  });
+
+  it("annule une déclaration erronée avec un motif obligatoire", async () => {
+    const user = userEvent.setup();
+    renderDetail(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "submit", "cancel_executed_without_instrumentist"],
+      executedWithoutInstrumentist: { declaredAt: "2026-08-10T12:00:00+02:00", declaredByName: "Jean Dupont" },
+    }));
+
+    expect(await screen.findByTestId("manager-without-instrumentist")).toHaveTextContent("déclarée par Jean Dupont");
+    await user.click(screen.getByTestId("manager-cancel-declaration"));
+    const confirm = screen.getAllByRole("button", { name: "Annuler la déclaration" }).at(-1)!;
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByLabelText(/Motif de l'annulation/), "Une instrumentiste était présente.");
+    await user.click(confirm);
+
+    expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel-executed-without-instrumentist", { reason: "Une instrumentiste était présente." });
+  });
+
+  it("sans droit servi par le backend, aucune de ces actions", async () => {
+    renderDetail(baseMission({ status: "OPEN", allowedActions: ["view", "cancel"] }));
+    expect(await screen.findByRole("button", { name: "Annuler la mission" })).toBeInTheDocument();
+    expect(screen.queryByTestId("manager-declare-without-instrumentist")).toBeNull();
+    expect(screen.queryByTestId("manager-cancel-declaration")).toBeNull();
+  });
+});
+
+describe("MissionDetailPage (manager) — heures et renvoi d'une activité sans instrumentiste (D-155)", () => {
+  const declared = { declaredAt: "2026-08-10T12:00:00+02:00", declaredByName: "Jean Dupont" };
+
+  it("aucun « repli sur le planifié » ni durée effective : information explicite à la place", async () => {
+    renderDetail(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], executedWithoutInstrumentist: declared }));
+
+    expect(await screen.findByTestId("manager-hours-without-instrumentist")).toHaveTextContent("Activité réalisée sans instrumentiste — aucune prestation horaire attendue");
+    expect(screen.queryByText("Non renseignée — repli sur le planifié")).toBeNull();
+    expect(screen.queryByText("Durée effective")).toBeNull();
+  });
+
+  it("« Rejeter l'encodage » annonce le renvoi au chirurgien, avec des exemples de contenu", async () => {
+    const user = userEvent.setup();
+    renderDetail(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], executedWithoutInstrumentist: declared }));
+
+    await user.click(await screen.findByRole("button", { name: "Rejeter l'encodage" }));
+    const intro = await screen.findByTestId("reject-encoding-intro");
+    expect(intro).toHaveTextContent("renvoyé au chirurgien");
+    expect(intro).toHaveTextContent("intervention manquante");
+    expect(intro).not.toHaveTextContent("instrumentiste pour correction");
+  });
+
+  it("mission classique : carte des heures et fenêtre de rejet inchangées", async () => {
+    const user = userEvent.setup();
+    renderDetail(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] }));
+
+    expect(await screen.findByText("Non renseignée — repli sur le planifié")).toBeInTheDocument();
+    expect(screen.queryByTestId("manager-hours-without-instrumentist")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Rejeter l'encodage" }));
+    expect(await screen.findByTestId("reject-encoding-intro")).toHaveTextContent("L'encodage repart chez l'instrumentiste pour correction");
+  });
+});

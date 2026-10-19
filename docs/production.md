@@ -336,6 +336,54 @@ confirmer via l'historique ADMIN (`/app/admin/outbound-notifications`) que les
 nouveaux envois apparaissent normalement. Les utilisateurs réels devront réactiver
 les notifications sur leurs appareils.
 
+### Clé Sentry (backend) — remplacement préparé le 2026-10-17, non exécuté
+
+**Nature.** `SENTRY_DSN` est un DSN d'**ingestion** moderne
+(`https://<clé publique>@o<org>.ingest.de.sentry.io/<projet>`) : clé publique de 32
+caractères, **sans partie secrète**. Il permet seulement d'**envoyer** des événements au
+projet Sentry du backend ; il ne donne aucune lecture des événements ni aucun accès au
+compte. Le frontend utilise une autre clé d'un autre projet (`VITE_SENTRY_DSN`, publique
+par conception, livrée dans le bundle).
+
+**Constat** (comparaison d'empreintes sur le serveur, lecture seule) : la valeur de
+production est celle qui était commitée dans `backend/.env` depuis 2026-06-13. Les
+environnements locaux et les tests l'utilisaient aussi. Risque : événements parasites
+dans le projet de production (bruit, quota), pas de fuite de données. Depuis ce lot, les
+fichiers suivis ont `SENTRY_DSN=` vide (garde-fou `NoRealSentryDsnCommittedTest`) ; le
+développement local règle son propre DSN dans `backend/.env.local` (de préférence un
+projet séparé).
+
+**Remplacement sans interruption de la collecte** (à faire par une personne ayant accès
+au projet Sentry ; l'ancienne clé reste active jusqu'à l'étape 6) :
+
+1. Sentry → projet backend → *Settings → Client Keys (DSN)* → **Generate New Key**.
+   Optionnel : limite de débit sur la nouvelle clé.
+2. Sauvegarde du `.env` :
+   `cp /opt/stack/apps/surgicalhub/.env /home/deploy/backups/env/surgicalhub.env.bak_$(date +%Y%m%d_%H%M%S)`
+3. Saisie sans affichage ni historique :
+   ```bash
+   read -rs -p 'Nouveau DSN : ' NEW_DSN; echo
+   NEW_DSN="$NEW_DSN" python3 - << 'EOF'
+   import os, re
+   p = "/opt/stack/apps/surgicalhub/.env"; v = os.environ["NEW_DSN"].strip()
+   assert re.fullmatch(r"https://[0-9a-f]{32}@o\d+\.ingest\.[a-z]+\.sentry\.io/\d+", v), "format inattendu"
+   s = open(p).read(); assert len(re.findall(r"^SENTRY_DSN=.*$", s, flags=re.M)) == 1
+   open(p, "w").write(re.sub(r"^SENTRY_DSN=.*$", lambda m: "SENTRY_DSN=" + v, s, flags=re.M)); print("OK")
+   EOF
+   unset NEW_DSN
+   ```
+4. `cd /opt/stack/apps/surgicalhub && docker compose up -d && docker compose restart nginx`
+   (recrée `php` et `worker` avec le nouveau `.env`).
+5. Contrôle : `docker exec surgicalhub-php php bin/console sentry:test` → l'événement de
+   test arrive dans le projet, compté sur la **nouvelle** clé (*Client Keys*, statistiques
+   par clé). Vérifier sans afficher de valeur que `php` et `worker` ont la même empreinte que
+   le `.env`.
+6. Après quelques jours sans événement légitime sur l'ancienne clé : la **désactiver**, puis
+   la supprimer.
+
+Rien à réécrire dans l'historique Git : une fois l'ancienne clé désactivée, la valeur qui y
+figure n'est plus acceptée par Sentry.
+
 ---
 
 ### Intégration MedVue (D-140)
@@ -753,25 +801,111 @@ convention existante de ce serveur sans décision opérationnelle séparée.
 ## Rollback
 
 Le tag `*-prod` précédent (voir "Historique des versions déployées"
-ci-dessus) identifie le dernier commit connu-bon. L'archive de code créée à
-l'étape 2 de chaque déploiement (`src_pre_deploy_*.tar.gz`) est le moyen le
-plus rapide de revenir en arrière sans dépendre de Git sur le serveur.
+ci-dessus) identifie le dernier commit connu-bon. Trois opérations
+distinctes, de la moins à la plus destructive ; choisir la plus légère qui
+suffit, jamais une restauration de base par défaut.
+
+| Besoin | Opération | Base | Perte de données |
+|---|---|---|---|
+| Le nouveau code pose problème, le schéma est sain | **A. Retour du code** | aucune modification | aucune |
+| Une migration du déploiement pose problème | **B. `down()` des migrations** | schéma de `surgicalhub` | contenu des colonnes et tables retirées (conservé dans l'instantané) |
+| Les données de `surgicalhub` sont corrompues | **C. Restauration de la seule base `surgicalhub`** | `surgicalhub` seule | tout ce qui a été écrit depuis le dump |
+
+**MedAtWork, MedClick et les comptes MySQL ne sont jamais touchés par un
+rollback SurgicalHub** : jamais de `zcat all_*.sql.gz | docker exec -i mysql
+mysql …`, qui rejoue toutes les bases du dump nocturne (voir
+[`backup-and-restore.md`](backup-and-restore.md) §Restaurer la base MySQL).
+
+### A. Retour du code, schéma conservé (par défaut)
+
+Les migrations additives (colonnes nullables ou à valeur par défaut,
+nouvelles tables) laissent l'ancien code fonctionner : la base reste telle
+quelle.
 
 ```bash
-# 1. Restaurer le backup DB (voir backup-and-restore.md)
-ROOTPW=$(grep '^MYSQL_ROOT_PASSWORD=' /opt/stack/mysql/.env | cut -d= -f2-)
-zcat /home/deploy/backups/mysql/all_YYYYMMDD_HHMMSS.sql.gz \
-  | docker exec -i mysql mysql -uroot -p"$ROOTPW"
+cd /opt/stack/apps/surgicalhub
+# 1. Garder l'image fautive, remettre les images précédentes (conservées à chaque déploiement)
+docker tag surgicalhub-php:local   surgicalhub-php:failed-<nouveau commit>
+docker tag surgicalhub-nginx:local surgicalhub-nginx:failed-<nouveau commit>
+docker tag surgicalhub-php:rollback-<ancien commit>   surgicalhub-php:local
+docker tag surgicalhub-nginx:rollback-<ancien commit> surgicalhub-nginx:local
+docker compose up -d
+docker compose restart php worker
+docker compose restart nginx   # toujours après php (incident du 2026-10-13)
+```
 
-# 2. Remettre l'ancienne version du code dans src/ depuis l'archive pré-déploiement
+Si les images `rollback-*` ne sont plus disponibles : remettre le code depuis
+l'archive pré-déploiement, puis rebuild depuis `/opt/stack/apps/surgicalhub` :
+
+```bash
 rm -rf /opt/stack/apps/surgicalhub/src/backend /opt/stack/apps/surgicalhub/src/frontend
 tar xzf /home/deploy/backups/code/src_pre_deploy_YYYYMMDD_HHMMSS.tar.gz \
   -C /opt/stack/apps/surgicalhub --strip-components=1 src/backend src/frontend
-
-# 3. Rebuild + restart
 cd /opt/stack/apps/surgicalhub
 docker compose build --no-cache && docker compose up -d
+docker compose restart nginx
 ```
+
+**Aucune** commande `doctrine:migrations:*`. Contrôles de santé habituels.
+Avant de redéployer le nouveau code, relire l'ADR du lot : les données écrites
+par l'ancien code sur le nouveau schéma peuvent devoir être resynchronisées.
+
+**D-150 — réactiver le code après une période d'ancien code** (`decisions.md`
+D-150 Décision 6 ; uniquement dans ce cas) :
+
+```bash
+cd /opt/stack/apps/surgicalhub
+# 1. Nouveau code en place, sans trafic ni worker
+docker compose stop nginx worker
+docker tag surgicalhub-php:failed-<nouveau commit>   surgicalhub-php:local
+docker tag surgicalhub-nginx:failed-<nouveau commit> surgicalhub-nginx:local
+docker compose up -d --no-deps php
+# 2. Vérification, aucune écriture (sortie 0 = aligné, 1 = corrections à faire)
+docker exec surgicalhub-php php bin/console app:mission-assignment:resync
+# 3. Si corrections : instantané de sécurité (backup-and-restore.md, Cas 0), puis
+docker exec surgicalhub-php php bin/console app:mission-assignment:resync --apply
+# 4. Contrôle : « Aucune correction nécessaire », sortie 0 ; puis remise en service
+docker exec surgicalhub-php php bin/console app:mission-assignment:resync
+docker compose up -d && docker compose restart nginx
+```
+
+Joindre au rapport la sortie de l'étape 2 (corrections et origine de leurs
+dates) et la liste des calculs rouverts sans marqueur D-153, à décider
+manuellement : la commande ne modifie jamais un calcul.
+
+### B. `down()` des migrations du déploiement
+
+Uniquement si le schéma lui-même est en cause.
+
+1. Instantané de sécurité de `surgicalhub` (`backup-and-restore.md`, Cas 0).
+2. Les classes de migration n'existent que dans le **nouveau** code : lancer
+   le `down()` depuis le conteneur encore en place, relu d'abord en
+   `--dry-run`, puis enchaîner aussitôt sur A :
+   ```bash
+   docker exec surgicalhub-php php bin/console doctrine:migrations:migrate 'DoctrineMigrations\Version<dernière migration de l'ancien code>' --dry-run -n
+   docker exec surgicalhub-php php bin/console doctrine:migrations:migrate 'DoctrineMigrations\Version<dernière migration de l'ancien code>' -n
+   ```
+3. A (images précédentes), puis `doctrine:migrations:status` : nombre de
+   migrations exécutées = celui de l'ancien code, 0 « Executed Unavailable ».
+
+Entre l'étape 2 et la fin de l'étape 3, le nouveau code tourne sur l'ancien
+schéma : faire les deux à la suite, de préférence `worker` arrêté.
+
+### C. Restauration de la seule base `surgicalhub`
+
+Uniquement si des données sont corrompues :
+[`backup-and-restore.md`](backup-and-restore.md), Cas 0 puis Cas 1
+(extraction de la seule section `surgicalhub` du dump nocturne, vérification
+dans une base temporaire, remplacement de `surgicalhub` et d'elle seule).
+Remettre ensuite le code correspondant au nombre de migrations restaurées (A).
+
+### Données créées après le déploiement
+
+Avant B ou C, l'instantané (Cas 0) conserve tout ce qui a été écrit depuis
+le dump nocturne. Après coup, il se relit dans une base séparée ; la reprise
+de chaque écriture (missions, encodages, calculs, factures, relevés,
+absences, comptes) est une **décision métier au cas par cas**, jamais une
+réinjection automatique.
 
 Après un rollback, ne pas créer de tag `*-prod` pour la version restaurée
 (elle a déjà son tag) — documenter l'incident et le rollback dans le rapport,

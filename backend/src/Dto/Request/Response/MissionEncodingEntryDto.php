@@ -61,5 +61,7 @@ final class MissionEncodingEntryDto
          * la liste ») quand `firm` est null. Toujours null pour kind=INTERVENTION.
          */
         public readonly ?string $proposedFirmName = null,
+        /** D-154 — version optimiste (If-Match) d'une intervention réelle ; null pour kind=DRAFT. */
+        public readonly ?int $version = null,
     ) {}
 }

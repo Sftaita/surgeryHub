@@ -321,7 +321,11 @@ final class FirmBillingWorklistService
             if ($calculation === null && $failure === null && $validated) {
                 $missionAnomalies[] = $this->workflowAnomaly(FirmBillingReason::CALCULATION_REQUIRED, $context, null, null, null, 'CALCULATE', 'Calculer');
             }
-            if ($calculation !== null && $calculation->getStatus() === FinancialCalculationStatus::CALCULATED) {
+            // D-153 — calcul rendu obsolète par une réouverture : à recalculer, jamais approuvé.
+            if ($calculation !== null && $calculation->isObsolete() && $validated) {
+                $missionAnomalies[] = $this->workflowAnomaly(FirmBillingReason::CALCULATION_OBSOLETE, $context, $calculation, null, null, 'RECALCULATE', 'Recalculer');
+            }
+            if ($calculation !== null && !$calculation->isObsolete() && $calculation->getStatus() === FinancialCalculationStatus::CALCULATED) {
                 $missionAnomalies[] = $this->workflowAnomaly(
                     FirmBillingReason::CALCULATION_PENDING_APPROVAL, $context, $calculation, null, null, 'APPROVE', 'Approuver',
                     sprintf('Les montants sont calculés (%s) mais doivent être approuvés avant facturation.', $this->formatTotals($firmLines)),
@@ -456,6 +460,10 @@ final class FirmBillingWorklistService
 
         if (!$missionValidated) {
             return $this->state(FirmBillingReason::ENCODING_REOPENED, null, $line, $line->getTotalAmount(), $draft);
+        }
+
+        if ($calculation?->isObsolete()) {
+            return $this->state(FirmBillingReason::CALCULATION_OBSOLETE, null, $line, $line->getTotalAmount(), $draft);
         }
 
         if ($calculation?->getStatus() === FinancialCalculationStatus::CALCULATED) {

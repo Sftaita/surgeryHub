@@ -56,5 +56,29 @@ final class MissionDetailDto
          * que la question ne se pose pas (MissionEncodingCorrectionPolicy).
          */
         public readonly ?string $encodingCorrectionBlockedReason = null,
+        /**
+         * D-151 — the current affectation, for the mission's surgeon and the managers only
+         * (null otherwise): {id, instrumentist: {id, name}, source, assignedAt,
+         * refusalDeadlineAt (voluntary acceptances only), refusable, refusalBlockedReason,
+         * reviewRequestedAt}. Computed by MissionAssignmentRefusalPolicy, never client-side.
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $currentAssignment = null,
+        /**
+         * D-151 — 'ENDED' when the viewing instrumentist had an affectation to this mission
+         * that has ended ("Affectation annulée" — never why). Null otherwise.
+         */
+        public readonly ?string $myAssignmentStatus = null,
+        /**
+         * D-153 — managers only: why a correction has financial consequences (an active
+         * CALCULATED / APPROVED calculation to recalculate after revalidation), null otherwise.
+         */
+        public readonly ?string $encodingCorrectionFinancialNotice = null,
+        /**
+         * D-155 — activity executed without instrumentist (null otherwise):
+         * {declaredAt, declaredByName}. Hours never exist in this mode; billing is firm-only.
+         */
+        public readonly ?array $executedWithoutInstrumentist = null,
     ) {}
 }

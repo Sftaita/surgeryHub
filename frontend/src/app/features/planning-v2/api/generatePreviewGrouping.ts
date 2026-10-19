@@ -249,6 +249,7 @@ export function getFreedInstrumentists(lines: PreviewLineV2[], target: PreviewLi
     if (
       l.date === target.date &&
       l.status !== "SKIPPED" &&
+      !l.blockedReason && // D-152 — a blocked line never holds its instrumentist
       l.instrumentistId &&
       timeToMin(l.startTime) < tEnd &&
       timeToMin(l.endTime) > tStart

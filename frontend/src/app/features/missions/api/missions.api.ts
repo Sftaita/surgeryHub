@@ -279,6 +279,25 @@ export async function claimMission(id: number): Promise<Mission | null> {
   return (res.data as Mission) ?? null;
 }
 
+/**
+ * D-151 / D-152 — le chirurgien refuse l'affectation qu'il a vue (assignmentId) : pour cette
+ * mission (PUNCTUAL) ou en bloquant aussi ses futures missions (DURABLE).
+ */
+export async function refuseMissionAssignment(
+  missionId: number,
+  assignmentId: number,
+  scope: "PUNCTUAL" | "DURABLE" = "PUNCTUAL",
+): Promise<Mission> {
+  const res = await apiClient.post(`/api/missions/${missionId}/assignments/${assignmentId}/refuse`, { scope });
+  return res.data as Mission;
+}
+
+/** D-151 — le chirurgien demande l'intervention du manager sur l'affectation en cours. */
+export async function requestMissionAssignmentReview(missionId: number): Promise<Mission> {
+  const res = await apiClient.post(`/api/missions/${missionId}/assignment-review-request`);
+  return res.data as Mission;
+}
+
 export type SubmitMissionBody = {
   noMaterial: boolean;
   comment?: string;
@@ -368,6 +387,22 @@ export async function cancelMission(
   const { data } = await apiClient.post<Mission>(`/api/missions/${id}/cancel`, {
     reason: reason?.trim() || undefined,
   });
+  return data;
+}
+
+/**
+ * D-155 — l'activité de cette mission OPEN commencée, jamais couverte, a réellement eu lieu
+ * sans instrumentiste : OPEN → ENCODING_IN_PROGRESS (chirurgien de la mission ou manager).
+ * POST /api/missions/{id}/declare-executed-without-instrumentist
+ */
+export async function declareExecutedWithoutInstrumentist(id: number): Promise<Mission> {
+  const { data } = await apiClient.post<Mission>(`/api/missions/${id}/declare-executed-without-instrumentist`, {});
+  return data;
+}
+
+/** D-155 — annulation d'une déclaration erronée (manager, motif obligatoire, avant soumission). */
+export async function cancelExecutedWithoutInstrumentist(id: number, reason: string): Promise<Mission> {
+  const { data } = await apiClient.post<Mission>(`/api/missions/${id}/cancel-executed-without-instrumentist`, { reason });
   return data;
 }
 

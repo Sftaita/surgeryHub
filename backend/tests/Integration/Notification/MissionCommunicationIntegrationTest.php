@@ -77,6 +77,7 @@ final class MissionCommunicationIntegrationTest extends KernelTestCase
             $c->executeStatement("DELETE FROM notification_event WHERE user_id IN ($users) OR mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM notification_preference WHERE user_id IN ($users)");
             $c->executeStatement("DELETE FROM audit_event WHERE mission_id IN ($missions)");
+            $c->executeStatement("DELETE FROM mission_assignment WHERE mission_id IN ($missions)");
             $c->executeStatement("DELETE FROM mission WHERE id IN ($missions)");
             $c->executeStatement("DELETE FROM user WHERE id IN ($users)");
             $c->executeStatement('DELETE FROM hospital WHERE id IN (' . (implode(',', $this->created['sites']) ?: '0') . ')');
@@ -210,6 +211,7 @@ final class MissionCommunicationIntegrationTest extends KernelTestCase
         $c = $this->em->getConnection();
         $c->executeStatement('DELETE FROM notification_event WHERE mission_id = ?', [$missionId]);
         $c->executeStatement('DELETE FROM audit_event WHERE mission_id = ?', [$missionId]);
+        $c->executeStatement('DELETE FROM mission_assignment WHERE mission_id = ?', [$missionId]);
         $c->executeStatement('DELETE FROM mission WHERE id = ?', [$missionId]);
 
         $row = $c->fetchAssociative('SELECT * FROM mission_communication WHERE mission_id_snapshot = ?', [$missionId]);

@@ -120,6 +120,8 @@ export interface EncodingTrackingItem {
   encodingState: EncodingState;
   encodingStateLabel: string;
   instrumentist: EncodingTrackingPerson | null;
+  /** D-155 — « Sans instrumentiste — activité déclarée par … » (null pour une mission classique). */
+  executedWithoutInstrumentist?: { declaredByName: string | null } | null;
   surgeon: EncodingTrackingPerson | null;
   site: EncodingTrackingPerson | null;
   hours: EncodingTrackingHours;
@@ -269,4 +271,30 @@ export interface MissionFinancialAnomalies {
 export async function getMissionFinancialAnomalies(missionId: number): Promise<MissionFinancialAnomalies> {
   const res = await apiClient.get(`/api/billing/encoding-tracking/missions/${missionId}/financial-anomalies`);
   return res.data;
+}
+
+/** D-153 — une ligne de l'historique des corrections (lecture du journal d'activité). */
+export type EncodingHistoryCategory = "HOURS" | "INTERVENTION" | "MATERIAL" | "WORKFLOW";
+
+export interface EncodingHistoryChange {
+  field: string;
+  from: string | number | boolean | null;
+  to: string | number | boolean | null;
+  redacted: boolean;
+}
+
+export interface EncodingHistoryItem {
+  id: number;
+  occurredAt: string;
+  category: EncodingHistoryCategory;
+  eventType: string;
+  actorName: string | null;
+  summary: string;
+  changes: EncodingHistoryChange[];
+}
+
+/** D-153 — GET /api/missions/{id}/encoding/history (managers). */
+export async function getMissionEncodingHistory(missionId: number): Promise<EncodingHistoryItem[]> {
+  const res = await apiClient.get<{ items: EncodingHistoryItem[] }>(`/api/missions/${missionId}/encoding/history`);
+  return res.data.items;
 }

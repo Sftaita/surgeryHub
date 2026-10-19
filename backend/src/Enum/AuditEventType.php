@@ -85,6 +85,23 @@ enum AuditEventType: string
     case MISSION_RESTORED_AFTER_SURGEON_ABSENCE                   = 'MISSION_RESTORED_AFTER_SURGEON_ABSENCE';
     case MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE  = 'MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE';
 
+    // D-151 — surgeon refusal of a voluntary acceptance (ASSIGNED → OPEN, the refused
+    // instrumentist can never take this mission back), and the surgeon's request for a
+    // manager intervention on the current affectation (no state change).
+    case MISSION_ASSIGNMENT_REFUSED_BY_SURGEON = 'MISSION_ASSIGNMENT_REFUSED_BY_SURGEON';
+    case MISSION_ASSIGNMENT_REVIEW_REQUESTED   = 'MISSION_ASSIGNMENT_REVIEW_REQUESTED';
+
+    // D-155 — activité réellement exécutée sans instrumentiste : déclarée (OPEN commencée →
+    // ENCODING_IN_PROGRESS, par le chirurgien de la mission ou un manager) et, pour une
+    // déclaration erronée, annulée par un manager avec motif (→ OPEN).
+    case MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED = 'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED';
+    case MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED = 'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED';
+
+    // D-152 — surgeon–instrumentist incompatibility created / lifted (mission is null: it
+    // concerns a pair of people, never one mission).
+    case SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED = 'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED';
+    case SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED  = 'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED';
+
     // Automated (D-064) — MissionStartDueCommand, ASSIGNED -> IN_PROGRESS on startAt.
     case MISSION_STARTED = 'MISSION_STARTED';
 

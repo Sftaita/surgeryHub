@@ -72,6 +72,9 @@ final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCa
                 foreach ($this->em->createQueryBuilder()->select('e')->from(AuditEvent::class, 'e')->where('e.mission = :m')->setParameter('m', $mission)->getQuery()->getResult() as $event) {
                     $this->em->remove($event);
                 }
+                foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $mission]) as $assignment) {
+                    $this->em->remove($assignment); // D-150 — affectation history (FK without ON DELETE)
+                }
                 $this->em->remove($mission);
             }
             $this->em->flush();

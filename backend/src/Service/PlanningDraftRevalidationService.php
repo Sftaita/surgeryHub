@@ -67,6 +67,8 @@ class PlanningDraftRevalidationService
         private readonly MissionPostDeployService $postDeploy,
         private readonly PlanningConflictDetectionService $conflictDetection,
         private readonly MissionConflictWaiverService $conflictWaiver,
+        // D-152 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionEligibilityService $eligibility = null,
     ) {}
 
     /**
@@ -138,6 +140,29 @@ class PlanningDraftRevalidationService
                         'Instrumentiste %s absent le %s — déploiement bloqué.',
                         self::displayName($instrumentist),
                         $start->format('d/m/Y'),
+                    ),
+                ];
+                continue;
+            }
+
+            // D-152 — a DRAFT prepared before an incompatibility was created would otherwise be
+            // published as an incompatible affectation: the deploy is blocked until the
+            // manager changes the line (never silently unassigned).
+            if ($surgeon !== null && $instrumentist !== null && $this->eligibility?->isIncompatible($surgeon, $instrumentist)) {
+                $blockingConflicts[] = [
+                    'type'              => 'INCOMPATIBILITY',
+                    'missionId'         => $mission->getId(),
+                    'date'              => $start->format('Y-m-d'),
+                    'siteId'            => $mission->getSite()?->getId(),
+                    'siteName'          => $mission->getSite()?->getName(),
+                    'surgeonId'         => $surgeon->getId(),
+                    'surgeonName'       => self::displayName($surgeon),
+                    'instrumentistId'   => $instrumentist->getId(),
+                    'instrumentistName' => self::displayName($instrumentist),
+                    'reason'            => sprintf(
+                        'Instrumentiste %s incompatible avec %s — déploiement bloqué : changez l\'instrumentiste de cette ligne.',
+                        self::displayName($instrumentist),
+                        self::displayName($surgeon),
                     ),
                 ];
                 continue;

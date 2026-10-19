@@ -122,6 +122,10 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::ENCODING_ESCALATION,
         // D-136 — rappel des heures : e-mail de secours (non configurable).
         NotificationType::MISSION_HOURS_REMINDER,
+        // D-151 — a surgeon refusal leaves a mission uncovered, a review request awaits a
+        // manager decision: same urgency as MISSION_OFFER_DECLINED (D-125).
+        NotificationType::ASSIGNMENT_REFUSED_BY_SURGEON,
+        NotificationType::ASSIGNMENT_REVIEW_REQUESTED,
     ];
 
     /**

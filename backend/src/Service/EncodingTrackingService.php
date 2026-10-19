@@ -198,6 +198,8 @@ final class EncodingTrackingService
                 ? $this->anomalyExplainer->summarize($rawFailureAnomalies)
                 : [],
             escalatedAt: $escalatedAt,
+            executedWithoutInstrumentist: $mission->isExecutedWithoutInstrumentist(),
+            executedWithoutInstrumentistByName: $this->displayName($mission->getExecutedWithoutInstrumentistBy()),
         );
     }
 
@@ -294,7 +296,8 @@ final class EncodingTrackingService
      */
     private function retryAction(Mission $mission): ?array
     {
-        if ($mission->getStatus() !== MissionStatus::VALIDATED || $mission->getInstrumentist() === null) {
+        // D-155 — une activité déclarée sans instrumentiste se calcule aussi (firme seule).
+        if ($mission->getStatus() !== MissionStatus::VALIDATED || !$mission->hasEncodableActivity()) {
             return null;
         }
         $active = $this->financialCalculationService->findActiveCalculation($mission);

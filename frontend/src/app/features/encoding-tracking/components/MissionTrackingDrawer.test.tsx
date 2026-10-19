@@ -10,10 +10,22 @@ import type { EncodingTrackingItem } from "../api/encodingTracking.api";
 const fetchMissionByIdMock = vi.fn();
 const getMissionExecutionMock = vi.fn();
 const remindMissionHoursMock = vi.fn();
+const updateMissionExecutionMock = vi.fn();
 vi.mock("../../missions/api/missions.api", () => ({
   fetchMissionById: (...args: unknown[]) => fetchMissionByIdMock(...args),
   getMissionExecution: (...args: unknown[]) => getMissionExecutionMock(...args),
   remindMissionHours: (...args: unknown[]) => remindMissionHoursMock(...args),
+  updateMissionExecution: (...args: unknown[]) => updateMissionExecutionMock(...args),
+}));
+
+// D-153 — la section d'encodage réutilisée est déjà couverte par ses propres tests : seul
+// son branchement (droits servis par le backend, jamais de soumission) est vérifié ici.
+const interventionsSectionProps = vi.fn();
+vi.mock("../../encoding/components/InterventionsSection", () => ({
+  default: (props: { canEdit: boolean; canSubmit: boolean }) => {
+    interventionsSectionProps(props);
+    return <div data-testid="interventions-section-stub">{props.canEdit ? "editable" : "read-only"}</div>;
+  },
 }));
 
 const fetchMissionEncodingMock = vi.fn();
@@ -36,8 +48,10 @@ vi.mock("../../planning-v2/api/planningV2.api", () => ({
 }));
 
 const getMissionFinancialAnomaliesMock = vi.fn();
+const getMissionEncodingHistoryMock = vi.fn();
 vi.mock("../api/encodingTracking.api", () => ({
   getMissionFinancialAnomalies: (...args: unknown[]) => getMissionFinancialAnomaliesMock(...args),
+  getMissionEncodingHistory: (...args: unknown[]) => getMissionEncodingHistoryMock(...args),
 }));
 
 const calculateMissionMock = vi.fn();
@@ -91,6 +105,10 @@ beforeEach(() => {
   getMissionFinancialAnomaliesMock.mockReset();
   calculateMissionMock.mockReset();
   recalculateFinancialCalculationMock.mockReset();
+  updateMissionExecutionMock.mockReset();
+  getMissionEncodingHistoryMock.mockReset();
+  interventionsSectionProps.mockReset();
+  getMissionEncodingHistoryMock.mockResolvedValue([]);
 
   getMissionExecutionMock.mockResolvedValue({ hasExecutionRecord: false, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 0, effectiveDurationSource: "PLANNED", disputes: [] });
   fetchMissionEncodingMock.mockResolvedValue({ mission: { id: 42, type: "BLOCK", status: "SUBMITTED", allowedActions: [] }, interventions: [], entries: [], interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [] });
@@ -701,5 +719,138 @@ describe("MissionTrackingDrawer", () => {
       expect(await screen.findByRole("button", { name: "Valider l'encodage" })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Renvoyer en correction" })).not.toBeInTheDocument();
     });
+  });
+  describe("D-153 — corrections directes du manager", () => {
+    it("aucune action de correction sans edit_hours / edit_encoding servis par le backend (mission validée : rouvrir d'abord)", async () => {
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "VALIDATED", allowedActions: ["view", "reopen"] });
+      fetchMissionEncodingMock.mockResolvedValue({ mission: { id: 42, type: "BLOCK", status: "VALIDATED", allowedActions: [] }, interventions: [], entries: VALIDATED_ENTRIES, interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [] });
+      renderDrawer(validatedItem());
+
+      expect(await screen.findByRole("button", { name: /Rouvrir l'encodage/ })).toBeInTheDocument();
+      expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+      expect(screen.queryByTestId("drawer-edit-encoding")).toBeNull();
+    });
+
+    it("« Corriger les heures » réutilise la fenêtre des heures et enregistre comme correction manager", async () => {
+      const user = userEvent.setup();
+      fetchMissionByIdMock.mockResolvedValue({
+        id: 42, status: "SUBMITTED", startAt: "2026-09-10T08:00:00+02:00", endAt: "2026-09-10T12:00:00+02:00",
+        allowedActions: ["view", "validate", "reject", "edit_encoding", "edit_hours"],
+      });
+      updateMissionExecutionMock.mockResolvedValue({ missionId: 42, hasExecutionRecord: true, actualStartAt: "2026-09-10T08:00:00+02:00", actualEndAt: "2026-09-10T12:00:00+02:00", actualDurationMinutes: 240, hoursSource: "MANAGER", effectiveDurationMinutes: 240, effectiveDurationSource: "ACTUAL_TIMES", disputes: [] });
+      renderDrawer(makeItem());
+
+      await user.click(await screen.findByTestId("drawer-edit-hours"));
+      // Titre de la fenêtre réutilisée + libellé du bouton du tiroir.
+      await user.click(await screen.findByText("Enregistrer les heures"));
+      expect(screen.getAllByText("Corriger les heures").length).toBeGreaterThanOrEqual(1);
+
+      await waitFor(() => expect(updateMissionExecutionMock).toHaveBeenCalledWith(42, expect.objectContaining({ hoursSource: "MANAGER" })));
+      // L'historique est relu après la correction (affichage immédiat).
+      await waitFor(() => expect(getMissionEncodingHistoryMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+    });
+
+    it("« Corriger l'encodage » ouvre la section d'encodage existante, modifiable, sans soumission", async () => {
+      const user = userEvent.setup();
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "edit_encoding"] });
+      fetchMissionEncodingMock.mockResolvedValue({ mission: { id: 42, type: "BLOCK", status: "SUBMITTED", allowedActions: [] }, interventions: [], entries: VALIDATED_ENTRIES, interventionTypeRequests: [], coherenceSummary: {}, encodingComments: [], catalog: { items: [], firms: [], interventionTypes: [] }, progress: { total: 2, encoded: 2 } });
+      renderDrawer(makeItem());
+
+      await user.click(await screen.findByTestId("drawer-edit-encoding"));
+
+      expect(await screen.findByTestId("interventions-section-stub")).toHaveTextContent("editable");
+      expect(interventionsSectionProps).toHaveBeenLastCalledWith(expect.objectContaining({ canEdit: true, canSubmit: false, missionId: 42 }));
+      // Pas d'heures sans edit_hours.
+      expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+    });
+
+    it("affiche la conséquence financière servie par le backend, jamais déduite", async () => {
+      fetchMissionByIdMock.mockResolvedValue({
+        id: 42, status: "SUBMITTED", allowedActions: ["view", "edit_encoding"],
+        encodingCorrectionFinancialNotice: "Un calcul financier existe pour cette mission.",
+      });
+      renderDrawer(makeItem());
+
+      expect(await screen.findByTestId("drawer-financial-notice")).toHaveTextContent("Un calcul financier existe pour cette mission.");
+    });
+
+    it("affiche l'historique des corrections avec l'auteur, la date et les valeurs avant → après", async () => {
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+      getMissionEncodingHistoryMock.mockResolvedValue([
+        {
+          id: 9, occurredAt: "2026-09-11T10:00:00+00:00", category: "HOURS", eventType: "MISSION_EXECUTION_DURATION_CHANGED",
+          actorName: "Marie Manager", summary: "Marie Manager a corrigé les heures réelles de la mission #42 : 08:00–12:00 (240 min) → 08:00–13:00 (300 min)",
+          changes: [{ field: "Durée (min)", from: 240, to: 300, redacted: false }],
+        },
+        {
+          id: 8, occurredAt: "2026-09-11T09:00:00+00:00", category: "MATERIAL", eventType: "MISSION_MATERIAL_LINE_UPDATED",
+          actorName: "Marie Manager", summary: "Marie Manager a modifié une ligne de matériel",
+          changes: [{ field: "Quantité", from: "4.00", to: "2.00", redacted: false }, { field: "Commentaire", from: null, to: null, redacted: true }],
+        },
+      ]);
+      renderDrawer(makeItem());
+
+      const history = await screen.findByTestId("drawer-encoding-history");
+      expect(within(history).getByText(/08:00–12:00 \(240 min\) → 08:00–13:00 \(300 min\)/)).toBeInTheDocument();
+      expect(within(history).getByText("Durée (min) : 240 → 300")).toBeInTheDocument();
+      expect(within(history).getByText("Quantité : 4.00 → 2.00")).toBeInTheDocument();
+      expect(within(history).getByText("Commentaire : (masqué) → (masqué)")).toBeInTheDocument();
+      expect(within(history).getAllByText(/Marie Manager/).length).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe("MissionTrackingDrawer — activité réalisée sans instrumentiste (D-155)", () => {
+  it("affiche « Sans instrumentiste » et qui a déclaré l'activité, jamais un tiret", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] });
+    renderDrawer({ ...makeItem(), instrumentist: null, executedWithoutInstrumentist: { declaredByName: "Dr Martin" } } as any);
+
+    expect(await screen.findByText("Sans instrumentiste")).toBeInTheDocument();
+    expect(screen.getByText("Activité déclarée par Dr Martin")).toBeInTheDocument();
+  });
+});
+
+describe("MissionTrackingDrawer — heures et renvoi d'une activité sans instrumentiste (D-155)", () => {
+  const declaredItem = () => ({
+    ...makeItem(), instrumentist: null, executedWithoutInstrumentist: { declaredByName: "Dr Martin" },
+    hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" },
+  }) as any;
+
+  it("affiche « aucune prestation horaire attendue », sans barres, rappel ni correction des heures", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject", "edit_encoding"], executedWithoutInstrumentist: { declaredAt: null, declaredByName: "Dr Martin" } });
+    renderDrawer(declaredItem());
+
+    expect(await screen.findByTestId("drawer-hours-without-instrumentist")).toHaveTextContent("Activité réalisée sans instrumentiste — aucune prestation horaire attendue");
+    expect(screen.queryByText("Heures prestées non renseignées")).toBeNull();
+    expect(screen.queryByTestId("drawer-hours-status")).toBeNull();
+    expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+    expect(screen.queryByText("Rappeler les heures")).toBeNull();
+  });
+
+  it("« Renvoyer en correction » : le chirurgien est le destinataire, exemples de motifs sans horaires", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], encodingCorrectionBlockedReason: null, executedWithoutInstrumentist: { declaredAt: null, declaredByName: "Dr Martin" } });
+    renderDrawer(declaredItem());
+
+    await user.click(await screen.findByRole("button", { name: "Renvoyer en correction" }));
+    const dialog = await screen.findByRole("dialog", { name: "Renvoyer en correction" });
+    expect(within(dialog).getByText("Chirurgien (destinataire)")).toBeInTheDocument();
+    expect(within(dialog).getByTestId("correction-recipient")).toHaveTextContent("Dr Jean Dupont");
+    expect(within(dialog).queryByText("Instrumentiste")).toBeNull();
+    expect(within(dialog).getByText(/renvoyé au chirurgien/)).toBeInTheDocument();
+    const reason = within(dialog).getByLabelText(/Motif de la correction/);
+    expect(reason).toHaveAttribute("placeholder", expect.stringContaining("intervention manquante"));
+    expect(reason.getAttribute("placeholder")).not.toMatch(/horaires/i);
+  });
+
+  it("mission classique : la fenêtre de renvoi désigne toujours l'instrumentiste", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], encodingCorrectionBlockedReason: null });
+    renderDrawer(makeItem());
+
+    await user.click(await screen.findByRole("button", { name: "Renvoyer en correction" }));
+    const dialog = await screen.findByRole("dialog", { name: "Renvoyer en correction" });
+    expect(within(dialog).getByText("Instrumentiste")).toBeInTheDocument();
+    expect(within(dialog).getByText(/renvoyé à l'instrumentiste/)).toBeInTheDocument();
   });
 });

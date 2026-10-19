@@ -62,6 +62,12 @@ final class ActivityPayloadPolicy
         'calculationVersion', 'assignmentMode', 'targetInstrumentistId', 'targetInstrumentistName',
         'hasReason', 'oldRole', 'newRole', 'count', 'mergedIntoId', 'sourceId', 'targetId',
         'occurrenceCount', 'roles',
+        // D-150 / D-151 / D-152 — affectations, surgeon refusal, incompatibilities.
+        'assignmentId', 'assignmentSource', 'assignedAt', 'refusalScope', 'refusalBlockedReason',
+        'origin', 'incompatibilityId', 'sourceAssignmentId',
+        // D-153 — before / after of the real hours (correction history).
+        'previousActualStartAt', 'actualStartAt', 'previousActualEndAt', 'actualEndAt',
+        'previousActualDurationMinutes', 'previousHoursSource', 'hoursSource',
     ];
 
     /** Additionally allowed for PRICING / BILLING / PAYMENTS mirrors only. */

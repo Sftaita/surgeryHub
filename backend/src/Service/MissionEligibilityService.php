@@ -10,8 +10,12 @@ use App\Entity\User;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
 use App\Enum\EmploymentType;
+use App\Enum\MissionAssignmentEndReason;
 use App\Enum\MissionStatus;
+use Doctrine\DBAL\ArrayParameterType;
+use Doctrine\DBAL\ParameterType;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 
 /**
  * Single source of truth for mission eligibility decisions (ADR D-057).
@@ -19,8 +23,17 @@ use Doctrine\ORM\EntityManagerInterface;
  * All eligibility checks MUST go through this service — never duplicate
  * rules in controllers, voters, notification handlers, or anywhere else.
  *
- * Performance contract (D-036): ≤ 3 DB queries for the batch methods
- * (findEligibleByMission, evaluateAllCandidates), regardless of candidate or mission count.
+ * Performance contract (D-036): a constant number of DB queries for the batch methods
+ * (findEligibleByMission, evaluateAllCandidates), regardless of candidate or mission count —
+ * 3 DQL queries plus, since D-151/D-152, one DBAL UNION query for the surgeon's exclusions;
+ * never one per candidate or per mission.
+ *
+ * D-151 / D-152 — three more reasons: REFUSED_FOR_MISSION (the mission's surgeon refused this
+ * person's affectation to THIS mission — MissionAssignment.endReason) and
+ * SURGEON_INCOMPATIBILITY (an active incompatibility with the mission's surgeon), both on every
+ * path (claim, offer, assignment, pool solicitation, manager pickers, planning roster) and
+ * blocking under every policy; MISSION_ALREADY_STARTED (claim and pool solicitation only: a
+ * started mission is never taken from the pool, while a manager can still assign or correct it).
  */
 class MissionEligibilityService
 {
@@ -48,6 +61,9 @@ class MissionEligibilityService
         if ($mission->getInstrumentist() !== null) {
             $reasons[] = EligibilityReason::ALREADY_ASSIGNED;
         }
+        if (self::hasStarted($mission, Clock::get()->now())) {
+            $reasons[] = EligibilityReason::MISSION_ALREADY_STARTED;
+        }
 
         $site    = $mission->getSite();
         $startAt = $mission->getStartAt();
@@ -65,6 +81,9 @@ class MissionEligibilityService
             && $this->hasScheduleConflict($candidate, $startAt, $endAt, $mission->getId() ?? 0)) {
             $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
         }
+
+        // D-151 / D-152 — refused on this very mission, or incompatible with its surgeon.
+        array_push($reasons, ...$this->exclusionReasons($mission, $candidate));
 
         return new EligibilityResult($candidate, $reasons);
     }
@@ -120,6 +139,9 @@ class MissionEligibilityService
             }
         }
 
+        // D-151 / D-152 — never bypassed by a manager assignment, a reassignment or an offer.
+        array_push($reasons, ...$this->exclusionReasons($mission, $candidate));
+
         return new EligibilityResult($candidate, $reasons);
     }
 
@@ -143,6 +165,157 @@ class MissionEligibilityService
         }
 
         return new EligibilityResult($candidate, $reasons);
+    }
+
+    /**
+     * D-151 / D-152 — why this candidate is excluded from this very mission by its surgeon:
+     * REFUSED_FOR_MISSION (her affectation to it was refused) and/or SURGEON_INCOMPATIBILITY
+     * (an active incompatibility with its surgeon). One query. The incompatibility is read by
+     * surgeon, so it applies to a mission not persisted yet too (new planning line, post-deploy
+     * addition); a refusal only exists on a persisted mission (D-150).
+     *
+     * @return EligibilityReason[]
+     */
+    public function exclusionReasons(Mission $mission, User $candidate): array
+    {
+        $surgeonId = $mission->getSurgeon()?->getId();
+        if ($candidate->getId() === null || ($mission->getId() === null && $surgeonId === null)) {
+            return [];
+        }
+
+        $reasons = $this->em->getConnection()->fetchFirstColumn(
+            "SELECT 'REFUSED_FOR_MISSION' FROM mission_assignment
+              WHERE mission_id = ? AND instrumentist_id = ? AND end_reason = ?
+             UNION ALL
+             SELECT 'SURGEON_INCOMPATIBILITY' FROM surgeon_instrumentist_incompatibility
+              WHERE surgeon_id = ? AND instrumentist_id = ? AND lifted_at IS NULL",
+            [$mission->getId() ?? 0, $candidate->getId(), MissionAssignmentEndReason::REFUSED_BY_SURGEON->value, $surgeonId ?? 0, $candidate->getId()],
+            [ParameterType::INTEGER, ParameterType::INTEGER, ParameterType::STRING, ParameterType::INTEGER, ParameterType::INTEGER],
+        );
+
+        return array_values(array_unique(array_map(static fn ($r) => EligibilityReason::from((string) $r), $reasons), SORT_REGULAR));
+    }
+
+    /** D-152 — an active incompatibility between this surgeon and this instrumentist. */
+    public function isIncompatible(User $surgeon, User $instrumentist): bool
+    {
+        if ($surgeon->getId() === null || $instrumentist->getId() === null) {
+            return false;
+        }
+
+        return (bool) $this->em->getConnection()->fetchOne(
+            'SELECT 1 FROM surgeon_instrumentist_incompatibility WHERE surgeon_id = ? AND instrumentist_id = ? AND lifted_at IS NULL',
+            [$surgeon->getId(), $instrumentist->getId()],
+            [ParameterType::INTEGER, ParameterType::INTEGER],
+        );
+    }
+
+    /**
+     * D-152 — every active incompatible pair of these surgeons, in one query, as
+     * "surgeonId-instrumentistId" keys (the table's active_pair_key). For bulk readers that
+     * must not query per line (planning V2 preview, recurring posts list).
+     *
+     * @param int[] $surgeonIds
+     * @return array<string, true>
+     */
+    public function activeIncompatiblePairs(array $surgeonIds): array
+    {
+        $surgeonIds = array_values(array_unique(array_map('intval', array_filter($surgeonIds))));
+        if ($surgeonIds === []) {
+            return [];
+        }
+
+        $keys = $this->em->getConnection()->fetchFirstColumn(
+            'SELECT CONCAT(surgeon_id, \'-\', instrumentist_id) FROM surgeon_instrumentist_incompatibility
+              WHERE lifted_at IS NULL AND surgeon_id IN (?)',
+            [$surgeonIds],
+            [ArrayParameterType::INTEGER],
+        );
+
+        return array_fill_keys(array_map('strval', $keys), true);
+    }
+
+    /**
+     * D-152 — same question as isIncompatible(), as a LOCKING read (FOR SHARE) on the
+     * (surgeon, instrumentist) index range, for callers inside a transaction that are about to
+     * affect this instrumentist (claim, assignments). A concurrent creation of the
+     * incompatibility either commits first (seen here → refused) or waits for this transaction
+     * (and then finds the new affectation as a conflict to raise): never a silent overlap.
+     */
+    public function isIncompatibleLocked(User $surgeon, User $instrumentist): bool
+    {
+        if ($surgeon->getId() === null || $instrumentist->getId() === null) {
+            return false;
+        }
+
+        return (bool) $this->em->getConnection()->fetchOne(
+            'SELECT 1 FROM surgeon_instrumentist_incompatibility WHERE surgeon_id = ? AND instrumentist_id = ? AND lifted_at IS NULL FOR SHARE',
+            [$surgeon->getId(), $instrumentist->getId()],
+            [ParameterType::INTEGER, ParameterType::INTEGER],
+        );
+    }
+
+    /**
+     * D-151 / D-152 — one query for any number of persisted missions:
+     * missionId → userId → EligibilityReason[] (refused on that mission, incompatible with its surgeon).
+     *
+     * @param Mission[] $missions
+     * @return array<int, array<int, EligibilityReason[]>>
+     */
+    private function exclusionsByMission(array $missions): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map(static fn (Mission $m) => $m->getId(), $missions))));
+        if ($ids === []) {
+            return [];
+        }
+
+        $rows = $this->em->getConnection()->fetchAllAssociative(
+            "SELECT a.mission_id AS mission_id, a.instrumentist_id AS user_id, 'REFUSED_FOR_MISSION' AS reason
+               FROM mission_assignment a
+              WHERE a.mission_id IN (?) AND a.end_reason = ?
+             UNION ALL
+             SELECT m.id, i.instrumentist_id, 'SURGEON_INCOMPATIBILITY'
+               FROM surgeon_instrumentist_incompatibility i
+               JOIN mission m ON m.surgeon_id = i.surgeon_id
+              WHERE m.id IN (?) AND i.lifted_at IS NULL",
+            [$ids, MissionAssignmentEndReason::REFUSED_BY_SURGEON->value, $ids],
+            [ArrayParameterType::INTEGER, ParameterType::STRING, ArrayParameterType::INTEGER],
+        );
+
+        $exclusions = [];
+        foreach ($rows as $row) {
+            $exclusions[(int) $row['mission_id']][(int) $row['user_id']][] = EligibilityReason::from((string) $row['reason']);
+        }
+
+        return $exclusions;
+    }
+
+    /**
+     * D-152 — instrumentists actively incompatible with $surgeon: userId → true. One query.
+     *
+     * @return array<int, true>
+     */
+    private function incompatibleInstrumentistsOf(User $surgeon): array
+    {
+        if ($surgeon->getId() === null) {
+            return [];
+        }
+
+        $ids = $this->em->getConnection()->fetchFirstColumn(
+            'SELECT instrumentist_id FROM surgeon_instrumentist_incompatibility WHERE surgeon_id = ? AND lifted_at IS NULL',
+            [$surgeon->getId()],
+            [ParameterType::INTEGER],
+        );
+
+        return array_fill_keys(array_map('intval', $ids), true);
+    }
+
+    /** D-151 — a mission whose start time has passed can no longer be claimed from the pool. */
+    public static function hasStarted(Mission $mission, \DateTimeImmutable $now): bool
+    {
+        $startAt = $mission->getStartAt();
+
+        return $startAt !== null && $startAt <= $now;
     }
 
     /** Q1 — site membership. FREELANCER bypasses this requirement (D-057). */
@@ -245,6 +418,7 @@ class MissionEligibilityService
      */
     public function findEligibleByMission(array $missions): array
     {
+        $now    = Clock::get()->now();
         $result = [];
         $openMissions = [];
         foreach ($missions as $m) {
@@ -252,7 +426,8 @@ class MissionEligibilityService
                 continue;
             }
             $result[$m->getId()] = [];
-            if ($m->getStatus() === MissionStatus::OPEN && $m->getInstrumentist() === null) {
+            // D-151 — a started mission is never offered to the pool any more.
+            if ($m->getStatus() === MissionStatus::OPEN && $m->getInstrumentist() === null && !self::hasStarted($m, $now)) {
                 $openMissions[] = $m;
             }
         }
@@ -392,6 +567,9 @@ class MissionEligibilityService
             }
         }
 
+        // Q4 (D-151 / D-152) — people refused on each mission, or incompatible with its surgeon.
+        $exclusions = $this->exclusionsByMission($openMissions);
+
         // Per-mission PHP evaluation over the preloaded data — no further query.
         foreach ($openMissions as $mission) {
             $siteId = $mission->getSite()?->getId();
@@ -399,6 +577,9 @@ class MissionEligibilityService
                 continue;
             }
             foreach (array_keys($usersBySiteId[$siteId] ?? []) as $userId) {
+                if (isset($exclusions[(int) $mission->getId()][$userId])) {
+                    continue;
+                }
                 $candidate = $candidateById[$userId];
                 if ($this->isEligibleForMission($candidate, $mission, $absencesByUser, $conflictsByUser)) {
                     $result[$mission->getId()][] = $candidate;
@@ -503,6 +684,12 @@ class MissionEligibilityService
             ? new \DateTimeImmutable($startAt->format('Y-m-d'))
             : null;
 
+        // Q4 (D-151 / D-152) — people refused on this mission, or incompatible with its surgeon.
+        $exclusions = $mission->getId() !== null
+            ? ($this->exclusionsByMission([$mission])[(int) $mission->getId()] ?? [])
+            : array_map(static fn () => [EligibilityReason::SURGEON_INCOMPATIBILITY],
+                $mission->getSurgeon() !== null ? $this->incompatibleInstrumentistsOf($mission->getSurgeon()) : []);
+
         $results = [];
         foreach ($candidates as $candidate) {
             $uid     = $candidate->getId();
@@ -513,6 +700,7 @@ class MissionEligibilityService
             if (!$candidate->isActive()) {
                 $reasons[] = EligibilityReason::INACTIVE;
             }
+            array_push($reasons, ...($exclusions[$uid] ?? []));
 
             if ($missionDay !== null) {
                 foreach ($absencesByUser[$uid] ?? [] as $absence) {
@@ -563,6 +751,9 @@ class MissionEligibilityService
         \DateTimeImmutable $startAt,
         \DateTimeImmutable $endAt,
         ?int $excludeMissionId = null,
+        // D-152 — the slot's surgeon, when known: his incompatible instrumentists are reported
+        // (SURGEON_INCOMPATIBILITY, blocking) — one more query.
+        ?User $surgeon = null,
     ): array {
         // Q1 — full active ROLE_INSTRUMENTIST roster (matches GET /api/instrumentists?active=true).
         /** @var User[] $candidates */
@@ -640,6 +831,8 @@ class MissionEligibilityService
             }
         }
 
+        $incompatible = $surgeon !== null ? $this->incompatibleInstrumentistsOf($surgeon) : [];
+
         $results = [];
         foreach ($candidates as $candidate) {
             $uid     = $candidate->getId();
@@ -652,6 +845,10 @@ class MissionEligibilityService
                 && !isset($membershipUserIds[$uid])
             ) {
                 $reasons[] = EligibilityReason::NO_SITE_MEMBERSHIP;
+            }
+
+            if (isset($incompatible[$uid])) {
+                $reasons[] = EligibilityReason::SURGEON_INCOMPATIBILITY;
             }
 
             foreach ($absencesByUser[$uid] ?? [] as $absence) {

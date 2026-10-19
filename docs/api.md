@@ -338,6 +338,110 @@ Relâche la mission vers le pool. L'instrumentiste assigné est désengagé.
 
 ---
 
+### `POST /api/missions/{id}/assignments/{assignmentId}/refuse` (D-151)
+
+**AuthZ :** `ROLE_SURGEON` **et** chirurgien de cette mission (`MissionVoter::REFUSE_ASSIGNMENT`) —
+le chirurgien d'une autre mission, l'instrumentiste et le manager reçoivent `403` (le manager
+dispose de `release` / `reassign`).
+
+**Transition :** `ASSIGNED → OPEN` — seule l'affectation est défaite, jamais la mission.
+
+**Body :** `{"scope": "PUNCTUAL" | "DURABLE"}` (défaut `PUNCTUAL` ; `DURABLE` = refus + incompatibilité, D-152 ; toute autre valeur → `422`).
+
+`{assignmentId}` est l'affectation que le chirurgien a vue (`currentAssignment.id`). Les
+conditions sont décidées côté serveur, sous verrou de la mission, par
+`MissionAssignmentRefusalPolicy` :
+
+| Condition | Erreur `409` (`error.code`) |
+|---|---|
+| La mission a été attribuée à quelqu'un d'autre depuis | `ASSIGNMENT_SUPERSEDED` |
+| L'affectation n'existe plus (déjà refusée, libérée…) — double clic, refus répété | `ASSIGNMENT_ALREADY_ENDED` |
+| Affectation non acceptée volontairement (attribution manager, planning, reprise LEGACY…) | `ASSIGNMENT_NOT_REFUSABLE` |
+| Après `min(assignedAt + 24 h, début de la mission)` | `REFUSAL_WINDOW_EXPIRED` |
+| Moins de 12 h avant le début, ou données d'encodage / calcul financier existants | `REFUSAL_REQUIRES_MANAGER` |
+| La mission a été modifiée entre-temps (lecture verrouillante) | `CONFLICT` |
+
+**Réponse — 200 :** Mission complète (`status: "OPEN"`, `instrumentist: null`).
+
+**Effets backend :**
+- `MissionAssignment` terminée `REFUSED_BY_SURGEON`, `refusalScope = PUNCTUAL`, `endedBy` = chirurgien ;
+- l'instrumentiste refusée ne peut plus jamais reprendre **cette** mission (`EligibilityReason::REFUSED_FOR_MISSION`
+  sur toutes les voies : claim, liste des offres, sollicitation du pool, demande nominative,
+  attribution et réaffectation manager, sélecteurs) ;
+- `AuditEvent(MISSION_ASSIGNMENT_REFUSED_BY_SURGEON)` ;
+- `MissionLifecycleChangedMessage(RELEASED, origin = SURGEON_REFUSAL)` : l'instrumentiste reçoit
+  `PLANNING_MISSION_RELEASED` (formulation neutre imposée, e-mail « SurgicalHub — Mise à jour de
+  votre mission ») ; les managers opérationnels reçoivent `ASSIGNMENT_REFUSED_BY_SURGEON`
+  (origine réelle) ; le chirurgien ne reçoit rien ; le pool est sollicité comme pour un release.
+
+---
+
+### `POST /api/missions/{id}/assignment-review-request` (D-151)
+
+**AuthZ :** `ROLE_SURGEON` et chirurgien de cette mission (`MissionVoter::REQUEST_ASSIGNMENT_REVIEW`).
+
+Demande l'intervention des managers sur l'affectation en cours (délai de refus écoulé, mission
+imminente ou commencée, affectation non refusable). **Aucun changement d'état** : jamais de
+désaffectation automatique.
+
+**Body :** `{}` — **Réponse — 200 :** Mission complète (`currentAssignment.reviewRequestedAt` renseigné).
+
+Idempotente par affectation : une deuxième demande répond `200` sans nouvelle notification.
+`409 REVIEW_NOT_POSSIBLE` si aucune affectation n'est en cours (mission ni `ASSIGNED` ni `IN_PROGRESS`).
+
+**Effets backend :** `AuditEvent(MISSION_ASSIGNMENT_REVIEW_REQUESTED)`,
+`MissionLifecycleChangedMessage(ASSIGNMENT_REVIEW_REQUESTED)` → `ASSIGNMENT_REVIEW_REQUESTED`
+aux managers opérationnels (D-149).
+
+---
+
+### Détail mission — champs D-151
+
+- `currentAssignment` (chirurgien de la mission et managers seulement, sinon `null`) :
+  `{id, instrumentist: {id, name}, source, assignedAt, refusalDeadlineAt, refusable,
+  refusalBlockedReason, reviewRequestedAt}`. `refusalDeadlineAt` n'existe que pour une
+  acceptation volontaire (`POOL_CLAIM` / `OFFER_ACCEPTED`). `refusable` /
+  `refusalBlockedReason` sont la décision de `MissionAssignmentRefusalPolicy`, jamais recalculée.
+  Toujours `null` sur une mission `CANCELLED`, `REJECTED`, `CLOSED`, `OPEN` ou `DRAFT`
+  (invariant D-150) ; `instrumentist` reste renseigné sur une mission `REJECTED`.
+- `myAssignmentStatus: "ENDED"` : l'instrumentiste qui consulte a eu une affectation à cette
+  mission, terminée. Si elle n'a plus d'autre droit de lecture, `GET /api/missions/{id}` lui
+  sert une **vue minimale** (`MissionVoter::VIEW_FORMER_ASSIGNMENT`) : date, horaire, site, type,
+  chirurgien — `instrumentist: null`, `allowedActions: ["view"]`, jamais de motif.
+- `allowedActions` du chirurgien de la mission : `refuse_assignment` (refus possible
+  maintenant) ou `request_assignment_review` (sinon, une fois par affectation).
+
+---
+
+### Incompatibilités chirurgien–instrumentiste (D-152)
+
+Une incompatibilité active exclut l'instrumentiste de toutes les missions du chirurgien (motif
+`SURGEON_INCOMPATIBILITY`, voir D-152). Représentation commune :
+`{id, surgeon: {id, name}, instrumentist: {id, name}, origin: SURGEON_REFUSAL|SURGEON|MANAGER,
+active, createdAt, createdByName, liftedAt, liftedByName, canLift, conflicts?}` — `conflicts`
+(managers seulement) : `[{alertId, missionId, startAt, siteName}]`, missions futures encore
+affectées à la paire.
+
+| Méthode et route | AuthZ | Effet |
+|---|---|---|
+| `GET /api/me/blocked-instrumentists` | `ROLE_SURGEON` | ses incompatibilités actives |
+| `GET /api/me/blockable-instrumentists?q=` | `ROLE_SURGEON` | instrumentistes qu'il peut bloquer : actifs de ses sites + freelances ; ceux qu'il bloque déjà restent listés → `{items: [{id, name, blocked, incompatibilityId}]}` (affichés « Bloqué », non sélectionnables) |
+| `POST /api/me/blocked-instrumentists` `{instrumentistId}` | `ROLE_SURGEON` | crée (origine `SURGEON`) → 201 ; `422 INSTRUMENTIST_NOT_BLOCKABLE` hors périmètre ; `409 INCOMPATIBILITY_ALREADY_ACTIVE` |
+| `GET /api/surgeons/{id}/incompatibilities` | manager | actives + historique, avec conflits |
+| `GET /api/instrumentists/{id}/incompatibilities` | manager | idem côté instrumentiste |
+| `GET /api/incompatibilities/candidates?surgeonId=\|instrumentistId=&q=&page=&limit=` | manager | recherche paginée côté serveur des contreparties : instrumentistes (fiche chirurgien) ou chirurgiens (fiche instrumentiste) actifs, y compris ceux déjà incompatibles (`blocked: true`, `incompatibilityId` de l'incompatibilité active à lever — jamais une deuxième création) ; chaque terme de `q` sur prénom, nom ou e-mail ; `limit` 1–50 (défaut 20) → `{items: [{id, name, email, blocked, incompatibilityId}], page, limit, total, hasMore}` ; un seul des deux identifiants (sinon 422), personne inconnue 404, mauvais rôle 422 |
+| `POST /api/incompatibilities` `{surgeonId, instrumentistId}` | manager | crée (origine `MANAGER`) → 201 ; `422 INCOMPATIBILITY_INVALID_PAIR` |
+| `POST /api/incompatibilities/{id}/lift` | manager, ou le chirurgien pour ses propres blocages | lève (une fois, `409 INCOMPATIBILITY_ALREADY_LIFTED`), ferme ses conflits ouverts |
+
+À la création, chaque mission future du chirurgien encore `ASSIGNED` à l'instrumentiste devient
+une alerte planning `SURGEON_INCOMPATIBILITY` (non ignorable, non résoluble à la main ; voir
+`POST /api/planning/alerts/{id}/ignore|resolve` → 409) ; aucune mission n'est modifiée.
+`GET /api/planning/v2/eligible-instrumentists` accepte `surgeonId` (sinon le chirurgien de
+`excludeMissionId`). `POST /api/missions/{id}/assignments/{assignmentId}/refuse` accepte
+désormais `{"scope": "DURABLE"}` (refus + blocage, D-152).
+
+---
+
 ### `POST /api/missions/{id}/cancel`
 
 **AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::CANCEL`)
@@ -650,9 +754,14 @@ défense contre un id arbitraire).
 - **D-111 — changement de choix avec matériel déjà encodé** : si le nouveau choix rendrait incompatible un `MaterialLine` déjà attaché à cette intervention, la requête échoue avec `409 CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION` (corps `error.violations: [{ materialLineId, materialItemLabel }]`) tant que `confirmRemoveIncompatibleMaterial: true` n'est pas explicitement fourni — jamais de suppression silencieuse. Confirmé, la ligne incompatible est retirée et la nouvelle sélection appliquée dans la même transaction.
 - Réponse — **204** (pas de corps).
 
+**D-154 — concurrence :** envoyer la version lue (`version`, servie par `GET .../encoding`)
+en `If-Match: "N"`. Version différente → `409 ENCODING_CONCURRENT_MODIFICATION` (rien
+n'est écrit, relire l'encodage) ; `If-Match` absent → `428 ENCODING_VERSION_REQUIRED` pour
+le chirurgien de la mission (facultatif pour l'instrumentiste et le manager, compatibilité).
+
 ### `DELETE /api/missions/{missionId}/interventions/{interventionId}`
 
-_(Inchangé.)_
+_(Inchangé, sauf **D-154** : même `If-Match` / `409` / `428` que le `PATCH`.)_
 
 ### Champs Lot 6 (D-069) dans chaque intervention de `GET .../encoding`
 
@@ -801,7 +910,13 @@ Mise à jour partielle d'une ligne matériel.
 
 Tous les champs sont optionnels. `missionInterventionId` peut aussi être modifié.
 
-**Réponse — 200 :** MaterialLine mise à jour (même format que POST)
+**Réponse — 200 :** MaterialLine mise à jour (même format que POST, **D-154 :** avec sa
+nouvelle `version`)
+
+**D-154 — concurrence :** envoyer la version lue (`version`, servie par `GET .../encoding`)
+en `If-Match: "N"`. Version différente → `409 ENCODING_CONCURRENT_MODIFICATION` (rien
+n'est écrit, relire l'encodage) ; `If-Match` absent → `428 ENCODING_VERSION_REQUIRED` pour
+le chirurgien de la mission (facultatif pour l'instrumentiste et le manager, compatibilité).
 
 ---
 
@@ -809,7 +924,7 @@ Tous les champs sont optionnels. `missionInterventionId` peut aussi être modifi
 
 **AuthZ :** `MissionVoter::EDIT_ENCODING`
 
-Supprimer une ligne matériel.
+Supprimer une ligne matériel. **D-154 :** même `If-Match` / `409` / `428` que le `PATCH`.
 
 **Réponse — 204 :** Pas de corps
 
@@ -874,6 +989,14 @@ coexister. `remind_hours` n'est présent que si `MissionHoursReminderPolicy` le 
 pertinent : instrumentiste affecté, mission terminée (`endAt <= now`), aucune heure réelle
 (source `PLANNED`), statut `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`, encodage ni
 verrouillé ni facturé — même condition que `MissionVoter::HOURS_REMIND`.
+
+**Corrections directes du manager (D-153) :** `edit_encoding` (interventions, matériel) et
+`edit_hours` (heures réelles) sont proposés au manager / admin en `DECLARED`, `ASSIGNED`,
+`IN_PROGRESS`, `ENCODING_IN_PROGRESS` et `SUBMITTED`, encodage ni verrouillé ni facturé et sans
+calcul financier `LOCKED` ; `edit_hours` exige en plus une instrumentiste affectée. Jamais en
+`VALIDATED` (rouvrir d'abord), `CLOSED`, `OPEN`, `DRAFT`, `CANCELLED`, `REJECTED`. Même règle
+exactement que `MissionVoter::EDIT_ENCODING` et `MissionExecutionVoter::UPDATE` : un appel
+direct hors de ces cas répond `403`.
 
 ---
 
@@ -2487,6 +2610,7 @@ elle est libre).
 | `TO_REVIEW` | `CALCULATION_PENDING_APPROVAL` | calcul actif `CALCULATED` | total (non facturable) |
 | `TO_REVIEW` | `RECALCULATION_REQUIRED` | élément encodé absent du calcul actif, sans exclusion | `null` |
 | `TO_REVIEW` | `ENCODING_REOPENED` | ligne active non facturée d'une mission qui n'est plus `VALIDATED` | total |
+| `TO_REVIEW` | `CALCULATION_OBSOLETE` | **D-153** — mission revalidée, calcul actif rendu obsolète par la réouverture de son encodage (`obsolete: true`) : à recalculer ; anomalie mission avec l'action `RECALCULATE`, jamais `APPROVE` | total |
 | `TO_REVIEW` | `CALCULATION_BLOCKED` | élément correct, calcul de la mission en échec sur une autre anomalie. **D-141 :** `reasonDetail` donne le tarif résolu (montant, règle, période) et les anomalies qui bloquent ENCORE la mission (évaluation actuelle du moteur) | `null` |
 | `TO_REVIEW` | `FIXED_PENDING_RECALCULATION` | **D-141** — mission en échec dont l'évaluation actuelle du moteur ne trouve plus aucune anomalie : il reste à relancer le calcul (`reasonDetail` = tarif résolu) | `null` |
 | `TO_REVIEW` | `MISSING_FIRM_INTERVENTION_RATE`, `MISSING_FIRM_MATERIAL_RATE`, `MISSING_PRIMARY_FIRM`, `MISSING_INTERVENTION_TYPE`, `MISSING_REPRESENTATIVE_PRESENCE_ANSWER`, `MISSING_REQUIRED_CHOICE_ANSWER` | anomalie rattachée à l'élément (codes identiques au moteur ; `MISSING_PRIMARY_FIRM` aussi avant calcul). **D-141 :** pour une mission en échec sans calcul actif, c'est l'anomalie que le moteur produit MAINTENANT pour l'élément — une anomalie auditée dont la cause a disparu ne qualifie plus la ligne (ex. « Pas de forfait » posé depuis → `FEE_NOT_APPLICABLE`, `reasonDetail` le signale) | `null` |
@@ -2577,8 +2701,10 @@ génération.
 `FINANCIAL_LINE_NOT_BILLABLE` (ligne à 0 € — `context.reasonCode` = `REPRESENTATIVE_PRESENT`
 délégué présent ou `ZERO_AMOUNT` tarif nul ; mêmes règles que la worklist, revue PR #1),
 `MISSION_NOT_VALIDATED` (encodage rouvert après le calcul — « Encodage rouvert » dans la worklist),
+`FINANCIAL_CALCULATION_OBSOLETE` (**D-153** — calcul rendu obsolète par une réouverture, à
+recalculer ; aussi pour les relevés instrumentiste),
 `FINANCIAL_LINE_ALREADY_ASSIGNED` (document émis), `FINANCIAL_LINE_STALE` (calcul changé
-depuis l'ajout), `FINANCIAL_LINE_BENEFICIARY_MISMATCH`, `FINANCIAL_LINE_CURRENCY_MISMATCH`,
+depuis l'ajout, **D-153 :** ou rendu obsolète par une réouverture), `FINANCIAL_LINE_BENEFICIARY_MISMATCH`, `FINANCIAL_LINE_CURRENCY_MISMATCH`,
 `FINANCIAL_LINE_NOT_ELIGIBLE`, `FINANCIAL_CALCULATION_NOT_APPROVED`, `DRAFT_EMPTY`,
 `DRAFT_LINE_NOT_FOUND` ; `409 INVOICE_STATUS_TRANSITION_INVALID` (le document n'est pas/plus
 un brouillon) ; `422 VALIDATION_FAILED` ; `404` ; `403`.
@@ -5907,7 +6033,11 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 - `MissionLifecycleChangedMessage(ENCODING_REOPENED)` dispatché après le flush → **D-148 :**
   `ENCODING_CORRECTION_REQUESTED` à l'instrumentiste (`action: "REOPENED"`, même contrat que
   `reject`)
-- Aucun recalcul, aucune modification d'un calcul ou document financier (D-148)
+- Aucun recalcul, aucune modification d'un calcul ou document financier (D-148).
+  **D-153 :** le calcul actif `CALCULATED` / `APPROVED` est marqué obsolète
+  (`encodingReopenedAt`, statut et montants inchangés ; ids dans l'audit,
+  `obsoleteFinancialCalculationIds`) : il n'est plus approuvé, verrouillé ni facturé tant
+  qu'un recalcul explicite ne l'a pas remplacé
 
 **Erreurs :**
 
@@ -5923,6 +6053,49 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 réouverture est réellement possible (jamais avec un calcul `LOCKED`) ; le champ
 `encodingCorrectionBlockedReason` (managers seulement, `null` sinon) donne le motif d'un refus
 (`CLOSED` ou calcul `LOCKED`, mêmes textes que les `409`) pour l'afficher tel quel.
+
+**D-153 — `GET /api/missions/{id}`** : `encodingCorrectionFinancialNotice` (managers seulement,
+`null` sinon) explique qu'un calcul financier `CALCULATED` / `APPROVED` actif reflète
+l'encodage tel qu'il a été validé et devra être recalculé depuis la fiche mission après
+revalidation ; présent seulement quand une correction est possible. Aucun recalcul ni aucune
+facturation automatiques.
+
+### `GET /api/missions/{id}/encoding/history` (D-153)
+
+Historique des corrections de l'encodage d'une mission, lu dans le journal d'activité
+existant (aucun événement produit). **AuthZ :** `MissionVoter::VIEW_ENCODING_HISTORY` —
+manager / admin uniquement (`403` sinon). Au plus 200 lignes, les plus récentes d'abord.
+
+```json
+{
+  "items": [
+    {
+      "id": 9812,
+      "occurredAt": "2026-10-15T09:12:44+00:00",
+      "category": "HOURS",
+      "eventType": "MISSION_EXECUTION_DURATION_CHANGED",
+      "actorName": "Sophie Martin",
+      "summary": "Sophie Martin a corrigé les heures réelles de la mission #512 : 08:00–11:30 (210 min) → 08:00–12:15 (255 min)",
+      "changes": [
+        { "field": "Fin réelle", "from": "2026-10-12T11:30:00+02:00", "to": "2026-10-12T12:15:00+02:00", "redacted": false },
+        { "field": "Source des heures", "from": "INSTRUMENTIST", "to": "MANAGER", "redacted": false }
+      ]
+    }
+  ]
+}
+```
+
+- `category` : `HOURS` (`MISSION_EXECUTION_CREATED|UPDATED|DURATION_CHANGED`),
+  `INTERVENTION` (`MISSION_INTERVENTION_ADDED|UPDATED|REMOVED`), `MATERIAL`
+  (`MISSION_MATERIAL_LINE_ADDED|UPDATED|REMOVED`), `WORKFLOW`
+  (`MISSION_ENCODING_STARTED|COMPLETED|REOPENED|VALIDATED|REJECTED`).
+- `changes` : champ (libellé), ancienne et nouvelle valeur ; une valeur masquée (commentaire)
+  a `redacted: true` et `from` / `to` à `null`. Vide pour un ajout, une suppression ou une
+  correction d'heures antérieure à D-153.
+- Les audits `MISSION_EXECUTION_UPDATED` / `MISSION_EXECUTION_DURATION_CHANGED` portent
+  désormais `previousActualStartAt`, `actualStartAt`, `previousActualEndAt`, `actualEndAt`,
+  `previousActualDurationMinutes`, `actualDurationMinutes`, `previousHoursSource`,
+  `hoursSource`.
 
 ---
 
@@ -6271,14 +6444,14 @@ avec `version + 1`.
 ### `POST /api/financial-calculations/{id}/approve`
 
 `CALCULATED → APPROVED`. **Erreurs :** `409 FINANCIAL_CALCULATION_INELIGIBLE` si le
-calcul n'est pas `CALCULATED`.
+calcul n'est pas `CALCULATED`, ou (**D-153**) s'il est obsolète (`obsolete: true`).
 
 ### `POST /api/financial-calculations/{id}/lock`
 
 `APPROVED → LOCKED`. Un calcul `LOCKED` ne peut plus être recalculé ni annulé — et bloque
 désormais la réouverture de l'encodage de la mission (`POST .../encoding/reopen`, §32,
 `409` si un calcul `LOCKED` existe). **Erreurs :** `409 FINANCIAL_CALCULATION_INELIGIBLE`
-si le calcul n'est pas `APPROVED`.
+si le calcul n'est pas `APPROVED`, ou (**D-153**) s'il est obsolète.
 
 ### Forme d'un calcul (toutes réponses)
 
@@ -6290,6 +6463,7 @@ si le calcul n'est pas `APPROVED`.
   "approvedAt": null, "approvedBy": null, "lockedAt": null,
   "cancelledAt": null, "cancelledBy": null,
   "supersededAt": null, "supersededByCalculationId": null,
+  "obsolete": false, "encodingReopenedAt": null,
   "totalsByCurrency": { "EUR": { "FIRM": "340.00", "INSTRUMENTIST": "90.00" } },
   "lines": [
     {
@@ -6968,13 +7142,20 @@ GET /api/me/notification-preferences
 
 Retourne chaque `NotificationType` **configurable** avec ses canaux résolus (ligne
 stockée, ou défaut produit via `DefaultNotificationPreferenceResolver` si aucune ligne
-n'existe encore). **D-143 :** `ENCODING_REMINDER` et `ENCODING_ESCALATION` (relances
+n'existe encore). **Selon le rôle (2026-10-16) :** uniquement les types que les rôles de la
+personne reçoivent réellement (`NotificationType::audienceRoles()`, union pour plusieurs
+rôles, ROLE_ADMIN = manager) ; le `PATCH` et les préférences déjà enregistrées sont inchangés. **D-143 :** `ENCODING_REMINDER` et `ENCODING_ESCALATION` (relances
 d'encodage, obligations de service) sont exclus (`NotificationType::isConfigurable()`), et le
 `PATCH` de ces types répond `400`. Nouveaux types configurables : `ENCODING_SUBMITTED`
 (chirurgien, encodage soumis/corrigé) et `ENCODING_ANOMALY_INSTRUMENTIST` (instrumentiste,
 point signalé par le chirurgien — jamais le commentaire libre). **D-148 :**
 `ENCODING_CORRECTION_REQUESTED` (instrumentiste, encodage renvoyé en correction ou rouvert par
 un manager, avec le motif) — configurable, défauts in-app oui / e-mail non / push non.
+**D-154 :** `ENCODING_UPDATED_BY_SURGEON` (instrumentiste affectée : le chirurgien de la mission a
+complété ou corrigé interventions / matériel ; une notification par série de modifications,
+regroupées sur 2 h ; payload `missionId`, `missionDate`, `siteName`, `surgeonName`, jamais de
+détail d'encodage) — configurable, mêmes défauts. `CATALOGUE_REQUEST_CREATED` annonce l'auteur
+réel de la demande (instrumentiste, chirurgien, manager), jamais « un instrumentiste » par défaut.
 
 ```
 PATCH /api/me/notification-preferences/{type}
@@ -7433,8 +7614,13 @@ D-146 bis (`allowedActions` contient alors `"view_encoding"`, jamais une action 
 autre chirurgien (ownership toujours revérifiée côté serveur, jamais via l'ID seul).
 
 `mission.allowedActions` contient désormais `"view_encoding"` pour un chirurgien
-éligible (jamais `"edit_encoding"`/`"encoding"`, qui restent exclusivement
-instrumentiste/manager).
+éligible. **D-154 (amende D-100) :** `"edit_encoding"` aussi quand
+`SurgeonEncodingPolicy::canEditEncoding()` l'autorise (sa mission, avec instrumentiste,
+commencée, statut `DECLARED` → `SUBMITTED`, encodage ni verrouillé ni facturé, aucun calcul
+`LOCKED`) : il ajoute, modifie et supprime alors interventions et matériel par les endpoints
+`/interventions` et `/material-lines` existants (avec `If-Match`). Jamais `"edit_hours"`,
+`"start_encoding"`, `"submit"` ni `"encoding"`. Chaque intervention réelle et chaque ligne
+de matériel porte désormais `version` (entier, concurrence D-154).
 
 **Champ par champ, viewer chirurgien uniquement :** `materialLines[].item.billingStatus`
 (catalogue/facturation, D-101) est absent du JSON (jamais `null` explicite, la clé
@@ -7941,6 +8127,22 @@ mission préexistante reflétée, sinon `null`). Une mission préexistante **pub
 créneau d'un poste est montrée telle qu'elle est (son instrumentiste, ses heures,
 `COVERED`/`UNCOVERED`) — `generate()` ne la modifie jamais (R-01).
 
+### Preview V2 — champ additif `blockedReason` (D-152)
+
+`POST /api/planning/v2/preview` : `blockedReason` vaut `SURGEON_INCOMPATIBILITY` quand
+l'instrumentiste de la ligne (instrumentiste par défaut du poste, remplacement d'occurrence ou
+mission publiée existante) est incompatible avec le chirurgien ; la ligne est alors `CONFLICT`
+(« Bloqué — instrumentiste incompatible »), jamais `COVERED`, et garde `instrumentistId` pour que
+le poste reste identifiable. `generate()` ne persiste jamais la paire (mission sans
+instrumentiste, motif `SURGEON_INCOMPATIBILITY` dans `rejectedAssignments`). La seconde passe
+« instrumentistes libérés » ne propose jamais une personne incompatible avec le chirurgien de la
+ligne. `null` sinon.
+
+`GET /api/planning/surgeon-posts` (et `GET/POST/PATCH` d'un poste) : champ additif
+`instrumentistBlocked` (booléen) — l'instrumentiste par défaut du poste est devenu incompatible
+avec son chirurgien ; le manager corrige le poste (`PATCH` avec un autre instrumentiste ou
+aucun ; garder l'instrumentiste incompatible → 422).
+
 ## Intégration MedVue — liaison des comptes et lecture des congés (D-140)
 
 Contrat d'intégration **v1**, partagé avec MedVue (référence miroir côté MedVue :
@@ -8178,3 +8380,47 @@ tous les `AuditEvent` (rattachés à une mission ou globaux), tri `id` DESC.
 `mission` (`id`, `status`, `startAt`, `endAt`, `site`, `surgeon`, `instrumentist`) est
 renseigné quand l'événement porte une mission ; `surgeonMissionRequest` quand le payload
 porte `surgeonMissionRequestId`. `payload` est renvoyé tel qu'enregistré.
+
+## 46. Activité réalisée sans instrumentiste (D-155)
+
+Une mission OPEN **commencée** que personne n'a couverte peut être déclarée réalisée sans
+instrumentiste ; elle suit ensuite le cycle d'encodage existant, sans heures, et ne se calcule
+que pour la firme.
+
+### `POST /api/missions/{id}/declare-executed-without-instrumentist`
+
+**AuthZ :** `MissionVoter::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST` — chirurgien de la mission
+ou manager / admin ; mission OPEN, sans instrumentiste, `startAt ≤ maintenant`, pas déjà
+déclarée (`403` sinon ; `409` si l'état a changé sous le verrou). Corps vide.
+
+**Effets :** OPEN → ENCODING_IN_PROGRESS ; `executedWithoutInstrumentist` posé ; audit
+`MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED` (`declaredAs` = `SURGEON` | `MANAGER`). La
+mission quitte le pool (plus de claim / offre / affectation).
+
+**Réponse — 200 :** détail de mission.
+
+### `POST /api/missions/{id}/cancel-executed-without-instrumentist`
+
+**AuthZ :** `MissionVoter::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST` — manager / admin, mission
+déclarée encore ENCODING_IN_PROGRESS et non verrouillée (`403` sinon).
+
+```json
+{ "reason": "Une instrumentiste était bien présente." }
+```
+
+`reason` obligatoire (`422` si vide). **Effets :** ENCODING_IN_PROGRESS → OPEN, fait effacé,
+interventions / matériel conservés, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED`.
+
+### Champs et actions
+
+- Détail de mission : `executedWithoutInstrumentist: { declaredAt, declaredByName } | null`.
+- `allowedActions` : `declare_executed_without_instrumentist` (chirurgien de la mission,
+  manager), `cancel_executed_without_instrumentist` (manager) ; dans ce mode le chirurgien
+  reçoit `edit_encoding` et `submit`, jamais `edit_hours`.
+- `GET /api/encoding-tracking` (items) : `executedWithoutInstrumentist: { declaredByName } | null`.
+- Soumission (`POST .../encoding/complete`, `.../submit`) et validation : heures non exigées
+  dans ce mode (aucune n'existe) ; contenu et justification « sans matériel » inchangés.
+- Calcul financier : accepté sans instrumentiste uniquement dans ce mode ; seules des lignes
+  `FIRM_*`. Une mission classique sans instrumentiste reste `409 FINANCIAL_CALCULATION_INELIGIBLE`.
+- Renvoi en correction / réouverture : `ENCODING_CORRECTION_REQUESTED` au **chirurgien**
+  (lien `/app/s/missions/{id}/encoding`).

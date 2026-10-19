@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Box, Button, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Box, Button, Stack, TextField, Typography } from "@mui/material";
 import CloseOutlinedIcon from "@mui/icons-material/CloseOutlined";
 import DeleteOutlineOutlinedIcon from "@mui/icons-material/DeleteOutlineOutlined";
 import UnpublishedOutlinedIcon from "@mui/icons-material/UnpublishedOutlined";
@@ -80,7 +80,7 @@ export function Inspector({
   // the slot as filled in so far (site/date/times), same backend source of truth as the
   // edit picker. Falls back to the raw unannotated list until the slot is complete.
   const createSlot: RosterSlot | null = isCreating && draft.siteId !== null && draft.date !== ""
-    ? { siteId: draft.siteId, date: draft.date, startTime: draft.startTime, endTime: draft.endTime }
+    ? { siteId: draft.siteId, date: draft.date, startTime: draft.startTime, endTime: draft.endTime, surgeonId: draft.surgeonId }
     : null;
   const createRosterQuery = useRosterEligibility(createSlot, isModification ? "PLANNING_MODIFICATION" : "STRICT_ASSIGNMENT");
   const createInstrumentistOptions: SearchableOption[] = React.useMemo(() => {
@@ -233,6 +233,13 @@ export function Inspector({
                   <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
                     Vérification des disponibilités…
                   </Typography>
+                )}
+                {line.blockedReason && (
+                  <Alert severity="error" sx={{ mt: 1, py: 0, fontSize: 12 }} data-testid="inspector-blocked">
+                    Bloqué — instrumentiste incompatible : {line.instrumentistName} ne sera pas affecté·e à
+                    cette mission. Choisissez un autre instrumentiste, ou corrigez le poste récurrent dans
+                    l'onglet Postes.
+                  </Alert>
                 )}
               </Box>
             )}
