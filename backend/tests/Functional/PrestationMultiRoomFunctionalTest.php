@@ -4,14 +4,19 @@ namespace App\Tests\Functional;
 
 use App\Entity\FinancialCalculation;
 use App\Entity\FinancialCalculationLine;
+use App\Entity\Firm;
 use App\Entity\Hospital;
 use App\Entity\InstrumentistRate;
+use App\Entity\InterventionType;
+use App\Entity\MaterialItem;
 use App\Entity\Mission;
+use App\Entity\PricingRule;
 use App\Entity\User;
 use App\Entity\WorkedPresence;
 use App\Enum\FinancialLineType;
 use App\Enum\InstrumentistRateType;
 use App\Enum\MissionStatus;
+use App\Enum\PricingRuleType;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -33,6 +38,8 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
     private User $sophie;
     private User $salve;
     private \DateTimeImmutable $day;
+    /** @var array<string, list<object>> catalogue rows created by a test, removed in tearDown */
+    private array $catalogue = ['rules' => [], 'items' => [], 'types' => [], 'firms' => []];
 
     protected function setUp(): void
     {
@@ -205,6 +212,109 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
             ->setParameter('m', $b)->setParameter('t', FinancialLineType::INSTRUMENTIST_HOURLY)
             ->getQuery()->getOneOrNullResult());
         self::assertSame(0, $line->getSnapshot()['imputedMinutesByMission'][$b]);
+    }
+
+    #[WithoutErrorHandler]
+    public function test_journee_matin_apres_midi_one_presence_split_encoding_validation_and_pay(): void
+    {
+        // Postes réels du Dr Deltour le mercredi : deux salles physiques, la première toute la
+        // journée, la seconde en deux programmes. Trois missions, une seule présence.
+        $journee = $this->createAssigned('07:45', '18:00', $this->sophie);
+        $matin   = $this->createAssigned('07:45', '13:00', $this->sophie);
+        $apm     = $this->createAssigned('13:00', '18:00', $this->sophie);
+        $sophieToken = $this->login($this->client, $this->sophie);
+
+        $view = $this->body($this->api($this->client, $sophieToken, 'GET', "/api/missions/{$apm}/prestation"));
+        self::assertSame(3, $view['size']);
+        self::assertSame([$journee, $matin, $apm], $view['missionIds']);
+        self::assertSame(615, $view['planned']['unionMinutes'], 'Union 10h15, never the 20h30 sum');
+
+        // One presence 07:45–18:00 for the three missions.
+        $res = $this->api($this->client, $sophieToken, 'PUT', "/api/missions/{$journee}/prestation/presence", [
+            'actualStartAt' => $this->at($this->day, '07:45'), 'actualEndAt' => $this->at($this->day, '18:00'),
+            'expectedMissionIds' => [$journee, $matin, $apm],
+        ]);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $view = $this->body($res);
+        self::assertSame(615, $view['presence']['totalMinutes']);
+        $shares = array_column($view['missions'], 'imputedMinutes', 'id');
+        // EARLIEST_END_FIRST: 07:45–13:00 → Matin, 13:00–18:00 → Journée (starts first), Après-midi 0.
+        self::assertSame([$journee => 300, $matin => 315, $apm => 0], [$journee => $shares[$journee], $matin => $shares[$matin], $apm => $shares[$apm]]);
+        $this->em->clear();
+        self::assertCount(1, $this->em->getRepository(WorkedPresence::class)->findBy(['instrumentist' => $this->sophie->getId()]));
+
+        // The 0-minute mission stays fully encodable: intervention + material on it.
+        $firm = $this->tracked('firms', (new Firm())->setName('D156-Firm-' . bin2hex(random_bytes(3)))->setActive(true));
+        $type = $this->tracked('types', (new InterventionType())->setCode('D156-' . bin2hex(random_bytes(3)))->setLabel('Arthroscopie D156')->setActive(true));
+        $item = $this->tracked('items', (new MaterialItem())->setFirm($firm)->setLabel('Ancre D156')->setUnit('pièce')->setReferenceCode(bin2hex(random_bytes(4)))->setActive(true));
+        $this->tracked('rules', (new PricingRule())->setFirm($firm)->setRuleType(PricingRuleType::INTERVENTION_FEE)->setInterventionType($type)->setUnitPrice('150.00'));
+        $this->tracked('rules', (new PricingRule())->setFirm($firm)->setRuleType(PricingRuleType::MATERIAL_FEE)->setMaterialItem($item)->setUnitPrice('42.00'));
+
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$apm}/interventions", ['interventionTypeId' => $type->getId(), 'orderIndex' => 0, 'primaryFirmId' => $firm->getId()]);
+        self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
+        $interventionId = (int) $this->body($res)['id'];
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$apm}/material-lines", ['itemId' => $item->getId(), 'missionInterventionId' => $interventionId, 'quantity' => 2]);
+        self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
+
+        // Not "incomplete": the hours come from the shared presence, nothing is missing.
+        $view = $this->body($this->api($this->client, $sophieToken, 'GET', "/api/missions/{$apm}/prestation"));
+        self::assertContains('submit', $view['allowedActions']);
+        $apmRow = array_column($view['missions'], null, 'id')[$apm];
+        self::assertSame(0, $apmRow['imputedMinutes']);
+        self::assertSame(1, $apmRow['interventionCount']);
+        self::assertSame(1, $apmRow['activeMaterialLineCount']);
+
+        // One common submit; the justification only lands on the two missions without material.
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$apm}/prestation/submit", ['fingerprint' => $view['fingerprint'], 'noMaterialComment' => 'Aucun implant en salle 1.']);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $this->em->clear();
+        foreach ([$journee, $matin, $apm] as $id) {
+            self::assertSame(MissionStatus::SUBMITTED, $this->em->find(Mission::class, $id)->getStatus());
+        }
+        self::assertNull($this->em->find(Mission::class, $apm)->getNoMaterialComment());
+        self::assertSame('Aucun implant en salle 1.', $this->em->find(Mission::class, $journee)->getNoMaterialComment());
+        self::assertSame('Aucun implant en salle 1.', $this->em->find(Mission::class, $matin)->getNoMaterialComment());
+
+        // Validation per mission, then valuation per mission.
+        $calcs = [];
+        foreach ([$journee, $matin, $apm] as $id) {
+            $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate");
+            self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        }
+        foreach ([$journee, $matin, $apm] as $id) {
+            $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/financial-calculations");
+            self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
+            $calcs[$id] = $this->body($res);
+            self::assertSame('CALCULATED', $calcs[$id]['status']);
+        }
+
+        // Pay: 615 min × 37.77 €/h = 387.14 €, once — 188.85 (Journée) + 198.29 (Matin) + 0.
+        self::assertSame(300, $this->hourlyLine($journee)->getDurationMinutes());
+        self::assertSame('188.85', $this->hourlyLine($journee)->getTotalAmount());
+        self::assertSame(315, $this->hourlyLine($matin)->getDurationMinutes());
+        self::assertSame('198.29', $this->hourlyLine($matin)->getTotalAmount());
+        self::assertSame('387.14', $this->hourlyLine($matin)->getSnapshot()['presenceTotalAmount']);
+        self::assertSame(0, $this->hourlyLine($matin)->getSnapshot()['imputedMinutesByMission'][$apm]);
+
+        // The 0-minute mission is billed normally: intervention fee + material, no hourly line.
+        $apmTypes = array_column($calcs[$apm]['lines'], 'lineType');
+        sort($apmTypes);
+        self::assertSame(['FIRM_INTERVENTION_FEE', 'FIRM_MATERIAL_FEE'], $apmTypes);
+        self::assertSame('234.00', $calcs[$apm]['totalsByCurrency']['EUR']['FIRM'], '150.00 + 2 × 42.00');
+        self::assertArrayNotHasKey('INSTRUMENTIST', $calcs[$apm]['totalsByCurrency']['EUR']);
+
+        // Encoding tracking: validated, valued, with real hours — never shown as unworked.
+        $from = $this->day->format('Y-m-d');
+        $to = $this->day->modify('+1 day')->format('Y-m-d');
+        $tracking = $this->body($this->api($this->client, $this->managerToken, 'GET', "/api/billing/encoding-tracking?from={$from}&to={$to}&instrumentistId={$this->sophie->getId()}&limit=100"));
+        $rows = array_column($tracking['items'], null, 'missionId');
+        self::assertSame('VALIDATED', $rows[$apm]['encodingState']);
+        self::assertSame('CALCULATED', $rows[$apm]['financial']['state']);
+        self::assertSame('PRESENCE_SHARE', $rows[$apm]['hours']['effectiveSource']);
+        self::assertSame(0, $rows[$apm]['hours']['effectiveMinutes']);
+        self::assertTrue($rows[$apm]['hours']['hasRealHours']);
+        self::assertNotSame('NO_REAL_HOURS', $rows[$apm]['hours']['comparison']);
+        self::assertSame(615, $rows[$apm]['prestation']['plannedUnionMinutes']);
     }
 
     #[WithoutErrorHandler]
@@ -381,6 +491,20 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         return (int) $this->body($res)['id'];
     }
 
+    /**
+     * @template T of object
+     * @param T $entity
+     * @return T
+     */
+    private function tracked(string $kind, object $entity): object
+    {
+        $this->em->persist($entity);
+        $this->em->flush();
+        $this->catalogue[$kind][] = $entity;
+
+        return $entity;
+    }
+
     private function makeHourlyRate(User $instrumentist, string $amount): void
     {
         $rate = new InstrumentistRate();
@@ -416,6 +540,8 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
             foreach ([
                 'DELETE FROM App\Entity\FinancialCalculationLine l WHERE l.financialCalculation IN (SELECT c.id FROM App\Entity\FinancialCalculation c WHERE c.mission IN (:m))' => ['m' => $missionIds],
                 'DELETE FROM App\Entity\FinancialCalculation c WHERE c.mission IN (:m)' => ['m' => $missionIds],
+                'DELETE FROM App\Entity\MaterialLine l WHERE l.mission IN (:m)' => ['m' => $missionIds],
+                'DELETE FROM App\Entity\MissionIntervention i WHERE i.mission IN (:m)' => ['m' => $missionIds],
                 'DELETE FROM App\Entity\MissionExecution e WHERE e.mission IN (:m)' => ['m' => $missionIds],
                 'DELETE FROM App\Entity\WorkedPresence p WHERE p.instrumentist IN (:u)' => ['u' => $users],
                 'DELETE FROM App\Entity\InstrumentistRate r WHERE r.instrumentist IN (:u)' => ['u' => $users],
@@ -428,5 +554,13 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
             }
         }
         $this->traitTearDown();
+        if (isset($this->em) && $this->em->isOpen()) {
+            foreach ([PricingRule::class => 'rules', MaterialItem::class => 'items', InterventionType::class => 'types', Firm::class => 'firms'] as $class => $kind) {
+                $ids = array_map(static fn (object $e) => $e->getId(), $this->catalogue[$kind]);
+                if ($ids !== []) {
+                    $this->em->createQuery("DELETE FROM {$class} e WHERE e.id IN (:ids)")->setParameter('ids', $ids)->execute();
+                }
+            }
+        }
     }
 }

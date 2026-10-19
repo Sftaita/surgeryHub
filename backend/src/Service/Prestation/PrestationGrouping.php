@@ -241,4 +241,55 @@ final class PrestationGrouping
             'end'   => $m->getEndAt()->getTimestamp(),
         ], $missions);
     }
+
+    /**
+     * D-156 — informative only (no validation, no status change): marks each Planning V2
+     * preview line that forms, with other lines of the same person, one multi-room
+     * prestation (same rule as isMultiRoomPair(), on preview lines: BLOC, same
+     * instrumentist, surgeon, site and date, strict overlap, transitive). Sets
+     * `multiRoomCount` to the size of the group (null when alone). SKIPPED and CONFLICT
+     * lines never join a group. Idempotent: recomputed from scratch on every call.
+     *
+     * @param array<int, array<string, mixed>> &$lines
+     */
+    public static function annotatePreviewLines(array &$lines): void
+    {
+        $buckets = [];
+        foreach ($lines as $i => $line) {
+            $lines[$i]['multiRoomCount'] = null;
+            if (($line['instrumentistId'] ?? null) === null
+                || ($line['missionType'] ?? null) !== MissionType::BLOCK->value
+                || in_array($line['status'] ?? null, ['SKIPPED', 'CONFLICT'], true)
+                || ($line['siteId'] ?? null) === null) {
+                continue;
+            }
+            $buckets[implode('|', [$line['instrumentistId'], $line['date'], $line['surgeonId'], $line['siteId']])][] = $i;
+        }
+
+        foreach ($buckets as $indexes) {
+            if (count($indexes) < 2) {
+                continue;
+            }
+            // Sweep by start time: a line overlapping the running group's end joins it.
+            usort($indexes, static fn (int $a, int $b) => [$lines[$a]['startTime'], $lines[$a]['endTime']] <=> [$lines[$b]['startTime'], $lines[$b]['endTime']]);
+            $groups = [];
+            $groupEnd = null;
+            foreach ($indexes as $i) {
+                if ($groupEnd !== null && $lines[$i]['startTime'] < $groupEnd) {
+                    $groups[count($groups) - 1][] = $i;
+                    $groupEnd = max($groupEnd, $lines[$i]['endTime']);
+                } else {
+                    $groups[] = [$i];
+                    $groupEnd = $lines[$i]['endTime'];
+                }
+            }
+            foreach ($groups as $group) {
+                if (count($group) > 1) {
+                    foreach ($group as $i) {
+                        $lines[$i]['multiRoomCount'] = count($group);
+                    }
+                }
+            }
+        }
+    }
 }

@@ -159,6 +159,34 @@ final class PrestationGroupingTest extends TestCase
         return $h;
     }
 
+    public function test_preview_lines_are_marked_informatively_with_the_multi_room_group_size(): void
+    {
+        $line = static fn (string $from, string $to, array $o = []) => $o + [
+            'date' => '2027-01-06', 'surgeonId' => 8, 'siteId' => 1, 'instrumentistId' => 19,
+            'missionType' => 'BLOCK', 'status' => 'COVERED', 'startTime' => $from, 'endTime' => $to,
+        ];
+        $lines = [
+            $line('07:45', '18:00'),                               // Journée
+            $line('07:45', '13:00'),                               // Matin
+            $line('13:00', '18:00'),                               // Après-midi
+            $line('08:00', '12:00', ['surgeonId' => 9]),           // other surgeon: never grouped
+            $line('08:00', '12:00', ['instrumentistId' => null]),  // à pourvoir
+            $line('08:00', '12:00', ['siteId' => 2, 'surgeonId' => 9]),
+        ];
+        PrestationGrouping::annotatePreviewLines($lines);
+        self::assertSame([3, 3, 3, null, null, null], array_column($lines, 'multiRoomCount'));
+
+        // Corrected Wednesday posts: Sophie on Journée only → nothing to mark.
+        $lines = [$line('07:45', '18:00'), $line('07:45', '13:00', ['instrumentistId' => null]), $line('13:00', '18:00', ['instrumentistId' => null])];
+        PrestationGrouping::annotatePreviewLines($lines);
+        self::assertSame([null, null, null], array_column($lines, 'multiRoomCount'));
+
+        // Touching rooms are not simultaneous; a CONFLICT line never joins a group.
+        $lines = [$line('07:45', '13:00'), $line('13:00', '18:00'), $line('09:00', '11:00', ['status' => 'CONFLICT'])];
+        PrestationGrouping::annotatePreviewLines($lines);
+        self::assertSame([null, null, null], array_column($lines, 'multiRoomCount'));
+    }
+
     private function mission(
         string $from,
         string $to,

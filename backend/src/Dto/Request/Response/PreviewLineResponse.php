@@ -30,6 +30,12 @@ final class PreviewLineResponse
          * line as the existing reality and locks it. Additive field, null otherwise.
          */
         public ?string $existingMissionStatus = null,
+        /**
+         * D-156 — informative only: size of the multi-room prestation this line forms with
+         * other simultaneous lines of the same instrumentist (same surgeon, site, day, BLOC),
+         * null when alone. Never a validation step; additive field.
+         */
+        public ?int $multiRoomCount = null,
     ) {
     }
 
@@ -56,6 +62,7 @@ final class PreviewLineResponse
             surgeonPhotoPath: $line['surgeonPhotoPath'] ?? null,
             instrumentistPhotoPath: $line['instrumentistPhotoPath'] ?? null,
             existingMissionStatus: $line['existingMissionStatus'] ?? null,
+            multiRoomCount: $line['multiRoomCount'] ?? null,
         );
     }
 }

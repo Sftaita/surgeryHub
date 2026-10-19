@@ -441,7 +441,10 @@ export function MissionDetailContent({
                 <Typography component="span" variant="caption" color="text.secondary">
                   ({executionQuery.data.effectiveDurationSource === "ACTUAL_TIMES" ? "heures prestées"
                     : executionQuery.data.effectiveDurationSource === "ACTUAL_EXPLICIT" ? "durée déclarée"
-                    : executionQuery.data.effectiveDurationSource === "PRESENCE_SHARE" ? "part de la présence commune"
+                    : executionQuery.data.effectiveDurationSource === "PRESENCE_SHARE"
+                      ? (executionQuery.data.effectiveDurationMinutes === 0
+                        ? "imputation financière de la présence commune — heures comptées sur une autre mission de la prestation"
+                        : "imputation financière de la présence commune")
                     : "repli planifié"})
                 </Typography>
               </Typography>

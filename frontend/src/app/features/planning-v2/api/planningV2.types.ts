@@ -365,6 +365,11 @@ export interface PreviewLineV2 {
    * preview). Anything but DRAFT is never modified by generate() — shown as reality, locked.
    */
   existingMissionStatus?: string | null;
+  /**
+   * D-156 — informative only (backend preview): size of the multi-room prestation this line
+   * forms with simultaneous lines of the same instrumentist; null when alone.
+   */
+  multiRoomCount?: number | null;
   /** D-125 — Modification: nominative request state of the mission (backend `targetedOffer`). */
   pendingOfferName?: string | null;
   offerDeclinedByName?: string | null;

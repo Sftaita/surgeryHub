@@ -5,6 +5,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import PlanningSchedulePage from "./PlanningSchedulePage";
 
+// Recette D-156 (2026-10-19) — these full-editor flows (MUI Autocomplete, many userEvent
+// steps) take 5–11 s on a loaded machine, already timing out on main at 5/10 s: a
+// realistic per-file timeout instead of flaky failures (the logic itself is unchanged).
+vi.setConfig({ testTimeout: 30_000 });
+
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
 vi.mock("../../../features/missions/api/missions.api", () => ({

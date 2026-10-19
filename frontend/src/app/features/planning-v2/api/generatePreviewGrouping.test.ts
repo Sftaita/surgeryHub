@@ -236,7 +236,7 @@ describe("getFreedInstrumentists()", () => {
 
 describe("findSameDayAssignmentElsewhere()", () => {
   it("finds another active line the same day already using this instrumentist", () => {
-    const busyLine = line({ date: "2026-06-01", postId: 1, status: "COVERED", instrumentistId: 7 });
+    const busyLine = line({ date: "2026-06-01", postId: 1, surgeonId: 2, status: "COVERED", instrumentistId: 7 });
     const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED" });
 
     const found = findSameDayAssignmentElsewhere([busyLine, target], target, 7);
@@ -256,6 +256,19 @@ describe("findSameDayAssignmentElsewhere()", () => {
     const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED" });
 
     expect(findSameDayAssignmentElsewhere([otherDay, target], target, 7)).toBeNull();
+  });
+
+  it("D-156 — a simultaneous room of the same surgeon on the same site is the same prestation, never 'elsewhere'", () => {
+    const journee = line({ postId: 3, startTime: "07:45", endTime: "18:00", instrumentistId: 7 });
+    const matin = line({ postId: 4, startTime: "07:45", endTime: "13:00", status: "UNCOVERED" });
+    expect(findSameDayAssignmentElsewhere([journee, matin], matin, 7)).toBeNull();
+
+    // Still "elsewhere": another surgeon, another site, a consultation, or rooms that only touch.
+    expect(findSameDayAssignmentElsewhere([{ ...journee, surgeonId: 2 }, matin], matin, 7)?.postId).toBe(3);
+    expect(findSameDayAssignmentElsewhere([{ ...journee, siteId: 2 }, matin], matin, 7)?.postId).toBe(3);
+    expect(findSameDayAssignmentElsewhere([{ ...journee, missionType: "CONSULTATION" }, matin], matin, 7)?.postId).toBe(3);
+    const apm = line({ postId: 5, startTime: "13:00", endTime: "18:00", instrumentistId: 7 });
+    expect(findSameDayAssignmentElsewhere([apm, matin], matin, 7)?.postId).toBe(5);
   });
 
   it("never matches the target line itself", () => {

@@ -264,6 +264,11 @@ export function getFreedInstrumentists(lines: PreviewLineV2[], target: PreviewLi
  * assigned — the reciprocal of getFreedInstrumentists(): picking this person for a new
  * slot the same day means removing them from wherever they were already placed, since
  * a person can't be in two places on the same day.
+ *
+ * D-156 — except a simultaneous room of the SAME surgeon on the SAME site (BLOC, strict
+ * overlap): that is one multi-room prestation, never "elsewhere", so it is neither flagged
+ * nor freed. Mirrors the server rule (PrestationGrouping); the server stays the authority
+ * (multiRoomCount after saving, deploy revalidation).
  */
 export function findSameDayAssignmentElsewhere(
   lines: PreviewLineV2[],
@@ -276,9 +281,16 @@ export function findSameDayAssignmentElsewhere(
         l.date === target.date &&
         l.instrumentistId === instrumentistId &&
         l.status !== "SKIPPED" &&
-        lineKeyV2(l) !== lineKeyV2(target),
+        lineKeyV2(l) !== lineKeyV2(target) &&
+        !isSameMultiRoomPrestation(l, target),
     ) ?? null
   );
+}
+
+function isSameMultiRoomPrestation(a: PreviewLineV2, b: PreviewLineV2): boolean {
+  return a.missionType === "BLOCK" && b.missionType === "BLOCK"
+    && a.surgeonId === b.surgeonId && a.siteId !== null && a.siteId === b.siteId
+    && a.startTime < b.endTime && b.startTime < a.endTime;
 }
 
 const DAY_NAMES = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];

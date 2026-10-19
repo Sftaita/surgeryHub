@@ -10,7 +10,7 @@ import { Link as RouterLink } from "react-router-dom";
 import { useToast } from "../../../ui/toast/useToast";
 import { invalidateOperationalPlanning } from "../../missions/dispatch/missionDispatch.api";
 import {
-  detachPresence, fetchPrestation, formatMinutes, prestationError, updateRoomLabel,
+  detachPresence, fetchPrestation, formatImputation, formatMinutes, prestationError, updateRoomLabel,
 } from "../api/prestations.api";
 
 type Props = {
@@ -111,7 +111,7 @@ export function ManagerPrestationCard({ missionId, roomLabel, canEditRoomLabel }
                   <RouterLink to={`/app/m/missions/${m.id}`}>{m.label}</RouterLink>
                 )}
                 {" · "}
-                {m.imputedMinutes != null ? `part imputée ${formatMinutes(m.imputedMinutes)}` : "part non imputée"}
+                {formatImputation(m.imputedMinutes)}
               </Box>
             ))}
           </Stack>

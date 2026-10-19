@@ -345,6 +345,27 @@ export function GeneratePlanningTab() {
     onError: (err) => toast.error(extractErrorV2(err)),
   });
 
+  // Recette D-156 (A9) — once missions are generated, the editor must show the persisted
+  // draft itself (real existingMissionId on every line), so that a later edit is saved onto
+  // it via updateDraft() — never kept only locally while deploy() publishes the draft
+  // without it. Keeps `generated` (the deploy step) untouched.
+  async function reloadDraftLines(versionId: number): Promise<boolean> {
+    try {
+      const data = await reopenDraft(versionId);
+      setPreview({ lines: data.lines, summary: data.summary, previewVersion: data.previewVersion, generatedAt: data.generatedAt });
+      setPreviewResponses([{ lines: data.lines, summary: data.summary, previewVersion: data.previewVersion, generatedAt: data.generatedAt }]);
+      setEditedLines(new Map());
+      setNewLines([]);
+      setDraftVersionId(data.version.id);
+      setDraftScopeSource(data.version.scopeSource);
+      setDraftScopeSiteIds(data.version.scopeSiteIds);
+      return true;
+    } catch {
+      toast.warning("Brouillon enregistré, mais l'affichage n'a pas pu être rechargé — ouvrez le brouillon avant toute nouvelle modification.");
+      return false;
+    }
+  }
+
   const saveDraftMutation = useMutation({
     mutationFn: () => updateDraft(draftVersionId!, effectiveLines),
     onSuccess: (result) => {
@@ -359,6 +380,7 @@ export function GeneratePlanningTab() {
       // negative-postId line (and re-creating a duplicate Mission) on a later save.
       setNewLines([]);
       setIsCreatingMission(false);
+      void reloadDraftLines(draftVersionId!);
       if (result.rejectedAssignments.length > 0) {
         const detail = result.rejectedAssignments
           .map((r) => `${r.requestedInstrumentistName} — ${r.date ?? "date inconnue"} (${r.reasons.map(reasonLabel).join(", ")})`)
@@ -442,6 +464,11 @@ export function GeneratePlanningTab() {
     onSuccess: (data) => {
       setGenerated(data);
       toast.success(`Brouillon créé — ${data.created} mission(s) créée(s)`);
+      // A9 — one month generated: the editor switches to the persisted draft, so further
+      // edits are saved onto it. Several months: edits stay blocked from deploy (below).
+      if (data.versions.length === 1) {
+        void reloadDraftLines(data.versions[0].versionId);
+      }
 
       // D-101 — never silent: the backend refused to keep an ABSENT/SCHEDULE_CONFLICT/
       // INACTIVE/NO_SITE_MEMBERSHIP candidate on a line (e.g. an instrumentiste absent on
@@ -470,6 +497,10 @@ export function GeneratePlanningTab() {
 
   const deployMutation = useMutation({
     mutationFn: async () => {
+      // A9 — deploy() publishes the persisted draft only: never with local edits pending.
+      if (pendingDraftEdits > 0) {
+        throw new Error("Des modifications ne sont pas encore enregistrées dans le brouillon : enregistrez-les ou réinitialisez-les avant de déployer.");
+      }
       const results = [];
       for (const v of generated!.versions) {
         results.push(await deployPlanningV2(v.versionId, sendPdf));
@@ -637,6 +668,9 @@ export function GeneratePlanningTab() {
   const dayGroups = groupLinesByDayAndSurgeon(filteredLines);
   const severityCounts = countBySeverity(effectiveLines);
   const dirtyCount = editedLines.size;
+  // A9 — edits made once the missions exist (draft generated or reopened) that are not yet
+  // saved onto the draft: deploy() would publish the draft without them.
+  const pendingDraftEdits = generated && !isModification ? dirtyCount + newLines.length : 0;
 
   // ── Line edit helpers ──────────────────────────────────────────────────────
 
@@ -1626,7 +1660,10 @@ export function GeneratePlanningTab() {
           {dirtyCount > 0 && (
             <Stack direction="row" alignItems="center" justifyContent="flex-end" spacing={1} sx={{ mb: 1.25 }}>
               <Typography sx={{ fontSize: 12, fontWeight: 600, color: planningV2Colors.warnFg }}>
-                {dirtyCount} modification{dirtyCount > 1 ? "s" : ""} locale{dirtyCount > 1 ? "s" : ""} non générée{dirtyCount > 1 ? "s" : ""}
+                {dirtyCount} modification{dirtyCount > 1 ? "s" : ""} locale{dirtyCount > 1 ? "s" : ""}{" "}
+                {generated || isDraft
+                  ? `non enregistrée${dirtyCount > 1 ? "s" : ""} dans le brouillon`
+                  : `non générée${dirtyCount > 1 ? "s" : ""}`}
               </Typography>
               <Button size="small" color="inherit" onClick={() => setEditedLines(new Map())} sx={{ textTransform: "none" }}>
                 Tout réinitialiser
@@ -1697,9 +1734,21 @@ export function GeneratePlanningTab() {
                               />
                               <Box sx={{ width: 6, height: 6, borderRadius: "999px", bgcolor: tokens.dot, flex: "none" }} />
                               <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textBody, minWidth: 90 }} noWrap>{line.siteName ?? "—"}</Typography>
-                              <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong, minWidth: 100, fontVariantNumeric: "tabular-nums" }}>
-                                {line.startTime}–{line.endTime}
-                              </Typography>
+                              <Box sx={{ minWidth: 100, flex: "none" }}>
+                                <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textStrong, fontVariantNumeric: "tabular-nums" }}>
+                                  {line.startTime}–{line.endTime}
+                                </Typography>
+                                {/* D-156 — informative only (server-computed, no validation); hidden once edited locally. */}
+                                {!dirty && line.multiRoomCount != null && line.multiRoomCount > 1 && (
+                                  <Typography
+                                    data-testid="multi-room-chip"
+                                    title={`${line.multiRoomCount} missions simultanées confiées à la même personne : une seule prestation (présence et encodage communs). Information seulement.`}
+                                    sx={{ fontSize: 10.5, fontWeight: 700, color: planningV2Colors.brand, lineHeight: 1.2 }}
+                                  >
+                                    Multi-salles · {line.multiRoomCount} missions
+                                  </Typography>
+                                )}
+                              </Box>
                               <Stack
                                 direction="row" alignItems="center" spacing={0.9} sx={{ flex: 1, minWidth: 0 }}
                               >
@@ -1828,9 +1877,18 @@ export function GeneratePlanningTab() {
                     {dirtyCount > 0 ? "Générer avec modifications" : "Générer les missions"}
                   </Button>
                 )
+              ) : pendingDraftEdits > 0 && draftVersionId !== null ? (
+                // A9 — edits after generation are saved onto the draft first, never lost.
+                <Button
+                  variant="contained" disableElevation disabled={saveDraftMutation.isPending || draftScopeNeedsConfirmation} onClick={() => saveDraftMutation.mutate()}
+                  data-testid="save-draft-before-deploy"
+                  sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
+                >
+                  {saveDraftMutation.isPending ? "Enregistrement…" : "Enregistrer les modifications"}
+                </Button>
               ) : (
                 <Button
-                  variant="contained" disableElevation disabled={deployMutation.isPending} onClick={() => deployMutation.mutate()}
+                  variant="contained" disableElevation disabled={deployMutation.isPending || pendingDraftEdits > 0} onClick={() => deployMutation.mutate()}
                   startIcon={<RocketLaunchOutlinedIcon />}
                   sx={{ height: 40, px: 2.25, borderRadius: planningV2Radii.button, textTransform: "none", fontWeight: 600, bgcolor: planningV2Colors.brand, boxShadow: planningV2Shadows.button, "&:hover": { bgcolor: planningV2Colors.brandHover } }}
                 >
@@ -1839,6 +1897,14 @@ export function GeneratePlanningTab() {
               )}
             </Stack>
           </Stack>
+
+          {pendingDraftEdits > 0 && (
+            <Typography data-testid="pending-draft-edits" sx={{ mt: 1.5, fontSize: 12.5, fontWeight: 600, color: planningV2Colors.warnFg }}>
+              {draftVersionId !== null
+                ? `${pendingDraftEdits} modification(s) faite(s) après la génération ne sont pas encore dans le brouillon : enregistrez-les avant de déployer, ou réinitialisez-les.`
+                : `${pendingDraftEdits} modification(s) faite(s) après la génération ne sont pas dans les brouillons générés : réinitialisez-les, ou ouvrez le brouillon du mois concerné pour les enregistrer avant de déployer.`}
+            </Typography>
+          )}
 
           {generated && !isModification && (
             <Stack direction="row" alignItems="center" spacing={1} sx={{ mt: 1.5 }}>

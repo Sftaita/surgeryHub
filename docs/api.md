@@ -4730,6 +4730,12 @@ a changé depuis la génération de ce brouillon (comparaison de `previewHash`, 
 par la migration `Version20260908090000`) — **purement informationnel**, ne bloque jamais la
 réouverture et ne remplace rien.
 
+`status: "CONFLICT"` (D-156, recette 2026-10-18) sur une ligne liée à une mission du
+brouillon signifie que le déploiement la refuserait en l'état : même contrôle que la
+revalidation du déploiement (instrumentiste absent, chevauchement réel, dérogations D-091 et
+exception multi-salles D-156 comprises). Affichage seulement : `PATCH` ignore le statut d'une
+ligne persistée.
+
 **Réponse — 409 `PLANNING_VERSION_NOT_DRAFT`** : la version n'est plus `DRAFT` (déjà
 déployée/archivée).
 
@@ -4749,7 +4755,10 @@ Enregistre des modifications de lignes directement sur les `Mission` réelles de
 ```
 
 Mêmes règles d'éligibilité que 26.5 (`rejectedAssignments`, jamais une réaffectation
-silencieusement invalide conservée). `removed` compte les lignes marquées `SKIPPED` sur une
+silencieusement invalide conservée). Seules les lignes dont l'instrumentiste **change** sont
+revalidées (D-156, recette 2026-10-19) : une ligne renvoyée inchangée est conservée telle
+quelle, et un vrai conflit déjà présent reste affiché `CONFLICT` à la réouverture et bloque le
+déploiement — il n'est jamais résolu implicitement en retirant l'instrumentiste. `removed` compte les lignes marquées `SKIPPED` sur une
 occurrence déjà couverte par une `Mission` persistée — celle-ci est supprimée (jamais annulée
 : elle n'aurait jamais dû exister pour cette occurrence).
 
@@ -7943,6 +7952,15 @@ DRAFT). La réponse gagne `createdMissionStatus`.
 mission préexistante reflétée, sinon `null`). Une mission préexistante **publiée** occupant le
 créneau d'un poste est montrée telle qu'elle est (son instrumentiste, ses heures,
 `COVERED`/`UNCOVERED`) — `generate()` ne la modifie jamais (R-01).
+
+### Preview V2 — champ additif `multiRoomCount` (D-156)
+
+`POST /api/planning/v2/preview` et `GET /api/planning/v2/drafts/{id}` : chaque ligne porte
+`multiRoomCount` — taille de la prestation multi-salles qu'elle forme avec d'autres lignes de
+la même personne (BLOC, même chirurgien, même site, même jour, chevauchement strict,
+transitif), sinon `null`. Les lignes `SKIPPED` et `CONFLICT` n'en font jamais partie.
+**Purement informatif** : aucune validation supplémentaire, aucun effet sur `generate()`,
+`PATCH` ou le déploiement (le champ renvoyé dans `lines` est ignoré).
 
 ## Intégration MedVue — liaison des comptes et lecture des congés (D-140)
 

@@ -1,7 +1,7 @@
 import { Box } from "@mui/material";
 import dayjs from "dayjs";
 
-import { formatMinutes, type PrestationView } from "../api/prestations.api";
+import { formatImputation, formatMinutes, type PrestationView } from "../api/prestations.api";
 
 const GRAY_150 = "#EEF1F4";
 const GRAY_500 = "#727E8C";
@@ -62,7 +62,7 @@ export function PrestationPanel({ prestation, selectedMissionId, onSelectMission
             </Box>
             <Box sx={{ fontSize: 12.5, color: GRAY_500, mt: "2px" }}>
               {hoursComplete
-                ? `Présence réelle ${formatMinutes(presence?.totalMinutes)} — répartie entre les missions ci-dessous`
+                ? `Présence réelle ${formatMinutes(presence?.totalMinutes)} — imputée financièrement entre les missions ci-dessous`
                 : "À saisir une seule fois : elle sera répartie entre les missions."}
             </Box>
           </Box>
@@ -114,7 +114,7 @@ export function PrestationPanel({ prestation, selectedMissionId, onSelectMission
                 <Box sx={{ fontSize: 14, fontWeight: 700, color: GRAY_800 }}>{m.label}</Box>
                 <Box sx={{ fontSize: 12.5, color: GRAY_500, mt: "2px" }}>
                   {m.interventionCount} intervention(s) · {m.activeMaterialLineCount} ligne(s) de matériel
-                  {m.imputedMinutes != null ? ` · part imputée ${formatMinutes(m.imputedMinutes)}` : ""}
+                  {m.imputedMinutes != null ? ` · ${formatImputation(m.imputedMinutes)}` : ""}
                   {m.status === "SUBMITTED" ? " · soumise" : ""}
                 </Box>
               </Box>

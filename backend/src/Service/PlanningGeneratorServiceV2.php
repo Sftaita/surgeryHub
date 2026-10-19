@@ -155,7 +155,11 @@ class PlanningGeneratorServiceV2
             $current = $current->modify('+1 day');
         }
 
-        return $this->resolveFreedInstrumentists($lines);
+        $lines = $this->resolveFreedInstrumentists($lines);
+        // D-156 — informative "Multi-salles · N missions" marker, never a validation step.
+        PrestationGrouping::annotatePreviewLines($lines);
+
+        return $lines;
     }
 
     /**

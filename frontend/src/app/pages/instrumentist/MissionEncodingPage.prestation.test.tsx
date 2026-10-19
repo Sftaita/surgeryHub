@@ -205,6 +205,24 @@ describe("MissionEncodingPage — prestation multi-salles (D-156)", () => {
     expect(screen.getByTestId("prestation-hours-locked")).toHaveTextContent(/renvoyer aussi en correction/);
   });
 
+  it("présente une part de 0 minute comme une imputation financière, jamais comme une mission non travaillée", async () => {
+    const base = prestation();
+    mockApi(prestation({
+      presence: { id: 9, actualStartAt: "2026-11-04T07:45:00+01:00", actualEndAt: "2026-11-04T13:00:00+01:00", totalMinutes: 315, revision: 1 },
+      missions: [
+        { ...base.missions[0], imputedMinutes: 315, effectiveMinutes: 315, effectiveSource: "PRESENCE_SHARE", linkedToPresence: true },
+        { ...base.missions[1], imputedMinutes: 0, effectiveMinutes: 0, effectiveSource: "PRESENCE_SHARE", linkedToPresence: true, interventionCount: 2, activeMaterialLineCount: 3 },
+      ],
+    }));
+    renderPage();
+
+    const zero = await screen.findByTestId(`prestation-mission-${MISSION_B}`);
+    expect(zero).toHaveTextContent("2 intervention(s) · 3 ligne(s) de matériel");
+    expect(zero).toHaveTextContent("imputation financière 0h00 (heures comptées sur une autre mission de la prestation)");
+    expect(screen.getByTestId(`prestation-mission-${MISSION_A}`)).toHaveTextContent("imputation financière 5h15");
+    expect(screen.queryByText(/part imputée/)).not.toBeInTheDocument();
+  });
+
   it("le pied de validation d'une salle annonce la soumission commune de la prestation", async () => {
     mockApi();
     const user = userEvent.setup();

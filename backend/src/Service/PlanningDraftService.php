@@ -5,7 +5,6 @@ namespace App\Service;
 use App\Activity\Recorder\PlanningActivityRecorder;
 use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\AuditEvent;
-use App\Enum\AuditEventType;
 use App\Entity\EncodingAnomalyReport;
 use App\Entity\FinancialCalculation;
 use App\Entity\FirmInvoiceLine;
@@ -16,8 +15,8 @@ use App\Entity\InstrumentistStatementLine;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\MaterialItemRequest;
 use App\Entity\MaterialLine;
-use App\Entity\Mission;
 use App\Entity\MissingMaterialReport;
+use App\Entity\Mission;
 use App\Entity\MissionClaim;
 use App\Entity\MissionConflictWaiver;
 use App\Entity\MissionEncodingComment;
@@ -31,6 +30,7 @@ use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\SurgeonRatingByInstrumentist;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningDraftDeletionSource;
@@ -40,6 +40,7 @@ use App\Enum\SchedulePrecision;
 use App\Exception\PlanningDraftScopeAlreadyConfirmedException;
 use App\Exception\PlanningDraftScopeConfirmationRequiredException;
 use App\Exception\PlanningVersionNotDraftException;
+use App\Service\Prestation\PrestationGrouping;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 
@@ -64,6 +65,7 @@ final class PlanningDraftService
         private readonly PlanningGeneratorServiceV2 $generator,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly PlanningActivityRecorder $activity,
+        private readonly PlanningDraftRevalidationService $revalidation,
     ) {
     }
 
@@ -85,6 +87,9 @@ final class PlanningDraftService
 
         $this->normalizeForDraftEditing($lines);
         $this->appendAdHocMissions($version, $lines);
+        $this->flagBlockingConflicts($version, $lines);
+        // Statuses may have changed above (CONFLICT, UNCOVERED, ad-hoc lines): recompute.
+        PrestationGrouping::annotatePreviewLines($lines);
 
         return [
             'lines'          => $lines,
@@ -148,6 +153,35 @@ final class PlanningDraftService
     }
 
     /**
+     * Recette D-156 (A10) — preview() never re-checks a slot already backed by a DRAFT
+     * Mission (it only compares instrumentists), so a reopened draft showed a real conflict
+     * (same instrumentist booked elsewhere, absent instrumentist) as COVERED while deploy()
+     * then refused it. The status now comes from the very check deploy() runs
+     * (PlanningDraftRevalidationService::revalidate(): same multi-room exception, same
+     * waivers), so the editor and the deploy gate can no longer disagree. Display only:
+     * update() ignores the status of a persisted line.
+     *
+     * @param array<int, array<string, mixed>> &$lines
+     */
+    private function flagBlockingConflicts(PlanningVersion $version, array &$lines): void
+    {
+        $conflicting = [];
+        foreach ($this->revalidation->revalidate($version)['blockingConflicts'] as $conflict) {
+            $conflicting[(int) $conflict['missionId']] = true;
+        }
+        if ($conflicting === []) {
+            return;
+        }
+
+        foreach ($lines as &$line) {
+            if ($line['existingMissionId'] !== null && isset($conflicting[(int) $line['existingMissionId']]) && $line['status'] !== 'SKIPPED') {
+                $line['status'] = 'CONFLICT';
+            }
+        }
+        unset($line);
+    }
+
+    /**
      * Applies the editor's current line set to this draft's real, persisted Missions —
      * the draft-editing equivalent of generate()'s override mode, minus creating a new
      * PlanningVersion. A line already backed by a DRAFT Mission of this exact version is
@@ -199,6 +233,14 @@ final class PlanningDraftService
                 }
 
                 $newInstrumentistId = $line['instrumentistId'] ?? null;
+                // Recette D-156 — an unchanged assignment is not a (re)assignment (D-101 guards
+                // those): re-guarding it dropped BOTH sides of a real conflict on any save,
+                // publishing them OPEN instead of letting deploy() block for the manager to
+                // decide. Kept as-is: reopen() shows it CONFLICT and deploy() still refuses it.
+                if ($newInstrumentistId !== null && $mission->getInstrumentist()?->getId() === (int) $newInstrumentistId) {
+                    $updated++;
+                    continue;
+                }
                 $newInstrumentist   = $newInstrumentistId !== null
                     ? $this->em->find(User::class, $newInstrumentistId)
                     : null;

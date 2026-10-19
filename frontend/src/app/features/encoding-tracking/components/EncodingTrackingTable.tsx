@@ -292,7 +292,10 @@ export function EncodingTrackingTable({
                         <Box sx={{ height: "100%", borderRadius: "99px", width: `${pct}%`, background: item.hours.hasRealHours ? hoursTone.bar : "transparent" }} />
                       </Box>
                       <Box sx={{ mt: "2px", fontSize: 10.5, color: GRAY_400, fontStyle: item.hours.hasRealHours ? undefined : "italic" }}>
-                        {item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : hoursTone.label}
+                        {/* D-156 — 0 min imputed: hours paid on a sibling mission, never "not worked". */}
+                        {item.hours.effectiveSource === "PRESENCE_SHARE" && item.hours.effectiveMinutes === 0
+                          ? "Heures comptées sur une autre mission de la prestation"
+                          : item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : hoursTone.label}
                       </Box>
                     </Box>
                     <Box sx={{ width: 110, flexShrink: 0, textAlign: "right" }}>

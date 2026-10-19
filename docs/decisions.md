@@ -13385,8 +13385,56 @@ classées, ou départ anticipé) ne produit aucune ligne horaire à sa valorisat
 est intégralement payée sur les autres missions, dont le snapshot porte la répartition
 complète (`imputedMinutesByMission`). Constat de recette (2026-10-18) : les postes réels
 Journée + Matin + Après-midi d'un même chirurgien avec la même instrumentiste donnent une
-prestation de 3 missions dont l'après-midi reçoit 0 minute — total exact, ventilation par
-salle à arbitrer si elle doit refléter autre chose.
+prestation de 3 missions dont l'après-midi reçoit 0 minute — total exact. Arbitrage
+(2026-10-18) : la règle est conservée, à condition d'être présentée comme une **imputation
+financière**, jamais comme une absence de travail. Les écrans affichent « imputation
+financière 0h00 (heures comptées sur une autre mission de la prestation) » ; la mission reste
+encodable, soumise, validée et valorisée normalement (interventions et matériel facturés aux
+firmes), suivi « Validé / Calculé » avec heures réelles (source `PRESENCE_SHARE`).
+
+**Générateur et postes à instrumentiste unique — décision (2026-10-19).** Le fonctionnement
+du Planning V2 est conservé : les affectations prévues sur les postes sont appliquées
+automatiquement et le manager peut les modifier librement ; plusieurs missions simultanées
+confiées à la même personne se regroupent automatiquement (aucune validation
+supplémentaire). C'est le **paramétrage** qui est corrigé, pour les seules générations
+futures : poste #3 Journée → Sophie, postes #4 Matin et #5 Après-midi → « à assigner »
+(`PATCH /api/planning/surgeon-posts/{id}` avec `instrumentistId: null`, écran Postes ;
+journalisé `SURGEON_SCHEDULE_POST_UPDATED` ; ne touche aucune mission existante). Non
+appliqué en production sans autorisation explicite. Indication **informative** dans
+l'aperçu : `multiRoomCount` sur chaque ligne d'aperçu formant une prestation multi-salles
+avec d'autres lignes de la même personne (`PrestationGrouping::annotatePreviewLines()`,
+même règle que les missions), affichée « Multi-salles · N missions » sous l'horaire —
+jamais un blocage. L'éditeur ne traite plus une salle simultanée du même chirurgien sur le
+même site comme « déjà affectée ailleurs » (il libérait la Journée quand on affectait le
+Matin à la même personne).
+
+**Historique du constat (2026-10-18).**
+Le générateur ne choisit aucun candidat : il applique l'instrumentiste configuré sur chaque
+poste (`SurgeonSchedulePost.instrumentist`). En production, les trois postes du mercredi du
+Dr Deltour (Journée, Matin, Après-midi) désignent tous Sophie. Avant D-156, l'aperçu marquait
+deux d'entre eux « Conflit », les brouillons portaient pourtant Sophie sur les trois et le
+déploiement était bloqué (`DRAFT_CONFLICTS`) jusqu'à une résolution manuelle (historique :
+Salve sur Journée + Matin et Sophie sur l'Après-midi en juillet–septembre ; Sophie sur une
+seule salle et les deux autres à pourvoir d'octobre à décembre). Depuis D-156, le même
+paramétrage est déployé sans blocage avec Sophie sur les trois. Le comportement à retenir
+(appliquer le paramétrage, ou exiger une confirmation explicite des regroupements issus du
+générateur) reste à décider ; rien n'est changé dans le générateur en attendant.
+
+**Brouillons (recette 2026-10-18).** La réouverture d'un brouillon (`GET
+/api/planning/v2/drafts/{id}`) marque `CONFLICT` toute ligne dont la mission est refusée par
+la revalidation du déploiement (`PlanningDraftRevalidationService::revalidate()`, même
+exception multi-salles, mêmes dérogations) : l'éditeur et le déploiement ne peuvent plus se
+contredire. Après « Générer les missions » (un mois), l'éditeur recharge le brouillon
+persistant ; une modification ultérieure s'enregistre sur ce brouillon (`PATCH`) et le
+déploiement est indisponible tant qu'elle ne l'est pas (plusieurs mois générés : déploiement
+bloqué avec message tant que les modifications ne sont pas réinitialisées ou enregistrées
+depuis le brouillon du mois). Aucune modification n'est plus perdue silencieusement.
+Enregistrer un brouillon (`PATCH /api/planning/v2/drafts/{id}`) ne revalide plus que les
+lignes dont l'instrumentiste change (D-101 s'applique à toute affectation ou réaffectation) :
+une ligne renvoyée inchangée est conservée telle quelle. Auparavant, une seule modification
+sans rapport retirait l'instrumentiste des deux missions d'un vrai conflit, qui partaient
+ensuite au déploiement en missions ouvertes ; le conflit reste désormais affiché
+`CONFLICT` et bloque le déploiement jusqu'à la décision du manager.
 
 **Encodage commun.** `GET /api/missions/{id}/prestation`, `PUT …/prestation/presence`,
 `POST …/prestation/submit`. La soumission porte une empreinte de l'état (composition,

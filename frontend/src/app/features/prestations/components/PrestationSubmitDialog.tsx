@@ -7,7 +7,7 @@ import { Field } from "../../../ui/sheet/Field";
 import { useToast } from "../../../ui/toast/useToast";
 import { requestMissionSync } from "../../missions/sync/missionSyncBus";
 import { invalidateOperationalPlanning } from "../../missions/dispatch/missionDispatch.api";
-import { formatMinutes, prestationError, submitPrestation, type PrestationView } from "../api/prestations.api";
+import { formatImputation, formatMinutes, prestationError, submitPrestation, type PrestationView } from "../api/prestations.api";
 
 const GREEN_700 = "#2C7D5F";
 const GREEN_800 = "#1F6B4F";
@@ -84,7 +84,7 @@ export default function PrestationSubmitDialog({ open, onClose, anchorMissionId,
           <Box component="li" key={m.id} data-testid={`prestation-submit-mission-${m.id}`} sx={{ background: "#F5F7FA", borderRadius: "10px", padding: "10px 12px" }}>
             <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GRAY_800 }}>{m.label}</Box>
             <Box sx={{ fontSize: 12.5, color: GRAY_500, mt: "2px" }}>
-              {m.interventionCount} intervention(s) · {m.activeMaterialLineCount} ligne(s) de matériel · part imputée {formatMinutes(m.imputedMinutes)}
+              {m.interventionCount} intervention(s) · {m.activeMaterialLineCount} ligne(s) de matériel · {formatImputation(m.imputedMinutes)}
               {m.status === "SUBMITTED" ? " · déjà soumise" : ""}
             </Box>
           </Box>

@@ -112,3 +112,14 @@ export function formatMinutes(minutes: number | null | undefined): string {
   if (minutes == null) return "—";
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
 }
+
+/**
+ * D-156 — the imputed share is a financial allocation of the one shared presence, never a
+ * statement of work: 0 min means the hours are paid on another mission of the prestation,
+ * not that this room was not worked (its interventions and material stay billable).
+ */
+export function formatImputation(minutes: number | null | undefined): string {
+  if (minutes == null) return "imputation financière non calculée";
+  if (minutes === 0) return "imputation financière 0h00 (heures comptées sur une autre mission de la prestation)";
+  return `imputation financière ${formatMinutes(minutes)}`;
+}
