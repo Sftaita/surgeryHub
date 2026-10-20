@@ -23,6 +23,8 @@ parameters:
     env(MEDVUE_INBOUND_TOKEN_SHA256): ""
     env(MEDVUE_API_BASE_URL): ""
     env(MEDVUE_REDEEM_TOKEN): ""
+    # D-157 — Google Sign-In. Vide par défaut : POST /api/auth/google répond 404 (désactivé).
+    env(GOOGLE_OAUTH_CLIENT_ID): ""
 
 services:
     # default configuration for services in *this* file

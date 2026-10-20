@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Box, useMediaQuery } from "@mui/material";
 import { useAuth } from "../auth/AuthContext";
 import { consumeSessionExpired } from "../auth/authStorage";
+import { SessionRestoreUnavailable } from "../auth/SessionRestoreUnavailable";
 import { useToast } from "../ui/toast/useToast";
 import { dvh } from "../ui/dvh";
 import { isSafeInternalPath } from "../router/safeInternalPath";
@@ -232,7 +233,9 @@ function RememberCheckbox({ checked, onToggle }: { checked: boolean; onToggle: (
       component="button"
       type="button"
       onClick={onToggle}
-      aria-label="Se souvenir de moi"
+      role="checkbox"
+      aria-checked={checked}
+      aria-label="Rester connecté sur cet appareil"
       sx={{
         width: 22,
         height: 22,
@@ -382,6 +385,12 @@ export default function LoginPage() {
     return <div style={{ padding: 16 }}>Chargement…</div>;
   }
 
+  // D-157 — lancement PWA hors ligne avec une session stockée : elle est conservée et
+  // retentée, le formulaire (qui laisserait croire à une déconnexion) n'est pas affiché.
+  if (state.status === "unavailable") {
+    return <SessionRestoreUnavailable />;
+  }
+
   const fields = (
     <Box sx={{ display: "flex", flexDirection: "column", gap: "18px" }}>
       <LoginField
@@ -415,7 +424,7 @@ export default function LoginPage() {
           onClick={() => setRememberMe((v) => !v)}
           sx={{ fontSize: 14, fontWeight: 600, color: GRAY_700, cursor: "pointer" }}
         >
-          Se souvenir de moi
+          Rester connecté sur cet appareil
         </Box>
         <Box sx={{ flex: 1 }} />
         <Box
@@ -426,10 +435,16 @@ export default function LoginPage() {
           Mot de passe oublié&nbsp;?
         </Box>
       </Box>
+      {/* D-157 — conséquence explicite du choix, pour les appareils partagés. */}
+      <Box sx={{ mt: "-8px", fontSize: 12.5, color: GRAY_700, opacity: 0.85 }}>
+        {rememberMe
+          ? "Votre session reste ouverte tant que vous utilisez SurgicalHub au moins une fois tous les 30 jours."
+          : "Appareil partagé : la session se fermera à la fermeture du navigateur."}
+      </Box>
 
       {sessionExpired && (
         <Box sx={{ px: "14px", py: "10px", borderRadius: "10px", background: "#EDF4FF", border: "1px solid #D6E6FE", fontSize: 13, color: "#1B5FD0" }}>
-          Votre session a expiré. Merci de vous reconnecter.
+          Votre session a expiré. Veuillez vous reconnecter.
         </Box>
       )}
       {error && (

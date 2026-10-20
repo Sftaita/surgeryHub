@@ -5452,9 +5452,11 @@ secret SMTP, mot de passe, donnée patient.
 
 ---
 
-## 29. Authentification — login, refresh, logout, « Se souvenir de moi »
+## 29. Authentification — login, refresh, logout, « Rester connecté sur cet appareil »
 
-**AuthZ :** `PUBLIC_ACCESS` pour les trois endpoints ci-dessous.
+**AuthZ :** `PUBLIC_ACCESS` pour les endpoints ci-dessous. `refresh` et `logout` sont hors de tout
+firewall JWT (D-157) : un en-tête `Authorization` éventuellement envoyé est ignoré ; le client ne
+doit pas en envoyer sur `/api/auth/*`.
 
 ### `POST /api/auth/login`
 
@@ -5470,18 +5472,28 @@ secret SMTP, mot de passe, donnée patient.
 { "token": "<jwt access token>", "refresh_token": "<refresh token>" }
 ```
 
-Durée de vie du refresh token retourné :
+Le login ouvre une **session d'appareil** (D-157). Fenêtre d'inactivité du refresh token, prolongée à
+chaque refresh :
 
-| `rememberMe` | TTL refresh token |
+| `rememberMe` | Fenêtre glissante |
 |---|---|
-| `false` (ou absent) | 1 jour (86400 s) |
-| `true` | 30 jours (2592000 s) |
+| `false` (ou absent) | 1 jour sans utilisation (86400 s) |
+| `true` | 30 jours sans utilisation (2592000 s) |
 
 L'access token (JWT) a une durée de vie fixe de 1h, indépendante de `rememberMe`.
 
 ### `POST /api/auth/google`
 
-Même contrat que `/api/auth/login` : accepte un champ optionnel `rememberMe` (boolean, défaut `false`) en plus de `credential`.
+Même contrat que `/api/auth/login` : accepte un champ optionnel `rememberMe` (boolean, défaut `false`) en plus de `credential`
+(ID token Google Sign-In). Aucune interface ne l'appelle encore. D-157 :
+
+- **404** tant que `GOOGLE_OAUTH_CLIENT_ID` n'est pas configuré (connexion Google désactivée) ;
+- l'ID token est vérifié par Google (`tokeninfo`), puis : audience = `GOOGLE_OAUTH_CLIENT_ID`, émetteur
+  `accounts.google.com`, non expiré, `email_verified` vrai ;
+- seul un compte **existant et actif** (e-mail, sans distinction de casse) est connecté ; aucun compte
+  n'est créé (les comptes naissent d'une invitation) ;
+- **401** `{"error":"Invalid Google token"}` pour tout refus (jeton, compte inconnu ou suspendu : même
+  réponse) ; **503** si Google est injoignable ; **400** sans `credential`.
 
 ### `POST /api/auth/refresh`
 
@@ -5489,15 +5501,28 @@ Même contrat que `/api/auth/login` : accepte un champ optionnel `rememberMe` (b
 { "refresh_token": "..." }
 ```
 
-Retourne un nouvel access token. Le refresh token n'est **pas rotaté** : le même `refresh_token` reste valable jusqu'à son expiration (TTL fixée au login selon `rememberMe`). Aucun nouveau refresh token n'est créé en base à cette étape.
+Retourne un nouvel access token et un **nouveau** refresh token (rotation, D-157) qui remplace le
+précédent et prolonge la fenêtre d'inactivité de la session. Le client doit stocker le
+`refresh_token` reçu. Un refresh token déjà remplacé, présenté de nouveau dans les 120 s ou dont le
+successeur n'a jamais servi (réponse perdue), reçoit le jeton courant de la session ; au-delà, c'est
+un rejeu et la session entière est révoquée.
 
 **Réponse — 200 :**
 
 ```json
-{ "token": "<nouveau jwt>", "refresh_token": "<même refresh token>" }
+{ "token": "<nouveau jwt>", "refresh_token": "<nouveau refresh token>" }
 ```
 
-**401** si le refresh token est invalide, inconnu ou expiré.
+**401** `{"code":401,"message":"Invalid JWT Refresh Token"}` si la session ne peut plus être restaurée
+(inconnue, révoquée, fenêtre d'inactivité dépassée, rejeu, compte suspendu) ; `JWT Refresh Token Not
+Found` si le corps ne contient pas de `refresh_token`. Seul ce 401 justifie une déconnexion côté client.
+
+**Jeton d'accès lié à la session (D-157).** Tout JWT émis (login, Google, refresh) porte le claim
+`sid` (identifiant de la session d'appareil, pas un secret). Dès que la session n'existe plus
+(logout de cet appareil, suspension, `app:auth:revoke-sessions`, changement d'e-mail, rejeu détecté),
+ce JWT est refusé sur toute route protégée par **401 `Invalid JWT Token`**, même avant son
+expiration ; le refresh qui suit est refusé lui aussi. Un JWT sans `sid` (émis avant D-157) reste
+accepté jusqu'à son expiration (≤ 1 h).
 
 ### `POST /api/auth/logout`
 
@@ -5505,15 +5530,18 @@ Retourne un nouvel access token. Le refresh token n'est **pas rotaté** : le mê
 { "refresh_token": "..." }
 ```
 
-Invalide (supprime) le refresh token correspondant en base. Idempotent : si le token est déjà invalide/inconnu, répond `200` avec un message explicite plutôt qu'une erreur.
+Ferme la session de cet appareil : toutes les générations de son refresh token sont supprimées, les
+autres appareils restent connectés. Idempotent : répond toujours `200`, sans indiquer si le jeton
+existait.
 
 **Réponse — 200 :**
 
 ```json
-{ "code": 200, "message": "The supplied refresh_token has been invalidated." }
+{ "code": 200, "message": "Session closed." }
 ```
 
-**400** si `refresh_token` est manquant dans le corps de la requête.
+Sans `refresh_token` dans le corps : `200` également (rien à fermer). Le JWT d'accès de cette session
+est refusé dès la requête suivante.
 
 ---
 
