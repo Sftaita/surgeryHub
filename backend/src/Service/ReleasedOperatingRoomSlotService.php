@@ -90,7 +90,7 @@ class ReleasedOperatingRoomSlotService
         }
 
         $today = new \DateTimeImmutable('today');
-        $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd());
+        $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd(), $absence);
         if (empty($bySite)) {
             return [];
         }
@@ -108,6 +108,12 @@ class ReleasedOperatingRoomSlotService
                 $date = $occurrence['date'];
 
                 if ($date < $today) {
+                    continue;
+                }
+
+                // D-158 — the absent surgeon's Mission for this occurrence is still active
+                // (already started or encoded: never cancelled blindly) — the room is not free.
+                if ($this->takeovers->findActiveOccurrenceMission($surgeon, $site, $date, $post->getPeriod()) !== null) {
                     continue;
                 }
 

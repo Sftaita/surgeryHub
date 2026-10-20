@@ -234,7 +234,7 @@ class AbsenceCommunicationBackfillService
         $selectable = false;
 
         if ($surgeon !== null && self::isSurgeon($surgeon)) {
-            $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd());
+            $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd(), $absence);
             $today = new \DateTimeImmutable('today');
 
             foreach ($bySite as $siteGroup) {

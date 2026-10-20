@@ -22,6 +22,7 @@ use App\MessageHandler\AbsenceImpactNotificationMessageHandler;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
@@ -37,6 +38,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
 {
+    // D-158 — "now" frozen before the fixture dates: an instrumentist absence only puts a
+    // mission still to come back in the pool (AbsenceMissionProtectionPolicy).
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'ComplOccurrenceTest123!';
 
     private EntityManagerInterface $em;
@@ -46,6 +51,7 @@ final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCa
     {
         parent::setUp();
         self::ensureKernelShutdown();
+        self::mockTime('2026-08-01 00:00:00');
     }
 
     protected function tearDown(): void

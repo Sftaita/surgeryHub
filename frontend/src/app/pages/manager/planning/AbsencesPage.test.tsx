@@ -283,6 +283,31 @@ describe("AbsencesPage — mise à jour optimiste", () => {
   });
 });
 
+describe("AbsencesPage — rafraîchissement du planning (D-158)", () => {
+  it("après création, le planning opérationnel, le planning chirurgien et les alertes sont rechargés depuis le serveur", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    mockSearchablePerson();
+    vi.mocked(planningApi.createAbsence).mockResolvedValue(makeAbsence({ id: 99 }));
+
+    const user = userEvent.setup();
+    renderPage();
+    await openCreateDialog(user);
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+
+    await waitFor(() => expect(planningApi.createAbsence).toHaveBeenCalledTimes(1));
+    const keys = () => invalidateSpy.mock.calls.map(([filters]) => JSON.stringify(filters?.queryKey));
+    await waitFor(() => expect(keys()).toEqual(expect.arrayContaining([
+      JSON.stringify(["absences"]),
+      JSON.stringify(["missions"]),
+      JSON.stringify(["planning-schedule"]),
+      JSON.stringify(["planning-v2", "modification-missions"]),
+      JSON.stringify(["surgeon-planning"]),
+      JSON.stringify(["planning-v2", "alerts"]),
+    ])));
+    invalidateSpy.mockRestore();
+  });
+});
+
 describe("AbsencesPage — suppression, communication des absences chirurgiens (Lot B, D-114)", () => {
   it("jamais notifiée : supprime directement, sans jamais afficher de dialogue", async () => {
     vi.mocked(planningApi.getAbsences).mockResolvedValue([makeAbsence({ id: 1 })]);

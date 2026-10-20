@@ -261,6 +261,11 @@ class PlanningAlertService
                 'reason'    => $absence->getReason(),
             ] : null,
             'conflict' => $this->serializeConflict($alert),
+            // D-158 — snapshot value (MISSION_STARTED | ACTIVITY_ENCODED | null): why the absent
+            // surgeon's mission was left for the manager instead of being cancelled automatically.
+            'autoActionBlockedReason' => $alert->getSnapshotJson()['autoActionBlockedReason'] ?? null,
+            // D-158 — other absences covering the same problem (one alert, every reference kept).
+            'relatedAbsenceIds' => array_map('intval', $alert->getSnapshotJson()['relatedAbsenceIds'] ?? []),
             'actions' => $this->computeActionFlags($alert),
         ];
     }

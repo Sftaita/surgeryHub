@@ -65,7 +65,7 @@ class RoomReleaseCommunicationService
         }
 
         $today = new \DateTimeImmutable('today');
-        $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd());
+        $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd(), $absence);
         if (empty($bySite)) {
             return;
         }

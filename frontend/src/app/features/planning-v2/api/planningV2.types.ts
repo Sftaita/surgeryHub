@@ -325,6 +325,10 @@ export interface PlanningAlertV2 {
   mission: PlanningAlertMissionV2;
   absence: { id: number; dateStart: string; dateEnd: string; reason: string | null } | null;
   conflict: PlanningAlertConflictV2 | null;
+  /** D-158 — absence alerts: why the mission was not cancelled / put back in the pool automatically. */
+  autoActionBlockedReason?: "MISSION_STARTED" | "ACTIVITY_ENCODED" | null;
+  /** D-158 — other absences covering the same problem (one alert, every reference kept). */
+  relatedAbsenceIds?: number[];
   actions: PlanningAlertActionsV2;
 }
 

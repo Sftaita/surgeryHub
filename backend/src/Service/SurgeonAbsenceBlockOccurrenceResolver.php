@@ -2,11 +2,14 @@
 
 namespace App\Service;
 
+use App\Entity\Absence;
 use App\Entity\Hospital;
 use App\Entity\PlanningOccurrenceException;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
 use App\Enum\MissionType;
+use App\Enum\OccurrenceExceptionSource;
+use App\Enum\OccurrenceExceptionType;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -25,6 +28,14 @@ use Doctrine\ORM\EntityManagerInterface;
  * Une occurrence portant déjà une PlanningOccurrenceException (quel qu'en soit le type ou
  * la provenance — absence antérieure, action manuelle du manager) est exclue, même
  * convention que SurgeonAbsenceOccurrenceImpactService::hasExistingException().
+ *
+ * D-158 — sauf la neutralisation posée par CETTE absence elle-même : le coordinateur (H4)
+ * neutralise les occurrences non encore générées (SurgeonAbsenceOccurrenceImpactService,
+ * CANCELLED / SURGEON_ABSENCE / sourceAbsence = l'absence) AVANT les communications D-114.
+ * Les exclure revenait à ne jamais libérer de salle, ni envoyer de Room Release ou de
+ * gestion du bloc, pour un mois dont le planning n'était pas encore généré (prod : absences
+ * #79–#82, décembre 2026). Une exception d'une AUTRE absence reste exclue (déjà annoncée par
+ * celle-ci : jamais deux annonces pour la même occurrence).
  */
 class SurgeonAbsenceBlockOccurrenceResolver
 {
@@ -35,10 +46,12 @@ class SurgeonAbsenceBlockOccurrenceResolver
     }
 
     /**
+     * @param Absence|null $absence l'absence dont on calcule les occurrences : ses propres
+     *        neutralisations (D-103) ne masquent pas l'occurrence (D-158)
      * @return array<int, array{site: Hospital, occurrences: array<int, array{post: SurgeonSchedulePost, date: \DateTimeImmutable}>}>
      *         Groupé par id de site, dans l'ordre de première rencontre.
      */
-    public function resolveForWindow(User $surgeon, \DateTimeImmutable $windowStart, \DateTimeImmutable $windowEnd): array
+    public function resolveForWindow(User $surgeon, \DateTimeImmutable $windowStart, \DateTimeImmutable $windowEnd, ?Absence $absence = null): array
     {
         $posts = $this->loadActiveBlockPosts($surgeon, $windowStart, $windowEnd);
         if (empty($posts)) {
@@ -51,7 +64,7 @@ class SurgeonAbsenceBlockOccurrenceResolver
             $dates = $this->generator->theoreticalOccurrenceDates($post, $windowStart, $windowEnd);
 
             foreach ($dates as $date) {
-                if ($this->hasExistingException($post, $date)) {
+                if ($this->isExplainedByAnotherException($post, $date, $absence)) {
                     continue;
                 }
 
@@ -96,9 +109,19 @@ class SurgeonAbsenceBlockOccurrenceResolver
      * provenance, on ne recalcule/réinterprète jamais — un manager peut avoir MOVED ou
      * TIME_OVERRIDE cette occurrence pour une raison qui n'a rien à voir avec cette absence.
      */
-    private function hasExistingException(SurgeonSchedulePost $post, \DateTimeImmutable $date): bool
+    private function isExplainedByAnotherException(SurgeonSchedulePost $post, \DateTimeImmutable $date, ?Absence $absence): bool
     {
-        return $this->em->getRepository(PlanningOccurrenceException::class)
-            ->findOneBy(['post' => $post, 'occurrenceDate' => $date]) !== null;
+        $exception = $this->em->getRepository(PlanningOccurrenceException::class)
+            ->findOneBy(['post' => $post, 'occurrenceDate' => $date]);
+        if ($exception === null) {
+            return false;
+        }
+
+        // D-158 — the neutralisation of THIS absence is the absence itself, not another reason.
+        return !($absence !== null
+            && $absence->getId() !== null
+            && $exception->getType() === OccurrenceExceptionType::CANCELLED
+            && $exception->getSource() === OccurrenceExceptionSource::SURGEON_ABSENCE
+            && $exception->getSourceAbsence()?->getId() === $absence->getId());
     }
 }
