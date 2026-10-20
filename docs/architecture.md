@@ -2152,7 +2152,11 @@ supprimée le 2026-09-07 après un audit prod ayant révélé un angle mort stru
 absence sans communication `ROOM_RELEASE`, ex. site avec `notifyColleaguesEnabled=false`,
 restait invisible). Répond à « quelles salles ont réellement été libérées et ont encore une
 occurrence future ? », jamais à « quels emails ont déjà été envoyés ? » — voir
-`docs/decisions.md`, correction du 2026-09-07.
+`docs/decisions.md`, correction du 2026-09-07. D-160 : `--absence=<id>` (répétable ou séparé
+par des virgules) est une liste autorisée — même sélection lue en dry-run et écrite en réel,
+validée en entier avant tout traitement (malformé, doublon, inconnue, terminée, non-chirurgien
+→ refus complet, code `INVALID`) ; l'exécution réelle exige une sélection, seul `--dry-run`
+parcourt encore toutes les absences.
 
 Endpoints : `GET /api/planning/available-rooms` (manager, `PlanningVoter::PLANNING_MANAGE`)
 et `GET /api/me/available-rooms` (chirurgien, scopé `SiteMembership`) — voir `docs/api.md`
