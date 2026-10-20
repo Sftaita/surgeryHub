@@ -85,6 +85,12 @@ class SurgeonAbsenceBlockOccurrenceResolver
         return $bySite;
     }
 
+    /** D-159 — le poste produit-il cette occurrence (récurrence et période de validité, hors exceptions) ? */
+    public function postOccursOn(SurgeonSchedulePost $post, \DateTimeImmutable $date): bool
+    {
+        return $this->generator->theoreticalOccurrenceDates($post, $date, $date) !== [];
+    }
+
     /** @return SurgeonSchedulePost[] */
     private function loadActiveBlockPosts(User $surgeon, \DateTimeImmutable $windowStart, \DateTimeImmutable $windowEnd): array
     {

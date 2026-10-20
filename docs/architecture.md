@@ -2114,12 +2114,25 @@ ReleasedOperatingRoomSlotService::onAbsenceCreated()/onAbsenceUpdated()
         │       absent l'occupe encore (mission commencée / encodée, jamais annulée)
         ├── existsFor(site, postId, date) — idempotence applicative avant la contrainte
         │       unique DB (site_id, post_id, occurrence_date), dernier garde-fou
+        ├── D-159 : ReleasedRoomCapacityMatcher::classify() — un créneau du même chirurgien,
+        │       même site, même date, dont le poste ne porte plus l'occurrence (poste remplacé)
+        │       couvre déjà la capacité : NEW (créé) / REPLACED (rien) / REVIEW (rien, signalé)
         ├── ShiftPeriodConfig (site, période, actif) → startTime/endTime snapshotés,
         │       sinon restent NULL (jamais d'horaire inventé)
-        └── persist + flush par slot (jamais un flush groupé — une collision unique sur UNE
+        └── INSERT DBAL par slot (D-159 ; jamais un flush groupé — une collision unique sur UNE
               occurrence ne doit jamais faire échouer les autres occurrences de la même
-              réaction)
+              réaction, ni fermer l'EntityManager)
 ```
+
+**Remplacement de poste (D-159)** : le modèle ne connaît aucune salle physique. Deux postes
+qui produisent l'occurrence le même jour sont deux salles (D-035), jamais rapprochés ; un
+créneau dont le poste ne produit plus l'occurrence (terminé, désactivé, période ou récurrence
+modifiée) est « orphelin » et couvre l'unique poste courant qui le remplace. Le même
+rapprochement sert la reprise (instrumentiste et type du poste qui porte aujourd'hui la
+capacité) et la garde D-104 (`isOccurrenceTakenOver()` : une reprise faite sur l'ancien poste
+empêche de restaurer l'occurrence du nouveau). Tout cas ambigu (période différente qui
+chevauche, plusieurs candidats) n'est jamais créé ni supprimé : il est listé « à valider » par
+le backfill et journalisé en temps réel.
 
 **Non-rétractation structurelle** : aucune méthode `onAbsenceDeleted()`/de suppression
 n'existe sur ce service — un raccourcissement ou une suppression d'absence ne retire jamais
