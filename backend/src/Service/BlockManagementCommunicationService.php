@@ -148,7 +148,7 @@ class BlockManagementCommunicationService
         $isUpdate = $previousDateStart !== null;
         $existingBySite = $isUpdate ? $this->journal->blockManagementCommunicationsBySite($absence) : [];
 
-        $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd());
+        $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd(), $absence);
         // Gestion du bloc : la période complète du congé est communiquée, pas seulement les
         // dates futures — contrairement à ROOM_RELEASE, il n'y a pas de notion de "créneau
         // déjà passé" à exclure ici (§9 : on informe d'un congé, pas d'un créneau libéré).

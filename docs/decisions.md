@@ -14142,3 +14142,93 @@ Finitions (2026-10-16) :
   `MISSION_RESTORED`, `SURGEON_MISSION_REQUEST_ACCEPTED` / `_REJECTED`,
   `ENCODING_ANOMALY_RESOLVED`, `ABSENCE_INSTRUMENTIST_REASSIGNED`, `ABSENCE_OCCURRENCE_RESTORED`,
   `ABSENCE_SELF_DECLARED` et `ABSENCE_IMPACT_SUMMARY`.
+
+## D-158 — Absences : salles libérées quel que soit le mois, missions commencées protégées, une alerte par problème (2026-10-20)
+
+> Numéros D-156 et D-157 réservés par les branches `feat/prestations-regroupees` et `feat/auth-session-persistence` (non fusionnées).
+
+### Diagnostic
+
+- **Parcours chirurgien = parcours manager.** `SelfAbsenceController` (`/api/absences/mine`) et
+  `AbsenceController` appellent la même séquence `AbsenceImpactCoordinator` (H4, D-130) :
+  `AbsenceMissionReactionService` (annulation / retrait D-062), `AbsenceImpactService`
+  (alertes), neutralisation des occurrences (D-103), réconciliation (D-104), récap (D-105),
+  communications et salles libérées (D-114). Aucun contournement, aucune logique à dupliquer.
+- **Salles non libérées pour un mois non généré (bug principal).** Le coordinateur neutralise
+  d'abord les occurrences sans Mission (`PlanningOccurrenceException` `CANCELLED` /
+  `SURGEON_ABSENCE` / `sourceAbsence`), puis appelle Room Release, gestion du bloc et salles
+  libérées, qui passent toutes par `SurgeonAbsenceBlockOccurrenceResolver` — lequel excluait
+  **toute** occurrence portant une exception, y compris celle que l'absence venait de poser.
+  Résultat : pour un mois dont le planning n'était pas encore généré, aucune salle libérée,
+  aucun email Room Release, aucune information gestion du bloc. Un mois déjà généré (missions
+  `DRAFT` ou publiées) n'avait pas d'exception, d'où la différence. Cas prouvé en production
+  (Dr Willemart, Delta) : congé 02→04/11 déclaré le 09/09 alors que novembre existait en
+  brouillon (identifiants de missions 628→1038 créés puis supprimés entre le 07 et le 13/09) →
+  2 salles + email ; jours 21, 23, 28, 30/12 et 18/01 déclarés le 11/09, décembre non généré →
+  5 exceptions, 0 salle, 0 email. Les tests Lot D ne configuraient jamais de
+  `ShiftPeriodConfig`, sans lequel la neutralisation n'a pas lieu : le défaut n'y apparaissait
+  pas.
+- **Calendrier manager et rafraîchissement.** `GET /api/surgeons/{id}/planning` renvoyait les
+  missions sans leur statut (une mission annulée s'affichait comme occupée) et les écrans
+  d'absence ne rafraîchissaient pas les vues planning déjà chargées.
+- **Annulation / retrait à l'aveugle.** `AbsenceMissionReactionService` annulait toute mission
+  `OPEN|ASSIGNED` du chirurgien absent et remettait au pool toute mission `ASSIGNED` de
+  l'instrumentiste absente, **même déjà commencée** (absence rétroactive) ou encodée ; et
+  `ReleasedOperatingRoomSlotService` pouvait offrir la salle du jour alors que la mission
+  protégée l'occupait encore.
+- **Alertes.** La déduplication était déjà par (mission, type, état actif) — aucun doublon en
+  production. Mais modifier une absence résolvait l'alerte même quand une autre absence couvrait
+  encore la mission, et seule la première absence était référencée.
+
+### Décision
+
+1. **Resolver** — la neutralisation posée par l'absence elle-même (`CANCELLED`,
+   `SURGEON_ABSENCE`, `sourceAbsence` = cette absence) ne masque plus l'occurrence
+   (`resolveForWindow(..., $absence)`) ; toute autre exception (manager, autre absence déjà
+   annoncée) reste exclue. Les quatre appelants (Room Release, gestion du bloc, salles
+   libérées, rattrapage) passent l'absence. Aucun nouveau moteur, aucune modification de
+   `SurgeonSchedulePost`. Une reprise avant génération crée déjà sa Mission (D-124) ; le
+   générateur saute l'occurrence neutralisée (`SKIPPED`) et D-104 ne la restaure jamais tant
+   qu'elle est reprise.
+2. **`AbsenceMissionProtectionPolicy`** — une seule règle pour les deux rôles : une mission
+   n'est annulée (chirurgien, `OPEN|ASSIGNED`) ou remise au pool (instrumentiste, `ASSIGNED`)
+   automatiquement que si elle est **encore à venir** (`startAt > now`, `Clock`) et **sans
+   activité encodée** (interventions, matériel, heures réelles, activité déclarée sans
+   instrumentiste). `IN_PROGRESS`, `SUBMITTED`, `VALIDATED`, `CLOSED` restent hors périmètre
+   comme avant. Lue par `AbsenceImpactResolver`, `AbsenceMissionReactionService` (re-vérifiée
+   sous verrou) et `AbsenceImpactService`.
+3. **Mission protégée = signalement, jamais de mutation.** Elle garde statut, instrumentiste,
+   encodage et données financières ; l'alerte d'absence porte `autoActionBlockedReason`
+   (`MISSION_STARTED` | `ACTIVITY_ENCODED`), formulée par `AlertCard` ; aucune notification
+   d'annulation ou de remise au pool. La salle n'est ni offerte ni reprenable tant qu'une
+   Mission non `CANCELLED`/`DRAFT` du chirurgien absent l'occupe
+   (`ReleasedRoomSlotTakeoverService::findActiveOccurrenceMission()`, lue à la création du
+   créneau et sous verrou à la reprise).
+4. **Une alerte par problème.** Une absence supplémentaire couvrant le même problème est
+   ajoutée à `relatedAbsenceIds` ; une absence modifiée qui ne couvre plus la mission
+   ré-attribue l'alerte à une absence encore couvrante (même règle que la suppression, D-050),
+   sinon la résout.
+5. **Inchangé** : mission annulée → `CANCELLED` (jamais `OPEN`), instrumentiste libérée,
+   audit avec `causedByAbsenceId`, affectation clôturée (D-150), créneaux jamais rétractés,
+   unicité de la reprise (verrou + contrainte unique D-124).
+6. **Écrans fidèles au serveur.** `GET /api/surgeons/{id}/planning` renvoie `status` (mission
+   annulée affichée « Annulée — … ») ; `invalidateAfterAbsenceChange()` recharge missions,
+   plannings (manager, chirurgien, instrumentiste), mode Modification, couverture, tiroir
+   chirurgien, salles libérées et alertes après toute modification d'absence.
+
+### Données de production (constat, non régularisé)
+
+- 9 absences chirurgiens futures (#54, #57, #66, #67, #79, #80, #81, #82, #83) : 16 occurrences
+  neutralisées sans salle libérée ni email Room Release. Après déploiement :
+  `app:available-rooms:backfill --dry-run` puis exécution (créneaux) et, si souhaité,
+  rattrapage des emails par l'outil existant — sur décision explicite.
+- Absence #65 (rétroactive) : missions #429 (`IN_PROGRESS`, rien d'encodé) et #430
+  (`SUBMITTED`, 2 interventions) conservées, alertes #59/#60 ouvertes — vérification manager.
+
+Tests : `AbsenceRoomReleaseFunctionalTest` (régression Willemart mois brouillon / mois non
+généré et navigation, reprise unique avant génération + génération + suppression d'absence,
+mission commencée, absence instrumentiste, absences chevauchantes),
+`SurgeonAbsenceAfterPublicationFunctionalTest`, `AbsenceMissionProtectionPolicyTest`, horloge
+figée dans les tests d'absence existants dont les fixtures sont datées ;
+`SurgeonPlanningSection.events.test.ts`, `AlertCard.test.tsx`, `AbsencesPage.test.tsx`,
+`SelfAbsencesPage.test.tsx`.

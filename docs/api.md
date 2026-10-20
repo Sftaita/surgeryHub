@@ -2339,6 +2339,9 @@ Même format de params que `GET /api/instrumentists/{id}/planning`.
 **Réponse — 200 :** Tableau d'événements FullCalendar.
 
 Le `title` de chaque événement est le nom de l'instrumentiste assigné (ou l'email, ou `"Mission #id"`).
+`status` (D-158) est le statut de la mission tel qu'enregistré (toutes les missions du chirurgien
+sont renvoyées, y compris `CANCELLED`) : le calendrier affiche une mission annulée comme telle,
+jamais comme un créneau occupé.
 
 ```json
 [
@@ -2348,6 +2351,7 @@ Le `title` de chaque événement est le nom de l'instrumentiste assigné (ou l'e
     "start": "2026-03-14T08:00:00+01:00",
     "end": "2026-03-14T12:00:00+01:00",
     "allDay": false,
+    "status": "ASSIGNED",
     "instrumentist": { "id": 5, "firstname": "Ole", "lastname": "Salve" },
     "site": { "id": 2, "name": "Delta" }
   }
@@ -4615,6 +4619,16 @@ créer/modifier une exception avec `source = SURGEON_ABSENCE`.
 | `POST /api/planning/alerts/{id}/open-as-available` | Vide l'instrumentiste, mission → `OPEN`, résout l'alerte |
 | `GET /api/planning/alerts/{id}/eligible-instrumentists` | D-102 (Lot 2) — roster complet du site, annoté d'éligibilité (jamais filtré) : `{missionId, policy, candidates: CandidateEligibility[]}`, chaque candidat portant `sites: string[]` en plus (ajouté Batch 12, conservé). Toujours `STRICT_ASSIGNMENT`. Délègue à `evaluateAllCandidates()`/`serializeCandidate()`, plus de logique dupliquée dans `PlanningAlertActionService` |
 | `GET /api/planning/v2/eligible-instrumentists` | D-102 (Lot 2, nouveau) — roster éligibilité pour un créneau hypothétique/sans mission persistée (Preview Editor : ligne éditée, bulk-assign, création de mission en Mode Modification). Query : `siteId?`, `date`, `startTime`, `endTime` (requis), `excludeMissionId?`, `policy?`. Réponse : `{policy, candidates: CandidateEligibility[]}`. Délègue à `evaluateRoster()` (4 requêtes DB) |
+
+Chaque alerte porte aussi `autoActionBlockedReason` (D-158) : pour une alerte d'absence
+(`SURGEON_ABSENCE`, `REASSIGNMENT_REQUIRED`, `INSTRUMENTIST_ABSENCE`), `MISSION_STARTED`
+(mission déjà commencée au moment où l'absence est enregistrée) ou `ACTIVITY_ENCODED`
+(interventions, matériel, heures réelles ou activité déclarée sans instrumentiste) explique
+pourquoi la mission publiée n'a été ni annulée (chirurgien absent) ni remise au pool
+(instrumentiste absente) automatiquement ; `null` sinon. `relatedAbsenceIds` (D-158) liste les
+autres absences qui couvrent le même problème : une seule alerte active par (mission, type),
+`absence` restant l'absence de référence (ré-attribuée à une absence encore couvrante si la
+première est modifiée ou supprimée).
 
 `CandidateEligibility` (forme partagée par les 3 endpoints ci-dessus, D-102) :
 `{ id, name, email, eligible, selectable, reasons: string[], unavailability: {type: "ABSENCE", dateStart, dateEnd} | null, conflict: {missionId, siteName, startAt, endAt} | null, sites?: string[] }`

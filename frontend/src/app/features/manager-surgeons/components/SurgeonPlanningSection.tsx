@@ -19,9 +19,30 @@ import {
 } from "@mui/material";
 
 import { getSurgeonPlanning } from "../api/surgeons.api";
+import type { SurgeonPlanningEvent } from "../api/surgeons.types";
 import { MissionDetailContent } from "../../../pages/manager/MissionDetailPage";
 
 type ViewMode = "week" | "month";
+
+/**
+ * D-158 — a cancelled mission (e.g. surgeon absence) stays visible for traceability but must
+ * never read as an occupied slot: labelled and greyed from the status the backend returns.
+ */
+export function toSurgeonCalendarEvents(planning: SurgeonPlanningEvent[]) {
+  return planning.map((event) => {
+    const cancelled = event.status === "CANCELLED";
+    return {
+      id: String(event.id),
+      title: cancelled ? `Annulée — ${event.title}` : event.title,
+      start: event.start,
+      end: event.end,
+      allDay: event.allDay,
+      ...(cancelled
+        ? { backgroundColor: "#eeeeee", borderColor: "#bdbdbd", textColor: "#757575", classNames: ["surgeon-planning-event--cancelled"] }
+        : {}),
+    };
+  });
+}
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -143,15 +164,7 @@ export function SurgeonPlanningSection({ surgeonId }: Props) {
     enabled: surgeonId > 0,
   });
 
-  const events = React.useMemo(() => {
-    return (planningQuery.data ?? []).map((event) => ({
-      id: String(event.id),
-      title: event.title,
-      start: event.start,
-      end: event.end,
-      allDay: event.allDay,
-    }));
-  }, [planningQuery.data]);
+  const events = React.useMemo(() => toSurgeonCalendarEvents(planningQuery.data ?? []), [planningQuery.data]);
 
   const calendarView = view === "month" ? "dayGridMonth" : "timeGridWeek";
 

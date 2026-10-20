@@ -109,6 +109,9 @@ class SurgeonServiceManager
                 'start' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
                 'end' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
                 'allDay' => false,
+                // D-158 — a CANCELLED mission (e.g. surgeon absence) must not read as an
+                // occupied slot in the manager's calendar; the client renders the status as is.
+                'status' => $mission->getStatus()->value,
                 'instrumentist' => [
                     'id' => $mission->getInstrumentist()?->getId(),
                     'firstname' => $mission->getInstrumentist()?->getFirstname(),

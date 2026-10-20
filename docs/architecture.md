@@ -1861,7 +1861,8 @@ RoomReleaseCommunicationService::onAbsenceCreated()/onAbsenceUpdated()
         │
         ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow()
         │       → réutilise PlanningGeneratorServiceV2::theoreticalOccurrenceDates()
-        │       → filtre type=BLOCK, exclut les occurrences déjà exceptées, groupe par site
+        │       → filtre type=BLOCK, exclut les occurrences déjà exceptées (sauf la
+        │         neutralisation posée par CETTE absence, D-158), groupe par site
         ├── AbsenceCommunicationSiteConfig (site) — notifyColleaguesEnabled ?
         ├── filtre "occurrences encore futures" + (sur update) delta vs déjà annoncé
         ├── UserRepository::findSurgeonsAffiliatedToSite() — collègues actifs, exclut l'absent
@@ -2107,7 +2108,10 @@ AbsenceController::create()/update() / SelfAbsenceController équivalents
 ReleasedOperatingRoomSlotService::onAbsenceCreated()/onAbsenceUpdated()
         │
         ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow() (même resolver que
-        │       Lots A/B/C — aucun second moteur de récurrence)
+        │       Lots A/B/C — aucun second moteur de récurrence ; D-158 : la neutralisation
+        │       posée par l'absence elle-même ne masque pas l'occurrence, mois non généré inclus)
+        ├── D-158 : occurrence ignorée si une Mission non CANCELLED/DRAFT du chirurgien
+        │       absent l'occupe encore (mission commencée / encodée, jamais annulée)
         ├── existsFor(site, postId, date) — idempotence applicative avant la contrainte
         │       unique DB (site_id, post_id, occurrence_date), dernier garde-fou
         ├── ShiftPeriodConfig (site, période, actif) → startTime/endTime snapshotés,

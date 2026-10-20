@@ -39,6 +39,8 @@ export type SurgeonPlanningEvent = {
   start: string;
   end: string;
   allDay: boolean;
+  /** Mission status, as stored server-side (D-158). */
+  status?: string;
   instrumentist?: { id: number | null; firstname: string | null; lastname: string | null };
   site?: { id: number | null; name: string | null };
 };

@@ -63,9 +63,27 @@ function buildProbleme(alert: PlanningAlertV2): string {
   const surgeon = alert.mission.surgeon?.name ?? alert.mission.surgeon?.email ?? "—";
   const c = alert.conflict;
   switch (alert.type) {
-    case "SURGEON_ABSENCE": return `${surgeon} absent le ${formatFr(date)} — poste à couvrir`;
-    case "INSTRUMENTIST_ABSENCE": return `Instrumentiste absente le ${formatFr(date)}`;
-    case "REASSIGNMENT_REQUIRED": return `Instrumentiste absente le ${formatFr(date)} — réassignation nécessaire`;
+    case "SURGEON_ABSENCE":
+      // D-158 — the backend left this mission for the manager instead of cancelling it.
+      if (alert.autoActionBlockedReason === "MISSION_STARTED") {
+        return `${surgeon} absent le ${formatFr(date)} — mission déjà commencée, non annulée automatiquement : vérifiez si elle a eu lieu`;
+      }
+      if (alert.autoActionBlockedReason === "ACTIVITY_ENCODED") {
+        return `${surgeon} absent le ${formatFr(date)} — activité déjà encodée, mission non annulée automatiquement : vérifiez l'encodage`;
+      }
+      return `${surgeon} absent le ${formatFr(date)} — poste à couvrir`;
+    case "INSTRUMENTIST_ABSENCE":
+    case "REASSIGNMENT_REQUIRED":
+      // D-158 — the backend kept the instrumentist on a started / encoded mission.
+      if (alert.autoActionBlockedReason === "MISSION_STARTED") {
+        return `Instrumentiste absente le ${formatFr(date)} — mission déjà commencée, non remise au pool : vérifiez si elle a eu lieu`;
+      }
+      if (alert.autoActionBlockedReason === "ACTIVITY_ENCODED") {
+        return `Instrumentiste absente le ${formatFr(date)} — activité déjà encodée, mission non remise au pool : vérifiez l'encodage`;
+      }
+      return alert.type === "REASSIGNMENT_REQUIRED"
+        ? `Instrumentiste absente le ${formatFr(date)} — réassignation nécessaire`
+        : `Instrumentiste absente le ${formatFr(date)}`;
     case "OCCURRENCE_CANCELLED": return `Occurrence annulée le ${formatFr(date)}`;
     case "SURGEON_CONFLICT":
       if (c) {

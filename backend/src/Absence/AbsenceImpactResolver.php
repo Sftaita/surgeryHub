@@ -14,8 +14,10 @@ use App\Enum\MissionStatus;
 use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
 use App\Service\PlanningGeneratorServiceV2;
+use App\Service\AbsenceMissionProtectionPolicy;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 
 /**
  * H4 (D-130) — THE single place that answers, for one absence: which occurrences are
@@ -103,6 +105,7 @@ class AbsenceImpactResolver
             ->setParameter('statuses', self::IMPACTABLE_STATUSES)
             ->getResult();
 
+        $now = Clock::get()->now();
         $impacts = [];
         foreach ($missions as $m) {
             $status = $m->getStatus();
@@ -110,9 +113,11 @@ class AbsenceImpactResolver
             $consequence = match (true) {
                 $level === AbsenceImpactLevel::DRAFT => $role === AbsenceImpact::ROLE_SURGEON
                     ? AbsenceImpactConsequence::DRAFT_TO_NEUTRALIZE : AbsenceImpactConsequence::DRAFT_TO_COVER,
-                $role === AbsenceImpact::ROLE_SURGEON && in_array($status, [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)
+                // D-158 — a mission already started or with encoded activity is never cancelled
+                // automatically: it falls to the manager (default arm).
+                $role === AbsenceImpact::ROLE_SURGEON && AbsenceMissionProtectionPolicy::canAutoCancel($m, $now)
                     => AbsenceImpactConsequence::MISSION_CANCELLED,
-                $role === AbsenceImpact::ROLE_INSTRUMENTIST && $status === MissionStatus::ASSIGNED
+                $role === AbsenceImpact::ROLE_INSTRUMENTIST && AbsenceMissionProtectionPolicy::canAutoRelease($m, $now)
                     => AbsenceImpactConsequence::MISSION_OPENED,
                 default => AbsenceImpactConsequence::MANAGER_DECISION,
             };

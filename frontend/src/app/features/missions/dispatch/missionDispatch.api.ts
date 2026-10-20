@@ -92,3 +92,17 @@ export function invalidateOperationalPlanning(queryClient: QueryClient, missionI
     ...(missionId ? [queryClient.invalidateQueries({ queryKey: ["mission", missionId] })] : []),
   ]);
 }
+
+/**
+ * D-158 — after an absence is created, edited or deleted (manager or self-service), the
+ * backend may have cancelled/released published missions, neutralised occurrences, released
+ * rooms and raised alerts: every view of that state is refetched, never patched locally.
+ */
+export function invalidateAfterAbsenceChange(queryClient: QueryClient): Promise<unknown> {
+  return Promise.all([
+    invalidateOperationalPlanning(queryClient),
+    queryClient.invalidateQueries({ queryKey: ["surgeon-planning"] }),
+    queryClient.invalidateQueries({ queryKey: ["available-rooms"] }),
+    queryClient.invalidateQueries({ queryKey: ["planning-v2", "alerts"] }),
+  ]);
+}
