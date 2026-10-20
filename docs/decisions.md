@@ -14232,3 +14232,87 @@ mission commencée, absence instrumentiste, absences chevauchantes),
 figée dans les tests d'absence existants dont les fixtures sont datées ;
 `SurgeonPlanningSection.events.test.ts`, `AlertCard.test.tsx`, `AbsencesPage.test.tsx`,
 `SelfAbsencesPage.test.tsx`.
+
+---
+
+## D-159 — Salles libérées : remplacement de poste reconnu, salles simultanées préservées (2026-10-20)
+
+### Contexte
+
+Dry-run du rattrapage après le déploiement de D-158 (`v2026.10.20-prod`) : 19 salles proposées
+au lieu de 16. Les trois en trop (Dr Willemart, mercredis 21/10, 28/10 et 04/11, MATIN, poste
+#35) existaient déjà, disponibles, sur le poste #2 : le manager a terminé le poste #2 au
+2026-09-30 (désactivé) et créé le poste #35 dès le 2026-10-01 pour le même créneau hebdomadaire
+(nouvelle instrumentiste). Les créneaux déjà publiés ne sont jamais retirés (non-rétractation),
+et l'unicité `(site, postId, date)` ne voit pas qu'un autre poste porte la même capacité : le
+rattrapage (et le temps réel, à la moindre modification des absences #42/#73) aurait ouvert une
+seconde salle pour une seule capacité opératoire.
+
+### Ce que le modèle permet de savoir
+
+- Aucune salle physique : `SurgeonSchedulePost` n'a ni salle ni lien de remplacement, et
+  `SurgeonSchedulePostService::update()` modifie un poste **sur place** (période, instrumentiste,
+  dates) sans historique.
+- L'instrumentiste ne distingue pas deux salles de façon fiable : il change lors d'un
+  remplacement (#2 Sophie Collette → #35 Salve Decorte) et le même instrumentiste figure sur trois
+  postes simultanés de Dr Deltour.
+- Seul fait fiable : un poste **produit-il encore** l'occurrence (actif, BLOCK, même chirurgien,
+  même site, même période, dates de validité et récurrence) ? Deux postes qui la produisent le
+  même jour sont deux capacités (D-035) ; un créneau dont le poste ne la produit plus est
+  « orphelin ».
+
+### Décision
+
+`ReleasedRoomCapacityMatcher` (lecture seule), pour une occurrence sans créneau propre :
+
+- aucun orphelin du même chirurgien, même site, même date, dont l'horaire chevauche (JOURNEE
+  chevauche MATIN et APRES_MIDI) → **NEW**, créée ;
+- un seul orphelin chevauchant, de même période, et ce poste est le seul poste courant sans
+  créneau propre qui chevauche cette période → **REPLACED** : la capacité existe déjà
+  (disponible ou déjà reprise), rien n'est créé ;
+- sinon (période différente qui chevauche, plusieurs candidats) → **REVIEW** : jamais créé ni
+  supprimé automatiquement ; listé « à valider » par `app:available-rooms:backfill`, journalisé
+  (warning) en temps réel.
+
+Le même rapprochement sert :
+
+- la création temps réel et le rattrapage (`resolveFutureOccurrences()` porte la décision) ;
+- la reprise : instrumentiste initial et type viennent du poste qui porte aujourd'hui la
+  capacité (`effectivePost()`), jamais de l'ancien poste ;
+- la garde D-104/D-124 : `isOccurrenceTakenOver()` reçoit le poste et considère aussi une
+  reprise faite sur l'orphelin — raccourcir l'absence ne restaure jamais l'occurrence du nouveau
+  poste sous le repreneur.
+
+`theoreticalOccurrenceDates()` reste confiné aux fichiers autorisés : le matcher passe par
+`SurgeonAbsenceBlockOccurrenceResolver::postOccursOn()`.
+
+### Création concurrente
+
+Le test de concurrence demandé a révélé un défaut préexistant (Lot D) : la création passait par
+l'ORM, et une violation de la contrainte unique `(site_id, post_id, occurrence_date)` **fermait
+l'EntityManager** malgré le `catch` — l'occurrence suivante de la même absence échouait
+(« The EntityManager is closed »). La ligne est désormais insérée en DBAL, même convention que
+`ActivityJournal` : la collision est ignorée, MySQL garde la transaction utilisable, les autres
+occurrences sont créées.
+
+### Cas de production à valider par le métier (non tranchés par le code)
+
+- Dr Deltour, jeudi : postes #6 et #7 tous deux JOURNEE, alors que le planning généré le
+  2026-09-13 porte une mission JOURNEE et une mission APRES_MIDI chaque jeudi et que le créneau
+  #18 (05/11) a été créé sur le poste #7 en APRES_MIDI : le poste #7 a été modifié sur place.
+  Deux salles JOURNEE seraient libérées les 24/12 et 31/12.
+- Dr Deltour, mercredi : postes #3 JOURNEE, #4 MATIN, #5 APRES_MIDI, tous avec la même
+  instrumentiste ; trois missions générées chaque mercredi. Trois créneaux seraient libérés le
+  23/12. Aucun n'est fusionné.
+
+### Tests
+
+`ReleasedRoomPostReplacementFunctionalTest` (remplacement → une seule salle, au rattrapage, dans
+le calendrier et à la reprise ; deux salles simultanées conservées même après le remplacement de
+l'une ; JOURNEE + MATIN + APRES_MIDI jamais fusionnés ; période différente → à valider, rien
+créé ni retiré ; capacité déjà reprise jamais réofferte ; rattrapage répété sans création ;
+modification temps réel de l'absence après remplacement, sans doublon ni restauration sous le
+repreneur), `ReleasedRoomPostReplacementConcurrencyTest` (création concurrente du même créneau
+sur deux connexions MySQL ; double reprise d'une capacité remplacée). Sans le correctif, 6 des 7
+tests fonctionnels et le test de création concurrente échouent ; la garde de réconciliation et
+l'instrumentiste de reprise ont chacun un test qui échoue isolément sans leur correction.

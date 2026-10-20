@@ -4,6 +4,7 @@ namespace App\Command;
 
 use App\Entity\Absence;
 use App\Service\ReleasedOperatingRoomSlotService;
+use App\Service\ReleasedRoomCapacityMatcher;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -73,6 +74,8 @@ class AvailableRoomsBackfillCommand extends Command
         $futureOccurrences = 0;
         $alreadyExisting = 0;
         $rows = [];
+        $replaced = [];
+        $review = [];
         $errors = [];
 
         foreach ($absences as $absence) {
@@ -91,13 +94,28 @@ class AvailableRoomsBackfillCommand extends Command
                         continue;
                     }
 
-                    $rows[] = [
+                    $line = [
                         $occurrence['surgeon']->getDrName(),
                         $occurrence['site']->getName(),
                         $occurrence['date']->format('Y-m-d'),
                         $occurrence['period']->value,
                         $occurrence['post']->getId(),
                     ];
+                    $capacity = $occurrence['capacity'];
+
+                    // D-159 — poste remplacé : la capacité existe déjà (jamais une seconde salle) ;
+                    // cas ambigu : jamais créé, signalé pour validation métier.
+                    if ($capacity['decision'] === ReleasedRoomCapacityMatcher::REPLACED) {
+                        $slot = $capacity['slot'];
+                        $replaced[] = [...$line, sprintf('#%d (poste #%d, %s)', $slot->getId(), $slot->getPostId(), $slot->getStatus()->value)];
+                        continue;
+                    }
+                    if ($capacity['decision'] === ReleasedRoomCapacityMatcher::REVIEW) {
+                        $review[] = [...$line, $capacity['reason']];
+                        continue;
+                    }
+
+                    $rows[] = $line;
                 }
 
                 // Jamais de confiance aveugle dans la lecture ci-dessus (même principe que le
@@ -123,19 +141,31 @@ class AvailableRoomsBackfillCommand extends Command
             $io->table(['Chirurgien', 'Site', 'Date', 'Période', 'postId'], $rows);
         }
 
+        if (!empty($replaced)) {
+            $io->text(sprintf('%d occurrence(s) déjà couverte(s) par le créneau d\'un poste remplacé (aucune création) :', count($replaced)));
+            $io->table(['Chirurgien', 'Site', 'Date', 'Période', 'postId', 'Créneau existant'], $replaced);
+        }
+
+        if (!empty($review)) {
+            $io->warning(sprintf('%d occurrence(s) à valider par le métier (jamais créées automatiquement) :', count($review)));
+            $io->table(['Chirurgien', 'Site', 'Date', 'Période', 'postId', 'Motif'], $review);
+        }
+
         if (!empty($errors)) {
             $io->warning(sprintf('%d absence(s) ignorée(s) suite à une erreur (données incohérentes, jamais bloquant pour le reste du rattrapage) :', count($errors)));
             $io->listing($errors);
         }
 
         $io->success(sprintf(
-            '%s : %d absences analysées, %d occurrences BLOCK futures, %d déjà existants, %d %s%s.',
+            '%s : %d absences analysées, %d occurrences BLOCK futures, %d déjà existants, %d %s, %d poste(s) remplacé(s), %d à valider%s.',
             $dryRun ? 'Dry-run' : 'Backfill',
             $analyzed,
             $futureOccurrences,
             $alreadyExisting,
             $wouldCreate,
             $dryRun ? 'seraient créés' : 'créés',
+            count($replaced),
+            count($review),
             empty($errors) ? '' : sprintf(', %d ignorée(s) suite à une erreur', count($errors)),
         ));
 

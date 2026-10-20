@@ -296,7 +296,7 @@ class AbsenceImpactReconciliationService
         if (!$post->isActive()) {
             return true;
         }
-        if ($this->roomTakeovers->isOccurrenceTakenOver($post->getId(), $date)) {
+        if ($this->roomTakeovers->isOccurrenceTakenOver($post, $date)) {
             return true; // D-124 — room taken over by another surgeon, never restore underneath it
         }
         if (empty($this->generator->theoreticalOccurrenceDates($post, $date, $date))) {
@@ -617,7 +617,7 @@ class AbsenceImpactReconciliationService
         if (!$post->isActive() || empty($this->generator->theoreticalOccurrenceDates($post, $date, $date))) {
             return null; // recurrence no longer produces this date — not this scan's concern
         }
-        if ($this->roomTakeovers->isOccurrenceTakenOver($post->getId(), $date)) {
+        if ($this->roomTakeovers->isOccurrenceTakenOver($post, $date)) {
             return null; // D-124 — room taken over by another surgeon
         }
 
