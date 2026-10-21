@@ -14410,6 +14410,13 @@ annoncer une salle qui n'existait pas (mission déjà commencée, D-158 ; poste 
    Elle affiche à part l'état réel du push sur l'appareil (autorisation du navigateur et
    abonnement), avec un bouton d'autorisation. La catégorie n'apparaît pas une seconde fois dans
    la liste générique.
+9. **Invitation à activer le push (existante, D-143), adaptée au chirurgien.** La bannière
+   non bloquante de l'espace chirurgien (ordinateur et PWA) explique désormais l'intérêt pour
+   les salles disponibles. La permission n'est demandée qu'au clic ; le bouton « Plus tard »
+   reporte l'invitation de 7 jours, puis de 14 jours, puis ne la propose plus. Un refus du
+   navigateur n'est jamais redemandé, et le message qui suit un refus ne promet plus d'e-mail
+   de secours au chirurgien. Hors application installée, iOS ne prend pas en charge le push :
+   rien ne s'affiche alors.
 
 ### Comptes existants
 

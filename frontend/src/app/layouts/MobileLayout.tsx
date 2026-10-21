@@ -1082,7 +1082,7 @@ export function MobileLayout() {
       }}
     >
       {/* D-143 — invitation push volontaire (instrumentiste ET chirurgien), reportable. */}
-      {mobileScope !== null && <PushInvitationBanner />}
+      {mobileScope !== null && <PushInvitationBanner scope={mobileScope} />}
       <PwaInstallBanner />
       <Box
         key={pathname}
