@@ -14317,6 +14317,50 @@ sur deux connexions MySQL ; double reprise d'une capacité remplacée). Sans le 
 tests fonctionnels et le test de création concurrente échouent ; la garde de réconciliation et
 l'instrumentiste de reprise ont chacun un test qui échoue isolément sans leur correction.
 
+---
+
+## D-160 — Rattrapage des salles libérées : liste autorisée d'absences (2026-10-20)
+
+### Contexte
+
+Après D-159 (`v2026.10.20-prod-2`), le dry-run prod propose 16 salles, dont 7 pour Dr Deltour
+(absences #66/#67) dont les postes #3–#7 attendent une validation métier : le poste #7, APRES_MIDI
+du 2026-06-23 au 2026-10-10 (sauvegardes quotidiennes), a été passé en JOURNEE le 2026-10-10
+depuis l'interface manager, alors que les missions du jeudi restent JOURNEE + APRES_MIDI ; le
+mercredi, JOURNEE, MATIN et APRES_MIDI coexistent sans preuve de trois salles. La commande ne
+savait traiter que toutes les absences à la fois : impossible de rattraper Willemart, De Muylder
+et Ftaita sans créer aussi les salles Deltour.
+
+### Décision
+
+`app:available-rooms:backfill --absence=<id>` (répétable, ou `--absence=54,57,79`) :
+
+- liste autorisée : seules les absences sélectionnées sont lues et passées à
+  `onAbsenceUpdated()` — aucune lecture ni écriture pour les autres ;
+- même sélection en `--dry-run` et en exécution réelle, rappelée en tête du résultat
+  (« Sélection : #54, #57, … ») ;
+- validation stricte de toute la sélection avant le moindre traitement : identifiant non entier
+  positif, en double, absence inconnue, terminée (`dateEnd` passée), qui ne concerne pas un
+  chirurgien ou dont le chirurgien est introuvable → liste des erreurs, code `INVALID`, rien
+  n'est traité ni écrit, même pour les identifiants valides ;
+- l'exécution réelle exige une sélection explicite ; seul `--dry-run` parcourt encore toutes les
+  absences (un oubli d'option ne peut plus créer les salles d'absences non validées) ;
+- inchangé : chemin d'écriture temps réel, rapprochement D-159 (remplacé / à valider), idempotence
+  par la contrainte unique, aucun e-mail ni communication.
+
+### Tests
+
+`AvailableRoomsBackfillCommandTest` : exécution réelle sans sélection refusée ; lecture et
+écriture limitées à la sélection (créneaux et audits `ROOM_SLOT_MADE_AVAILABLE`) ; dry-run et
+réel identiques sur la même sélection ; formes répétée et séparée par des virgules
+équivalentes ; 12 sélections invalides ou non admissibles refusées en dry-run comme en réel sans
+aucune écriture ; rejeu idempotent sous sélection ; protection D-159 conservée sous sélection.
+Les tests existants passent désormais une sélection explicite (absence supprimée → « inconnue »,
+absence corrompue → refusée sélectionnée, ignorée sans blocage dans le parcours global). Chaque
+garde (validation, sélection, refus sans sélection) a été retirée isolément : 3, 7 et 1 tests
+échouent. Dry-run sur copie locale du dump prod du 2026-10-20 avec `--absence=54,57,79,80,81,82,83`
+: 7 absences, 9 occurrences, 9 salles, 0 remplacée, 0 à valider, aucune ligne Deltour.
+
 
 ## D-161 — Salles opératoires disponibles : push par défaut, e-mail sur option (2026-10-21)
 

@@ -219,12 +219,52 @@ final class AvailableRoomsBackfillCommandTest extends KernelTestCase
             ->getQuery()->getSingleScalarResult();
     }
 
-    private function runBackfill(bool $dryRun = false): CommandTester
+    /**
+     * D-160 — l'exécution réelle exige une liste autorisée : par défaut, les absences créées
+     * par ce test (jamais celles d'autres fixtures restées en base). `[]` = aucune sélection.
+     *
+     * @param list<int|string>|null $absences
+     */
+    private function runBackfill(bool $dryRun = false, ?array $absences = null): CommandTester
     {
+        $absences ??= $this->createdIds['absences'];
+        $input = [];
+        if ($dryRun) {
+            $input['--dry-run'] = true;
+        }
+        if ($absences !== []) {
+            $input['--absence'] = array_map('strval', $absences);
+        }
+
         $tester = new CommandTester(self::getContainer()->get(AvailableRoomsBackfillCommand::class));
-        $tester->execute($dryRun ? ['--dry-run' => true] : []);
+        $tester->execute($input);
 
         return $tester;
+    }
+
+    private function countSlotsFor(Absence $absence): int
+    {
+        return (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM released_operating_room_slot WHERE source_absence_id = ?', [$absence->getId()]);
+    }
+
+    private function countMadeAvailableAuditsFor(Absence $absence): int
+    {
+        return (int) $this->em->getConnection()->fetchOne(
+            "SELECT COUNT(*) FROM audit_event WHERE event_type = 'ROOM_SLOT_MADE_AVAILABLE' AND CAST(JSON_EXTRACT(payload, '$.absenceId') AS UNSIGNED) = ?",
+            [$absence->getId()],
+        );
+    }
+
+    /** Fixture « aujourd'hui » : un chirurgien, un site, un poste BLOCK du jour, une absence du jour. */
+    private function makeTodayCase(string $firstname): array
+    {
+        $today = new \DateTimeImmutable('today');
+        $surgeon = $this->makeUser($firstname);
+        $site = $this->makeSite();
+        $post = $this->makePost($surgeon, $site, MissionType::BLOCK, (int) $today->format('N'), $today, $today->format('Y-m-d'));
+        $absence = $this->makeAbsence($surgeon, $today, $today);
+
+        return [$surgeon, $site, $post, $absence];
     }
 
     // ── 1 — absence AVEC historique ROOM_RELEASE → slot créé quand même ─────────
@@ -403,14 +443,21 @@ final class AvailableRoomsBackfillCommandTest extends KernelTestCase
 
         // Suppression réelle de l'absence (pas seulement retirée de mes createdIds — elle est
         // déjà dedans, la retirer évite une double-suppression dans tearDown()).
-        $absence = $this->em->find(Absence::class, $absence->getId());
+        $deletedId = $absence->getId();
+        $absence = $this->em->find(Absence::class, $deletedId);
         $this->em->remove($absence);
         $this->em->flush();
-        $this->createdIds['absences'] = array_values(array_diff($this->createdIds['absences'], [$absence->getId()]));
+        $this->createdIds['absences'] = array_values(array_diff($this->createdIds['absences'], [$deletedId]));
         $this->em->clear();
 
-        $second = $this->runBackfill();
-        self::assertSame(Command::SUCCESS, $second->getStatusCode());
+        // D-160 — l'absence supprimée ne peut plus être sélectionnée, et le parcours global
+        // (dry-run) ne la voit plus.
+        $second = $this->runBackfill(absences: [$deletedId]);
+        self::assertSame(Command::INVALID, $second->getStatusCode());
+        self::assertStringContainsString('absence inconnue', $second->getDisplay());
+        $global = $this->runBackfill(dryRun: true, absences: []);
+        self::assertSame(Command::SUCCESS, $global->getStatusCode());
+        self::assertStringNotContainsString($site->getName(), $global->getDisplay());
 
         $this->em->clear();
         $site = $this->em->find(Hospital::class, $site->getId());
@@ -503,10 +550,25 @@ final class AvailableRoomsBackfillCommandTest extends KernelTestCase
         $this->createdIds['users'] = array_diff($this->createdIds['users'], [$corruptSurgeonId]);
         $this->em->clear();
 
-        $result = $this->runBackfill();
+        // Parcours global (dry-run) : l'absence corrompue est ignorée, jamais bloquante.
+        $result = $this->runBackfill(dryRun: true, absences: []);
         self::assertSame(Command::SUCCESS, $result->getStatusCode(), 'une absence corrompue ne doit jamais faire échouer la commande');
         self::assertStringContainsString('ignorée', $result->getDisplay());
         self::assertStringContainsString((string) $corruptAbsence->getId(), $result->getDisplay());
+        self::assertStringContainsString($validSite->getName(), $result->getDisplay());
+
+        // D-160 — sélectionnée explicitement, elle est refusée d'emblée : rien n'est écrit, même
+        // pour l'absence valide de la même sélection.
+        $this->em->clear();
+        $refused = $this->runBackfill();
+        self::assertSame(Command::INVALID, $refused->getStatusCode());
+        self::assertStringContainsString(sprintf('#%d : chirurgien introuvable', $corruptAbsence->getId()), $refused->getDisplay());
+        $this->em->clear();
+        self::assertCount(0, $this->slotsFor($this->em->find(Hospital::class, $validSite->getId())));
+
+        $this->em->clear();
+        $result = $this->runBackfill(absences: array_values(array_diff($this->createdIds['absences'], [$corruptAbsence->getId()])));
+        self::assertSame(Command::SUCCESS, $result->getStatusCode());
 
         $this->em->clear();
         $validSite = $this->em->find(Hospital::class, $validSite->getId());
@@ -541,5 +603,183 @@ final class AvailableRoomsBackfillCommandTest extends KernelTestCase
         $this->em->clear();
         $site = $this->em->find(Hospital::class, $site->getId());
         self::assertCount(1, $this->slotsFor($site));
+    }
+
+    // ── D-160 — liste autorisée (--absence) ──────────────────────────────────────
+
+    #[WithoutErrorHandler]
+    public function test_real_run_without_selection_is_refused_and_writes_nothing(): void
+    {
+        [, $site, , $absence] = $this->makeTodayCase('NoSelection');
+
+        $result = $this->runBackfill(absences: []);
+        self::assertSame(Command::INVALID, $result->getStatusCode());
+        self::assertStringContainsString('--absence', $result->getDisplay());
+
+        $this->em->clear();
+        self::assertCount(0, $this->slotsFor($this->em->find(Hospital::class, $site->getId())));
+        self::assertSame(0, $this->countMadeAvailableAuditsFor($absence));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_selection_limits_reads_and_writes_to_the_selected_absences(): void
+    {
+        [, $siteA, , $absenceA] = $this->makeTodayCase('Selected');
+        [, $siteB, , $absenceB] = $this->makeTodayCase('NotSelected');
+
+        $dry = $this->runBackfill(dryRun: true, absences: [$absenceA->getId()]);
+        self::assertSame(Command::SUCCESS, $dry->getStatusCode());
+        self::assertStringContainsString(sprintf('Sélection : #%d', $absenceA->getId()), $dry->getDisplay());
+        self::assertStringContainsString($siteA->getName(), $dry->getDisplay());
+        self::assertStringNotContainsString($siteB->getName(), $dry->getDisplay(), 'une absence non sélectionnée n\'est même pas lue');
+
+        $real = $this->runBackfill(absences: [$absenceA->getId()]);
+        self::assertSame(Command::SUCCESS, $real->getStatusCode());
+        self::assertStringNotContainsString($siteB->getName(), $real->getDisplay());
+
+        $this->em->clear();
+        self::assertCount(1, $this->slotsFor($this->em->find(Hospital::class, $siteA->getId())));
+        self::assertCount(0, $this->slotsFor($this->em->find(Hospital::class, $siteB->getId())), 'aucune écriture pour une absence non sélectionnée');
+        self::assertSame(1, $this->countMadeAvailableAuditsFor($absenceA));
+        self::assertSame(0, $this->countMadeAvailableAuditsFor($absenceB));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_dry_run_and_real_run_use_the_same_selection_and_agree(): void
+    {
+        [, $siteA, , $absenceA] = $this->makeTodayCase('SameA');
+        [, $siteB, , $absenceB] = $this->makeTodayCase('SameB');
+        [, $siteC] = $this->makeTodayCase('SameC');
+        $selection = [$absenceB->getId(), $absenceA->getId()];
+        $expectedScope = sprintf('Sélection : #%d, #%d', min($selection), max($selection));
+
+        $dry = $this->runBackfill(dryRun: true, absences: $selection);
+        self::assertStringContainsString($expectedScope, $dry->getDisplay());
+        self::assertStringContainsString('2 seraient créés', self::flat($dry));
+
+        $real = $this->runBackfill(absences: $selection);
+        self::assertStringContainsString($expectedScope, $real->getDisplay());
+        self::assertStringContainsString('2 créés', self::flat($real));
+
+        $this->em->clear();
+        self::assertCount(1, $this->slotsFor($this->em->find(Hospital::class, $siteA->getId())));
+        self::assertCount(1, $this->slotsFor($this->em->find(Hospital::class, $siteB->getId())));
+        self::assertCount(0, $this->slotsFor($this->em->find(Hospital::class, $siteC->getId())));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_comma_separated_and_repeated_forms_are_equivalent(): void
+    {
+        [, , , $absenceA] = $this->makeTodayCase('CommaA');
+        [, , , $absenceB] = $this->makeTodayCase('CommaB');
+        $expectedScope = sprintf('Sélection : #%d, #%d', $absenceA->getId(), $absenceB->getId());
+
+        $comma = $this->runBackfill(dryRun: true, absences: [sprintf('%d, %d', $absenceB->getId(), $absenceA->getId())]);
+        $repeated = $this->runBackfill(dryRun: true, absences: [$absenceA->getId(), $absenceB->getId()]);
+
+        self::assertSame(Command::SUCCESS, $comma->getStatusCode());
+        self::assertStringContainsString($expectedScope, $comma->getDisplay());
+        self::assertSame($comma->getDisplay(), $repeated->getDisplay());
+    }
+
+    #[WithoutErrorHandler]
+    public function test_invalid_or_inadmissible_identifiers_refuse_the_whole_selection(): void
+    {
+        [, $site, , $valid] = $this->makeTodayCase('Valid');
+        $id = (string) $valid->getId();
+
+        $pastSurgeon = $this->makeUser('Past');
+        $past = $this->makeAbsence($pastSurgeon, new \DateTimeImmutable('-10 days'), new \DateTimeImmutable('-3 days'));
+
+        $instrumentist = $this->makeUser('Instrumentist');
+        $instrumentist->setRoles(['ROLE_INSTRUMENTIST']);
+        $this->em->flush();
+        $notSurgeon = $this->makeAbsence($instrumentist, new \DateTimeImmutable('today'), new \DateTimeImmutable('today'));
+
+        $unknown = (int) $this->em->getConnection()->fetchOne('SELECT COALESCE(MAX(id), 0) + 1000 FROM absence');
+
+        $cases = [
+            [[$id, 'abc'], '« abc »'],
+            [[$id, '0'], '« 0 »'],
+            [[$id, '-3'], '« -3 »'],
+            [[$id, '5.0'], '« 5.0 »'],
+            [[$id, '1e3'], '« 1e3 »'],
+            [[$id, ''], '« »'],
+            [[$id . ','], '« »'],
+            [[$id, $id], sprintf('#%s : sélectionnée plusieurs fois', $id)],
+            [[$id . ',' . $id], sprintf('#%s : sélectionnée plusieurs fois', $id)],
+            [[$id, (string) $unknown], sprintf('#%d : absence inconnue', $unknown)],
+            [[$id, (string) $past->getId()], sprintf('#%d : absence terminée', $past->getId())],
+            [[$id, (string) $notSurgeon->getId()], sprintf('#%d : ne concerne pas un chirurgien', $notSurgeon->getId())],
+        ];
+
+        foreach ($cases as [$selection, $expected]) {
+            foreach ([true, false] as $dryRun) {
+                $this->em->clear();
+                $result = $this->runBackfill(dryRun: $dryRun, absences: $selection);
+                $label = json_encode($selection) . ($dryRun ? ' (dry-run)' : ' (réel)');
+                self::assertSame(Command::INVALID, $result->getStatusCode(), $label);
+                self::assertStringContainsString('aucune absence traitée', self::flat($result), $label);
+                self::assertStringContainsString($expected, self::flat($result), $label);
+            }
+        }
+
+        $this->em->clear();
+        self::assertCount(0, $this->slotsFor($this->em->find(Hospital::class, $site->getId())), 'aucune écriture, même pour l\'identifiant valide de la sélection refusée');
+        self::assertSame(0, $this->countMadeAvailableAuditsFor($valid));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_selected_rerun_is_idempotent(): void
+    {
+        [, $site, , $absence] = $this->makeTodayCase('Idempotent');
+
+        $first = $this->runBackfill(absences: [$absence->getId()]);
+        self::assertStringContainsString('1 créés', self::flat($first));
+        $this->em->clear();
+        $ids = array_map(static fn (ReleasedOperatingRoomSlot $s) => $s->getId(), $this->slotsFor($this->em->find(Hospital::class, $site->getId())));
+        self::assertCount(1, $ids);
+
+        foreach ([true, false, false] as $dryRun) {
+            $again = $this->runBackfill(dryRun: $dryRun, absences: [$absence->getId()]);
+            self::assertSame(Command::SUCCESS, $again->getStatusCode());
+            self::assertStringContainsString('1 déjà existants, 0', self::flat($again));
+        }
+
+        $this->em->clear();
+        self::assertSame($ids, array_map(static fn (ReleasedOperatingRoomSlot $s) => $s->getId(), $this->slotsFor($this->em->find(Hospital::class, $site->getId()))));
+        self::assertSame(1, $this->countMadeAvailableAuditsFor($absence), 'aucun audit supplémentaire au rejeu');
+    }
+
+    /** D-159 — un poste remplacé n'ouvre jamais une seconde salle, aussi sous sélection. */
+    #[WithoutErrorHandler]
+    public function test_selection_keeps_the_d159_post_replacement_protection(): void
+    {
+        $today = new \DateTimeImmutable('today');
+        [$surgeon, $site, $oldPost, $absence] = $this->makeTodayCase('Replaced');
+
+        $this->runBackfill(absences: [$absence->getId()]);
+        $this->em->clear();
+        self::assertCount(1, $this->slotsFor($this->em->find(Hospital::class, $site->getId())));
+
+        // Le manager désactive l'ancien poste et en crée un nouveau pour la même plage.
+        $oldPost = $this->em->find(SurgeonSchedulePost::class, $oldPost->getId());
+        $oldPost->setActive(false);
+        $this->em->flush();
+        $this->makePost($this->em->find(User::class, $surgeon->getId()), $this->em->find(Hospital::class, $site->getId()), MissionType::BLOCK, (int) $today->format('N'), $today, $today->format('Y-m-d'));
+
+        $dry = $this->runBackfill(dryRun: true, absences: [$absence->getId()]);
+        self::assertStringContainsString('0 seraient créés, 1 poste(s) remplacé(s), 0 à valider', self::flat($dry));
+        $real = $this->runBackfill(absences: [$absence->getId()]);
+        self::assertStringContainsString('0 créés, 1 poste(s) remplacé(s), 0 à valider', self::flat($real));
+
+        $this->em->clear();
+        self::assertCount(1, $this->slotsFor($this->em->find(Hospital::class, $site->getId())), 'une seule salle pour une seule capacité');
+    }
+
+    /** Message de succès SymfonyStyle replié sur plusieurs lignes : comparaison sur une seule ligne. */
+    private static function flat(CommandTester $tester): string
+    {
+        return (string) preg_replace('/\s+/u', ' ', $tester->getDisplay());
     }
 }

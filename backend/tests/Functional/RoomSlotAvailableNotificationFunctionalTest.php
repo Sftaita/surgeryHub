@@ -91,7 +91,12 @@ final class RoomSlotAvailableNotificationFunctionalTest extends WebTestCase
             $conn = $this->em->getConnection();
             $this->em->clear();
             foreach ($this->createdIds['sites'] as $siteId) {
+                $conn->executeStatement('UPDATE released_operating_room_slot SET takeover_mission_id = NULL WHERE site_id = ?', [$siteId]);
+                $conn->executeStatement('DELETE FROM mission_communication WHERE mission_id IN (SELECT id FROM mission WHERE site_id = ?)', [$siteId]);
+                $conn->executeStatement('DELETE FROM audit_event WHERE mission_id IN (SELECT id FROM mission WHERE site_id = ?)', [$siteId]);
+                $conn->executeStatement('DELETE FROM mission WHERE site_id = ?', [$siteId]);
                 $conn->executeStatement('DELETE FROM released_operating_room_slot WHERE site_id = ?', [$siteId]);
+                $conn->executeStatement('DELETE FROM shift_period_config WHERE site_id = ?', [$siteId]);
                 $conn->executeStatement('DELETE FROM absence_communication_site_config WHERE site_id = ?', [$siteId]);
                 $conn->executeStatement('DELETE FROM site_membership WHERE site_id = ?', [$siteId]);
             }
@@ -108,6 +113,7 @@ final class RoomSlotAvailableNotificationFunctionalTest extends WebTestCase
                 $ids = implode(',', array_map('intval', $this->createdIds['users']));
                 $conn->executeStatement("DELETE FROM push_subscription WHERE user_id IN ($ids)");
                 $conn->executeStatement("DELETE FROM notification_preference WHERE user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM audit_event WHERE actor_id IN ($ids)");
             }
             $this->purgeNotificationTraces($this->em, $this->createdIds['users']);
             $this->em->clear();
@@ -312,6 +318,50 @@ final class RoomSlotAvailableNotificationFunctionalTest extends WebTestCase
 
         self::assertSame([], $this->dispatches($colleague), 'never announce a room that is no longer available');
         self::assertSame([], $this->pushCalls);
+    }
+
+    /** Point 3 (validation PR #29) — rendue par son repreneur : de nouveau reprenable, jamais réannoncée. */
+    #[WithoutErrorHandler]
+    public function test_a_room_released_by_its_taker_is_takeable_again_but_never_announced_again(): void
+    {
+        [$absent, $taker, $site] = $this->scenario();
+        $observer = $this->makeUser('ROLE_SURGEON', 'Observer');
+        $this->affiliate($observer, $site);
+        $this->subscribe($taker);
+        $this->subscribe($observer);
+        // The take-over needs the period's hours (D-124: never an invented schedule).
+        $this->em->persist((new \App\Entity\ShiftPeriodConfig())->setSite($this->em->find(Hospital::class, $site->getId()))->setPeriod(ShiftPeriod::MATIN)
+            ->setStartTime(new \DateTimeImmutable('07:45'))->setEndTime(new \DateTimeImmutable('13:00'))->setActive(true));
+        $this->em->flush();
+
+        $this->declareAbsence($absent, '+0 days', '+0 days');
+        $this->drain();
+        $slotId = $this->createdSlotIds($site)[0];
+        self::assertCount(1, $this->deliveries($observer, 'PUSH'));
+
+        $takerToken = $this->login($taker);
+        $this->request('POST', "/api/available-rooms/{$slotId}/take-over", server: $this->auth($takerToken));
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+        $observerToken = $this->login($observer);
+        $this->request('GET', "/api/me/available-rooms/{$slotId}", server: $this->auth($observerToken));
+        self::assertSame(404, $this->client->getResponse()->getStatusCode(), 'taken by a colleague: not offered');
+
+        $this->request('POST', "/api/available-rooms/{$slotId}/release", server: $this->auth($takerToken));
+        self::assertSame(200, $this->client->getResponse()->getStatusCode(), (string) $this->client->getResponse()->getContent());
+        $this->drain();
+
+        // De nouveau dans « Reprendre cette salle » (liste et lecture unitaire), reprise autorisée…
+        $this->request('GET', '/api/me/available-rooms', server: $this->auth($observerToken));
+        $listed = array_values(array_filter($this->json()['items'], static fn (array $s) => $s['id'] === $slotId));
+        self::assertCount(1, $listed);
+        self::assertSame(['AVAILABLE', true], [$listed[0]['status'], $listed[0]['allowedActions']['takeOver']]);
+        $this->request('GET', "/api/me/available-rooms/{$slotId}", server: $this->auth($observerToken));
+        self::assertSame(200, $this->client->getResponse()->getStatusCode());
+
+        // …mais aucune nouvelle annonce (comportement existant conservé).
+        self::assertCount(1, $this->announcedSlotIds());
+        self::assertCount(1, $this->deliveries($observer, 'PUSH'));
+        self::assertCount(1, $this->inAppItems($observer));
     }
 
     // ── 8 — rattrapage historique : création sans annonce ────────────────────────
