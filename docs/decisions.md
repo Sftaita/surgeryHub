@@ -14438,3 +14438,65 @@ l'e-mail.
 - Une salle rendue par son repreneur, ou rouverte par l'absence du repreneur (D-124), n'était
   pas annoncée avant ce changement et ne l'est toujours pas.
 - Aucune notification rétroactive pour les salles créées par le rattrapage D-160.
+
+---
+
+## D-162 — Version de SurgicalHub en bas des paramètres utilisateur (2026-10-21)
+
+### Contexte
+
+Rien dans l'application n'indiquait la version qui tourne. Seuls le tag Git `*-prod` et
+`docs/production.md` la documentaient (deployment-versioning.md §1). La procédure impose de
+créer le tag **après** les tests de santé. Le build ne peut donc pas connaître le tag
+officiel, alors qu'un rollback doit afficher la version restaurée.
+
+Audit : l'archive `git archive -- backend frontend docker-compose.yml` ne contient ni `docker/`
+ni `.git`. Les Dockerfiles de production (`src/docker/`, copiés le 2026-08-02) ne sont pas
+mis à jour par la procédure. Le mécanisme ne doit donc dépendre d'aucune modification de
+Dockerfile ni d'argument de build.
+
+### Décision
+
+1. **Commit exécuté = `git archive`.** `backend/REVISION` et
+   `frontend/src/app/features/app-version/buildRevision.ts` contiennent `$Format:%H$`, avec
+   l'attribut `export-subst`. L'archive obligatoire y écrit le SHA exact du commit, ce qui
+   suffit pour les images php, worker et nginx (bundle). Dans un clone, la valeur littérale
+   signifie « développement ».
+2. **Version officielle = registre écrit après validation.** Le fichier est
+   `var/release/releases.json`, sur le volume persistant `surgicalhub_var` ; chaque ligne
+   contient un tag, un SHA et une date. Il est alimenté par
+   `app:release:mark <tag> --commit=<sha>` après le tag Git (§7.1). La commande refuse un
+   format de tag invalide, un SHA différent du code exécuté, et un tag réutilisé pour un autre
+   commit ; elle est idempotente et écrit de façon atomique.
+3. **`GET /api/version`** (utilisateur authentifié, `Cache-Control: no-store, private`)
+   renvoie `{application, status, version, commit}`. Valeurs de `status` :
+   - `OFFICIAL` : le commit exécuté figure dans le registre ;
+   - `PENDING_VALIDATION` : le tag n'est pas encore enregistré, ou le registre est illisible
+     (jamais un tag supposé) ;
+   - `DEVELOPMENT` : pas de SHA (clone de travail).
+
+   Un rollback retrouve le tag du commit restauré, sans aucune action sur le registre. La
+   réponse ne contient qu'un tag et un SHA court : aucun secret, aucun chemin.
+4. **Affichage.** `AppVersionLine` est un composant unique, placé en bas de « Mon profil »
+   (paramètres utilisateur) des trois rôles. Il n'y a pas de footer permanent. Format :
+   `SurgicalHub · vYYYY.MM.DD-prod · <sha>`. La version est relue à chaque ouverture, sans
+   cache.
+
+   Si le bundle chargé (PWA en cache) a été construit d'un autre commit que celui du serveur,
+   le composant propose « Actualiser ». `index.html` est revalidé grâce à son ETag.
+5. **Procédure.** La procédure ajoute trois contrôles obligatoires
+   (deployment-versioning.md §4.3, §5 et §7.1, production.md, production-checklist.md) :
+   - `REVISION` = SHA validé après l'extraction ;
+   - `app:release:show` = `PENDING_VALIDATION` avant le tag ;
+   - cohérence entre le tag Git, `app:release:show` (`OFFICIAL`) et la version affichée, après
+     `app:release:mark`.
+
+### Hors périmètre, signalé
+
+- `src/docker/` et le `.dockerignore` de production ne suivent pas la procédure `git archive`.
+  Ils sont restés figés depuis le 2026-08-02 : un changement de Dockerfile ou de configuration
+  nginx dans le dépôt n'atteint jamais la production. À traiter séparément.
+- `index.html` est servi sans en-tête `Cache-Control` (ETag seulement). Une navigation normale
+  peut afficher un ancien bundle pendant une durée heuristique ; « Actualiser » le revalide.
+- Les versions déployées avant D-162 ne figurent pas dans le registre. La première ligne sera
+  écrite au déploiement de D-162.

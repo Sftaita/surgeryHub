@@ -13,6 +13,7 @@ import { AvatarUploader } from "../../ui/avatar/AvatarUploader";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { PageHeader } from "../../ui/PageHeader";
 import { EmptyState } from "../../ui/EmptyState";
+import { AppVersionLine } from "../../features/app-version/AppVersionLine";
 
 const ROLE_LABEL: Record<string, string> = {
   MANAGER: "Manager",
@@ -123,6 +124,9 @@ export default function ProfilePage() {
         <NotificationPreferencesSection />
 
         <PwaInstallMenuItem />
+
+        {/* D-162 — version réellement exécutée, en bas des paramètres (trois rôles). */}
+        <AppVersionLine />
       </Stack>
     </Box>
   );

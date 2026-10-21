@@ -42,6 +42,9 @@ vi.mock("../../features/push/PushPermissionCard", () => ({
 vi.mock("../../features/notifications/NotificationPreferencesSection", () => ({
   NotificationPreferencesSection: () => null,
 }));
+vi.mock("../../features/app-version/AppVersionLine", () => ({
+  AppVersionLine: () => <div data-testid="app-version" />,
+}));
 vi.mock("../../features/notifications/RoomAvailabilityNotificationsCard", () => ({
   RoomAvailabilityNotificationsCard: () => <div data-testid="room-availability-notifications" />,
 }));
@@ -234,5 +237,14 @@ describe("ProfilePage — section instrumentiste conditionnelle", () => {
     renderPage();
     await screen.findByText("Jane Doe");
     expect(screen.queryByTestId("room-availability-notifications")).not.toBeInTheDocument();
+  });
+
+  it.each(["SURGEON", "INSTRUMENTIST"])("D-162 — %s : la version est affichée en bas des paramètres", async (role) => {
+    fetchMeMock.mockResolvedValue(meResponse({ role, instrumentistProfile: null }));
+    renderPage();
+    await screen.findByText("Jane Doe");
+    const version = screen.getByTestId("app-version");
+    const allTestIds = Array.from(document.querySelectorAll("[data-testid]"));
+    expect(allTestIds[allTestIds.length - 1]).toBe(version);
   });
 });
