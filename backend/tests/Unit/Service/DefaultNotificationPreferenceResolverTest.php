@@ -61,6 +61,32 @@ class DefaultNotificationPreferenceResolverTest extends TestCase
         $this->assertTrue($channels->push, 'H3: push on by default for available missions');
     }
 
+    /** D-161 — a room that became available: push by default, email OFF unless the surgeon opts in. */
+    public function test_resolver_room_slot_available_defaults_to_push_without_email(): void
+    {
+        $this->stored = null;
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::ROOM_SLOT_AVAILABLE);
+        $this->assertTrue($channels->inApp);
+        $this->assertTrue($channels->push, 'D-161: push is the standard channel');
+        $this->assertFalse($channels->email, 'D-161: email off by default, for every surgeon');
+        $this->assertSame('DEFAULT', $channels->source);
+        $this->assertTrue(NotificationType::ROOM_SLOT_AVAILABLE->isConfigurable());
+        $this->assertSame([NotificationType::AUDIENCE_SURGEON], NotificationType::ROOM_SLOT_AVAILABLE->audienceRoles());
+    }
+
+    /** D-161 — an explicit choice made in the settings is always honoured. */
+    public function test_room_slot_available_explicit_email_choice_is_honoured(): void
+    {
+        $pref = (new NotificationPreference())->setUser($this->makeUser())->setNotificationType(NotificationType::ROOM_SLOT_AVAILABLE)
+            ->setInAppEnabled(true)->setEmailEnabled(true)->setPushEnabled(true);
+        $this->stored = $pref;
+
+        $channels = $this->makeResolver()->resolve($this->makeUser(), NotificationType::ROOM_SLOT_AVAILABLE);
+        $this->assertTrue($channels->email);
+        $this->assertTrue($channels->push);
+        $this->assertSame('PREFERENCE', $channels->source);
+    }
+
     public function test_resolver_planning_deployed_instrumentist_default_email_true(): void
     {
         $this->stored = null;

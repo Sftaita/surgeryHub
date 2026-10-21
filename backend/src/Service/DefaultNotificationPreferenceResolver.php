@@ -55,6 +55,8 @@ use Doctrine\ORM\EntityManagerInterface;
  *   - SURGEON_MISSION_REQUEST_CREATED
  *     (Lot 5, D-099):                       inApp=true, email=false (manager side, same reasoning
  *                                           as CATALOGUE_REQUEST_CREATED — not urgent)
+ *   - ROOM_SLOT_AVAILABLE (D-161):         inApp=true, email=false, push=true — push by default,
+ *                                           email only when the surgeon opts in.
  *   - All others (pool, coverage, updates): inApp=true, email=false (informational)
  *
  *   - ENCODING_REMINDER_D1 (H5a):          inApp=true (no in-app item exists), email=true, push=true —
@@ -143,6 +145,9 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::ENCODING_REMINDER,
         // D-136 — the hours reminder was always push first (unconditional): unchanged.
         NotificationType::MISSION_HOURS_REMINDER,
+        // D-161 — a room that just became available: push is the standard channel; the email
+        // stays off unless the surgeon turns it on (never an automatic fallback).
+        NotificationType::ROOM_SLOT_AVAILABLE,
     ];
 
     public function __construct(

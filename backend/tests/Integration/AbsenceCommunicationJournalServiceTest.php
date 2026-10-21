@@ -8,6 +8,7 @@ use App\Entity\SurgeonAbsenceCommunication;
 use App\Entity\SurgeonAbsenceCommunicationDelivery;
 use App\Entity\User;
 use App\Enum\AbsenceCommunicationStatus;
+use App\Enum\AbsenceCommunicationType;
 use App\Service\AbsenceCommunicationJournalService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
@@ -98,16 +99,39 @@ final class AbsenceCommunicationJournalServiceTest extends KernelTestCase
 
     private function makeDelivery(User $surgeon, Hospital $site, User $recipient): SurgeonAbsenceCommunicationDelivery
     {
-        $absence = $this->makeAbsence($surgeon);
-        $result = $this->service->recordRoomRelease(
-            $absence, $site, $surgeon,
-            occurrences: [['postId' => 1, 'date' => (new \DateTimeImmutable('today'))->format('Y-m-d'), 'period' => 'MATIN']],
-            recipients: [$recipient],
-            subject: 'Libération de salle — Test',
-            body: '<p>Test</p>',
-        );
-        $this->createdIds['communications'][] = $result['communication']->getId();
-        return $result['deliveries'][0];
+        return $this->recordCommunication($this->makeAbsence($surgeon), $site, $surgeon, [$recipient])[0];
+    }
+
+    /**
+     * A historical ROOM_RELEASE communication with one SCHEDULED delivery per recipient, as
+     * D-114 wrote them (D-161: no producer any more — the delivery journal still serves the
+     * block-management communications and keeps the history readable).
+     *
+     * @param list<User> $recipients
+     * @return list<SurgeonAbsenceCommunicationDelivery>
+     */
+    private function recordCommunication(Absence $absence, Hospital $site, User $surgeon, array $recipients): array
+    {
+        $communication = (new SurgeonAbsenceCommunication())
+            ->setAbsence($absence)->setSurgeon($surgeon)->setSite($site)
+            ->setType(AbsenceCommunicationType::ROOM_RELEASE)->setRevisionNumber(0)
+            ->setSubjectSnapshot('Libération de salle — Test')->setBodySnapshot('<p>Test</p>')
+            ->setOccurrencesSnapshot([['postId' => 1, 'date' => (new \DateTimeImmutable('today'))->format('Y-m-d'), 'period' => 'MATIN']])
+            ->setAbsenceDateStartSnapshot($absence->getDateStart())->setAbsenceDateEndSnapshot($absence->getDateEnd());
+        $this->em->persist($communication);
+        $deliveries = [];
+        foreach ($recipients as $recipient) {
+            $delivery = (new SurgeonAbsenceCommunicationDelivery())
+                ->setRecipient($recipient)->setRecipientEmailSnapshot((string) $recipient->getEmail())
+                ->setStatus(AbsenceCommunicationStatus::SCHEDULED);
+            $communication->addDelivery($delivery);
+            $this->em->persist($delivery);
+            $deliveries[] = $delivery;
+        }
+        $this->em->flush();
+        $this->createdIds['communications'][] = $communication->getId();
+
+        return $deliveries;
     }
 
     // ── État initial ─────────────────────────────────────────────────────────
@@ -233,16 +257,7 @@ final class AbsenceCommunicationJournalServiceTest extends KernelTestCase
         $colleagueB = $this->makeUser('ROLE_SURGEON');
         $site = $this->makeSite();
 
-        $absence = $this->makeAbsence($surgeon);
-        $result = $this->service->recordRoomRelease(
-            $absence, $site, $surgeon,
-            occurrences: [['postId' => 1, 'date' => (new \DateTimeImmutable('today'))->format('Y-m-d'), 'period' => 'MATIN']],
-            recipients: [$colleagueA, $colleagueB],
-            subject: 'Libération de salle — Test',
-            body: '<p>Test</p>',
-        );
-        $this->createdIds['communications'][] = $result['communication']->getId();
-        [$deliveryA, $deliveryB] = $result['deliveries'];
+        [$deliveryA, $deliveryB] = $this->recordCommunication($this->makeAbsence($surgeon), $site, $surgeon, [$colleagueA, $colleagueB]);
 
         $this->service->recordDeliveryFailure($deliveryA->getId(), 'boom', final: true);
         $this->service->recordDeliverySuccess($deliveryB->getId());

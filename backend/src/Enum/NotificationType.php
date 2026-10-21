@@ -199,6 +199,13 @@ enum NotificationType: string
     // MissionLifecycleChangedMessageHandler), email=false par défaut. 27 caractères (< 32).
     case ROOM_TAKEOVER_MISSION_OFFER = 'ROOM_TAKEOVER_MISSION_OFFER';
 
+    // ── Salle opératoire disponible (D-161) ──────────────────────────────────
+    // Aux chirurgiens autorisés à reprendre la salle (affiliés au site, sauf le chirurgien
+    // absent) quand un créneau `ReleasedOperatingRoomSlot` vient réellement d'être créé.
+    // Remplace l'e-mail automatique « Libération de salle » (D-114) : push par défaut, e-mail
+    // uniquement si le chirurgien l'active dans ses préférences. 19 caractères (< 32).
+    case ROOM_SLOT_AVAILABLE = 'ROOM_SLOT_AVAILABLE';
+
     // ── H5a — email flows migrated to NotificationDispatcher ─────────────────
     // Encoding reminder D+1 (D-083) — RETIRED by D-143 (replaced by ENCODING_REMINDER,
     // J+1/J+2/J+4). Value kept so the existing outbound / dispatch history keeps its type.
@@ -309,7 +316,7 @@ enum NotificationType: string
             self::PLANNING_DEPLOYED_SURGEON, self::SURGEON_POST_COVERED, self::SURGEON_POST_UNCOVERED,
             self::ABSENCE_SURGEON_MISSION_OPENED, self::ABSENCE_OCCURRENCE_UNCOVERED, self::MISSION_UNCOVERED_ESCALATION,
             self::SURGEON_MISSION_OPEN_PUBLISHED, self::SURGEON_MISSION_REQUEST_ACCEPTED, self::SURGEON_MISSION_REQUEST_REJECTED,
-            self::ENCODING_ANOMALY_RESOLVED, self::ENCODING_SUBMITTED => [$s],
+            self::ENCODING_ANOMALY_RESOLVED, self::ENCODING_SUBMITTED, self::ROOM_SLOT_AVAILABLE => [$s],
 
             self::PLANNING_DEPLOYED_INSTRUMENTIST, self::OPEN_MISSION_AVAILABLE, self::PLANNING_MISSION_REASSIGNED,
             self::PLANNING_MISSION_RELEASED, self::MISSION_OFFERED, self::MISSION_ASSIGNED_DIRECTLY,

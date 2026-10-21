@@ -6,6 +6,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\CatalogueRequestKind;
 use App\Enum\NotificationType;
+use App\Notification\ReleasedRoomAvailabilityNotifier;
 
 /**
  * Point 4 (audit UX) — cible de navigation structurée pour une notification, calculée
@@ -32,6 +33,7 @@ final class NotificationTargetResolver
         User $recipient,
         ?int $requestId = null,
         ?CatalogueRequestKind $kind = null,
+        ?int $roomSlotId = null,
     ): ?string {
         $roles = $recipient->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
@@ -78,6 +80,12 @@ final class NotificationTargetResolver
         // NotificationEvent pour le contexte.
         if ($type === NotificationType::ROOM_TAKEOVER_MISSION_OFFER && $isInstrumentist) {
             return '/app/i/offers';
+        }
+
+        // D-161 — une salle disponible se reprend depuis « Salles disponibles », ouverte sur le
+        // créneau annoncé (le serveur y revérifie qu'il est toujours disponible).
+        if ($type === NotificationType::ROOM_SLOT_AVAILABLE && $isSurgeon) {
+            return ReleasedRoomAvailabilityNotifier::roomsPath($roomSlotId);
         }
 
         // D-143 — une relance ou un signalement mène directement à l'écran qui permet d'agir :

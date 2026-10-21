@@ -169,7 +169,7 @@ export interface AbsenceCommunicationSiteSettingUpdateV2 {
 
 // ── Communication des absences chirurgiens — Lot C (D-114) : rattrapage ──────
 
-export type BackfillRoomReleaseStatus = "WILL_SEND" | "NO_NEW_OCCURRENCE" | "NO_RECIPIENT" | "NO_FUTURE_BLOCK" | "DISABLED";
+export type BackfillRoomReleaseStatus = "WILL_SEND" | "NO_NEW_OCCURRENCE" | "NO_RECIPIENT" | "NO_FUTURE_BLOCK" | "DISABLED" | "RETIRED";
 export type BackfillBlockManagementStatus = "WILL_SEND_NOW" | "WILL_SCHEDULE" | "ALREADY_PROCESSED" | "DISABLED" | "MISSING_CONFIG" | "ABSENCE_ALREADY_ENDED";
 
 export interface BackfillSiteActionV2 {

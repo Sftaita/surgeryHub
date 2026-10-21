@@ -15,7 +15,6 @@ use App\Service\AbsenceMissionReactionService;
 use App\Service\AuditService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
-use App\Service\RoomReleaseCommunicationService;
 use App\Service\BlockManagementCommunicationService;
 use App\Service\ReleasedOperatingRoomSlotService;
 use App\Message\AbsenceSelfDeclaredMessage;

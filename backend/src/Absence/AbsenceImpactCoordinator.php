@@ -7,6 +7,7 @@ use App\Entity\Absence;
 use App\Entity\User;
 use App\Enum\AbsenceImpactLevel;
 use App\Message\AbsenceImpactNotificationMessage;
+use App\Message\ReleasedRoomSlotsCreatedMessage;
 use App\Service\AbsenceImpactReconciliationService;
 use App\Service\AbsenceImpactService;
 use App\Service\AbsenceImpactSummaryService;
@@ -14,7 +15,6 @@ use App\Service\AbsenceMissionReactionService;
 use App\Service\BlockManagementCommunicationService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Service\ReleasedOperatingRoomSlotService;
-use App\Service\RoomReleaseCommunicationService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -35,8 +35,11 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *   3. ABSENCE_IMPACT_EVALUATED + USER_PLANNING_IMPACTED in activity_event;
  *   4. N1 / N2 people informed asynchronously by AbsenceImpactNotifier (one message);
  *   5. the consolidated manager summary (D-105) and the surgeon-absence communications
- *      (D-114: room release, block management, released slots — unrelated to the person
- *      notifications above).
+ *      (D-114: block management, released slots — unrelated to the person notifications
+ *      above);
+ *   6. D-161 — the rooms really created in step 5 are announced to the surgeons who may take
+ *      them over (ReleasedRoomSlotsCreatedMessage → ReleasedRoomAvailabilityNotifier), a
+ *      distinct asynchronous operation that replaces the D-114 « Libération de salle » email.
  */
 class AbsenceImpactCoordinator
 {
@@ -49,7 +52,6 @@ class AbsenceImpactCoordinator
         private readonly InstrumentistAbsenceOccurrenceImpactService $instrumentistOccurrences,
         private readonly AbsenceImpactReconciliationService $reconciliation,
         private readonly AbsenceImpactSummaryService $summary,
-        private readonly RoomReleaseCommunicationService $roomRelease,
         private readonly BlockManagementCommunicationService $blockManagement,
         private readonly ReleasedOperatingRoomSlotService $releasedSlots,
         private readonly AbsenceImpactActivityRecorder $activity,
@@ -173,13 +175,17 @@ class AbsenceImpactCoordinator
             );
         }
         if ($isUpdate) {
-            $this->roomRelease->onAbsenceUpdated($absence, $actor);
             $this->blockManagement->onAbsenceUpdated($absence, $actor, $previousStart, $previousEnd);
-            $this->releasedSlots->onAbsenceUpdated($absence, $actor);
+            $createdSlotIds = $this->releasedSlots->onAbsenceUpdated($absence, $actor);
         } else {
-            $this->roomRelease->onAbsenceCreated($absence, $actor);
             $this->blockManagement->onAbsenceCreated($absence, $actor);
-            $this->releasedSlots->onAbsenceCreated($absence, $actor);
+            $createdSlotIds = $this->releasedSlots->onAbsenceCreated($absence, $actor);
+        }
+
+        // 6. Announce only the rooms THIS processing really created (an existing room, a
+        //    replaced post or a failed creation is never announced, D-161).
+        if ($createdSlotIds !== []) {
+            $this->bus->dispatch(new ReleasedRoomSlotsCreatedMessage($createdSlotIds, (int) $absence->getId()));
         }
 
         return new AbsenceProcessingResult(

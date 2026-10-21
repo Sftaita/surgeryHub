@@ -3224,7 +3224,11 @@ automatiquement par `POST /api/absences`, `PATCH /api/absences/{id}`, `POST
 un `SURGEON`, deux communications indépendantes peuvent se déclencher par site concerné (au
 moins une occurrence `BLOCK` future de son planning habituel dans la période de l'absence,
 jamais `CONSULTATION`) :
-- **Libération de salle (Lot A)** — `notifyColleaguesEnabled` : un email individuel à chaque
+- **Libération de salle (Lot A)** — **retiré par D-161** : plus aucun e-mail automatique aux
+  confrères. Les salles réellement créées sont annoncées par la notification
+  `ROOM_SLOT_AVAILABLE` (push par défaut, e-mail seulement si le chirurgien l'a activé ; voir
+  `GET /api/me/notification-preferences`). `notifyColleaguesEnabled` gouverne désormais cette
+  annonce. Comportement historique : un email individuel à chaque
   chirurgien collègue actif affilié au site (le chirurgien absent exclu). Aucune
   correction/rétractation : raccourcir ou supprimer l'absence ne déclenche jamais rien pour ce
   flux ; un allongement révélant de nouvelles occurrences BLOCK jamais annoncées déclenche un
@@ -3514,6 +3518,15 @@ l'espace chirurgien, contrairement au manager ci-dessus.
 
 **Query params :** `siteId?`, `status?`, `page?`, `limit?`, `dateFrom?`/`dateTo?`, `period?`
 (mêmes formats/bornes que l'endpoint manager).
+
+#### `GET /api/me/available-rooms/{id}` (D-161)
+
+**AuthZ :** `ROLE_SURGEON` (403 sinon). Le créneau annoncé par une notification « Salle
+opératoire disponible », relu à l'ouverture, avec exactement les mêmes règles de visibilité que
+`GET /api/me/available-rooms` : sites du chirurgien, jamais le passé, jamais une salle reprise
+par un confrère. Réponse `200` : même forme qu'un élément de la liste (`status`,
+`allowedActions`, …). `404` `{"error": {"code": "ROOM_SLOT_UNAVAILABLE"}}` quand le créneau
+n'existe pas ou n'est plus visible. La reprise reste revérifiée par `take-over`.
 
 #### `GET /api/me/available-rooms/count`
 
@@ -7170,6 +7183,11 @@ complété ou corrigé interventions / matériel ; une notification par série d
 regroupées sur 2 h ; payload `missionId`, `missionDate`, `siteName`, `surgeonName`, jamais de
 détail d'encodage) — configurable, mêmes défauts. `CATALOGUE_REQUEST_CREATED` annonce l'auteur
 réel de la demande (instrumentiste, chirurgien, manager), jamais « un instrumentiste » par défaut.
+**D-161 :** `ROOM_SLOT_AVAILABLE` (chirurgien : une salle de l'un de ses sites vient de se
+libérer et peut être reprise ; payload `roomSlotId`, `siteName`, `occurrenceDate`, `dayLabel`,
+`startTime`, `endTime`, `periodLabel`) — configurable, défauts in-app oui / **push oui** /
+**e-mail non**, pour tous les comptes existants comme nouveaux. Jamais d'e-mail de secours sans
+abonnement push.
 
 ```
 PATCH /api/me/notification-preferences/{type}
@@ -7186,7 +7204,10 @@ exactement leur comportement précédent. `400` si `{type}` n'est pas une valeur
 **Frontend :** `frontend/src/app/features/notifications/NotificationPreferencesSection.tsx`,
 monté sur les deux pages Profil (manager et instrumentiste). Le canal push n'y est pas
 proposé — il dépend d'un abonnement d'appareil (voir §40), pas d'un simple booléen par
-catégorie.
+catégorie. **D-161 :** exception, `ROOM_SLOT_AVAILABLE` a sa rubrique dédiée
+(`RoomAvailabilityNotificationsCard`, profil chirurgien) avec les interrupteurs push et e-mail
+(`pushEnabled`, `emailEnabled`), l'état réel du push sur l'appareil affiché à part ; elle
+n'apparaît pas dans la liste générique.
 
 ### 41.3 Badge "offres non lues" (instrumentiste)
 

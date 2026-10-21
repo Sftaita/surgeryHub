@@ -14360,3 +14360,81 @@ absence corrompue → refusée sélectionnée, ignorée sans blocage dans le par
 garde (validation, sélection, refus sans sélection) a été retirée isolément : 3, 7 et 1 tests
 échouent. Dry-run sur copie locale du dump prod du 2026-10-20 avec `--absence=54,57,79,80,81,82,83`
 : 7 absences, 9 occurrences, 9 salles, 0 remplacée, 0 à valider, aucune ligne Deltour.
+
+
+## D-161 — Salles opératoires disponibles : push par défaut, e-mail sur option (2026-10-21)
+
+### Contexte
+
+Chaque absence d'un chirurgien envoyait automatiquement l'e-mail « Libération de salle »
+(D-114, `RoomReleaseCommunicationService`) à tous les chirurgiens actifs affiliés au site, sans
+préférence individuelle possible (contournement volontaire du résolveur, ADR D-114) : en
+production, 11 e-mails par absence (absences #91 à #93, 2026-10-20). Cet e-mail était calculé
+sur les occurrences théoriques du planning, et non sur les créneaux réellement créés : il pouvait
+annoncer une salle qui n'existait pas (mission déjà commencée, D-158 ; poste remplacé, D-159).
+
+### Décision
+
+1. **Nouvelle catégorie `ROOM_SLOT_AVAILABLE`**, destinée aux chirurgiens et configurable.
+   Défauts produit (`DefaultNotificationPreferenceResolver`) : centre de notifications et push
+   activés, **e-mail désactivé**. Elle passe par l'architecture existante
+   (`NotificationDispatcher`) : aucune seconde architecture de notifications.
+2. **Annonce séparée de la création.** `ReleasedOperatingRoomSlotService::onAbsenceCreated()`
+   et `onAbsenceUpdated()` renvoient les identifiants des créneaux réellement créés par l'appel.
+   Seul `AbsenceImpactCoordinator` les transmet (`ReleasedRoomSlotsCreatedMessage`, asynchrone)
+   à `ReleasedRoomAvailabilityNotifier`. Le rattrapage (`app:available-rooms:backfill`, D-160)
+   crée des créneaux sans jamais les annoncer, sauf décision explicite ultérieure.
+3. **Ciblage inchangé.** Le réglage de site `notifyColleaguesEnabled` est conservé (désactivé :
+   aucune annonce, la salle reste visible dans SurgicalHub). Sont visés les chirurgiens actifs
+   affiliés au site, jamais le chirurgien absent : ce sont exactement ceux que
+   `ReleasedRoomSlotVoter::TAKE_OVER` autorise à reprendre la salle. Un créneau qui n'est plus
+   `AVAILABLE`, ou déjà passé, n'est annoncé à personne.
+4. **Un envoi par opération.** Le mode BATCH du dispatcher crée un élément dans le centre de
+   notifications par salle, mais un seul push et un seul e-mail par destinataire et par
+   opération. L'idempotence repose sur la clé `room_slot:{id}` : un rejeu Messenger ou une
+   nouvelle modification de l'absence n'annonce jamais deux fois la même salle.
+5. **Pas d'e-mail de secours.** La politique e-mail reste `WHEN_ENABLED` : sans abonnement
+   push, aucun e-mail n'est envoyé (push `SKIPPED / NO_PUSH_SUBSCRIPTION`) et le centre de
+   notifications reste le seul canal.
+6. **L'e-mail D-114 « Libération de salle » est retiré.** `RoomReleaseCommunicationService`
+   et les écritures `ROOM_RELEASE` du journal sont supprimés. Les communications historiques
+   restent lisibles. Le rattrapage manager des communications (D-114 Lot C) classe désormais
+   ce volet `RETIRED` : seule la Gestion du bloc reste rattrapable.
+7. **Deep link revérifié.** Le push et l'élément du centre de notifications ouvrent
+   `/app/s/planning/salles-disponibles?slot={id}`. La page relit le créneau via
+   `GET /api/me/available-rooms/{id}`, avec les mêmes règles de visibilité que la liste. Le
+   serveur répond 404 `ROOM_SLOT_UNAVAILABLE` quand la salle n'est plus disponible. La reprise
+   reste revérifiée sous verrou.
+8. **Préférences du chirurgien.** La rubrique « Notifications — Salles opératoires
+   disponibles » (profil) propose deux interrupteurs persistés en base (`NotificationPreference`).
+   Elle affiche à part l'état réel du push sur l'appareil (autorisation du navigateur et
+   abonnement), avec un bouton d'autorisation. La catégorie n'apparaît pas une seconde fois dans
+   la liste générique.
+9. **Invitation à activer le push (existante, D-143), adaptée au chirurgien.** La bannière
+   non bloquante de l'espace chirurgien (ordinateur et PWA) explique désormais l'intérêt pour
+   les salles disponibles. La permission n'est demandée qu'au clic ; le bouton « Plus tard »
+   reporte l'invitation de 7 jours, puis de 14 jours, puis ne la propose plus. Un refus du
+   navigateur n'est jamais redemandé, et le message qui suit un refus ne promet plus d'e-mail
+   de secours au chirurgien. Hors application installée, iOS ne prend pas en charge le push :
+   rien ne s'affiche alors.
+
+### Comptes existants
+
+Aucune migration. Audit de production du 2026-10-21 :
+- aucune ligne `notification_preference` n'existe pour cette nouvelle catégorie, ni pour aucune
+  préférence individuelle de l'ancien e-mail (qui n'en avait pas) ;
+- les 8 lignes existantes concernent d'autres types, et aucune n'est supprimée ni modifiée.
+
+Tous les chirurgiens, existants comme nouveaux, reçoivent donc le nouveau défaut : e-mail
+désactivé. Les seuls choix antérieurs étaient organisationnels : `notifyColleaguesEnabled`,
+activé sur les trois sites. Ils sont conservés.
+
+Deux chirurgiens actifs sur treize ont un abonnement push. Les autres ne verront les nouvelles
+salles que dans le centre de notifications tant qu'ils n'auront pas autorisé le push ou activé
+l'e-mail.
+
+### Hors périmètre
+
+- Une salle rendue par son repreneur, ou rouverte par l'absence du repreneur (D-124), n'était
+  pas annoncée avant ce changement et ne l'est toujours pas.
+- Aucune notification rétroactive pour les salles créées par le rattrapage D-160.

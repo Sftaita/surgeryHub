@@ -555,6 +555,15 @@ export async function getMyAvailableRooms(params?: {
 }
 
 /**
+ * D-161 — le créneau annoncé par une notification, relu par le serveur à l'ouverture (mêmes
+ * règles de visibilité que la liste). 404 `ROOM_SLOT_UNAVAILABLE` s'il ne l'est plus.
+ */
+export async function getMyAvailableRoom(slotId: number): Promise<ReleasedRoomSlotV2> {
+  const res = await apiClient.get(`/api/me/available-rooms/${slotId}`);
+  return res.data;
+}
+
+/**
  * D-124 — « Reprendre cette salle ». UNE seule action métier : le serveur réserve la salle ET
  * crée la Mission OPEN dans la même transaction — jamais deux appels côté client. 409
  * `ROOM_SLOT_ALREADY_TAKEN` (+ `error.takenBy`) si un autre chirurgien l'a prise avant.

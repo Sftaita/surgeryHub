@@ -42,6 +42,9 @@ vi.mock("../../features/push/PushPermissionCard", () => ({
 vi.mock("../../features/notifications/NotificationPreferencesSection", () => ({
   NotificationPreferencesSection: () => null,
 }));
+vi.mock("../../features/notifications/RoomAvailabilityNotificationsCard", () => ({
+  RoomAvailabilityNotificationsCard: () => <div data-testid="room-availability-notifications" />,
+}));
 
 const requestReplayMock = vi.fn();
 vi.mock("../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext", () => ({
@@ -218,5 +221,18 @@ describe("ProfilePage — section instrumentiste conditionnelle", () => {
 
     await screen.findByText("Jane Doe");
     expect(screen.queryByText("Mes compétences orthopédiques")).not.toBeInTheDocument();
+  });
+
+  it("D-161 — la rubrique « Salles opératoires disponibles » n'est proposée qu'au chirurgien", async () => {
+    fetchMeMock.mockResolvedValue(meResponse({ role: "SURGEON", instrumentistProfile: null }));
+    const { unmount } = renderPage();
+    await screen.findByText("Jane Doe");
+    expect(screen.getByTestId("room-availability-notifications")).toBeInTheDocument();
+    unmount();
+
+    fetchMeMock.mockResolvedValue(meResponse({ role: "INSTRUMENTIST" }));
+    renderPage();
+    await screen.findByText("Jane Doe");
+    expect(screen.queryByTestId("room-availability-notifications")).not.toBeInTheDocument();
   });
 });
