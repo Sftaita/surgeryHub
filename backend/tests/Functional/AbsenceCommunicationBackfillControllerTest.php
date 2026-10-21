@@ -397,7 +397,7 @@ final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
         }
         self::assertNotNull($item);
         self::assertTrue($item['selectable']);
-        self::assertSame('WILL_SEND', $item['sites'][0]['roomRelease']['status']);
+        self::assertSame('RETIRED', $item['sites'][0]['roomRelease']['status'], 'D-161 — room release email retired, never retroactive');
         self::assertSame('WILL_SEND_NOW', $item['sites'][0]['blockManagement']['status']);
 
         // Preview n'a rien créé.
@@ -409,7 +409,7 @@ final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
         self::assertSame('PROCESSED', $result['results'][0]['status']);
 
         $comms = $this->em->createQueryBuilder()->select('c')->from(SurgeonAbsenceCommunication::class, 'c')->where('c.absence = :a')->setParameter('a', $absence)->getQuery()->getResult();
-        self::assertCount(2, $comms, 'une ROOM_RELEASE + une BLOCK_MANAGEMENT_ABSENCE');
+        self::assertCount(1, $comms, 'une BLOCK_MANAGEMENT_ABSENCE (D-161 : plus de ROOM_RELEASE)');
     }
 
     // ── §13 : absence supprimée entre preview et execute ─────────────────────

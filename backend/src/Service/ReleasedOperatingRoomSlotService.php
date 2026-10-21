@@ -63,17 +63,26 @@ class ReleasedOperatingRoomSlotService
     ) {
     }
 
-    public function onAbsenceCreated(Absence $absence, User $actor): void
+    /**
+     * D-161 — renvoie les identifiants des créneaux réellement créés par CET appel : leur
+     * annonce aux chirurgiens est une opération distincte (ReleasedRoomSlotsCreatedMessage,
+     * dispatchée par AbsenceImpactCoordinator), jamais faite ici — le rattrapage
+     * (AvailableRoomsBackfillCommand) crée des créneaux sans jamais les annoncer.
+     *
+     * @return list<int>
+     */
+    public function onAbsenceCreated(Absence $absence, User $actor): array
     {
-        $this->react($absence, $actor);
+        return $this->react($absence, $actor);
     }
 
-    public function onAbsenceUpdated(Absence $absence, User $actor): void
+    /** @return list<int> identifiants des créneaux réellement créés (voir onAbsenceCreated()) */
+    public function onAbsenceUpdated(Absence $absence, User $actor): array
     {
         // Une extension de congé révèle de nouvelles occurrences (créées ci-dessous, déjà
         // filtrées par existsFor()) ; un raccourcissement ne révèle jamais rien de nouveau et
         // ne touche jamais les lignes déjà créées (aucune suppression ici, par construction).
-        $this->react($absence, $actor);
+        return $this->react($absence, $actor);
     }
 
     /**
@@ -142,8 +151,11 @@ class ReleasedOperatingRoomSlotService
         return $result;
     }
 
-    private function react(Absence $absence, User $actor): void
+    /** @return list<int> */
+    private function react(Absence $absence, User $actor): array
     {
+        $created = [];
+
         // D-124 — l'absent peut aussi être un REPRENEUR : sa Mission de reprise vient d'être
         // annulée par AbsenceMissionReactionService (appelé avant ce collaborateur) — rendre la
         // salle plutôt que la laisser CLAIMED sur une Mission annulée.
@@ -204,6 +216,7 @@ class ReleasedOperatingRoomSlotService
 
             /** @var ReleasedOperatingRoomSlot $slot */
             $slot = $this->em->find(ReleasedOperatingRoomSlot::class, (int) $this->em->getConnection()->lastInsertId());
+            $created[] = (int) $slot->getId();
 
             // D-124 — « salle rendue disponible », uniquement pour une ligne réellement créée
             // par CETTE exécution (jamais pour un doublon concurrent détaché ci-dessus).
@@ -232,6 +245,8 @@ class ReleasedOperatingRoomSlotService
             ]);
             $this->em->flush();
         }
+
+        return $created;
     }
 
     private function shiftPeriodConfig(Hospital $site, ShiftPeriod $period): ?ShiftPeriodConfig

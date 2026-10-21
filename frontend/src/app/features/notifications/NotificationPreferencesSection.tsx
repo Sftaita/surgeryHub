@@ -8,7 +8,10 @@ import {
 } from "./api/notifications.api";
 import { notificationTypeLabel } from "./notificationTypeLabels";
 
-const CHANNEL_LABELS: { key: keyof NotificationPreferencePatch; label: string }[] = [
+/** Types gérés par une rubrique dédiée (jamais deux interrupteurs pour un même réglage). */
+export const DEDICATED_SECTION_TYPES = ["ROOM_SLOT_AVAILABLE"];
+
+const CHANNEL_LABELS:{ key: keyof NotificationPreferencePatch; label: string }[] = [
   { key: "inAppEnabled", label: "Dans l'app" },
   { key: "emailEnabled", label: "E-mail" },
 ];
@@ -41,13 +44,16 @@ export function NotificationPreferencesSection() {
     return null;
   }
 
+  // D-161 — « Salles opératoires disponibles » a sa propre rubrique (push + e-mail).
+  const items = query.data.filter((pref) => !DEDICATED_SECTION_TYPES.includes(pref.type));
+
   return (
     <Paper variant="outlined" sx={{ p: 2, borderRadius: 3 }}>
       <Typography variant="subtitle1" fontWeight={700} mb={1.5}>
         Catégories de notifications
       </Typography>
       <Stack spacing={1.5}>
-        {query.data.map((pref) => (
+        {items.map((pref) => (
           <Box key={pref.type}>
             <Typography variant="body2" fontWeight={600} mb={0.25}>
               {notificationTypeLabel(pref.type)}

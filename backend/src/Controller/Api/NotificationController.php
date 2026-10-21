@@ -127,6 +127,7 @@ final class NotificationController extends AbstractController
                 $recipient,
                 isset($payload['requestId']) ? (int) $payload['requestId'] : null,
                 isset($payload['kind']) ? CatalogueRequestKind::tryFrom((string) $payload['kind']) : null,
+                isset($payload['roomSlotId']) ? (int) $payload['roomSlotId'] : null,
             )
             : null;
 

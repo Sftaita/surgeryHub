@@ -10,7 +10,6 @@ use App\Entity\User;
 use App\Enum\AbsenceBackfillBlockManagementAction;
 use App\Enum\AbsenceBackfillRoomReleaseAction;
 use App\Enum\AbsenceCommunicationStatus;
-use App\Repository\UserRepository;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -34,6 +33,10 @@ use Doctrine\ORM\EntityManagerInterface;
  * find-or-create + comparaison de snapshot pour Gestion du bloc), donc rejouer ce rattrapage
  * plusieurs fois sur la même absence ne crée jamais de doublon — exactement le même
  * mécanisme qu'un vrai `PATCH` sans changement réel.
+ *
+ * D-161 — le volet « Libération de salle » est retiré (`RoomReleaseCommunicationService`
+ * supprimé) : l'annonce des salles disponibles n'est jamais rétroactive, seul le volet
+ * Gestion du bloc reste rattrapable ici.
  */
 class AbsenceCommunicationBackfillService
 {
@@ -41,8 +44,6 @@ class AbsenceCommunicationBackfillService
         private readonly EntityManagerInterface $em,
         private readonly SurgeonAbsenceBlockOccurrenceResolver $resolver,
         private readonly AbsenceCommunicationJournalService $journal,
-        private readonly UserRepository $userRepository,
-        private readonly RoomReleaseCommunicationService $roomReleaseCommunicationService,
         private readonly BlockManagementCommunicationService $blockManagementCommunicationService,
     ) {
     }
@@ -170,11 +171,9 @@ class AbsenceCommunicationBackfillService
 
         $before = $this->snapshotCommunicationIds($absence);
 
-        // Room Release : `onAbsenceUpdated()` est intrinsèquement delta-aware (n'annonce
-        // jamais deux fois la même occurrence) — strictement identique à un vrai PATCH sans
-        // changement de dates, donc naturellement idempotent sur plusieurs exécutions du
-        // rattrapage (§11 : aucune seconde couche d'idempotence nécessaire).
-        $this->roomReleaseCommunicationService->onAbsenceUpdated($absence, $actor);
+        // D-161 — plus aucun e-mail « Libération de salle » : l'annonce des salles est faite
+        // par ReleasedRoomAvailabilityNotifier à la création réelle d'un créneau, jamais
+        // rétroactivement par un rattrapage (classifyRoomRelease() : RETIRED).
 
         // Gestion du bloc : §14 — jamais de notification rétroactive pour un congé déjà
         // entièrement terminé. `onAbsenceUpdated()` avec les dates courantes comme
@@ -245,7 +244,7 @@ class AbsenceCommunicationBackfillService
                     static fn (array $o) => $o['date'] >= $today,
                 ));
 
-                $roomRelease = $this->classifyRoomRelease($absence, $surgeon, $site, $futureOccurrences);
+                $roomRelease = $this->classifyRoomRelease();
                 $blockManagement = $this->classifyBlockManagement($absence, $site);
 
                 if ($roomRelease['status'] === AbsenceBackfillRoomReleaseAction::WILL_SEND->value
@@ -280,40 +279,15 @@ class AbsenceCommunicationBackfillService
     }
 
     /**
-     * Rejoue en LECTURE SEULE exactement les conditions de
-     * `RoomReleaseCommunicationService::react()` — jamais sa logique d'écriture.
+     * D-161 — l'e-mail automatique « Libération de salle » (D-114) n'existe plus : les salles
+     * sont annoncées (push, e-mail sur option) à la création réelle d'un créneau, jamais par
+     * ce rattrapage. Toujours RETIRED, jamais sélectionnable pour ce volet.
      *
-     * @param array<int, array{post: \App\Entity\SurgeonSchedulePost, date: \DateTimeImmutable}> $futureOccurrences
      * @return array{status: string, recipientCount: int, newOccurrenceCount: int}
      */
-    private function classifyRoomRelease(Absence $absence, User $surgeon, Hospital $site, array $futureOccurrences): array
+    private function classifyRoomRelease(): array
     {
-        $config = $this->em->getRepository(AbsenceCommunicationSiteConfig::class)->findOneBy(['site' => $site]);
-        if ($config === null || !$config->isNotifyColleaguesEnabled()) {
-            return ['status' => AbsenceBackfillRoomReleaseAction::DISABLED->value, 'recipientCount' => 0, 'newOccurrenceCount' => 0];
-        }
-
-        if (empty($futureOccurrences)) {
-            return ['status' => AbsenceBackfillRoomReleaseAction::NO_FUTURE_BLOCK->value, 'recipientCount' => 0, 'newOccurrenceCount' => 0];
-        }
-
-        $alreadyAnnounced = $this->journal->alreadyAnnouncedOccurrenceKeys($absence, $site);
-        $delta = array_values(array_filter(
-            $futureOccurrences,
-            static fn (array $o) => !isset($alreadyAnnounced[AbsenceCommunicationJournalService::occurrenceKey(
-                $o['post']->getId(), $o['date']->format('Y-m-d'),
-            )]),
-        ));
-        if (empty($delta)) {
-            return ['status' => AbsenceBackfillRoomReleaseAction::NO_NEW_OCCURRENCE->value, 'recipientCount' => 0, 'newOccurrenceCount' => 0];
-        }
-
-        $recipients = $this->userRepository->findSurgeonsAffiliatedToSite($site->getId(), excludeUserId: $surgeon->getId(), activeOnly: true);
-        if (empty($recipients)) {
-            return ['status' => AbsenceBackfillRoomReleaseAction::NO_RECIPIENT->value, 'recipientCount' => 0, 'newOccurrenceCount' => count($delta)];
-        }
-
-        return ['status' => AbsenceBackfillRoomReleaseAction::WILL_SEND->value, 'recipientCount' => count($recipients), 'newOccurrenceCount' => count($delta)];
+        return ['status' => AbsenceBackfillRoomReleaseAction::RETIRED->value, 'recipientCount' => 0, 'newOccurrenceCount' => 0];
     }
 
     /**

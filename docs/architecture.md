@@ -1846,7 +1846,42 @@ Chaque primitive réutilisée est déjà individuellement idempotente (garde de 
 transactionnelle ; une anomalie isolée est journalisée et n'interrompt jamais le reste du
 scan. Voir docs/decisions.md D-106 pour le détail des catégories et des choix de conception.
 
-### Communication des absences chirurgiens — Lot A « Libération de salle » (D-114)
+### Salles opératoires disponibles — annonce aux chirurgiens (D-161)
+
+Remplace l'e-mail automatique « Libération de salle » (Lot A ci-dessous, retiré) : la création
+technique d'un créneau et son annonce sont deux opérations distinctes.
+
+```
+AbsenceImpactCoordinator (création / modification d'absence)
+        │
+        ├── ReleasedOperatingRoomSlotService::onAbsenceCreated()/onAbsenceUpdated()
+        │       → renvoie les ids des créneaux RÉELLEMENT créés par cet appel
+        │         (déjà existant, poste remplacé, à valider, collision : jamais renvoyés)
+        └── ReleasedRoomSlotsCreatedMessage (async, seulement si ≥ 1 créneau créé)
+                ▼
+        ReleasedRoomAvailabilityNotifier::announce()
+                ├── relit les créneaux : encore AVAILABLE et pas passés
+                ├── AbsenceCommunicationSiteConfig::notifyColleaguesEnabled (site)
+                ├── UserRepository::findSurgeonsAffiliatedToSite() — actifs, jamais l'absent
+                └── NotificationDispatcher::dispatchBatch() — ROOM_SLOT_AVAILABLE
+                        in-app par salle, 1 push + 1 e-mail max par destinataire et opération,
+                        canaux décidés par NotificationPreferenceResolver
+                        (défaut : in-app + push, e-mail désactivé), clé `room_slot:{id}`
+
+AvailableRoomsBackfillCommand → ReleasedOperatingRoomSlotService (création seule, jamais d'annonce)
+```
+
+Le push et l'élément in-app ouvrent `/app/s/planning/salles-disponibles?slot={id}`. La page
+relit le créneau (`GET /api/me/available-rooms/{id}`, mêmes règles de visibilité que la liste),
+et la reprise reste revérifiée sous verrou (D-124). Les préférences du chirurgien sont dans
+`RoomAvailabilityNotificationsCard` (profil) : push et e-mail sont deux interrupteurs
+indépendants, l'état réel du push sur l'appareil est affiché à part, et l'e-mail n'est jamais
+activé automatiquement.
+
+### Communication des absences chirurgiens — Lot A « Libération de salle » (D-114) — retiré par D-161
+
+> D-161 : `RoomReleaseCommunicationService` est supprimé, plus aucune communication
+> `ROOM_RELEASE` n'est écrite. La description ci-dessous reste pour lire l'historique.
 
 Nouvelle couche, indépendante des réactions D-062/D-103/D-104/D-105/D-107/D-112 ci-dessus
 (aucune Mission/PlanningAlert/PlanningOccurrenceException mutée) : quand un chirurgien

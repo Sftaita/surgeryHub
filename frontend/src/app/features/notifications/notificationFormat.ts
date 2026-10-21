@@ -30,6 +30,8 @@ const TITLES: Record<string, string> = {
   ABSENCE_INSTRUMENTIST_REASSIGNED: "Mission réaffectée (absence)",
   PLANNING_RESENT_MANUAL: "Planning renvoyé",
   ROOM_TAKEOVER_MISSION_OFFER: "Salle reprise — mission disponible",
+  // D-161 — une salle opératoire vient de se libérer et peut être reprise.
+  ROOM_SLOT_AVAILABLE: "Salle opératoire disponible",
   // H4 (D-130) — absences, niveaux N1 (créneau habituel) / N2 (planning en préparation).
   ABSENCE_OCCURRENCE_CANCELLED: "Absence du chirurgien — créneau impacté",
   ABSENCE_OCCURRENCE_UNCOVERED: "Absence de votre instrumentiste",
@@ -88,6 +90,19 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
   const payload = n.payload ?? {};
   const siteName = typeof payload.siteName === "string" ? payload.siteName : null;
   const missionDate = typeof payload.missionDate === "string" ? payload.missionDate : null;
+
+  // D-161 — built only from the server payload; availability is re-checked on opening.
+  if (n.eventType === "ROOM_SLOT_AVAILABLE") {
+    const dayLabel = typeof payload.dayLabel === "string" ? payload.dayLabel : null;
+    const startTime = typeof payload.startTime === "string" ? payload.startTime : null;
+    const endTime = typeof payload.endTime === "string" ? payload.endTime : null;
+    const periodLabel = typeof payload.periodLabel === "string" ? payload.periodLabel : null;
+    const when = [dayLabel, startTime && endTime ? `${startTime}–${endTime}` : periodLabel].filter(Boolean).join(", ");
+    const where = [siteName, when || null].filter(Boolean).join(" — ");
+    return where
+      ? `${where}. Une salle vient de se libérer et peut être récupérée.`
+      : "Une salle vient de se libérer et peut être récupérée.";
+  }
 
   // D-125 — built only from the server payload (names snapshotted), never recomputed.
   // MISSION_ASSIGNED_DIRECTLY is a confirmation: never phrased as a request.

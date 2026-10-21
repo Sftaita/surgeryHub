@@ -56,6 +56,8 @@ class NotificationDispatcher
         'toInstrumentistId', 'toInstrumentistName', 'actorName',
         // H4 (D-130) — absence impacts
         'level', 'status', 'absenceId', 'occurrenceDate', 'surgeonName', 'postId',
+        // D-161 — released room announced
+        'roomSlotId',
     ];
 
     public function __construct(

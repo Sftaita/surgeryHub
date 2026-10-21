@@ -13,6 +13,7 @@ import { PwaInstallMenuItem } from "../../features/pwa-install/PwaInstallMenuIte
 import { PushPermissionCard } from "../../features/push/PushPermissionCard";
 import { MedVueIntegrationCard } from "../../features/medvue-integration/MedVueIntegrationCard";
 import { NotificationPreferencesSection } from "../../features/notifications/NotificationPreferencesSection";
+import { RoomAvailabilityNotificationsCard } from "../../features/notifications/RoomAvailabilityNotificationsCard";
 import { EmptyState } from "../../ui/EmptyState";
 import BlockedInstrumentistsCard from "../../features/incompatibilities/components/BlockedInstrumentistsCard";
 import { useInstrumentistOnboardingReplay } from "../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext";
@@ -163,6 +164,8 @@ export default function ProfilePage() {
       <Divider />
 
       <PushPermissionCard />
+      {/* D-161 — salles opératoires disponibles : push par défaut, e-mail sur option. */}
+      {user.role === "SURGEON" && <RoomAvailabilityNotificationsCard />}
       <NotificationPreferencesSection />
 
       {/* D-152 — le chirurgien gère ses instrumentistes bloqués. */}

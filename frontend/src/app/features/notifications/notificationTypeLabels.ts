@@ -32,6 +32,8 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   CATALOGUE_REQUEST_RESOLVED: "Votre proposition Catalogue acceptée",
   CATALOGUE_REQUEST_IGNORED: "Votre proposition Catalogue non retenue",
   ROOM_TAKEOVER_MISSION_OFFER: "Salle reprise — mission disponible pour vous",
+  // D-161 — rubrique dédiée (RoomAvailabilityNotificationsCard), hors liste générique.
+  ROOM_SLOT_AVAILABLE: "Salles opératoires disponibles",
   // H4 (D-130) — absences avant publication (créneau habituel / planning en préparation).
   ABSENCE_OCCURRENCE_CANCELLED: "Absence du chirurgien sur un créneau prévu ou habituel",
   ABSENCE_OCCURRENCE_UNCOVERED: "Absence de votre instrumentiste sur un créneau prévu ou habituel",

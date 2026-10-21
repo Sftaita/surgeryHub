@@ -332,10 +332,11 @@ final class AbsenceRoomReleaseFunctionalTest extends WebTestCase
         self::assertSame('07:45', $slots[$decWed1->format('Y-m-d')]->getStartTime()?->format('H:i'));
         self::assertSame('13:00', $slots[$decWed1->format('Y-m-d')]->getEndTime()?->format('H:i'));
 
-        // Room Release journal: colleagues informed for both months.
+        // D-161 — the D-114 « Libération de salle » email is retired: the rooms are announced
+        // by ReleasedRoomAvailabilityNotifier (RoomSlotAvailableNotificationFunctionalTest).
         $conn = $this->em->getConnection();
         foreach ([$novAbsence, $dec1Absence] as $absenceId) {
-            self::assertSame(1, (int) $conn->fetchOne("SELECT COUNT(*) FROM surgeon_absence_communication WHERE absence_id = ? AND type = 'ROOM_RELEASE'", [$absenceId]));
+            self::assertSame(0, (int) $conn->fetchOne("SELECT COUNT(*) FROM surgeon_absence_communication WHERE absence_id = ? AND type = 'ROOM_RELEASE'", [$absenceId]));
         }
 
         // A colleague navigating month by month sees each month's rooms (visible window only).
@@ -352,7 +353,9 @@ final class AbsenceRoomReleaseFunctionalTest extends WebTestCase
         // Re-declaring an overlapping day never creates a second slot nor a second announcement.
         $this->declare($client, $token, $decWed1, $decWed1);
         self::assertCount(4, $this->slotsFor($site));
-        self::assertSame(1, (int) $this->em->getConnection()->fetchOne("SELECT COUNT(*) FROM surgeon_absence_communication c JOIN absence a ON a.id = c.absence_id WHERE c.site_id = ? AND c.type = 'ROOM_RELEASE' AND a.date_start = ?", [$site->getId(), $decWed1->format('Y-m-d')]));
+        /** @var \Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        self::assertSame([], array_values(array_filter($transport->getSent(), static fn ($e) => $e->getMessage() instanceof \App\Message\ReleasedRoomSlotsCreatedMessage)), 'no new room, nothing announced');
     }
 
     /**
