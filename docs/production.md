@@ -269,7 +269,22 @@ docker exec surgicalhub-php php bin/console debug:router --env=prod | grep admin
 
 # Migrations à jour — doit dire "Already at latest version"
 docker exec surgicalhub-php php bin/console doctrine:migrations:status --env=prod
+
+# D-162 — commit exécuté (= commit déployé), statut PENDING_VALIDATION avant le tag
+cat /opt/stack/apps/surgicalhub/src/backend/REVISION
+docker exec surgicalhub-php php bin/console app:release:show
 ```
+
+Après le tag Git (`deployment-versioning.md` §7.1) :
+
+```bash
+docker exec surgicalhub-php php bin/console app:release:mark vYYYY.MM.DD-prod --commit=<sha>
+docker exec surgicalhub-php php bin/console app:release:show   # OFFICIAL, tag et commit identiques au tag Git
+```
+
+Le registre des versions officielles se trouve dans `var/release/releases.json`, sur le volume
+`surgicalhub_var`. Il ne contient qu'un tag, un SHA et une date par ligne, et doit être conservé
+(il n'est jamais modifié à la main). La version affichée en bas de « Mon profil » en est le reflet.
 
 Tests santé complets (HTTP public, login, `/api/me`, test ciblé fonction
 modifiée) : voir [`docs/deployment-versioning.md`](deployment-versioning.md) §5.
@@ -851,6 +866,9 @@ docker compose restart nginx
 ```
 
 **Aucune** commande `doctrine:migrations:*`. Contrôles de santé habituels.
+D-162 : `docker exec surgicalhub-php php bin/console app:release:show` doit afficher le commit
+restauré, avec son tag s'il avait été enregistré. Le registre n'est jamais modifié lors d'un
+rollback.
 Avant de redéployer le nouveau code, relire l'ADR du lot : les données écrites
 par l'ancien code sur le nouveau schéma peuvent devoir être resynchronisées.
 

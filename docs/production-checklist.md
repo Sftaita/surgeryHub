@@ -78,6 +78,8 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 
 - [ ] Archive créée via `git archive --format=tar.gz HEAD -- backend frontend docker-compose.yml` (**jamais** `tar` sur le répertoire de travail)
 - [ ] Archive transférée (`scp`) et extraite dans `/opt/stack/apps/surgicalhub/src/`
+- [ ] Fichiers supprimés par l'écart (`git diff --name-status --diff-filter=D <commit-serveur> HEAD`) retirés de `src/` (l'extraction ne les supprime pas)
+- [ ] D-162 : `src/backend/REVISION` contient le SHA complet du commit validé (jamais `$Format:%H$`)
 - [ ] Build Docker : `docker compose build --no-cache` → `BUILD_EXIT=0` confirmé
 - [ ] Restart : `docker compose up -d` → 3 containers recréés
 - [ ] Migrations exécutées : `doctrine:migrations:migrate --no-interaction --env=prod`
@@ -95,6 +97,7 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] `docker logs surgicalhub-php --tail 30` — pas d'erreur/exception/critique liée au déploiement
 - [ ] `docker logs surgicalhub-worker --tail 15` — worker actif, consumer démarré
 - [ ] `doctrine:migrations:status --env=prod` → « Already at latest version »
+- [ ] D-162 : `app:release:show` → commit exécuté = commit déployé, statut `PENDING_VALIDATION`
 
 ## 7. Test ciblé — si une fonctionnalité majeure a été modifiée
 
@@ -118,6 +121,9 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] Commit déployé déjà présent sur `origin` (vérifié — sinon push `main`/branche d'abord)
 - [ ] `git tag -a vYYYY.MM.DD-prod -m "..."` créé
 - [ ] `git push origin vYYYY.MM.DD-prod`
+- [ ] D-162 : `app:release:mark vYYYY.MM.DD-prod --commit=<sha>` exécuté sur le serveur
+- [ ] D-162 : cohérence vérifiée — commit du tag = commit exécuté (`app:release:show`, statut `OFFICIAL`) = version affichée en bas de « Mon profil » / `GET /api/version`
+- [ ] Après un rollback : `app:release:show` affiche la version restaurée
 - [ ] Table "Historique des versions déployées" de `docs/production.md` mise à jour (nouvelle ligne ajoutée, aucune ligne existante modifiée)
 
 ## En cas de problème — rollback

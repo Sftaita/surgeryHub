@@ -7209,6 +7209,31 @@ catégorie. **D-161 :** exception, `ROOM_SLOT_AVAILABLE` a sa rubrique dédiée
 (`pushEnabled`, `emailEnabled`), l'état réel du push sur l'appareil affiché à part ; elle
 n'apparaît pas dans la liste générique.
 
+### 41.2b Version de l'application (D-162)
+
+```
+GET /api/version
+```
+
+**AuthZ :** tout utilisateur authentifié (`401` sinon). **Jamais mise en cache**
+(`Cache-Control: no-store, max-age=0, private`).
+
+```json
+{ "application": "SurgicalHub", "status": "OFFICIAL", "version": "v2026.10.21-prod", "commit": "f1ee401" }
+```
+
+`status` :
+- `OFFICIAL` : le commit exécuté a été enregistré comme version officielle par
+  `app:release:mark`, après le tag Git ;
+- `PENDING_VALIDATION` : déploiement pas encore validé, ou registre illisible ; `version` vaut
+  `null` ;
+- `DEVELOPMENT` : clone de travail ; `version` et `commit` valent `null`.
+
+`commit` est le SHA court du code réellement exécuté (`backend/REVISION`, écrit par
+`git archive`). Aucune autre donnée n'est exposée.
+
+**Frontend :** `AppVersionLine`, en bas de « Mon profil » des trois rôles.
+
 ### 41.3 Badge "offres non lues" (instrumentiste)
 
 Remplace un badge cumulatif qui comptait toutes les missions `OPEN` éligibles

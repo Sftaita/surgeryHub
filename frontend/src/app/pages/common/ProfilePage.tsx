@@ -17,6 +17,7 @@ import { RoomAvailabilityNotificationsCard } from "../../features/notifications/
 import { EmptyState } from "../../ui/EmptyState";
 import BlockedInstrumentistsCard from "../../features/incompatibilities/components/BlockedInstrumentistsCard";
 import { useInstrumentistOnboardingReplay } from "../../features/instrumentist-onboarding/InstrumentistOnboardingReplayContext";
+import { AppVersionLine } from "../../features/app-version/AppVersionLine";
 
 const ROLE_LABEL: Record<string, string> = {
   INSTRUMENTIST: "Instrumentiste",
@@ -235,6 +236,9 @@ export default function ProfilePage() {
           </Box>
         </>
       )}
+
+      {/* D-162 — version réellement exécutée, en bas des paramètres (trois rôles). */}
+      <AppVersionLine />
     </Stack>
   );
 }

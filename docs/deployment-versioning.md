@@ -57,6 +57,35 @@ Exemple : `v2026.06.24-prod`.
   ce qui tourne actuellement sur le serveur.** C'est la seule source de
   vérité sur la version de prod — pas la mémoire de qui a déployé quoi.
 
+### Version visible dans l'application (D-162)
+
+La version qui tourne est aussi affichée en bas de « Mon profil », dans les trois espaces
+(manager, chirurgien, instrumentiste). Elle est lue par `GET /api/version` et ne s'écrit
+jamais à la main. Elle repose sur deux sources, chacune alimentée par cette procédure :
+
+- **Le commit exécuté** : `backend/REVISION` (et `frontend/src/app/features/app-version/buildRevision.ts`)
+  contient `$Format:%H$`. `git archive` (§4.3) le remplace par le SHA exact du commit archivé
+  (attribut `export-subst`, `.gitattributes`). L'image construite connaît donc son commit sans
+  aucune étape manuelle. Dans un clone de travail, la valeur reste littérale : l'application
+  affiche « développement ».
+- **Le registre des versions officielles** : `var/release/releases.json`, sur le volume
+  persistant `surgicalhub_var` (il survit aux rebuilds et aux rollbacks). Une ligne n'y est
+  ajoutée **qu'après** les tests de santé et la création du tag (§7), par
+  `app:release:mark <tag> --commit=<sha>`.
+
+Une version n'est donc affichée comme officielle (`SurgicalHub · vYYYY.MM.DD-prod · <sha>`)
+que si le commit exécuté figure dans le registre :
+
+| Situation | Affichage |
+|---|---|
+| Déploiement en cours, tag pas encore créé | « version en cours de validation · `<sha>` » — jamais un tag |
+| Tag créé et enregistré | `SurgicalHub · vYYYY.MM.DD-prod · <sha>`, sans redéployer |
+| Rollback | La version restaurée (son tag, si elle a été enregistrée), jamais celle abandonnée |
+| Métadonnées illisibles | Jamais un tag supposé (« en cours de validation », ou « version indisponible » si l'API ne répond pas) |
+
+Ce mécanisme ne remplace pas le tag Git : le dernier tag `*-prod` reste la source de vérité.
+Le registre n'en est que le reflet dans le serveur, vérifié à chaque déploiement (§5 et §7).
+
 ### Tableau de référence (à tenir à jour dans `docs/production.md`)
 
 Chaque déploiement ajoute une ligne en haut de la table "Historique des
@@ -201,6 +230,10 @@ git archive --format=tar.gz -o surgicalhub_deploy.tar.gz HEAD -- backend fronten
 scp surgicalhub_deploy.tar.gz surgicalhub-prod:/tmp/
 ```
 
+**Contrôle D-162 après extraction** : `cat /opt/stack/apps/surgicalhub/src/backend/REVISION` doit
+afficher le SHA complet du commit validé en §2. La valeur littérale `$Format:%H$` signifie que
+l'archive ne vient pas de `git archive` : il faut alors arrêter.
+
 **Toujours `git archive`, jamais `tar` sur le répertoire de travail.**
 `git archive` ne contient que le contenu exactement committé sur le commit
 ciblé — aucune modification non commitée, aucun fichier non suivi, aucun
@@ -247,6 +280,7 @@ Toujours, sans exception :
 | Logs PHP | `docker logs surgicalhub-php --tail 30` → pas de `CRITICAL`/`exception` lié au déploiement |
 | Logs worker | `docker logs surgicalhub-worker --tail 15` → consumer actif |
 | Migrations | `doctrine:migrations:status` → `Already at latest version` |
+| Version exécutée (D-162) | `docker exec surgicalhub-php php bin/console app:release:show` → `Commit exécuté` = SHA du commit déployé, `Statut` = `PENDING_VALIDATION` (le tag n'existe pas encore) |
 
 **Si une fonctionnalité majeure a été modifiée par ce déploiement**, ajouter
 un test réel ciblé sur cette fonctionnalité (pas seulement les checks
@@ -360,6 +394,29 @@ git push origin v2026.06.24-prod
 - Mettre à jour la table "Historique des versions déployées" dans
   `docs/production.md` avec une nouvelle ligne (jamais réécrire une ligne
   existante).
+
+### 7.1 Enregistrer la version officielle sur le serveur (D-162) — obligatoire
+
+Juste après avoir poussé le tag, et seulement alors :
+
+```bash
+# SHA court pointé par le tag (vérifié localement : git rev-parse --short vYYYY.MM.DD-prod^{commit})
+ssh surgicalhub-prod "docker exec surgicalhub-php php bin/console app:release:mark vYYYY.MM.DD-prod --commit=<sha>"
+ssh surgicalhub-prod "docker exec surgicalhub-php php bin/console app:release:show"
+```
+
+La commande refuse un tag mal formé, un SHA différent du code exécuté, et un tag déjà
+enregistré pour un autre commit. Elle est idempotente. Aucun redémarrage n'est nécessaire.
+
+**Contrôle de cohérence obligatoire.** Ces trois valeurs doivent être identiques :
+1. le commit pointé par le tag Git ;
+2. le `Commit exécuté` de `app:release:show` (`Statut` = `OFFICIAL`, `Version officielle` = le tag) ;
+3. la version affichée en bas de « Mon profil » (`SurgicalHub · vYYYY.MM.DD-prod · <sha>`),
+   lue avec un compte de test via l'API publique (`GET /api/version`).
+
+Tout écart est une anomalie à signaler (§8). Après un **rollback**, `app:release:show` doit
+afficher le commit et le tag de la version restaurée. Un rollback vers une version antérieure
+à D-162 restaure aussi l'ancien frontend, sans affichage de version.
 
 ---
 
