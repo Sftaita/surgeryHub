@@ -269,7 +269,8 @@ final class ReleasedRoomPostReplacementFunctionalTest extends WebTestCase
     private function runBackfill(bool $dryRun): string
     {
         $tester = new CommandTester(static::getContainer()->get(AvailableRoomsBackfillCommand::class));
-        $tester->execute($dryRun ? ['--dry-run' => true] : []);
+        // D-160 — liste autorisée : les absences déclarées par ce test, en dry-run comme en réel.
+        $tester->execute(['--absence' => array_map('strval', $this->createdIds['absences'])] + ($dryRun ? ['--dry-run' => true] : []));
         self::assertSame(0, $tester->getStatusCode());
 
         return $tester->getDisplay();
