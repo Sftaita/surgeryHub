@@ -1005,6 +1005,75 @@ crontab -l   # confirmer l'absence de la ligne, les autres jobs intacts
 
 ---
 
+## Opérations de données
+
+_Opérations manuelles sur les données de production, réalisées sur accord explicite. Ne jamais
+réécrire une entrée existante. Chaque entrée indique la date, la version déployée, la commande,
+les sauvegardes, le résultat vérifié et les données préservées._
+
+### 2026-10-21 — Rattrapage ciblé des salles libérées (D-160) : 9 salles
+
+**Version déployée** : `v2026.10.21-prod` (commit `f1ee401`).
+
+**Contexte** : avant le correctif D-158, sept absences n'avaient jamais produit leurs salles
+libérées. Le rattrapage global aurait aussi créé des salles pour les absences #66 et #67 de
+Dr Deltour, dont les postes #3 à #7 attendent une validation métier (D-159). L'option
+`--absence` (D-160) limite donc la lecture et l'écriture aux seules absences sélectionnées.
+
+**Vérification préalable** : la commande
+`app:available-rooms:backfill --dry-run --absence=54,57,79,80,81,82,83` a été relancée juste
+avant l'écriture. Résultat : 7 absences, 9 occurrences, 0 salle existante, 9 à créer,
+0 remplacée, 0 à valider, aucune ligne Deltour. Le résultat était identique au dry-run validé.
+
+**Sauvegarde préalable** : `/home/deploy/backups/mysql/surgicalhub_pre_backfill_D160_20261021_183436.sql.gz`
+(base `surgicalhub` seule).
+
+**Action réalisée** (2026-10-21 18:34 UTC) :
+`docker exec surgicalhub-php php bin/console app:available-rooms:backfill --absence=54,57,79,80,81,82,83 --env=prod`.
+Résultat : 7 absences, 9 occurrences, 0 salle existante, 9 créées, 0 remplacée, 0 à valider.
+
+| Salle | Absence | Chirurgien | Site | Date | Horaire | Poste | Audit |
+|---|---|---|---|---|---|---|---|
+| #28 | 54 | Dr Samy Ftaita | CHIREC - Hôpital Delta | 2026-12-03 | 13:00–18:00 (APRES_MIDI) | #12 | #1027 |
+| #29 | 57 | Dr Jerome De Muylder | CHIREC - Hôpital Delta | 2026-12-31 | 07:45–13:00 (MATIN) | #13 | #1028 |
+| #30 | 57 | Dr Jerome De Muylder | CHIREC - Hôpital Delta | 2026-12-28 | 07:45–18:00 (JOURNEE) | #25 | #1029 |
+| #31 | 57 | Dr Jerome De Muylder | Clinique de la Basilique - CHIREC | 2027-01-01 | 13:00–18:00 (APRES_MIDI) | #23 | #1030 |
+| #32 | 79 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2026-12-21 | 07:45–18:00 (JOURNEE) | #1 | #1031 |
+| #33 | 80 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2026-12-23 | 07:45–13:00 (MATIN) | #35 | #1032 |
+| #34 | 81 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2026-12-28 | 07:45–18:00 (JOURNEE) | #1 | #1033 |
+| #35 | 82 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2026-12-30 | 07:45–13:00 (MATIN) | #35 | #1034 |
+| #36 | 83 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2027-01-18 | 07:45–18:00 (JOURNEE) | #1 | #1035 |
+
+Chaque audit (`ROOM_SLOT_MADE_AVAILABLE`) porte l'identifiant de sa salle et de son absence.
+
+**Contrôles après exécution** :
+- **Statut** : les 9 salles sont `AVAILABLE` et aucune n'est reprise.
+- **Vérification par l'API** : vérifiées via l'API publique avec un compte chirurgien jetable
+  `@surgicalhub.internal` affilié à Delta et à la Basilique. Les 9 salles figurent dans
+  `GET /api/me/available-rooms`, et `GET /api/me/available-rooms/{id}` renvoie 200, statut
+  `AVAILABLE`, reprise autorisée. Aucune reprise n'a été effectuée. Le compte, ses affiliations
+  et son jeton ont été supprimés, et le contrôle des comptes de test actifs est vide.
+- **Doublons** : aucun doublon `(site, poste, date)` dans toute la table, et aucune salle pour
+  une autre absence.
+- **Communications** : aucune communication rétroactive. Aucun push, aucun e-mail, aucun élément
+  dans le centre de notifications, aucune communication `ROOM_RELEASE` : le rattrapage n'annonce
+  jamais (D-161). La file Messenger est restée vide.
+- **Deuxième exécution** : la même commande, relancée, compte 9 salles déjà existantes et
+  0 créée. Elle n'ajoute ni salle, ni audit, ni événement : l'empreinte est identique avant et
+  après.
+- **Données préservées** : les postes #3 à #7 de Dr Deltour, ses absences #66 et #67, ainsi
+  que les missions #429 et #430 et leurs alertes, ont une empreinte inchangée avant et après le
+  déploiement, le dry-run et le rattrapage.
+
+**Autre écriture pendant l'opération** : un appareil push a été enregistré par un
+utilisateur réel (`PUSH_SUBSCRIPTION_CREATED`). Cette écriture n'a aucun lien avec le
+rattrapage.
+
+**Pas de nouveau tag** : opération de données sans changement de code. La production reste
+`v2026.10.21-prod`.
+
+---
+
 ## Historique des incidents
 
 _Traçabilité complète — ne jamais réécrire une entrée existante. Chaque
