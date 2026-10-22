@@ -222,48 +222,30 @@ présentes que dans `down()`, jamais dans `up()`, sauf si le ticket l'exige
 explicitement et que c'est documenté. **Ne jamais exécuter une migration non
 relue.**
 
-### 4.3 Construction de l'archive — depuis `git archive`, jamais depuis le disque
+### 4.3 Archive, transfert, release, build, activation — `deploy/deploy.sh` (D-163)
 
-```bash
-# Depuis la racine du repo, sur le commit HEAD exact validé en §2
-git archive --format=tar.gz -o surgicalhub_deploy.tar.gz HEAD -- backend frontend docker-compose.yml
-scp surgicalhub_deploy.tar.gz surgicalhub-prod:/tmp/
-```
+Depuis D-163, le déploiement passe **exclusivement** par `deploy/deploy.sh` (commandes
+détaillées : `docs/production.md` §1-6). Le script rend mécanique ce que cette procédure exige,
+et chaque étape s'arrête avant toute modification du serveur dès qu'un contrôle échoue.
 
-**Contrôle D-162 après extraction** : `cat /opt/stack/apps/surgicalhub/src/backend/REVISION` doit
-afficher le SHA complet du commit validé en §2. La valeur littérale `$Format:%H$` signifie que
-l'archive ne vient pas de `git archive` : il faut alors arrêter.
+| Exigence | Mécanisme |
+|---|---|
+| Ce qui est déployé = un commit validé | SHA complet, fusionné sur `origin/main` ; `git archive` de ce commit, jamais le disque |
+| Rien d'oublié (incident de `docker/`, figé depuis le 2026-08-02) | Périmètre dérivé du compose versionné (`deploy/production/docker-compose.yml`) et des `COPY` de ses Dockerfiles (`deploy.sh paths`) |
+| Jamais une autre archive (incident du 2026-10-21) | Nom = `surgicalhub-<SHA>.tar.gz` ; SHA-256 calculée localement, vérifiée sur le serveur avant tout renommage ou extraction ; `backend/REVISION` = SHA |
+| Aucun secret | Refus de `.env.local`, `.env.prod`, `*.pem`, `*.key`, `var/`, `vendor/`, `node_modules/` ; `.env` reste hors de l'archive |
+| Fichiers supprimés de Git | Chaque release est un arbre neuf (`releases/<SHA>/`) : rien de périmé n'est construit, rien n'est supprimé sur place ; `stage` liste les fichiers retirés |
+| Pas de déploiement partiel | Une release contient tout le périmètre ; le build part de cette release, jamais de `src/` |
+| Échec de build | Images `:<SHA>` uniquement ; rien n'est activé tant que le build n'est pas vérifié |
+| Rollback complet | `deploy.sh rollback <SHA>` : release, compose et images restaurés ensemble |
 
-**Toujours `git archive`, jamais `tar` sur le répertoire de travail.**
-`git archive` ne contient que le contenu exactement committé sur le commit
-ciblé — aucune modification non commitée, aucun fichier non suivi, aucun
-chantier en cours ne peut s'y glisser. C'est ce qui garantit que "ce qui est
-déployé" == "ce qui est dans `git log`" == "ce qui sera tagué" (§1).
+**Contrôle après extraction** : `releases/<SHA>/backend/REVISION` = SHA, vérifié par `stage`.
+L'ancienne vérification manuelle de `src/backend/REVISION` (D-162) n'a plus lieu d'être.
 
-### 4.4 Extraction
-
-```bash
-ssh surgicalhub-prod "tar xzf /tmp/surgicalhub_deploy.tar.gz -C /opt/stack/apps/surgicalhub/src/ && rm /tmp/surgicalhub_deploy.tar.gz"
-```
-
-### 4.5 Build, restart, migration réelle, cache
-
-```bash
-# Build (en tâche de fond, ~5-10 min)
-ssh surgicalhub-prod "cd /opt/stack/apps/surgicalhub && nohup bash -c 'docker compose build --no-cache > /tmp/build.log 2>&1; echo BUILD_EXIT=\$? >> /tmp/build.log' &"
-# attendre BUILD_EXIT=0 dans /tmp/build.log avant de continuer
-
-ssh surgicalhub-prod "cd /opt/stack/apps/surgicalhub && docker compose up -d"
-
-ssh surgicalhub-prod "docker exec surgicalhub-php php bin/console doctrine:migrations:migrate --no-interaction --env=prod"
-
-ssh surgicalhub-prod "docker exec surgicalhub-php php bin/console cache:clear --env=prod && docker restart surgicalhub-php"
-
-# Si le worker doit reprendre une nouvelle version du code des handlers Messenger :
-ssh surgicalhub-prod "docker restart surgicalhub-worker"
-```
-
----
+> Avant D-163 : `git archive … -- backend frontend docker-compose.yml`, extrait sur place dans
+> `src/`. Ce mode n'incluait pas `docker/` et laissait sur place les fichiers supprimés de Git :
+> 4 tests retirés de Git étaient encore copiés dans l'image le 2026-10-22. Il ne doit plus être
+> utilisé.
 
 ## 5. Tests santé obligatoires
 
@@ -281,6 +263,8 @@ Toujours, sans exception :
 | Logs worker | `docker logs surgicalhub-worker --tail 15` → consumer actif |
 | Migrations | `doctrine:migrations:status` → `Already at latest version` |
 | Version exécutée (D-162) | `docker exec surgicalhub-php php bin/console app:release:show` → `Commit exécuté` = SHA du commit déployé, `Statut` = `PENDING_VALIDATION` (le tag n'existe pas encore) |
+| Release active (D-163) | `deploy/deploy.sh status` → release active = SHA déployé |
+| Cache frontend (D-163) | `curl -sI https://surgicalhub.be/` → `Cache-Control: no-cache` ; un asset `/assets/<nom>.js` → `immutable` ; `/assets/inexistant.js` → 404 |
 
 **Si une fonctionnalité majeure a été modifiée par ce déploiement**, ajouter
 un test réel ciblé sur cette fonctionnalité (pas seulement les checks
@@ -400,9 +384,8 @@ git push origin v2026.06.24-prod
 Juste après avoir poussé le tag, et seulement alors :
 
 ```bash
-# SHA court pointé par le tag (vérifié localement : git rev-parse --short vYYYY.MM.DD-prod^{commit})
-ssh surgicalhub-prod "docker exec surgicalhub-php php bin/console app:release:mark vYYYY.MM.DD-prod --commit=<sha>"
-ssh surgicalhub-prod "docker exec surgicalhub-php php bin/console app:release:show"
+deploy/deploy.sh mark <SHA> vYYYY.MM.DD-prod   # D-163 : refuse si le tag n'est pas sur origin ou ne pointe pas sur SHA,
+                                              # ou si SHA n'est pas la release active ; puis app:release:show
 ```
 
 La commande refuse un tag mal formé, un SHA différent du code exécuté, et un tag déjà

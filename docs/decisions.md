@@ -14500,3 +14500,107 @@ Dockerfile ni d'argument de build.
   peut afficher un ancien bundle pendant une durée heuristique ; « Actualiser » le revalide.
 - Les versions déployées avant D-162 ne figurent pas dans le registre. La première ligne sera
   écrite au déploiement de D-162.
+
+---
+
+## D-163 — Déploiement reproductible : releases vérifiées, configuration Docker livrée, cache maîtrisé (2026-10-22)
+
+### Constats (audit en lecture seule du 2026-10-22, production `v2026.10.21-prod-2` / `20aa821`)
+
+**Problèmes déjà présents**
+
+1. **Configuration Docker hors procédure.** L'archive `git archive -- backend frontend
+   docker-compose.yml` n'inclut ni `docker/` ni `.dockerignore`. Sur le serveur, ces fichiers
+   datent d'une copie manuelle du 2026-08-02. Ils sont identiques au dépôt aujourd'hui, mais
+   par hasard : toute modification de Dockerfile, de nginx ou d'entrypoint serait restée en
+   dépôt.
+2. **Compose de production non versionné.** `/opt/stack/apps/surgicalhub/docker-compose.yml`
+   (du 2026-06-23) n'existe pas dans le dépôt. Le `docker-compose.yml` extrait dans `src/` est
+   celui du développement, et il n'est pas utilisé. Le compose n'est copié ni par la sauvegarde
+   `src_pre_deploy`, ni par les sauvegardes quotidiennes.
+3. **Fichiers supprimés de Git toujours construits.** L'extraction sur place ne supprime rien :
+   `src/backend/tests/` contenait 4 tests retirés de Git, copiés dans l'image php. `src/`
+   contient aussi des visuels, une documentation figée au 2026-08-02 et un `.claude/`, envoyés
+   dans le contexte de build.
+4. **Ancienne archive déployable par erreur.** Le nom d'archive était générique et rien ne
+   comparait l'archive transférée au commit autorisé (incident du 2026-10-21, arrêté
+   manuellement avant le build).
+5. **Cache frontend non maîtrisé.** `index.html`, `sw.js`, le manifest et les assets étaient
+   servis sans `Cache-Control` (cache heuristique), et les assets hashés sans cache long.
+   Surtout, un asset absent renvoyait `index.html` en `200 text/html` : après un déploiement,
+   un onglet ou une PWA ouverts chargeant un ancien chunk recevaient du HTML comme JavaScript.
+   Le frontend ne gérait pas `vite:preloadError`.
+6. **Sauvegardes incomplètes ou défaillantes** (scripts serveur, hors dépôt) :
+   - `surgicalhub_var` (registre des versions D-162, clés JWT) n'est jamais sauvegardé ;
+   - l'expression `find` de `rotate_backups.sh` est mal parenthésée : aucun dump `.sql.gz`
+     n'est jamais supprimé (149 dumps de plus de 30 jours le 2026-10-22) ;
+   - `backups/code` (927 Mo) n'est ni tourné ni copié hors serveur ;
+   - 26 paires d'images `rollback-*` s'accumulent, avec 11 Go de cache de build.
+7. **Risque faible** : `backend/.env`, versionné et copié dans l'image, contient une valeur
+   `JWT_PASSPHRASE` de développement. Elle diffère de la production, qui la remplace par son
+   `.env`.
+
+**Risques futurs (sans correction)** : un changement nginx ou Dockerfile jamais livré ; un
+build contenant du code supprimé ; une archive d'une autre version extraite ; un rollback qui
+ne restaure pas la configuration (compose non versionné) ; des écrans cassés après chaque
+déploiement pour les sessions ouvertes.
+
+### Décision
+
+1. **Compose versionné.** `deploy/production/docker-compose.yml` reprend la configuration en
+   service : même projet `surgicalhub`, mêmes conteneurs, réseaux, volumes et labels Traefik.
+   `docker compose config` est identique à celle de production, au contexte de build près
+   (`./src` → release).
+2. **Périmètre dérivé, pas supposé.** `deploy.sh paths` le calcule à partir du compose
+   versionné et des `COPY` de ses Dockerfiles. Aujourd'hui : `backend`, `frontend`,
+   `docker/php/{Dockerfile.prod,entrypoint.prod.sh}`, `docker/nginx/{Dockerfile.prod,prod.conf}`,
+   `.dockerignore` et le compose.
+3. **Releases vérifiées.** Le nom de l'archive porte le SHA complet. La SHA-256 est calculée
+   localement, puis vérifiée sur le serveur avant tout renommage ou extraction. Sont aussi
+   vérifiés : `backend/REVISION` = SHA, l'absence de fichiers interdits, et un commit fusionné
+   sur `origin/main`.
+
+   L'extraction se fait dans un staging, puis dans `releases/<SHA>/` ; `current` est un lien
+   remplacé atomiquement. Aucune suppression n'a lieu sur place, et `.env`, les volumes et
+   `src/` ne sont jamais écrits.
+4. **Build sans risque.** Les images sont construites sous `:<SHA>` depuis la release, sans
+   toucher au service, et leur `REVISION` est vérifiée. Ensuite seulement : sauvegardes
+   (MySQL, compose, `.env`, volume `surgicalhub_var`), bascule, retag `:<SHA>` → `:local`,
+   redémarrages, et contrôle du code exécuté par php et le worker.
+5. **Version officielle (D-162).** Ni `activate` ni `rollback` ne l'écrivent. `deploy.sh mark`
+   exige un tag présent sur `origin` qui pointe sur le SHA, et que ce SHA soit la release active.
+6. **Rollback complet.** `deploy.sh rollback <SHA>` restaure ensemble la release, son compose et
+   ses images. `rollback legacy` revient à la configuration d'avant D-163 (compose sauvegardé,
+   `src/`, images `rollback-legacy`).
+7. **Cache** (`docker/nginx/prod.conf`) :
+   - `/assets/*` : `public, max-age=31536000, immutable`, et 404 si absent (jamais de HTML) ;
+   - `index.html`, routes SPA, `sw.js`, manifest, icônes : `no-cache` (revalidés par ETag) ;
+   - API inchangée (`private` ; `/api/version` en `no-store`).
+
+   Côté frontend, `vite:preloadError` recharge la page une seule fois (garde de 30 s), en
+   complément de « Actualiser » (D-162).
+
+### Tests
+
+- **Procédure :** `deploy/tests/run.sh` (58 contrôles), exécuté sous Linux par
+  `deploy/tests/run-in-docker.sh`, avec de vrais commits, `git archive` et export-subst, un
+  faux serveur et un faux Docker. Il couvre :
+  - périmètre et livraison d'une modification Docker ;
+  - refus d'un commit hors `main`, d'un SHA abrégé ou d'une clé ;
+  - ancienne archive, archive altérée (locale ou distante), transfert manquant ;
+  - fichier supprimé de Git absent de la nouvelle release mais conservé dans l'ancienne ;
+  - `.env` et `src/` intacts ;
+  - échec de build sans activation ;
+  - première activation depuis `src/` ;
+  - rollback complet, et rollback vers l'état d'avant D-163 ;
+  - `mark` et `migrate` refusés si le commit n'est pas en service.
+- **Cache :** `deploy/tests/nginx-cache.sh` (8 contrôles) sur un vrai nginx. La configuration
+  d'avant D-163 les échoue tous, la nouvelle les passe tous.
+- **Frontend :** reprise après chunk obsolète (anti-boucle, stockage indisponible).
+
+### Hors périmètre, à décider
+
+- Corriger `rotate_backups.sh`, sauvegarder `surgicalhub_var` chaque nuit, tourner
+  `backups/code` et les images `rollback-*` : ce sont des scripts serveur hors dépôt.
+- Retirer `src/` après quelques déploiements D-163 réussis.
+- Retirer `JWT_PASSPHRASE` de `backend/.env`.
