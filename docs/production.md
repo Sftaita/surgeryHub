@@ -213,7 +213,7 @@ Hors de `releases/`, rien n'est écrit : ni `.env`, ni les volumes, ni `src/`.
 
 ```bash
 deploy/deploy.sh build "$SHA"        # ~5-10 min ; images surgicalhub-{php,nginx}:<SHA>
-deploy/deploy.sh migrations "$SHA"   # dry-run des migrations sur la nouvelle image
+deploy/deploy.sh migrations "$SHA"   # dry-run des migrations sur la nouvelle image (cache jetable)
 ```
 
 `build` vérifie que l'image php contient `REVISION` = SHA et que le bundle nginx porte le SHA.
@@ -260,11 +260,12 @@ contient des fichiers supprimés de Git, des visuels et une documentation datée
 et le compose n'y était pas versionné.
 
 La première activation garde tout l'existant :
-- `src/` reste intact ;
+- `src/` reste intact, et il est en plus archivé (`deploy-backups/<horodatage>/src.tar.gz`) ;
 - l'ancien compose est sauvegardé dans `deploy-backups/` ;
 - les images en service sont retaguées `surgicalhub-*:rollback-legacy`.
 
-Pour revenir à cet état : `deploy/deploy.sh rollback legacy`. `src/` ne sera retiré qu'après
+Pour revenir à cet état : `deploy/deploy.sh rollback legacy`. Ce retour vide aussi le cache
+Symfony, qui est sur le volume `surgicalhub_var` et a été compilé par la release quittée. `src/` ne sera retiré qu'après
 plusieurs déploiements réussis, sur décision explicite.
 
 ### 7. Vérification

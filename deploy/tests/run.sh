@@ -107,11 +107,15 @@ check "images en service = A" bash -c "[ \"\$(cat '$STUB_STATE/images/surgicalhu
 check "images historiques conservées (rollback-legacy)" bash -c "[ \"\$(cat '$STUB_STATE/images/surgicalhub-php_rollback-legacy')\" = legacy ]"
 BK=$(ls -d "$T/server/deploy-backups"/*/ | tail -1)
 check "sauvegardes : compose historique, .env (600), volume var" bash -c "grep -q historique '$BK/docker-compose.yml' && [ \"\$(stat -c %a '$BK/env' 2>/dev/null || echo 600)\" = 600 ] && [ -f '$BK/surgicalhub_var.tar.gz' ]"
+check "src/ historique archivé à la première activation" bash -c "tar tzf '$BK/src.tar.gz' | grep -qx src/backend/legacy.txt"
 check "nginx redémarré après php" bash -c "grep -n 'docker restart' '$STUB_LOG' | tail -1 | grep -q surgicalhub-nginx"
 check "jamais de version officielle à l'activation" bash -c "! grep -q 'app:release:mark' '$STUB_LOG'"
 check ".env intact" bash -c "[ \"\$(sha256sum '$T/server/.env' | cut -d' ' -f1)\" = '$ENV_SUM' ]"
 check "src/ historique intact" grep -q legacy "$T/server/src/backend/legacy.txt"
 refused "mark refusé pour un commit qui n'est pas en service" bash "$R/deploy/remote.sh" mark "$B" v2026.10.22-prod
+
+: > "$STUB_LOG"
+check "dry-run des migrations sur un cache jetable (jamais celui en service)" bash -c "bash '$D' migrations '$A' && grep -q -- 'run --rm --no-deps -T -v /var/www/backend/var/cache php' '$STUB_LOG'"
 
 echo "== B : échec de build → rien d'activé"
 bash "$D" upload "$B" >/dev/null && bash "$D" stage "$B" > "$T/stage_b.out"
@@ -132,7 +136,9 @@ check "le registre des versions n'est jamais modifié par un rollback" bash -c "
 check "mark accepté pour le commit en service" bash "$R/deploy/remote.sh" mark "$A" v2026.10.22-prod
 refused "migrations refusées pour un commit qui n'est pas en service" bash "$R/deploy/remote.sh" migrate "$B"
 check "migrations pour le commit en service" bash "$R/deploy/remote.sh" migrate "$A"
+bash "$D" activate "$B" >/dev/null; : > "$STUB_LOG"
 check "rollback vers la configuration d'avant D-163" bash -c "bash '$D' rollback legacy && grep -q historique '$T/server/docker-compose.yml' && [ ! -e '$T/server/current' ] && [ \"\$(cat '$STUB_STATE/images/surgicalhub-php_local')\" = legacy ]"
+check "… cache Symfony vidé avant les redémarrages" bash -c "grep -n -e 'cache:clear' -e 'docker restart' '$STUB_LOG' | head -1 | grep -q cache:clear"
 check ".env intact à la fin" bash -c "[ \"\$(sha256sum '$T/server/.env' | cut -d' ' -f1)\" = '$ENV_SUM' ]"
 
 echo

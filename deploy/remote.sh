@@ -120,9 +120,11 @@ cmd_build() {
 }
 
 # ── migrations <sha> : dry-run sur la nouvelle image, avant activation ────────
+# var/cache est sur le volume surgicalhub_var, partagé avec la version en service : le dry-run
+# reçoit un cache vide et jetable (volume anonyme supprimé par --rm), jamais celui en service.
 cmd_migrations() {
   need_sha "${1:-}"; local sha="$1"
-  IMAGE_TAG="$sha" compose "$sha" run --rm --no-deps -T php php bin/console doctrine:migrations:migrate --dry-run --no-interaction --env=prod
+  IMAGE_TAG="$sha" compose "$sha" run --rm --no-deps -T -v /var/www/backend/var/cache php     php bin/console doctrine:migrations:migrate --dry-run --no-interaction --env=prod
 }
 
 # ── migrate <sha> : migrations réelles, APRÈS relecture du dry-run et activation ──
@@ -145,6 +147,10 @@ backup_before_switch() {
   [ -f "$APP_ROOT/.env" ] && { cp -p "$APP_ROOT/.env" "$dir/env"; chmod 600 "$dir/env"; }
   "$DOCKER" run --rm -v "${PROJECT}_var:/data:ro" -v "$dir:/backup" alpine tar czf /backup/surgicalhub_var.tar.gz -C /data . \
     || die "sauvegarde du volume ${PROJECT}_var échouée."
+  if [ "$(current_release)" = legacy ] && [ -d "$APP_ROOT/src" ]; then
+    # Première activation : la copie manuelle src/ (contexte de build d'avant D-163) est archivée.
+    tar czf "$dir/src.tar.gz" -C "$APP_ROOT" src || die "archivage de src/ échoué."
+  fi
   echo "$(current_release)" > "$dir/previous_release"
   echo "$dir"
 }
@@ -200,6 +206,8 @@ cmd_rollback() {
     "$DOCKER" tag "$PROJECT-php:rollback-legacy" "$PROJECT-php:local"
     "$DOCKER" tag "$PROJECT-nginx:rollback-legacy" "$PROJECT-nginx:local"
     "$DOCKER" compose --project-directory "$APP_ROOT" -f "$APP_ROOT/docker-compose.yml" up -d
+    # Le cache Symfony (volume surgicalhub_var) a été compilé par la release quittée.
+    "$DOCKER" exec "$PROJECT-php" php bin/console cache:clear --env=prod
     "$DOCKER" restart "$PROJECT-php" "$PROJECT-worker" >/dev/null
     "$DOCKER" restart "$PROJECT-nginx" >/dev/null
     info "retour à la configuration d'avant D-163 (src/, images rollback-legacy)."
