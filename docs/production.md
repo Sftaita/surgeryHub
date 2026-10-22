@@ -166,94 +166,106 @@ déployer a été validée.
 > [`docs/deployment-versioning.md`](deployment-versioning.md) §3 — on
 > déploie `HEAD` en entier, ou on s'arrête et on demande validation.
 
-### 1. Préparer l'archive en local — toujours depuis `git archive`
+### 1. Préparer et vérifier l'archive en local (D-163)
+
+Toujours depuis un clone propre et à jour, et toujours avec le **SHA complet** du commit
+validé : jamais `HEAD`, jamais un nom de branche, jamais un nom d'archive générique.
 
 ```bash
-# Depuis la racine du repo, sur le commit HEAD exact qui sera déployé
-git status   # doit être propre pour les chemins déployés
-git log --oneline -1
-
-git archive --format=tar.gz -o surgicalhub_deploy.tar.gz HEAD -- backend frontend docker-compose.yml
-scp surgicalhub_deploy.tar.gz deploy@187.124.55.15:/tmp/
+git fetch origin
+SHA=$(git rev-parse origin/main)          # le commit validé dans le rapport §2
+deploy/deploy.sh paths   "$SHA"           # périmètre : compose versionné, Dockerfiles, .dockerignore, sources COPY
+deploy/deploy.sh prepare "$SHA"           # .deploy-dist/surgicalhub-<SHA>.tar.gz + .sha256
 ```
 
-**Jamais `tar` sur le répertoire de travail.** `git archive` ne contient
-que le contenu exactement committé sur `HEAD` — aucune modification non
-commitée, aucun chantier en cours (ex: `planning-v2/*` non finalisé) ne
-peut s'y glisser. C'est ce qui garantit que le tag créé en fin de
-déploiement (§7 de `deployment-versioning.md`) correspond exactement à ce
-qui tourne réellement.
+`prepare` contrôle ce qui suit et **s'arrête à la moindre anomalie** :
 
-### 2. Sauvegardes (toujours avant d'écraser quoi que ce soit)
+| Contrôle | Règle |
+|---|---|
+| Commit autorisé | SHA complet, commit fusionné sur `origin/main` |
+| Contenu | `git archive` du commit, sans aucun fichier du disque |
+| Périmètre | Dérivé de `deploy/production/docker-compose.yml` et des instructions `COPY` de ses Dockerfiles ; `docker/` est inclus |
+| Version | `backend/REVISION` et le bundle frontend portent le SHA |
+| Fichiers interdits | Aucun `.env.local`, `.env.prod`, `*.pem`, `*.key`, `var/`, `vendor/` ni `node_modules/` |
+| Empreinte | SHA-256 enregistrée |
+
+### 2. Transférer, vérifier et préparer la release sur le serveur
 
 ```bash
-ssh deploy@187.124.55.15
-
-# Dump DB
-/home/deploy/scripts/backup_mysql.sh
-
-# Code source actuellement déployé (pour rollback — voir §"Rollback" plus bas)
-tar czf /home/deploy/backups/code/src_pre_deploy_$(date +%Y%m%d_%H%M%S).tar.gz \
-  -C /opt/stack/apps/surgicalhub src
+deploy/deploy.sh upload "$SHA"   # scp → incoming/<archive>.part, SHA-256 vérifiée sur le serveur, puis renommée
+deploy/deploy.sh stage  "$SHA"   # extraction dans releases/<SHA>/ (jamais dans la release active)
 ```
 
-Noter les deux chemins produits — ils vont dans le rapport final.
+**L'archive n'est jamais extraite si l'un de ces contrôles échoue :**
+- l'empreinte calculée sur le serveur diffère de celle de l'archive locale (fichier altéré,
+  transfert incomplet, ancienne archive) ;
+- `backend/REVISION` n'est pas le SHA autorisé ;
+- l'archive contient un fichier interdit.
 
-### 3. Extraire sur le serveur
+L'extraction se fait dans un répertoire temporaire, déplacé dans `releases/<SHA>/` seulement
+une fois complet. `stage` affiche les fichiers retirés par rapport à la release active. Ils ne
+sont jamais supprimés : la nouvelle release est un arbre neuf, l'ancienne reste intacte pour le
+rollback.
+
+Hors de `releases/`, rien n'est écrit : ni `.env`, ni les volumes, ni `src/`.
+
+### 3. Construire les images (le service n'est pas touché)
 
 ```bash
-tar xzf /tmp/surgicalhub_deploy.tar.gz -C /opt/stack/apps/surgicalhub/src/
-rm /tmp/surgicalhub_deploy.tar.gz
+deploy/deploy.sh build "$SHA"        # ~5-10 min ; images surgicalhub-{php,nginx}:<SHA>
+deploy/deploy.sh migrations "$SHA"   # dry-run des migrations sur la nouvelle image
 ```
 
-### 4. Vérifier les migrations avant de les exécuter
+`build` vérifie que l'image php contient `REVISION` = SHA et que le bundle nginx porte le SHA.
+En cas d'échec, rien n'est activé : les conteneurs et les images `:local` restent ceux en
+service.
+
+Relire le SQL du dry-run (`deployment-versioning.md` §4.2) avant toute activation.
+
+### 4. Activer
 
 ```bash
-docker exec surgicalhub-php php bin/console doctrine:migrations:status --env=prod
+deploy/deploy.sh activate "$SHA"
 ```
 
-Puis, une fois les nouvelles images buildées (étape 5) :
+Étapes, dans l'ordre :
+1. **Sauvegardes** : `backup_mysql.sh`, puis dans `deploy-backups/<horodatage>/` le compose en
+   service, une copie de `.env` (chmod 600) et le volume `surgicalhub_var` (registre des
+   versions D-162, clés JWT).
+2. **Bascule** : `current` → `releases/<SHA>` (remplacement atomique), installation du compose
+   versionné de cette release, et retag `surgicalhub-*:<SHA>` → `:local`.
+3. **Redémarrage** : `up -d`, `cache:clear`, redémarrage de php et du worker, **puis** de nginx.
+4. **Contrôle** : php et le worker exécutent `REVISION` = SHA.
+
+`activate` ne déclare **jamais** la version officielle (D-162) : elle reste
+`PENDING_VALIDATION` jusqu'au §7.1 de `deployment-versioning.md`.
+
+### 5. Migrations (seulement s'il y en a, après relecture du dry-run)
 
 ```bash
-docker exec surgicalhub-php php bin/console doctrine:migrations:migrate --dry-run --env=prod
+deploy/deploy.sh migrate "$SHA"   # migrate réel, cache:clear, redémarrages, status
 ```
 
-Relire le SQL produit (voir `docs/deployment-versioning.md` §4.2 pour les
-critères de relecture) **avant** d'exécuter la vraie migration à l'étape 6.
-
-### 5. Rebuild des images Docker
+### 6. Après les tests de santé : version officielle
 
 ```bash
-cd /opt/stack/apps/surgicalhub
-
-# En tâche de fond (le build prend ~5-10 min)
-nohup bash -c 'docker compose build --no-cache > /tmp/build.log 2>&1; echo "BUILD_EXIT=$?" >> /tmp/build.log' &
-until grep -q 'BUILD_EXIT=' /tmp/build.log; do sleep 15; done
-grep 'BUILD_EXIT=' /tmp/build.log
+git tag -a vYYYY.MM.DD-prod "$SHA" -m "…" && git push origin vYYYY.MM.DD-prod
+deploy/deploy.sh mark "$SHA" vYYYY.MM.DD-prod   # refuse si le tag n'est pas sur origin ou ne pointe pas sur SHA
 ```
 
-### 6. Redémarrer et migrer
+### Première utilisation (bascule depuis `src/`, une seule fois)
 
-```bash
-cd /opt/stack/apps/surgicalhub
+Avant D-163, la production était construite depuis `src/`, une copie manuelle. Ce répertoire
+contient des fichiers supprimés de Git, des visuels et une documentation datée du 2026-08-02,
+et le compose n'y était pas versionné.
 
-docker compose up -d
+La première activation garde tout l'existant :
+- `src/` reste intact ;
+- l'ancien compose est sauvegardé dans `deploy-backups/` ;
+- les images en service sont retaguées `surgicalhub-*:rollback-legacy`.
 
-# Migrations Doctrine (réel, après relecture du dry-run à l'étape 4)
-docker exec surgicalhub-php php bin/console doctrine:migrations:migrate \
-  --no-interaction --env=prod
-
-# Cache + restart (toujours après une migration ou un changement de code)
-docker exec surgicalhub-php php bin/console cache:clear --env=prod
-docker restart surgicalhub-php
-
-# Si des handlers Messenger ont changé, le worker doit aussi relire le nouveau code
-docker restart surgicalhub-worker
-```
-
-> **Note** : après `cache:clear`, un restart du container PHP est nécessaire
-> pour que PHP-FPM prenne en compte le nouveau cache (le cache est dans le
-> volume `surgicalhub_var`, non dans l'image).
+Pour revenir à cet état : `deploy/deploy.sh rollback legacy`. `src/` ne sera retiré qu'après
+plusieurs déploiements réussis, sur décision explicite.
 
 ### 7. Vérification
 
@@ -271,16 +283,15 @@ docker exec surgicalhub-php php bin/console debug:router --env=prod | grep admin
 # Migrations à jour — doit dire "Already at latest version"
 docker exec surgicalhub-php php bin/console doctrine:migrations:status --env=prod
 
-# D-162 — commit exécuté (= commit déployé), statut PENDING_VALIDATION avant le tag
-cat /opt/stack/apps/surgicalhub/src/backend/REVISION
+# D-162/D-163 — release active et commit exécuté (= SHA déployé), PENDING_VALIDATION avant le tag
+readlink /opt/stack/apps/surgicalhub/current
 docker exec surgicalhub-php php bin/console app:release:show
 ```
 
-Après le tag Git (`deployment-versioning.md` §7.1) :
+Après le tag Git (`deployment-versioning.md` §7.1), depuis le poste de déploiement :
 
 ```bash
-docker exec surgicalhub-php php bin/console app:release:mark vYYYY.MM.DD-prod --commit=<sha>
-docker exec surgicalhub-php php bin/console app:release:show   # OFFICIAL, tag et commit identiques au tag Git
+deploy/deploy.sh mark "$SHA" vYYYY.MM.DD-prod   # OFFICIAL, tag et commit identiques au tag Git
 ```
 
 Le registre des versions officielles se trouve dans `var/release/releases.json`, sur le volume
@@ -836,7 +847,28 @@ rollback SurgicalHub** : jamais de `zcat all_*.sql.gz | docker exec -i mysql
 mysql …`, qui rejoue toutes les bases du dump nocturne (voir
 [`backup-and-restore.md`](backup-and-restore.md) §Restaurer la base MySQL).
 
-### A. Retour du code, schéma conservé (par défaut)
+### A0. Rollback d'une release D-163 (code, configuration et images)
+
+Depuis D-163, chaque release est conservée sous `releases/<SHA>/`, avec son compose versionné
+et ses images `surgicalhub-*:<SHA>` :
+
+```bash
+deploy/deploy.sh status                     # release active et releases disponibles
+deploy/deploy.sh rollback <SHA précédent>   # current, compose et images de cette release, redémarrages
+deploy/deploy.sh rollback legacy            # retour à la configuration d'avant D-163 (src/, rollback-legacy)
+```
+
+Le rollback restaure ensemble le code backend et frontend, les Dockerfiles, la configuration
+nginx et le compose de la release visée.
+
+Il ne touche jamais à la base, à `.env`, aux volumes ni au registre des versions (D-162).
+`/api/version` affiche le commit restauré : son tag s'il avait été enregistré, sinon
+« en cours de validation ». Une version abandonnée n'est jamais affichée.
+
+Si le schéma doit aussi revenir en arrière, appliquer B ou C ci-dessous. Après tout rollback :
+`deploy/deploy.sh status` et les contrôles de santé.
+
+### A. Retour du code, schéma conservé (avant D-163 : images `rollback-*` et `src/`)
 
 Les migrations additives (colonnes nullables ou à valeur par défaut,
 nouvelles tables) laissent l'ancien code fonctionner : la base reste telle
