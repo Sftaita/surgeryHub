@@ -28,6 +28,17 @@ export interface NewMissionDraft {
   instrumentistId: number | null;
 }
 
+/**
+ * D-165 — what may be changed on the inspected line, from the saved mission's backend
+ * `allowedActions` (see GeneratePlanningTab's editabilityOf): an IN_PROGRESS mission keeps
+ * only its times; a mission past that point is read-only. Absent → everything editable.
+ */
+export interface LineEditability {
+  schedule: boolean;
+  instrumentist: boolean;
+  cancel: boolean;
+}
+
 interface InspectorProps {
   /** null = nothing selected — shows the empty state. */
   line: PreviewLineV2 | null;
@@ -42,6 +53,11 @@ interface InspectorProps {
   onCancelMission: () => void;
   onReleaseMission: () => void;
   onReset: () => void;
+  editability?: LineEditability;
+  /** D-165 — backend-sourced explanation of the current instrumentist's schedule conflict. */
+  conflictMessage?: string | null;
+  /** D-165 — the line as saved/published, when it has local unsaved edits. */
+  previousLine?: PreviewLineV2 | null;
   // ── Create-new-mission mode (Modification, or a reopened DRAFT — CAS C) ──
   /** Whether "Ajouter" itself should be offered — Modification (ACTIVE) or a reopened
    *  DRAFT, never plain Génération/Preview. Deliberately separate from `isModification`,
@@ -61,6 +77,7 @@ const MISSION_TYPE_LABEL: Record<string, string> = { BLOCK: "Bloc opératoire", 
 export function Inspector({
   line, isDirty, isModification, instrumentistOptions, freedInstrumentists, absencesLoading, accent,
   onInstrumentistChange, onScheduleChange, onCancelMission, onReleaseMission, onReset,
+  editability = { schedule: true, instrumentist: true, cancel: true }, conflictMessage = null, previousLine = null,
   canAddMission, isCreating, surgeonOptions, siteOptions, onStartCreate, onSubmitCreate, onCancelCreate,
 }: InspectorProps) {
   const [draft, setDraft] = React.useState<NewMissionDraft>({
@@ -197,10 +214,12 @@ export function Inspector({
               <Stack direction="row" spacing={1.25}>
                 <TextField
                   label="Début" type="time" size="small" fullWidth InputLabelProps={{ shrink: true }}
+                  disabled={!editability.schedule}
                   value={line.startTime} onChange={(e) => onScheduleChange({ startTime: e.target.value })}
                 />
                 <TextField
                   label="Fin" type="time" size="small" fullWidth InputLabelProps={{ shrink: true }}
+                  disabled={!editability.schedule}
                   value={line.endTime} onChange={(e) => onScheduleChange({ endTime: e.target.value })}
                 />
               </Stack>
@@ -227,8 +246,26 @@ export function Inspector({
                   options={instrumentistOptions}
                   value={line.instrumentistId}
                   onChange={onInstrumentistChange}
+                  disabled={!editability.instrumentist}
                   placeholder="Rechercher un instrumentiste…"
                 />
+                {isModification && line.existingMissionId !== null && !editability.instrumentist && (
+                  <Typography data-testid="inspector-locked" sx={{ fontSize: 11.5, color: planningV2Colors.textSecondary, mt: 0.5 }}>
+                    {editability.schedule
+                      ? "Mission commencée : l'instrumentiste ne peut plus être changé·e ni la mission annulée depuis le planning ; seuls les horaires prévus du jour peuvent être corrigés."
+                      : "Mission commencée et plus modifiable depuis le planning."}
+                  </Typography>
+                )}
+                {conflictMessage && (
+                  <Alert severity="warning" sx={{ mt: 1, py: 0, fontSize: 12 }} data-testid="inspector-conflict">
+                    {conflictMessage}
+                  </Alert>
+                )}
+                {previousLine && (previousLine.instrumentistId !== line.instrumentistId || previousLine.startTime !== line.startTime || previousLine.endTime !== line.endTime) && (
+                  <Typography data-testid="inspector-previous" sx={{ fontSize: 11.5, color: planningV2Colors.textSecondary, mt: 0.75 }}>
+                    {isModification ? "Actuellement publié" : "Avant modification"} : {previousLine.startTime}–{previousLine.endTime} · {previousLine.instrumentistName ?? "sans instrumentiste"}
+                  </Typography>
+                )}
                 {absencesLoading && (
                   <Typography sx={{ fontSize: 11, color: planningV2Colors.textSecondary, mt: 0.5 }}>
                     Vérification des disponibilités…
@@ -244,7 +281,7 @@ export function Inspector({
               </Box>
             )}
 
-            {line.status !== "SKIPPED" && freedInstrumentists.length > 0 && (
+            {line.status !== "SKIPPED" && editability.instrumentist && freedInstrumentists.length > 0 && (
               <Box>
                 <Typography sx={{ fontSize: 11, fontWeight: 700, color: planningV2Colors.textSecondary, mb: 0.5 }}>
                   Libérés disponibles
@@ -269,7 +306,7 @@ export function Inspector({
             )}
 
             <Stack spacing={0.75} sx={{ pt: 1, borderTop: `1px dashed ${planningV2Colors.divider}` }}>
-              {isModification && line.status !== "SKIPPED" && line.instrumentistId !== null && (
+              {isModification && line.status !== "SKIPPED" && line.instrumentistId !== null && editability.instrumentist && (
                 <Button
                   size="small" color="inherit" startIcon={<UnpublishedOutlinedIcon sx={{ fontSize: 15 }} />}
                   onClick={onReleaseMission}
@@ -280,6 +317,7 @@ export function Inspector({
               )}
               <Button
                 size="small" color="error" startIcon={<DeleteOutlineOutlinedIcon sx={{ fontSize: 15 }} />}
+                disabled={!editability.cancel}
                 onClick={onCancelMission}
                 sx={{ justifyContent: "flex-start", textTransform: "none", fontSize: 12.5 }}
               >

@@ -347,8 +347,11 @@ describe("AppRouter — Absences self-service (Lot 3, D-097, 2026-08-06)", () =>
     authRole = "INSTRUMENTIST";
     renderAt("/app/i/absences");
     await waitFor(() => expect(screen.getByText("MES ABSENCES")).toBeInTheDocument(), { timeout: 5000 });
-    const nav = screen.getByRole("navigation", { name: "Navigation instrumentiste" });
-    expect(within(nav).getByRole("button", { name: "Absences" })).toHaveAttribute("aria-current", "page");
+    // D-166 — la présentation instrumentiste (« Bienvenue dans SurgicalHub », une fenêtre
+    // SheetModal) est ouverte dans ce scénario : la navigation est derrière elle, donc hors de
+    // l'arbre d'accessibilité (aria-hidden) — on vérifie quand même l'onglet actif.
+    const nav = screen.getByRole("navigation", { name: "Navigation instrumentiste", hidden: true });
+    expect(within(nav).getByRole("button", { name: "Absences", hidden: true })).toHaveAttribute("aria-current", "page");
   });
 });
 

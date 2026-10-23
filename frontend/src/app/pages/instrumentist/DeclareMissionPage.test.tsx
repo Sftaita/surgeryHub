@@ -178,7 +178,8 @@ describe("DeclareMissionPage — steppers + SelectField", () => {
     await vi.waitFor(() => expect(declareMissionMock).toHaveBeenCalledTimes(1));
     // Le sheet doit encore être là juste après le succès (l'anim de sortie n'a pas fini).
     expect(navigateMock).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Déclarer une mission" })).toBeInTheDocument();
+    // D-166 — pendant sa sortie, la fenêtre n'est plus interactive (aria-hidden) mais reste affichée.
+    expect(screen.getByRole("dialog", { name: "Déclarer une mission", hidden: true })).toBeInTheDocument();
 
     await vi.advanceTimersByTimeAsync(300);
     expect(navigateMock).toHaveBeenCalledWith("/app/i/missions/999", { replace: true });

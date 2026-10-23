@@ -34,7 +34,11 @@ export type AllowedAction =
   | "request_assignment_review"
   // D-155 — activité exécutée sans instrumentiste : déclarer (chirurgien de la mission, manager), annuler (manager).
   | "declare_executed_without_instrumentist"
-  | "cancel_executed_without_instrumentist";
+  | "cancel_executed_without_instrumentist"
+  // Manager : réaffecter une mission ASSIGNED (déjà renvoyé par le backend).
+  | "reassign"
+  // D-165 — manager : corriger l'horaire prévu (OPEN/ASSIGNED, et IN_PROGRESS pour ses heures du jour).
+  | "reschedule";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";

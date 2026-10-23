@@ -373,6 +373,12 @@ export interface PreviewLineV2 {
    * preview). Anything but DRAFT is never modified by generate() — shown as reality, locked.
    */
   existingMissionStatus?: string | null;
+  /**
+   * D-165 — Modification: the mission's backend `allowedActions` — `reschedule` (times
+   * editable, also while IN_PROGRESS) and `cancel` (instrumentist and cancellation
+   * editable: OPEN/ASSIGNED only). Absent for a preview/new line (everything editable).
+   */
+  existingMissionActions?: string[] | null;
   /** D-125 — Modification: nominative request state of the mission (backend `targetedOffer`). */
   pendingOfferName?: string | null;
   offerDeclinedByName?: string | null;
@@ -542,10 +548,16 @@ export interface UnavailabilityDetail {
 }
 
 export interface ConflictDetail {
-  missionId: number;
+  /** null when the conflict is a new line proposed in the editor (never saved). */
+  missionId: number | null;
   siteName: string | null;
   startAt: string | null;
   endAt: string | null;
+  /** D-165 — who/what the conflict is with, as decided by the backend. */
+  surgeonName?: string | null;
+  missionStatus?: string | null;
+  /** PERSISTED = a saved mission; PROPOSED = an unsaved line of the editor (POST roster). */
+  source?: "PERSISTED" | "PROPOSED";
 }
 
 /**

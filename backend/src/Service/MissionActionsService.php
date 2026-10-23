@@ -38,10 +38,10 @@ final class MissionActionsService
 
         // Manager/Admin
         if ($isManager) {
-            // D-120 — mêmes statuts que MissionVoter::canEncodingRemind() /
-            // EncodingReminderService::SUBMITTABLE_STATUSES ; pas de relance sans
-            // instrumentiste assigné (rien ni personne à notifier).
-            $remind = $mission->getInstrumentist() !== null ? ['remind'] : [];
+            // D-120 / D-166 — même règle exactement que MissionVoter::ENCODING_REMIND
+            // (EncodingReminderPolicy) : jamais de relance sans instrumentiste affectée. Le
+            // filtrage par statut reste porté par le match ci-dessous (mêmes statuts).
+            $remind = EncodingReminderPolicy::canSendManualReminder($mission) ? ['remind'] : [];
 
             $actions = match ($mission->getStatus()) {
                 // 'cancel' couvre aussi DRAFT depuis D-090 (MissionPostDeployService::cancel()
@@ -66,6 +66,12 @@ final class MissionActionsService
                 MissionStatus::DECLARED => [...['view', 'approve', 'reject', 'edit'], ...$remind],
                 default => ['view'],
             };
+
+            // D-165 — horaires prévus corrigeables depuis le planning (MissionPostDeployService::
+            // updateSchedule()) : OPEN/ASSIGNED, et IN_PROGRESS pour ses seules heures du jour.
+            if (in_array($mission->getStatus(), MissionPostDeployService::RESCHEDULABLE_STATUSES, true)) {
+                $actions[] = 'reschedule';
+            }
 
             // D-136 — rappel des heures réelles manquantes, transverse aux statuts ci-dessus :
             // même condition exactement que MissionVoter::HOURS_REMIND.
