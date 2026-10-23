@@ -38,7 +38,7 @@ _Mis en place le : 2026-06-16_
 La plus récente sauvegarde de chaque série est toujours conservée. Seuls les fichiers au format
 exact d'une série sont concernés : tout autre fichier est signalé « non géré » et conservé.
 
-### Rétention hors serveur (proposée, à valider)
+### Rétention hors serveur (validée le 2026-10-23, indépendante de la rétention locale)
 
 Dumps quotidiens : 30 jours, 12 semaines, 24 mois. Uploads et var : 90 jours. Les anciens
 dossiers en clair du Drive (`…/mysql`, `…/uploads`) ne sont pas touchés : leur sort est une
@@ -55,6 +55,7 @@ rotate_backups.sh                 # DRY-RUN : ce qui serait supprimé et l'espac
 rotate_backups.sh --list          # … avec la liste détaillée
 rotate_backups.sh --apply         # réel ; exige un test de restauration réussi récent
 restore_test.sh                   # restauration RÉELLE dans un MySQL jetable + JWT + registre + uploads
+restore_test.sh --from-remote     # idem, à partir des copies TÉLÉCHARGÉES depuis le Drive
 install.sh [--apply-scripts|--apply-crontab]   # depuis le poste : diff, puis installation
 ```
 
@@ -73,26 +74,63 @@ gpg --batch --pinentry-mode loopback --passphrase-file $P -d surgicalhub_var_<ho
   | docker run --rm -i --network none --entrypoint tar -v surgicalhub_var:/d alpine:latest xzf - -C /d
 ```
 
-### Installation (chaque étape après accord explicite)
+### Mise en service (chaque étape après accord explicite)
 
-1. Créer la passphrase (600) et la ranger hors du serveur ; `install.sh --apply-scripts` ;
-   première exécution manuelle de `backup_mysql.sh`, `backup_volumes.sh`, puis `restore_test.sh`.
-2. `install.sh --apply-crontab` : remplace les 4 anciennes lignes (`backup_mysql`, `backup_uploads`,
-   `sync_gdrive`, `rotate_backups`) par `crontab.proposed`. La crontab précédente est sauvegardée
-   dans `backups/cron/`. La rotation reste en dry-run.
-3. Après relecture des dry-runs : passage de la rotation en `--apply` (locale, puis distante).
+L'ancien système (`/home/deploy/scripts/*.sh`, crontab actuelle) **reste actif** jusqu'à l'étape 4,
+et ses scripts ne sont jamais supprimés : retour arrière = restaurer la crontab sauvegardée.
 
-L'ordre compte : `sync_gdrive.sh` doit être retiré **avant** toute rotation réelle, sinon les
-suppressions locales seraient répercutées sur le Drive.
+**Étape 1 — Passphrase (par l'utilisateur, jamais par l'agent).** Dans **son propre terminal** :
+pas avec le préfixe `!` de Claude Code, dont la sortie arrive dans la conversation.
+
+```bash
+ssh surgicalhub-prod
+umask 077
+openssl rand -base64 48 > ~/.surgicalhub-backup-passphrase   # rien n'est affiché
+chmod 600 ~/.surgicalhub-backup-passphrase
+less ~/.surgicalhub-backup-passphrase                         # copier dans le gestionnaire de secrets, puis q
+sha256sum ~/.surgicalhub-backup-passphrase | cut -c1-16       # empreinte courte, à noter avec le secret
+```
+
+Le secret est rangé dans le gestionnaire de mots de passe (entrée « SurgicalHub — passphrase des
+sauvegardes D-164 », avec l'empreinte courte). Il n'apparaît jamais dans Git, dans un journal, dans
+l'historique du shell ni dans une conversation. L'agent vérifie seulement la présence, les droits
+600 et la taille du fichier. Sans cette passphrase, aucune sauvegarde chiffrée n'est restaurable :
+la copie hors serveur est obligatoire avant l'étape 3.
+
+**Étape 2 — Scripts.** `deploy/server/backup/install.sh` (différences, rien n'est écrit), puis
+`install.sh --apply-scripts` → `/home/deploy/scripts/surgicalhub-backup/` (700). La crontab est
+inchangée et l'ancien système continue.
+
+**Étape 3 — Premier cycle chiffré, manuel, à côté de l'ancien.**
+1. `backup_mysql.sh`, puis `backup_volumes.sh` : premiers `*.gpg`, et `backups/surgicalhub-var/` créé.
+2. `restore_test.sh` : restauration réelle locale, marqueur `.restore-test-ok`.
+3. `backup_offsite.sh` : copie vérifiée vers `…/surgicalhub-chiffre/` ; la rotation distante est
+   en dry-run. Ensuite, contrôle des permissions du nouveau dossier (propriétaire seul).
+4. `restore_test.sh --from-remote` : les dernières sauvegardes sont **téléchargées depuis le Drive**,
+   puis restaurées dans un MySQL jetable sans réseau. Contrôles : lignes, clés JWT appariées,
+   registre, uploads. Marqueur `.restore-test-remote-ok`.
+
+**Étape 4 — Crontab.** `install.sh --apply-crontab` : la crontab est sauvegardée dans
+`backups/cron/crontab_before_d164_*.txt`, puis les 4 anciennes lignes sont remplacées par
+`crontab.proposed`. Le test de restauration devient hebdomadaire, et la rotation reste en dry-run.
+`sync_gdrive.sh` n'est plus lancé : les anciens dossiers en clair du Drive sont **figés**, plus
+rien ne les modifie. Contrôle après une nuit : journal, nouveaux fichiers, copie distante.
+
+**Étape 5 — Rotation réelle.** Nouveau dry-run présenté, puis `--apply` en local, puis
+`--apply-remote-rotation`. Ensuite seulement, la liste des anciens dossiers en clair du Drive
+pouvant être supprimés est présentée, pour décision.
 
 ### Tests
 
-- `deploy/server/backup/tests/rotation.sh` (31 contrôles, arborescence factice, faux docker ;
-  sous Linux) : grand-père/père/fils, séries, liens symboliques, fichiers non gérés, images
-  protégées, cache de build, refus sans test de restauration, passphrase.
-- `deploy/server/backup/tests/e2e-docker.sh` (15 contrôles, vrai Docker, tout jetable) : dumps et
-  volumes chiffrés, restauration réelle (lignes, clés JWT appariées, registre, uploads), refus
-  d'une archive altérée et d'une mauvaise passphrase.
+- `deploy/server/backup/tests/run-in-docker.sh`, sous Linux :
+  - `rotation.sh` (31 contrôles) : grand-père/père/fils, séries, liens symboliques, fichiers non
+    gérés, images protégées, cache de build, refus sans test de restauration, passphrase ;
+  - `offsite.sh` (18 contrôles, faux rclone) : seuls les `*.gpg` sortent (jamais un fichier en
+    clair ni un `.env`), suppressions locales jamais répercutées, aucune rotation si la copie n'est
+    pas vérifiée, rétention distante 30 j / 12 sem. / 24 mois et 90 j.
+- `deploy/server/backup/tests/e2e-docker.sh` (21 contrôles, vrai Docker, tout jetable) : dumps et
+  volumes chiffrés, restauration réelle locale **puis depuis la copie hors serveur sans aucune
+  sauvegarde locale**, refus d'une archive altérée (locale ou distante) et d'une mauvaise passphrase.
 
 ---
 

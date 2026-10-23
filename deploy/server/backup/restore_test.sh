@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # SurgicalHub — test RÉEL de restauration des dernières sauvegardes (D-164).
-#   restore_test.sh   → vérifie, sans jamais toucher à la production :
+#   restore_test.sh                → dernières sauvegardes LOCALES ;
+#   restore_test.sh --from-remote  → dernières sauvegardes TÉLÉCHARGÉES depuis le Drive ($REMOTE_BASE).
+#   Vérifie, sans jamais toucher à la production :
 #     1. intégrité (SHA-256) et déchiffrement des dernières sauvegardes chiffrées ;
 #     2. dump MySQL restauré dans un MySQL JETABLE (conteneur sans réseau, données en tmpfs),
 #        bases et tables comptées, lignes de tables clés de surgicalhub ;
 #     3. volume surgicalhub_var : clés JWT présentes et appariées, registre des versions lisible ;
 #     4. volume uploads : archive lisible, nombre de fichiers comparé au volume en service.
 # Tout est extrait dans un répertoire temporaire (700) supprimé à la sortie. En cas de succès,
-# écrit le marqueur $BACKUP_ROOT/.restore-test-ok exigé par « rotate_backups.sh --apply ».
+# écrit le marqueur $BACKUP_ROOT/.restore-test-ok (exigé par « rotate_backups.sh --apply »), ou
+# .restore-test-remote-ok avec --from-remote.
 set -euo pipefail
 LOG_TAG=restore-test
 # shellcheck source=lib.sh
@@ -25,6 +28,28 @@ ko() { log "ÉCHEC $*"; FAIL=1; }
 
 latest() { ls -1 "$1" 2>/dev/null | grep -E "$2" | LC_ALL=C sort | tail -1; }
 check_sum() { (cd "$(dirname "$1")" && sha256sum -c --status "$(basename "$1").sha256"); }
+
+# --from-remote : la dernière sauvegarde de chaque série est d'abord TÉLÉCHARGÉE depuis la copie
+# hors serveur ($REMOTE_BASE), avec son .sha256, dans le répertoire temporaire ; tous les contrôles
+# ci-dessous portent alors sur ces copies distantes, jamais sur les fichiers locaux.
+MARKER="$BACKUP_ROOT/.restore-test-ok"
+if [ "${1:-}" = --from-remote ]; then
+  export PATH="$HOME/bin:$PATH"
+  command -v "$RCLONE" > /dev/null || die "rclone introuvable."
+  fetch_latest() { # fetch_latest <sous-dossier distant> <regex> <dir local>
+    local n; mkdir -p "$3"
+    n=$("$RCLONE" lsf "$REMOTE_BASE/$1" --files-only 2>/dev/null | grep -E "$2" | LC_ALL=C sort | tail -1 || true)
+    [ -n "$n" ] || { log "aucune sauvegarde dans $REMOTE_BASE/$1"; return 0; }
+    "$RCLONE" copyto "$REMOTE_BASE/$1/$n" "$3/$n" && "$RCLONE" copyto "$REMOTE_BASE/$1/$n.sha256" "$3/$n.sha256" \
+      && log "     téléchargé depuis le Drive : $1/$n"
+  }
+  fetch_latest mysql '^all_[0-9]{8}_[0-9]{6}\.sql\.gz\.gpg$' "$T/remote/mysql"
+  fetch_latest surgicalhub-var "^${VAR_VOLUME}_[0-9]{8}_[0-9]{6}\\.tar\\.gz\\.gpg\$" "$T/remote/var"
+  for pair in $UPLOAD_VOLUMES; do fetch_latest uploads "^${pair##*:}_[0-9]{8}_[0-9]{6}\\.tar\\.gz\\.gpg\$" "$T/remote/uploads"; done
+  MYSQL_DIR="$T/remote/mysql"; VAR_DIR="$T/remote/var"; UPLOADS_DIR="$T/remote/uploads"
+  MARKER="$BACKUP_ROOT/.restore-test-remote-ok"
+  log "test de restauration depuis la copie hors serveur ($REMOTE_BASE)"
+fi
 
 # ── 1+2. MySQL ───────────────────────────────────────────────────────────────
 dump=$(latest "$MYSQL_DIR" '^all_[0-9]{8}_[0-9]{6}\.sql\.gz\.gpg$')
@@ -86,8 +111,8 @@ for pair in $UPLOAD_VOLUMES; do
 done
 
 if [ "$FAIL" = 0 ]; then
-  date -u +%FT%TZ > "$BACKUP_ROOT/.restore-test-ok"
-  log "test de restauration RÉUSSI — marqueur $BACKUP_ROOT/.restore-test-ok"
+  date -u +%FT%TZ > "$MARKER"
+  log "test de restauration RÉUSSI — marqueur $MARKER"
 else
   log "test de restauration EN ÉCHEC — aucune rotation ne sera autorisée"; exit 1
 fi
