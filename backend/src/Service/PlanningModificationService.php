@@ -19,6 +19,7 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningVersionStatus;
 use App\Exception\PlanningVersionNotActiveException;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
@@ -262,6 +263,15 @@ class PlanningModificationService
     /**
      * Applies one editor line's intent to an existing Mission. Returns true if anything
      * actually changed (i.e. a mutation call was made), false for a genuine no-op.
+     *
+     * D-165 — a requested change the mission's status does not allow (an instrumentist change
+     * or a cancellation on an IN_PROGRESS/SUBMITTED/… mission, a schedule change past
+     * IN_PROGRESS) is refused with a 409 — formerly it was silently counted "unchanged" and
+     * the manager believed the planning was updated. The whole batch is rolled back.
+     *
+     * Order inside the line: a removed instrumentist is released BEFORE the schedule change;
+     * a new instrumentist is assigned AFTER it, so her eligibility is always evaluated on the
+     * slot she will actually hold, never on the mission's previous times.
      */
     /** @param array<string, int> $detail H1 (D-126) journal-only counters, see apply() */
     private function applyLineToMission(Mission $mission, array $line, User $actor, array &$detail, array &$removedBy = []): bool
@@ -271,6 +281,9 @@ class PlanningModificationService
         if ($wantsCancelled) {
             if ($mission->getStatus() === MissionStatus::CANCELLED) {
                 return false;
+            }
+            if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+                throw $this->refusal($mission, 'elle ne peut plus être annulée depuis le planning');
             }
             if ($mission->getStatus() === MissionStatus::ASSIGNED) {
                 $this->postDeploy->release($mission, $actor, notify: false);
@@ -283,45 +296,19 @@ class PlanningModificationService
             return true;
         }
 
-        $changed = false;
-
-        // Instrumentist assignment change — $changed only flips when a mutation actually
-        // ran. A mismatched instrumentistId on a mission whose status allows none of the
-        // three transitions (e.g. CLOSED, SUBMITTED, VALIDATED, IN_PROGRESS — stale frontend
-        // data or a concurrent change) must NOT be reported as a change: nothing happened.
-        $newInstrumentistId = $line['instrumentistId'] ?? null;
+        $newInstrumentistId     = isset($line['instrumentistId']) ? (int) $line['instrumentistId'] : null;
         $currentInstrumentistId = $mission->getInstrumentist()?->getId();
-        if ($newInstrumentistId !== $currentInstrumentistId) {
-            if ($newInstrumentistId === null && $mission->getStatus() === MissionStatus::ASSIGNED) {
-                // Backend invariant (never rely solely on the editor sending the right status):
-                // if this mission's surgeon is currently absent, releasing must never reopen it
-                // to the pool — reuse the exact same reconciliation MissionPostDeployService's
-                // callers already trust (D-062/D-106) instead of unconditionally calling
-                // release(). Returns null when neither person is currently absent, in which case
-                // this really is a normal release-to-pool and proceeds exactly as before.
-                if ($this->absenceMissionReaction->reconcileMissionAgainstCurrentAbsences($mission, $actor, notify: false) === null) {
-                    $removedBy[$mission->getId()] = $currentInstrumentistId;
-                    $this->postDeploy->release($mission, $actor, notify: false);
-                    $detail['released']++;
-                } else {
-                    $detail['absenceReconciled']++;
-                }
-                $changed = true;
-            } elseif ($newInstrumentistId !== null && $mission->getStatus() === MissionStatus::OPEN) {
-                // D-101 — Mode Modification: ABSENT/INACTIVE block, SCHEDULE_CONFLICT does
-                // not (D-091/D-052 — surfaced instead via syncAlertsForMission() below).
-                $this->postDeploy->assign($mission, $actor, (int) $newInstrumentistId, notify: false, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
-                $detail['assigned']++;
-                $changed = true;
-            } elseif ($newInstrumentistId !== null && $mission->getStatus() === MissionStatus::ASSIGNED) {
-                $this->postDeploy->reassign($mission, $actor, (int) $newInstrumentistId, notify: false, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
-                $detail['reassigned']++;
-                $changed = true;
-            }
+        $instrumentistChanges   = $newInstrumentistId !== $currentInstrumentistId;
+        if ($instrumentistChanges && !in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+            throw $this->refusal($mission, 'son instrumentiste ne peut plus être modifié(e) depuis le planning');
         }
 
-        // Schedule / site / type change — compare against the mission's *current* state
-        // (re-fetched, since the block above may already have mutated status/instrumentist).
+        $changed = false;
+        if ($instrumentistChanges && $newInstrumentistId === null) {
+            $changed = $this->applyInstrumentistChange($mission, null, $currentInstrumentistId, $actor, $detail, $removedBy);
+        }
+
+        // Schedule / site / type change — compared against the mission's *current* state.
         $newStartAt = $this->combineDateTime($line['date'] ?? null, $line['startTime'] ?? null);
         $newEndAt   = $this->combineDateTime($line['date'] ?? null, $line['endTime'] ?? null);
         $newSite    = isset($line['siteId']) ? $this->em->find(Hospital::class, $line['siteId']) : null;
@@ -333,13 +320,79 @@ class PlanningModificationService
             || ($newSite !== null && $newSite->getId() !== $mission->getSite()?->getId())
             || ($newType !== null && $newType !== $mission->getType());
 
-        if ($scheduleChanged && in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+        if ($scheduleChanged) {
+            if (!in_array($mission->getStatus(), MissionPostDeployService::RESCHEDULABLE_STATUSES, true)) {
+                throw $this->refusal($mission, 'ses horaires ne peuvent plus être modifiés depuis le planning');
+            }
             $this->postDeploy->updateSchedule($mission, $actor, $newStartAt, $newEndAt, $newSite, $newType, notify: false, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
             $detail['scheduleChanged']++;
             $changed = true;
         }
 
+        if ($instrumentistChanges && $newInstrumentistId !== null) {
+            $changed = $this->applyInstrumentistChange($mission, $newInstrumentistId, $currentInstrumentistId, $actor, $detail, $removedBy) || $changed;
+        }
+
         return $changed;
+    }
+
+    /**
+     * Instrumentist assignment change — returns true only when a mutation actually ran.
+     *
+     * @param array<string, int> $detail
+     * @param array<int, int>    $removedBy
+     */
+    private function applyInstrumentistChange(Mission $mission, ?int $newInstrumentistId, ?int $currentInstrumentistId, User $actor, array &$detail, array &$removedBy): bool
+    {
+        if ($newInstrumentistId === null) {
+            if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
+                return false;
+            }
+            // Backend invariant (never rely solely on the editor sending the right status):
+            // if this mission's surgeon is currently absent, releasing must never reopen it
+            // to the pool — reuse the exact same reconciliation MissionPostDeployService's
+            // callers already trust (D-062/D-106) instead of unconditionally calling
+            // release(). Returns null when neither person is currently absent, in which case
+            // this really is a normal release-to-pool and proceeds exactly as before.
+            if ($this->absenceMissionReaction->reconcileMissionAgainstCurrentAbsences($mission, $actor, notify: false) === null) {
+                $removedBy[$mission->getId()] = $currentInstrumentistId;
+                $this->postDeploy->release($mission, $actor, notify: false);
+                $detail['released']++;
+            } else {
+                $detail['absenceReconciled']++;
+            }
+            return true;
+        }
+
+        if ($mission->getStatus() === MissionStatus::OPEN) {
+            // D-101 — Mode Modification: ABSENT/INACTIVE block, SCHEDULE_CONFLICT does
+            // not (D-091/D-052 — surfaced instead via syncAlertsForMission() below).
+            $this->postDeploy->assign($mission, $actor, $newInstrumentistId, notify: false, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
+            $detail['assigned']++;
+            return true;
+        }
+        if ($mission->getStatus() === MissionStatus::ASSIGNED) {
+            $this->postDeploy->reassign($mission, $actor, $newInstrumentistId, notify: false, policy: EligibilityEnforcementPolicy::PLANNING_MODIFICATION);
+            $detail['reassigned']++;
+            return true;
+        }
+
+        return false;
+    }
+
+    /** D-165 — explicit refusal of a change the mission's current status does not allow. */
+    private function refusal(Mission $mission, string $what): ConflictHttpException
+    {
+        $surgeon = $mission->getSurgeon();
+
+        return new ConflictHttpException(sprintf(
+            'Mission #%d (%s, %s) — statut « %s » : %s. Rien n\'a été enregistré.',
+            $mission->getId(),
+            $surgeon !== null ? 'Dr ' . trim(($surgeon->getFirstname() ?? '') . ' ' . ($surgeon->getLastname() ?? '')) : 'sans chirurgien',
+            $mission->getStartAt()?->format('d/m/Y') ?? '—',
+            $mission->getStatus()?->label() ?? '—',
+            $what,
+        ));
     }
 
     /**
@@ -357,7 +410,7 @@ class PlanningModificationService
      */
     private function applyLines(PlanningVersion $version, array $lines, User $actor, array &$counts, array &$touchedMissionIds, array &$detail, array &$removedBy, array &$createdIds): void
     {
-            foreach ($lines as $line) {
+            foreach ($this->orderForApplication($lines) as $line) {
                 $existingMissionId = $line['existingMissionId'] ?? null;
 
                 if ($existingMissionId === null) {
@@ -401,6 +454,36 @@ class PlanningModificationService
                     $counts['unchanged']++;
                 }
             }
+    }
+
+    /**
+     * D-165 — the batch is the manager's whole intended day: an existing mission that gets a
+     * NEW instrumentist is applied only after every other line (cancellations, releases,
+     * schedule changes), so her eligibility is checked against the batch's final schedules —
+     * e.g. Dr A shortened to 07:45–14:00 before she is assigned to Dr B at 14:45–18:00 —
+     * never against a slot this same batch is about to shorten. Stable otherwise.
+     *
+     * @param array<int, array<string, mixed>> $lines
+     * @return array<int, array<string, mixed>>
+     */
+    private function orderForApplication(array $lines): array
+    {
+        $first = [];
+        $last  = [];
+        foreach ($lines as $line) {
+            $missionId = $line['existingMissionId'] ?? null;
+            $newId     = isset($line['instrumentistId']) ? (int) $line['instrumentistId'] : null;
+            $mission   = $missionId !== null && $newId !== null && ($line['status'] ?? null) !== 'SKIPPED'
+                ? $this->em->find(Mission::class, $missionId)
+                : null;
+            if ($mission !== null && $mission->getInstrumentist()?->getId() !== $newId) {
+                $last[] = $line;
+            } else {
+                $first[] = $line;
+            }
+        }
+
+        return [...$first, ...$last];
     }
 
     /**

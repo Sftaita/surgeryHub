@@ -4213,7 +4213,18 @@ mission n'est modifiée, personne n'est notifié, et la trace est un
 | `existingMissionId` | int \| null | `null` = nouvelle mission à créer (`MissionPostDeployService::createPostDeploy()`). Sinon, ID de la `Mission` existante à muter. |
 | `status` | string | `"SKIPPED"` = annuler la mission (`release()` si `ASSIGNED`, `cancel()` si `OPEN`). Toute autre valeur = pas d'annulation. |
 | `instrumentistId` | int \| null | Comparé à l'instrumentiste courant de la mission — `null`→valeur = `assign()`, valeur→`null` = `release()` **sauf si le chirurgien de cette Mission est actuellement absent** (D-112) : dans ce cas la Mission est réconciliée en `CANCELLED` (jamais `OPEN`) via `AbsenceMissionReactionService::reconcileMissionAgainstCurrentAbsences()`, quel que soit le `status` envoyé par le client. valeur→autre valeur = `reassign()`. |
-| `date`/`startTime`/`endTime`/`siteId`/`missionType` | — | Comparés à l'état courant ; tout écart sur une mission `OPEN`/`ASSIGNED` déclenche `updateSchedule()`. |
+| `date`/`startTime`/`endTime`/`siteId`/`missionType` | — | Comparés à l'état courant ; tout écart sur une mission `OPEN`/`ASSIGNED` déclenche `updateSchedule()`. D-165 : aussi sur une mission `IN_PROGRESS`, pour ses **seules heures du jour** (début jamais reporté après maintenant). |
+
+**D-165 — refus explicites et ordre d'application.** Un changement que le statut de la mission
+n'autorise pas répond `409 CONFLICT` (message nommant la mission, son chirurgien, sa date et son
+statut) et annule tout le lot — auparavant il était compté « inchangé » sans rien faire :
+changement ou retrait d'instrumentiste et annulation hors `OPEN`/`ASSIGNED` (ex. mission « En
+cours ») ; horaire/site/type au-delà d'`IN_PROGRESS` ; sur une mission `IN_PROGRESS`, site, type ou
+date ; heure de fin ≤ heure de début (tout statut). Les lignes qui donnent un **nouvel**
+instrumentiste à une mission existante sont appliquées **après** toutes les autres
+(annulations, retraits, horaires), et dans une ligne l'horaire est appliqué avant la nouvelle
+affectation : l'éligibilité est toujours évaluée sur les horaires finaux du lot (Dr A raccourci
+à 14:00 avant qu'elle soit affectée au Dr B à 14:45).
 
 Une ligne dont l'`existingMissionId` référence une mission déjà mutée ailleurs (ou étrangère à cette version) est **silencieusement ignorée** (pas d'échec du lot entier).
 
@@ -4632,6 +4643,7 @@ créer/modifier une exception avec `source = SURGEON_ABSENCE`.
 | `POST /api/planning/alerts/{id}/open-as-available` | Vide l'instrumentiste, mission → `OPEN`, résout l'alerte |
 | `GET /api/planning/alerts/{id}/eligible-instrumentists` | D-102 (Lot 2) — roster complet du site, annoté d'éligibilité (jamais filtré) : `{missionId, policy, candidates: CandidateEligibility[]}`, chaque candidat portant `sites: string[]` en plus (ajouté Batch 12, conservé). Toujours `STRICT_ASSIGNMENT`. Délègue à `evaluateAllCandidates()`/`serializeCandidate()`, plus de logique dupliquée dans `PlanningAlertActionService` |
 | `GET /api/planning/v2/eligible-instrumentists` | D-102 (Lot 2, nouveau) — roster éligibilité pour un créneau hypothétique/sans mission persistée (Preview Editor : ligne éditée, bulk-assign, création de mission en Mode Modification). Query : `siteId?`, `date`, `startTime`, `endTime` (requis), `excludeMissionId?`, `policy?`. Réponse : `{policy, candidates: CandidateEligibility[]}`. Délègue à `evaluateRoster()` (4 requêtes DB) |
+| `POST /api/planning/v2/eligible-instrumentists` | D-165 — même roster, évalué contre la journée **en cours d'édition**. Body JSON : mêmes champs que la query GET + `proposals[]` (≤ 200) : `{missionId: int\|null, instrumentistId: int\|null, startTime, endTime, date?, surgeonId?, siteId?, cancelled?}` — les autres lignes non enregistrées de l'éditeur ce jour-là. Une mission existante proposée est évaluée à son créneau/instrumentiste **proposé** (sa ligne enregistrée ne compte plus ; `cancelled: true` → ne compte plus du tout) ; une nouvelle ligne avec instrumentiste compte comme une mission. Règle de chevauchement `[début, fin)` : `A.start < B.end && B.start < A.end` (07:45–14:00 et 14:00–18:00 ne se chevauchent pas). Rien n'est écrit ; chaque enregistrement revalide (D-101). |
 
 Chaque alerte porte aussi `autoActionBlockedReason` (D-158) : pour une alerte d'absence
 (`SURGEON_ABSENCE`, `REASSIGNMENT_REQUIRED`, `INSTRUMENTIST_ABSENCE`), `MISSION_STARTED`
@@ -8484,3 +8496,30 @@ interventions / matériel conservés, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENT
   `FIRM_*`. Une mission classique sans instrumentiste reste `409 FINANCIAL_CALCULATION_INELIGIBLE`.
 - Renvoi en correction / réouverture : `ENCODING_CORRECTION_REQUESTED` au **chirurgien**
   (lien `/app/s/missions/{id}/encoding`).
+
+### D-165 — détail du conflit dans `CandidateEligibility.conflict`
+
+Tous les rosters d'éligibilité (`GET /api/missions/{id}/eligible-instrumentists`,
+`GET /api/planning/alerts/{id}/eligible-instrumentists`, `GET|POST /api/planning/v2/eligible-instrumentists`)
+enrichissent `conflict` (champs existants inchangés) :
+
+```json
+{
+  "missionId": 1085,
+  "siteName": "CHIREC - Hôpital Delta",
+  "startAt": "2026-10-23T07:45:00+02:00",
+  "endAt": "2026-10-23T18:00:00+02:00",
+  "surgeonName": "Phillipe Schiepers",
+  "missionStatus": "IN_PROGRESS",
+  "source": "PERSISTED"
+}
+```
+
+`source` : `PERSISTED` (mission enregistrée — publiée, ou brouillon si `missionStatus = DRAFT`)
+ou `PROPOSED` (ligne proposée dans l'éditeur, non enregistrée — `missionId` `null` pour une
+nouvelle ligne). Un conflit avec une mission enregistrée est signalé en priorité.
+
+`allowedActions` (manager / admin) gagne `reschedule` sur une mission `OPEN`, `ASSIGNED` ou
+`IN_PROGRESS` : son horaire prévu est corrigeable depuis le planning (`IN_PROGRESS` : heures du
+jour seulement). L'éditeur de planning en Mode Modification n'autorise le changement
+d'instrumentiste et l'annulation que si `cancel` est présent (`OPEN`/`ASSIGNED`).

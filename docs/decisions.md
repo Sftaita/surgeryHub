@@ -14644,3 +14644,76 @@ déploiement pour les sessions ouvertes.
 2026-10-23 : 165 dumps quotidiens, 1 archive uploads, 59 archives de code et 9 paires d'images
 seraient supprimés (910 Mo de fichiers, 2,5 Go d'images en taille apparente) ; aucun fichier
 modifié par le dry-run.
+
+---
+
+## D-165 — Planning : modification d'horaires sans perte d'affectation, conflits expliqués, missions en cours (2026-10-23)
+
+### Cas réel
+
+Vendredi 23/10/2026, CHIREC Delta : #1085 (Dr Schiepers, Françoise Detrembleur, 07:45–18:00) et
+#1084 (Dr Berger, sans instrumentiste, 07:45–18:00). Réalité : Philippe termine à 14:00, Françoise
+couvre ensuite Yorick de 14:45 à 18:00. Le constructeur affichait « Déjà affectée ailleurs »,
+faisait « disparaître » des affectations, le planning publié gardait Philippe jusqu'à 18:00 et
+une ligne montrait une instrumentiste sous le badge « Mission ouverte ». Lecture seule de la prod :
+#1085 est `IN_PROGRESS` depuis 05:45 (D-064), aucun audit ni `PLANNING_MODIFICATION_APPLIED` sur
+les deux missions — rien n'avait jamais été enregistré.
+
+### Causes racines
+
+1. **Contrôle « Déjà affecté ailleurs » sans horaires (frontend).** `findSameDayAssignmentElsewhere()`
+   cherchait la même instrumentiste **le même jour**, sans comparer les heures : deux créneaux
+   successifs étaient un « conflit », que les horaires soient modifiés ou non, enregistrés ou non.
+2. **Retrait implicite.** Choisir cette personne vidait l'autre ligne (instrumentiste `null`,
+   statut `UNCOVERED`) : l'affectation de Philippe « disparaissait » et, au redéploiement, la
+   mission aurait été remise au pool.
+3. **Mission `IN_PROGRESS` ignorée en silence (backend).** `PlanningModificationService` ne mutait
+   l'horaire que d'une mission `OPEN`/`ASSIGNED` ; pour #1085 le changement était compté
+   « inchangé », d'où Philippe toujours à 18:00 et un toast trompeur.
+4. **Badge incohérent.** `missionToPreviewLine()` ne connaissait qu'`ASSIGNED`/`OPEN`/`CANCELLED` :
+   `IN_PROGRESS` (et tout statut ultérieur) retombait sur `UNCOVERED` = « Mission ouverte », avec
+   l'instrumentiste affichée.
+5. **Roster contre l'état enregistré seulement + cache.** `evaluateRoster()` ne voyait que la base
+   (Philippe encore à 18:00 tant que rien n'était redéployé), et ses résultats restaient en cache
+   30 s par créneau après un redéploiement réussi.
+6. **Ordre du lot.** Une nouvelle affectation pouvait être évaluée avant le raccourcissement d'une
+   autre ligne du même lot (non bloquant en Mode Modification, mais alerte/évaluation fausse).
+
+La règle de chevauchement du backend était déjà correcte (`[début, fin)`, `A.start < B.end AND
+A.end > B.start`, `PlanningConflictDetectionService` / `MissionEligibilityService`).
+
+### Décision
+
+- **Une seule source pour les conflits : le backend.** `POST /api/planning/v2/eligible-instrumentists`
+  reçoit les autres lignes non enregistrées du jour (`ProposedSlot`) : une mission éditée compte à
+  son créneau proposé, une annulée ne compte plus, une nouvelle ligne compte. Le détail du conflit
+  (`ScheduleConflictDetail`) nomme la mission, le chirurgien, les heures, le statut et l'origine
+  `PERSISTED`/`PROPOSED`. Le contrôle client « même jour » et le retrait implicite sont supprimés ;
+  aucune ligne n'est jamais modifiée par l'édition d'une autre.
+- **Missions en cours** (choix du manager, 2026-10-23) : l'horaire **prévu** d'une mission
+  `IN_PROGRESS` reste corrigeable — heures du jour seulement, jamais site, type ou date, début
+  jamais reporté après maintenant — audit `MISSION_TIME_CHANGED_POST_DEPLOY`, statut et
+  instrumentiste conservés. Changer/retirer l'instrumentiste ou annuler reste réservé à
+  `OPEN`/`ASSIGNED`.
+- **Plus d'abandon silencieux** : tout changement non permis par le statut répond `409` et annule le
+  lot (H3). `updateSchedule()` refuse aussi une fin ≤ début.
+- **Ordre** : nouvelles affectations après les autres lignes ; dans une ligne, horaire puis
+  affectation (retrait avant horaire).
+- **Exposé au frontend via `allowedActions`** (`reschedule`, `cancel`) — l'éditeur verrouille
+  instrumentiste/annulation d'une mission commencée sans déduire de droit du statut.
+- **Statuts cohérents** : tout statut au-delà d'`ASSIGNED` s'affiche « OK » s'il a une
+  instrumentiste (+ pastille du statut réel, ex. « En cours ») ; une ligne éditée indique l'état
+  encore publié (« Publié : Mission ouverte ») ; après redéploiement, rosters, planning publié,
+  listes de missions et alertes sont invalidés.
+
+Inchangé : D-091 (un conflit reste non bloquant en Mode Modification, alerte), D-052 (missions
+existantes mutées par `MissionPostDeployService`, jamais supprimées/recréées), D-101 (revalidation
+à l'enregistrement).
+
+### Limites connues
+
+- Le chemin brouillon (`PlanningDraftService::update()`) n'expose pas d'édition d'horaire et
+  revalide toutes les lignes, y compris inchangées (corrigé séparément sur la branche non fusionnée
+  `feat/prestations-regroupees`, D-156).
+- Le roster ne reçoit que les lignes du même jour (une mission de nuit à cheval sur minuit n'existe
+  pas dans le modèle actuel).
