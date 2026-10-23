@@ -14604,3 +14604,43 @@ déploiement pour les sessions ouvertes.
   `backups/code` et les images `rollback-*` : ce sont des scripts serveur hors dépôt.
 - Retirer `src/` après quelques déploiements D-163 réussis.
 - Retirer `JWT_PASSPHRASE` de `backend/.env`.
+
+---
+
+## D-164 — Sauvegardes serveur versionnées, chiffrées, avec rétention et tests de restauration (2026-10-23)
+
+### Constats (audit D-163 du 2026-10-22)
+
+- `rotate_backups.sh` : `find A B -name '*.sql.gz' -o -name '*.tar.gz' -mtime +30` applique
+  `-mtime` au seul second motif ; aucun dump n'a jamais été supprimé (151 de plus de 30 jours).
+- `surgicalhub_var` (clés JWT, registre des versions D-162) n'a jamais été sauvegardé ; la
+  documentation le disait « regénérable », ce qui est faux pour les clés JWT et le registre.
+- Les dumps et uploads partent en clair sur Google Drive, par `rclone sync` : une suppression
+  locale efface aussi la copie distante.
+- `backups/code` (archives de code, copies de `.env` parfois en 664), les images `rollback-*` et
+  le cache de build ne sont jamais tournés.
+- Les scripts n'étaient pas versionnés.
+
+### Décision
+
+1. Scripts versionnés dans `deploy/server/backup/`, installés par `install.sh` (diff d'abord ;
+   scripts puis crontab, chacun sur option explicite). Configuration surchargeable
+   (`~/.config/surgicalhub-backup.conf`).
+2. Chiffrement gpg AES-256 de toute sauvegarde (dumps, uploads, var), à la création, avec une
+   passphrase (600) conservée aussi hors du serveur — même convention que MedClick. Chaque fichier
+   est relu (déchiffrement, gzip, « Dump completed ») avant d'être publié, et porte un `.sha256`.
+3. Hors serveur : `rclone copy` des seuls fichiers chiffrés, vérifié par `rclone check`, vers un
+   dossier distinct ; rétention distante indépendante (dry-run par défaut).
+4. Rotation locale validée le 2026-10-23 (`docs/backup-and-restore.md`) : dry-run par défaut ;
+   `--apply` refusé sans test de restauration réussi depuis moins de 35 jours. La plus récente de
+   chaque série est toujours conservée ; seuls les noms au format exact d'une série sont
+   concernés ; images protégées (active, précédente, legacy, `:local`, utilisées par un conteneur).
+5. `restore_test.sh` restaure réellement : dump dans un MySQL jetable sans réseau, clés JWT
+   (appariement privée/publique), registre des versions, lecture des uploads.
+
+### Tests
+
+`tests/rotation.sh` (31) et `tests/e2e-docker.sh` (15, vrai Docker). Dry-run en production le
+2026-10-23 : 165 dumps quotidiens, 1 archive uploads, 59 archives de code et 9 paires d'images
+seraient supprimés (910 Mo de fichiers, 2,5 Go d'images en taille apparente) ; aucun fichier
+modifié par le dry-run.

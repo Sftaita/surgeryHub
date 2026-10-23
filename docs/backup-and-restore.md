@@ -5,6 +5,97 @@ _Mis en place le : 2026-06-16_
 
 ---
 
+## D-164 — Nouvelle chaîne de sauvegarde (versionnée, PAS ENCORE INSTALLÉE)
+
+> État au 2026-10-23 : les scripts sont dans le dépôt (`deploy/server/backup/`) et testés, mais
+> **la production utilise toujours les anciens scripts** décrits plus bas (`/home/deploy/scripts`).
+> L'installation se fait en trois étapes, chacune après accord explicite.
+
+### Ce qui change
+
+| Sujet | Avant (scripts manuels) | D-164 |
+|---|---|---|
+| Dumps MySQL | `all_*.sql.gz` en clair | `all_*.sql.gz.gpg` chiffré AES-256 (+ `.sha256`), contrôlé après écriture |
+| Volume `surgicalhub_var` (clés JWT, registre D-162) | jamais sauvegardé | archive chiffrée quotidienne, sans `cache/` ni `log/` |
+| Uploads | `*.tar.gz` en clair | `*.tar.gz.gpg` chiffré |
+| Hors serveur | `rclone sync` : chaque suppression locale efface le Drive | `rclone copy` des seuls fichiers chiffrés vers `…/surgicalhub-chiffre/`, vérifié, avec une rétention distante **indépendante** |
+| Rotation | `find` mal parenthésé : les dumps n'étaient jamais supprimés | dry-run par défaut ; `--apply` refusé sans test de restauration réussi depuis moins de 35 jours |
+| Code, `.env`, images, cache de build | jamais tournés | règles ci-dessous |
+
+### Rétention locale (validée le 2026-10-23)
+
+| Série | Règle |
+|---|---|
+| Dumps quotidiens `all_*` | Tous pendant 14 jours, puis le plus récent de chacune des 8 dernières semaines, puis le plus récent de chacun des 12 derniers mois |
+| Dumps d'avant déploiement `surgicalhub_pre_deploy_*` | Les 10 derniers |
+| Uploads, volume var | 30 jours, jamais moins des 3 plus récentes par volume |
+| Archives de code `src_pre_deploy_*`, `pre_*` | Les 10 dernières |
+| Copies de `.env` (`backups/code`) | Les 10 dernières, toujours en 600 |
+| `deploy-backups/<horodatage>/` (D-163) | Les 10 derniers, plus celui nécessaire à `rollback legacy` tant que les images `rollback-legacy` existent |
+| Images de release (`:<sha>`, `:rollback-*`) | Les 5 plus récentes ; toujours la release active, la précédente, `rollback-legacy`, `:local` et toute image utilisée par un conteneur |
+| Cache de build | Élagué (entrées de plus de 7 jours) seulement au-delà de 8 Go, jamais pendant un build |
+
+La plus récente sauvegarde de chaque série est toujours conservée. Seuls les fichiers au format
+exact d'une série sont concernés : tout autre fichier est signalé « non géré » et conservé.
+
+### Rétention hors serveur (proposée, à valider)
+
+Dumps quotidiens : 30 jours, 12 semaines, 24 mois. Uploads et var : 90 jours. Les anciens
+dossiers en clair du Drive (`…/mysql`, `…/uploads`) ne sont pas touchés : leur sort est une
+décision séparée.
+
+### Scripts (`deploy/server/backup/`)
+
+```bash
+backup_mysql.sh                   # dump chiffré de toutes les bases ; --pre-deploy <étiquette>
+backup_volumes.sh                 # uploads + surgicalhub_var, chiffrés
+backup_offsite.sh                 # copie vérifiée vers le Drive ; rotation distante en dry-run
+backup_offsite.sh --apply-remote-rotation
+rotate_backups.sh                 # DRY-RUN : ce qui serait supprimé et l'espace récupéré
+rotate_backups.sh --list          # … avec la liste détaillée
+rotate_backups.sh --apply         # réel ; exige un test de restauration réussi récent
+restore_test.sh                   # restauration RÉELLE dans un MySQL jetable + JWT + registre + uploads
+install.sh [--apply-scripts|--apply-crontab]   # depuis le poste : diff, puis installation
+```
+
+Prérequis : `~/.surgicalhub-backup-passphrase` (600), conservée **aussi hors du serveur**. Sans
+elle, aucune sauvegarde chiffrée n'est restaurable.
+
+### Restaurer une sauvegarde chiffrée
+
+```bash
+P=~/.surgicalhub-backup-passphrase
+sha256sum -c all_<horodatage>.sql.gz.gpg.sha256
+gpg --batch --pinentry-mode loopback --passphrase-file $P -d all_<horodatage>.sql.gz.gpg > dump.sql.gz
+# puis la procédure « Restaurer la base MySQL » ci-dessous (Cas 0, puis Cas 1)
+
+gpg --batch --pinentry-mode loopback --passphrase-file $P -d surgicalhub_var_<horodatage>.tar.gz.gpg \
+  | docker run --rm -i --network none --entrypoint tar -v surgicalhub_var:/d alpine:latest xzf - -C /d
+```
+
+### Installation (chaque étape après accord explicite)
+
+1. Créer la passphrase (600) et la ranger hors du serveur ; `install.sh --apply-scripts` ;
+   première exécution manuelle de `backup_mysql.sh`, `backup_volumes.sh`, puis `restore_test.sh`.
+2. `install.sh --apply-crontab` : remplace les 4 anciennes lignes (`backup_mysql`, `backup_uploads`,
+   `sync_gdrive`, `rotate_backups`) par `crontab.proposed`. La crontab précédente est sauvegardée
+   dans `backups/cron/`. La rotation reste en dry-run.
+3. Après relecture des dry-runs : passage de la rotation en `--apply` (locale, puis distante).
+
+L'ordre compte : `sync_gdrive.sh` doit être retiré **avant** toute rotation réelle, sinon les
+suppressions locales seraient répercutées sur le Drive.
+
+### Tests
+
+- `deploy/server/backup/tests/rotation.sh` (31 contrôles, arborescence factice, faux docker ;
+  sous Linux) : grand-père/père/fils, séries, liens symboliques, fichiers non gérés, images
+  protégées, cache de build, refus sans test de restauration, passphrase.
+- `deploy/server/backup/tests/e2e-docker.sh` (15 contrôles, vrai Docker, tout jetable) : dumps et
+  volumes chiffrés, restauration réelle (lignes, clés JWT appariées, registre, uploads), refus
+  d'une archive altérée et d'une mauvaise passphrase.
+
+---
+
 ## Architecture des sauvegardes
 
 ```
