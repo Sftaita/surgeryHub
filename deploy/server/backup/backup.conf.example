@@ -1,0 +1,34 @@
+# SurgicalHub — configuration des sauvegardes serveur (D-164). À copier en
+# ~/.config/surgicalhub-backup.conf (chmod 600) ; toute valeur absente prend le défaut de lib.sh.
+
+# Chiffrement (AES-256, gpg symétrique). La passphrase doit AUSSI être conservée hors du serveur
+# (gestionnaire de mots de passe) : sans elle, aucune sauvegarde chiffrée n'est restaurable.
+#PASSFILE=$HOME/.surgicalhub-backup-passphrase
+
+#BACKUP_ROOT=/home/deploy/backups
+#APP_ROOT=/opt/stack/apps/surgicalhub
+#REMOTE_BASE="gdrive:INFORMATIQUE/Base de donnée/surgicalhub-chiffre"
+
+# Rétention locale (validée le 2026-10-23)
+#KEEP_DAILY_DAYS=14
+#KEEP_WEEKLY=8
+#KEEP_MONTHLY=12
+#KEEP_PRE_DEPLOY=10
+#KEEP_VOLUME_DAYS=30
+#KEEP_VOLUME_MIN=3
+#KEEP_CODE=10
+#KEEP_ENV_COPIES=10
+#KEEP_DEPLOY_BACKUPS=10
+#KEEP_RELEASES=5
+#BUILD_CACHE_MAX_GB=8
+#BUILD_CACHE_UNTIL=168h
+
+# Rétention hors serveur (indépendante, proposée — à valider)
+#REMOTE_KEEP_DAILY_DAYS=30
+#REMOTE_KEEP_WEEKLY=12
+#REMOTE_KEEP_MONTHLY=24
+#REMOTE_KEEP_VOLUME_DAYS=90
+
+# rotate_backups.sh --apply refuse de supprimer si le dernier test de restauration réussi date
+# de plus de N jours.
+#RESTORE_TEST_MAX_AGE_DAYS=35

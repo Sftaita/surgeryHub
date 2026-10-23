@@ -490,7 +490,7 @@ cd /opt/stack/apps/surgicalhub && docker compose build php
 | Volume | Contenu | Backup |
 |---|---|---|
 | `surgicalhub_uploads` | Fichiers uploadés (PDFs, docs) | ✓ quotidien |
-| `surgicalhub_var` | Cache Symfony, logs, clés JWT | non (regénérable) |
+| `surgicalhub_var` | Cache Symfony, logs, clés JWT, registre des versions (D-162) | non jusqu'ici — **pas regénérable** : nouvelles clés JWT = sessions invalidées, registre perdu. Sauvegarde chiffrée quotidienne prévue par D-164 (non installée) ; avant chaque activation D-163 : `deploy-backups/` |
 
 Les uploads sont sauvegardés dans `/home/deploy/backups/uploads/` et
 synchronisés sur Google Drive. Voir [`docs/backup-and-restore.md`](backup-and-restore.md).

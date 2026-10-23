@@ -1,0 +1,15 @@
+# SurgicalHub — tâches de sauvegarde PROPOSÉES (D-164). Ne remplacent les lignes actuelles
+# (backup_mysql, backup_uploads, sync_gdrive, rotate_backups) qu'après accord explicite, via
+# install.sh --apply. S = /home/deploy/scripts/surgicalhub-backup
+#
+# Phase 1 (à l'installation) : sauvegardes chiffrées + copie hors serveur, rotation en DRY-RUN.
+0 3 * * *   /home/deploy/scripts/surgicalhub-backup/backup_mysql.sh   >> /home/deploy/backups/backup.log 2>&1
+15 3 * * *  /home/deploy/scripts/surgicalhub-backup/backup_volumes.sh >> /home/deploy/backups/backup.log 2>&1
+30 3 * * *  /home/deploy/scripts/surgicalhub-backup/backup_offsite.sh  >> /home/deploy/backups/backup.log 2>&1
+0 4 * * *   /home/deploy/scripts/surgicalhub-backup/rotate_backups.sh  >> /home/deploy/backups/backup.log 2>&1
+# Test de restauration hebdomadaire (dimanche) : prérequis de toute rotation réelle.
+30 4 * * 0  /home/deploy/scripts/surgicalhub-backup/restore_test.sh    >> /home/deploy/backups/backup.log 2>&1
+#
+# Phase 2 (après accord, sur la base des dry-runs) : remplacer les deux lignes suivantes.
+#0 4 * * *  /home/deploy/scripts/surgicalhub-backup/rotate_backups.sh --apply >> /home/deploy/backups/backup.log 2>&1
+#30 3 * * * /home/deploy/scripts/surgicalhub-backup/backup_offsite.sh --apply-remote-rotation >> /home/deploy/backups/backup.log 2>&1
