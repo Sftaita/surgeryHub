@@ -406,6 +406,30 @@ final class EncodingReminderScheduleIntegrationTest extends KernelTestCase
         self::assertSame([], $this->emailsTo($instr));
     }
 
+    /**
+     * D-166 — mission sans instrumentiste affectée : jamais sélectionnée, jamais relancée (ni
+     * relance, ni escalade J+4), même si elle avait une instrumentiste au moment de la
+     * sélection — l'affectation réelle est relue juste avant l'envoi.
+     */
+    public function test_d166_instrumentist_removed_between_selection_and_send_sends_nothing(): void
+    {
+        $instr = $this->makeUser('ROLE_INSTRUMENTIST');
+        $mission = $this->makeMission($instr);
+        $service = $this->service(new MockHandler([]));
+        $ids = static fn (array $due) => array_map(static fn (array $d) => $d['mission']->getId(), $due);
+        self::assertContains($mission->getId(), $ids($service->findDueReminders($this->at('2026-07-15 09:05'))));
+
+        $this->em->getConnection()->executeStatement('UPDATE mission SET instrumentist_id = NULL WHERE id = ?', [$mission->getId()]);
+
+        self::assertSame('skipped', $service->processReminder($mission, EncodingReminderStage::D1, $this->at('2026-07-15 09:05')));
+        self::assertNull($this->reminderRow($mission, EncodingReminderStage::D1));
+        self::assertSame([], $this->outbound($instr));
+        self::assertSame([], $this->inAppReminders($instr));
+        self::assertNotContains($mission->getId(), $ids($service->findDueReminders($this->at('2026-07-15 09:05'))), 'plus jamais sélectionnée sans instrumentiste');
+        self::assertNotContains($mission->getId(), $ids($service->findDueReminders($this->at('2026-07-18 09:05'))), 'ni à J+4 (aucune escalade)');
+        self::assertNull($service->nextAutomaticReminderAt($this->em->find(\App\Entity\Mission::class, $mission->getId()), $this->at('2026-07-15 08:00')));
+    }
+
     /** Scénario 15 — nouvelle exécution du traitement : aucun doublon. */
     public function test_second_run_at_the_same_stage_sends_nothing(): void
     {

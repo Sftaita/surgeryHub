@@ -39,7 +39,8 @@ final class MissionHoursReminderPolicy
 
     public static function isReminderRelevant(Mission $mission, ?\DateTimeImmutable $now = null): bool
     {
-        if ($mission->getInstrumentist() === null) {
+        // D-166 — règle commune à toutes les relances (EncodingReminderPolicy).
+        if (!EncodingReminderPolicy::hasReminderRecipient($mission)) {
             return false;
         }
 

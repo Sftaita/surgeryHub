@@ -331,6 +331,61 @@ describe("MissionTrackingDrawer", () => {
     expect(remindMissionHoursMock).toHaveBeenCalledTimes(1);
   });
 
+  describe("D-166 — aucune relance sans instrumentiste affectée", () => {
+    const unassigned = () => makeItem({ instrumentist: null, encodingState: "IN_PROGRESS", encodingStateLabel: "En cours", missionStatus: "IN_PROGRESS" });
+
+    it("mission sans instrumentiste : ni « Relancer » ni « Rappeler les heures », aucun envoi", async () => {
+      // Le backend (EncodingReminderPolicy) ne sert ni 'remind' ni 'remind_hours'.
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "IN_PROGRESS", allowedActions: ["view"] });
+      renderDrawer(unassigned());
+
+      await waitFor(() => expect(fetchMissionByIdMock).toHaveBeenCalled());
+      await screen.findByRole("heading", { name: "Mission #42" });
+      expect(screen.queryByText("Relancer")).toBeNull();
+      expect(screen.queryByText("Rappeler les heures")).toBeNull();
+      expect(remindMissionEncodingMock).not.toHaveBeenCalled();
+      expect(remindMissionHoursMock).not.toHaveBeenCalled();
+    });
+
+    it("mission avec instrumentiste et encodage incomplet : la relance est disponible", async () => {
+      const user = userEvent.setup();
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "IN_PROGRESS", allowedActions: ["view", "remind"] });
+      renderDrawer(makeItem({ encodingState: "IN_PROGRESS", encodingStateLabel: "En cours", missionStatus: "IN_PROGRESS" }));
+
+      await user.click(await screen.findByText("Relancer"));
+      await waitFor(() => expect(remindMissionEncodingMock).toHaveBeenCalledWith(42, expect.any(String)));
+    });
+
+    it("instrumentiste retirée après ouverture : refus du backend, message clair, bouton retiré après relecture", async () => {
+      const user = userEvent.setup();
+      fetchMissionByIdMock
+        .mockResolvedValueOnce({ id: 42, status: "IN_PROGRESS", allowedActions: ["view", "remind"] })
+        .mockResolvedValue({ id: 42, status: "IN_PROGRESS", allowedActions: ["view"] });
+      remindMissionEncodingMock.mockRejectedValue({ response: { status: 403, data: {} } });
+      renderDrawer(makeItem({ encodingState: "IN_PROGRESS", encodingStateLabel: "En cours", missionStatus: "IN_PROGRESS" }));
+
+      await user.click(await screen.findByText("Relancer"));
+
+      expect(await screen.findByText(/Relance impossible pour cette mission \(aucune instrumentiste affectée/)).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByText("Relancer")).toBeNull());
+      expect(remindMissionEncodingMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("affectation ultérieure : la relance redevient disponible dès que le backend la sert", async () => {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      fetchMissionByIdMock.mockResolvedValueOnce({ id: 42, status: "IN_PROGRESS", allowedActions: ["view"] });
+      renderDrawer(unassigned(), () => {}, client);
+      await screen.findByRole("heading", { name: "Mission #42" });
+      await waitFor(() => expect(fetchMissionByIdMock).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText("Relancer")).toBeNull();
+
+      fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "IN_PROGRESS", allowedActions: ["view", "remind"] });
+      await client.invalidateQueries({ queryKey: ["mission", 42] });
+
+      expect(await screen.findByText("Relancer")).toBeInTheDocument();
+    });
+  });
+
   it("Échap ferme le tiroir", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
