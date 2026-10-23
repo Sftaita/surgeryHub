@@ -14644,3 +14644,71 @@ déploiement pour les sessions ouvertes.
 2026-10-23 : 165 dumps quotidiens, 1 archive uploads, 59 archives de code et 9 paires d'images
 seraient supprimés (910 Mo de fichiers, 2,5 Go d'images en taille apparente) ; aucun fichier
 modifié par le dry-run.
+
+## D-166 — Suivi des encodages : fenêtres d'ajout utilisables depuis « Corriger l'encodage », aucune relance sans instrumentiste (2026-10-23)
+
+### Constats
+
+1. **Fenêtre d'ajout cachée (mission #1079).** « Corriger l'encodage » (D-153) est un `Dialog` MUI
+   (`zIndex.modal` = 1300, piège à focus actif). Les fenêtres de l'encodage (`AddInterventionDialog`,
+   `MaterialWizard`, `EditMaterialLineDialog`, `ConfirmDeleteDialog`, `MaterialItemRequestDialog`,
+   `EditInterventionDialog`, `ConfirmChoiceChangeDialog`) reposent sur `SheetModal`, un portail
+   maison (`createPortal` vers `body`) à `z-index` 800/810, inconnu du gestionnaire de fenêtres MUI.
+   Ouvert depuis le Dialog, le sheet passait **derrière** lui, et le piège à focus du Dialog
+   reprenait le focus à chaque tentative de saisie : fenêtre visible en arrière-plan, inutilisable.
+   Sur le parcours instrumentiste, aucun Dialog MUI n'est ouvert dessous : le défaut n'apparaissait pas.
+   `SheetModal` ne gérait par ailleurs ni Échap, ni blocage du défilement, ni retour du focus.
+2. **Relances sans instrumentiste.** Tous les chemins de relance refusaient déjà une mission sans
+   instrumentiste affectée, mais la règle était recopiée à quatre endroits (`MissionVoter`,
+   `MissionActionsService`, `EncodingReminderService::isEncodingPending()`,
+   `MissionHoursReminderPolicy`). Il n'existe **aucun envoi groupé** de relances (ni endpoint, ni
+   sélection dans l'écran) : rien à filtrer de ce côté.
+
+### Décision
+
+1. `SheetModal` est construit sur `Modal` MUI (portail vers `body` conservé, `hideBackdrop`, voile et
+   animations inchangés) avec un enfant « transition » (`SheetFrame`, prop `in`) qui garde la fenêtre
+   montée pendant l'animation de fermeture. Conséquences, pour toutes les fenêtres empilées : la
+   dernière ouverte est au-dessus (même niveau `zIndex.modal`, ordre d'ouverture), elle seule est
+   accessible (les autres reçoivent `aria-hidden`) et garde le focus, Échap ne ferme qu'elle (sauf
+   `closeDisabled` pendant un enregistrement), le défilement de la page est bloqué, et le focus revient
+   au bouton d'origine dès la fermeture — y compris quand un sheet en ouvre un autre (wizard matériel →
+   « Je ne trouve pas le matériel »). Aucun `z-index` arbitraire : les toasts passent au niveau
+   `zIndex.snackbar` (au-dessus des fenêtres) et le panneau d'aide (`HelpDrawer`, ouvert par le « ? »
+   d'un sheet) au niveau `zIndex.modal`, l'ordre d'ouverture le plaçant au-dessus de la fenêtre qui
+   l'ouvre. La sémantique `role="dialog"` / `aria-modal` / `aria-label` est portée par l'élément qui
+   reçoit le focus.
+2. `EncodingReminderPolicy` (nouveau) est la définition unique : `hasReminderRecipient()`
+   (instrumentiste affectée) et `canSendManualReminder()` (instrumentiste affectée + statut
+   `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`). Elle est lue par
+   `MissionVoter::ENCODING_REMIND` (l'autorisation reste dans le Voter), par `allowedActions`
+   (`remind`), par les relances automatiques J+1/J+2/J+4 (sélection SQL puis relecture en base juste
+   avant l'envoi) et par `MissionHoursReminderPolicy` (`remind_hours` / `HOURS_REMIND`). Le handler
+   asynchrone du rappel des heures revérifie l'affectation réelle à l'envoi (inchangé).
+3. Frontend : les boutons « Relancer » et « Rappeler les heures » suivent `allowedActions` (inchangé).
+   Un refus du backend (instrumentiste retirée depuis l'ouverture du tiroir) affiche un message
+   explicite et relit la mission, ce qui retire le bouton.
+4. Les alertes de couverture du planning (missions non pourvues) ne sont pas concernées.
+
+### Comportement par chemin de relance
+
+| Chemin | Sans instrumentiste affectée |
+|---|---|
+| `POST /api/missions/{id}/encoding/remind` (manuel, D-120) | `403`, aucune notification, aucun audit ; `remind` absent d'`allowedActions` |
+| `POST /api/missions/{id}/execution/remind` (heures, D-136) | `403` ; `remind_hours` absent ; le message en file n'envoie rien si l'affectation a changé |
+| `app:encoding:send-reminders` (J+1/J+2/J+4 + escalade managers, D-143) | jamais sélectionnée ; relue avant l'envoi → `skipped`, aucune réservation ni notification |
+| Affectation ultérieure | la mission redevient éligible selon les règles habituelles |
+
+### Tests
+
+Frontend : `SheetModal.test.tsx` (3), `MissionTrackingDrawer.encodingEdit.test.tsx` (4, vrais
+composants d'encodage dans le tiroir manager — 5 de ces 7 tests échouent avec l'ancien `SheetModal`),
+`MissionTrackingDrawer.test.tsx` (+4, D-166). Backend : `EncodingReminderPolicyTest` (4),
+`MissionEncodingWorkflowControllerTest` (+2, dont retrait après sélection puis réaffectation),
+`EncodingReminderScheduleIntegrationTest` (+1, retrait entre sélection et envoi).
+
+### Limite
+
+Aucun envoi groupé de relances n'existe : s'il est créé, il devra passer par
+`EncodingReminderPolicy` mission par mission, au moment de l'envoi, et renvoyer le nombre de missions
+exclues.
