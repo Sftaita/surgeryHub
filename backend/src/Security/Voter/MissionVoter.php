@@ -10,6 +10,7 @@ use App\Enum\PublicationScope;
 use App\Service\MissionAssignmentService;
 use App\Service\MissionDispatchService;
 use App\Service\MissionEncodingCorrectionPolicy;
+use App\Service\EncodingReminderPolicy;
 use App\Service\MissionHoursReminderPolicy;
 use App\Service\ExecutedWithoutInstrumentistPolicy;
 use App\Service\SurgeonEncodingPolicy;
@@ -426,16 +427,8 @@ class MissionVoter extends Voter
      */
     private function canEncodingRemind(Mission $mission): bool
     {
-        if ($mission->getInstrumentist() === null) {
-            return false;
-        }
-
-        return in_array($mission->getStatus(), [
-            MissionStatus::DECLARED,
-            MissionStatus::ASSIGNED,
-            MissionStatus::IN_PROGRESS,
-            MissionStatus::ENCODING_IN_PROGRESS,
-        ], true);
+        // D-166 — règle métier unique (instrumentiste affectée + encodage attendu).
+        return EncodingReminderPolicy::canSendManualReminder($mission);
     }
 
     private function canApproveDeclared(Mission $mission, bool $managerContext): bool

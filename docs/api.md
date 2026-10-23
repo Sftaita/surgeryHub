@@ -989,6 +989,10 @@ coexister. `remind_hours` n'est présent que si `MissionHoursReminderPolicy` le 
 pertinent : instrumentiste affecté, mission terminée (`endAt <= now`), aucune heure réelle
 (source `PLANNED`), statut `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`, encodage ni
 verrouillé ni facturé — même condition que `MissionVoter::HOURS_REMIND`.
+**D-166 :** aucune relance sans instrumentiste affectée — `remind` et `remind_hours` ne sont
+jamais servis pour une mission non pourvue, désaffectée ou réalisée sans instrumentiste (D-155),
+et réapparaissent dès qu'une instrumentiste est affectée. Règle unique :
+`EncodingReminderPolicy` (Voter, `allowedActions`, relances automatiques, rappel des heures).
 
 **Corrections directes du manager (D-153) :** `edit_encoding` (interventions, matériel) et
 `edit_hours` (heures réelles) sont proposés au manager / admin en `DECLARED`, `ASSIGNED`,
@@ -6144,7 +6148,10 @@ manager / admin uniquement (`403` sinon). Au plus 200 lignes, les plus récentes
 aucun statut : simple envoi de notification + trace d'audit.
 
 **AuthZ :** `MissionVoter::ENCODING_REMIND` — Manager/Admin uniquement, mission avec
-instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`.
+instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`
+(**D-166** : `EncodingReminderPolicy::canSendManualReminder()`). L'affectation est lue sur la
+mission en base au moment de la requête : une instrumentiste retirée après l'ouverture de la
+mission par le manager → `403`, rien n'est envoyé ni audité.
 
 **Body (optionnel, H5a) :** `{ "batchId": "uuid" }` — identifiant de l'action du manager
 (8–64 caractères `[A-Za-z0-9-]`) : une requête rejouée avec le même lot n'envoie jamais une
@@ -6182,8 +6189,14 @@ seconde relance. Absent → la corrélation de la requête.
 
 | Code | Description |
 |---|---|
-| `403` | Non manager, mission sans instrumentiste, ou statut hors fenêtre |
+| `403` | Non manager, mission sans instrumentiste (y compris retirée depuis l'affichage, D-166), ou statut hors fenêtre |
 | `409` | D-143 — relance manuelle déjà envoyée il y a moins de 10 minutes |
+
+**Relances automatiques (D-143, `app:encoding:send-reminders`) — D-166 :** une mission sans
+instrumentiste affectée n'est jamais sélectionnée ; l'état est relu en base juste avant chaque
+envoi (instrumentiste retirée entre la sélection et l'envoi → `skipped`, aucune réservation,
+aucune notification, aucune escalade J+4). **Aucun envoi groupé** de relances manuelles n'existe
+(pas d'endpoint) ; la réponse de l'endpoint unitaire est inchangée.
 
 ---
 

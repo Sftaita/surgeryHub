@@ -38,10 +38,10 @@ final class MissionActionsService
 
         // Manager/Admin
         if ($isManager) {
-            // D-120 — mêmes statuts que MissionVoter::canEncodingRemind() /
-            // EncodingReminderService::SUBMITTABLE_STATUSES ; pas de relance sans
-            // instrumentiste assigné (rien ni personne à notifier).
-            $remind = $mission->getInstrumentist() !== null ? ['remind'] : [];
+            // D-120 / D-166 — même règle exactement que MissionVoter::ENCODING_REMIND
+            // (EncodingReminderPolicy) : jamais de relance sans instrumentiste affectée. Le
+            // filtrage par statut reste porté par le match ci-dessous (mêmes statuts).
+            $remind = EncodingReminderPolicy::canSendManualReminder($mission) ? ['remind'] : [];
 
             $actions = match ($mission->getStatus()) {
                 // 'cancel' couvre aussi DRAFT depuis D-090 (MissionPostDeployService::cancel()
