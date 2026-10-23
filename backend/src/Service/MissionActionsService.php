@@ -67,6 +67,12 @@ final class MissionActionsService
                 default => ['view'],
             };
 
+            // D-165 — horaires prévus corrigeables depuis le planning (MissionPostDeployService::
+            // updateSchedule()) : OPEN/ASSIGNED, et IN_PROGRESS pour ses seules heures du jour.
+            if (in_array($mission->getStatus(), MissionPostDeployService::RESCHEDULABLE_STATUSES, true)) {
+                $actions[] = 'reschedule';
+            }
+
             // D-136 — rappel des heures réelles manquantes, transverse aux statuts ci-dessus :
             // même condition exactement que MissionVoter::HOURS_REMIND.
             if (MissionHoursReminderPolicy::isReminderRelevant($mission)) {

@@ -53,10 +53,43 @@ export function candidateGhostLabel(candidate: CandidateEligibility): string | n
     return `${label} · ${formatFrDate(candidate.unavailability.dateStart)} → ${formatFrDate(candidate.unavailability.dateEnd)}`;
   }
   if (reason === "SCHEDULE_CONFLICT" && candidate.conflict) {
-    const site = candidate.conflict.siteName ? ` (${candidate.conflict.siteName})` : "";
+    const c = candidate.conflict;
+    // D-165 — who and when, not just "conflict": "Conflit d'horaire · Dr X 07:45–18:00".
+    if (c.surgeonName || (c.startAt && c.endAt)) {
+      const who = c.surgeonName ? `Dr ${c.surgeonName}` : (c.siteName ?? "");
+      const when = c.startAt && c.endAt ? ` ${hhmm(c.startAt)}–${hhmm(c.endAt)}` : "";
+      const proposed = c.source === "PROPOSED" ? " (non enregistré)" : "";
+      return `${label} · ${who}${when}${proposed}`.trim();
+    }
+    const site = c.siteName ? ` (${c.siteName})` : "";
     return `${label}${site}`;
   }
   return label;
+}
+
+/**
+ * D-165 — full sentence explaining a SCHEDULE_CONFLICT, from the backend's conflict detail
+ * only: "Françoise Detrembleur est déjà affectée au Dr Philippe Schiepers de 07:45 à 18:00
+ * (planning publié)." The suffix tells a saved mission (published / saved draft) from a
+ * line still proposed in the editor. Null when there is no conflict to explain.
+ */
+export function conflictSentence(candidate: CandidateEligibility): string | null {
+  const c = candidate.conflict;
+  if (!c || !candidate.reasons.includes("SCHEDULE_CONFLICT")) return null;
+  const who = c.surgeonName ? `au Dr ${c.surgeonName}` : "à une autre mission";
+  const where = c.siteName ? ` (${c.siteName})` : "";
+  const when = c.startAt && c.endAt ? ` de ${hhmm(c.startAt)} à ${hhmm(c.endAt)}` : "";
+  const source = c.source === "PROPOSED"
+    ? "modification proposée, non enregistrée"
+    : c.missionStatus === "DRAFT"
+      ? "brouillon enregistré"
+      : "planning publié";
+  return `${candidate.name} est déjà affectée ${who}${where}${when} — ${source}.`;
+}
+
+/** "2026-10-23T07:45:00+02:00" → "07:45" (backend business wall-clock, never re-zoned). */
+function hhmm(iso: string): string {
+  return iso.slice(11, 16);
 }
 
 function formatFrDate(iso: string): string {

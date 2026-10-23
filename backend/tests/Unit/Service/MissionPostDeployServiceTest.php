@@ -2,6 +2,9 @@
 
 namespace App\Tests\Unit\Service;
 
+use Symfony\Component\Clock\NativeClock;
+use Symfony\Component\Clock\MockClock;
+use Symfony\Component\Clock\Clock;
 use App\Dto\EligibilityResult;
 use App\Entity\Mission;
 use App\Entity\User;
@@ -941,7 +944,8 @@ final class MissionPostDeployServiceTest extends TestCase
     {
         $mission = $this->makeMission(MissionStatus::OPEN);
         $mission->setStartAt(new \DateTimeImmutable('2026-09-15 08:00:00'));
-        $mission->setEndAt(new \DateTimeImmutable('2026-09-15 09:00:00'));
+        // D-165 — end after the new 10:00 start (an end before the start is now refused).
+        $mission->setEndAt(new \DateTimeImmutable('2026-09-15 12:00:00'));
         $actor = $this->makeActor();
 
         $this->em->method('flush');
@@ -1006,6 +1010,91 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->expectException(ConflictHttpException::class);
 
         $this->service->updateSchedule($mission, $actor, new \DateTimeImmutable(), null, null, null);
+    }
+
+    // ── updateSchedule() — D-165 : mission En cours, fin avant début ─────────────
+
+    /** Cas réel 23/10/2026 : Schiepers démarré à 07:45, termine à 14:00 au lieu de 18:00. */
+    public function test_update_schedule_shortens_an_in_progress_mission_keeping_status_and_instrumentist(): void
+    {
+        Clock::set(new MockClock('2026-10-23 10:00:00', 'Europe/Brussels'));
+        try {
+            $francoise = $this->makeInstrumentist('Françoise', 'Detrembleur');
+            $mission   = $this->makeMission(MissionStatus::IN_PROGRESS, $francoise);
+            $mission->setStartAt(new \DateTimeImmutable('2026-10-23 07:45:00', new \DateTimeZone('Europe/Brussels')));
+            $mission->setEndAt(new \DateTimeImmutable('2026-10-23 18:00:00', new \DateTimeZone('Europe/Brussels')));
+            $this->em->method('flush');
+            $this->audit->expects($this->once())->method('record')
+                ->with($mission, $this->anything(), AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY, $this->callback(
+                    fn (array $p) => str_starts_with($p['fromEndAt'], '2026-10-23T18:00') && str_starts_with($p['toEndAt'], '2026-10-23T14:00'),
+                ));
+
+            $this->service->updateSchedule($mission, $this->makeActor(), null,
+                new \DateTimeImmutable('2026-10-23 14:00:00', new \DateTimeZone('Europe/Brussels')), null, null, notify: false);
+
+            $this->assertSame('14:00', $mission->getEndAt()->format('H:i'));
+            $this->assertSame(MissionStatus::IN_PROGRESS, $mission->getStatus());
+            $this->assertSame($francoise, $mission->getInstrumentist());
+        } finally {
+            Clock::set(new NativeClock());
+        }
+    }
+
+    /** @return iterable<string, array{0: ?string, 1: ?string, 2: bool, 3: bool, 4: string}> */
+    public static function inProgressRefusals(): iterable
+    {
+        yield 'date change'           => ['2026-10-24 07:45:00', '2026-10-24 14:00:00', false, false, 'sa date'];
+        yield 'start moved after now' => ['2026-10-23 11:00:00', null, false, false, 'son début ne peut pas être reporté'];
+        yield 'site change'           => [null, '2026-10-23 14:00:00', true, false, 'son site'];
+        yield 'type change'           => [null, '2026-10-23 14:00:00', false, true, 'son type'];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('inProgressRefusals')]
+    public function test_update_schedule_refuses_anything_but_same_day_times_on_an_in_progress_mission(?string $start, ?string $end, bool $otherSite, bool $otherType, string $expected): void
+    {
+        Clock::set(new MockClock('2026-10-23 10:00:00', 'Europe/Brussels'));
+        try {
+            $tz      = new \DateTimeZone('Europe/Brussels');
+            $mission = $this->makeMission(MissionStatus::IN_PROGRESS, $this->makeInstrumentist());
+            $mission->setStartAt(new \DateTimeImmutable('2026-10-23 07:45:00', $tz));
+            $mission->setEndAt(new \DateTimeImmutable('2026-10-23 18:00:00', $tz));
+            $site = new \App\Entity\Hospital();
+            $this->setId($site, 801);
+            $mission->setSite($site);
+            $mission->setType(\App\Enum\MissionType::BLOCK);
+            $other = new \App\Entity\Hospital();
+            $this->setId($other, 802);
+            $this->em->expects($this->never())->method('flush');
+
+            try {
+                $this->service->updateSchedule($mission, $this->makeActor(),
+                    $start !== null ? new \DateTimeImmutable($start, $tz) : null,
+                    $end !== null ? new \DateTimeImmutable($end, $tz) : null,
+                    $otherSite ? $other : null,
+                    $otherType ? \App\Enum\MissionType::CONSULTATION : null,
+                    notify: false);
+                $this->fail('Expected a 409');
+            } catch (ConflictHttpException $e) {
+                $this->assertStringContainsString('en cours', $e->getMessage());
+                $this->assertStringContainsString($expected, $e->getMessage());
+            }
+            $this->assertSame('18:00', $mission->getEndAt()->format('H:i'), 'nothing staged');
+        } finally {
+            Clock::set(new NativeClock());
+        }
+    }
+
+    public function test_update_schedule_refuses_an_end_before_or_at_the_start(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
+        $mission->setStartAt(new \DateTimeImmutable('2026-10-23 07:45:00'));
+        $mission->setEndAt(new \DateTimeImmutable('2026-10-23 18:00:00'));
+        $this->em->expects($this->never())->method('flush');
+
+        $this->expectException(ConflictHttpException::class);
+        $this->expectExceptionMessage("l'heure de fin (07:45) doit être après l'heure de début (07:45)");
+
+        $this->service->updateSchedule($mission, $this->makeActor(), null, new \DateTimeImmutable('2026-10-23 07:45:00'), null, null);
     }
 
     // ── createPostDeploy() ────────────────────────────────────────────────────
