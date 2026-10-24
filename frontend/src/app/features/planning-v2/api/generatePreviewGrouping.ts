@@ -1,5 +1,6 @@
 import type { GeneratedPlanningV2, PreviewLineStatus, PreviewLineV2, PreviewResponseV2 } from "./planningV2.types";
 import type { Mission } from "../../missions/api/missions.types";
+import type { RosterProposal } from "./planningV2.api";
 
 // ── Month chip selection ─────────────────────────────────────────────────────
 // Months are encoded as a single int id = year*12 + (month-1), matching the
@@ -180,6 +181,19 @@ const MISSION_STATUS_TO_PREVIEW_STATUS: Record<string, PreviewLineStatus> = {
 };
 
 /**
+ * D-165 — any other server status (IN_PROGRESS, DECLARED, SUBMITTED, VALIDATED, CLOSED,
+ * ENCODING_IN_PROGRESS…) is a mission that has moved past OPEN/ASSIGNED: it is covered when
+ * it has an instrumentist, never "Mission ouverte" (which used to be the fallback and showed
+ * an instrumentist under an "open" badge — e.g. an IN_PROGRESS mission). Its real status
+ * stays available as `existingMissionStatus`.
+ */
+function previewStatusOf(mission: Mission): PreviewLineStatus {
+  const mapped = MISSION_STATUS_TO_PREVIEW_STATUS[mission.status ?? ""];
+  if (mapped) return mapped;
+  return mission.instrumentist ? "COVERED" : "UNCOVERED";
+}
+
+/**
  * Adapts a real, already-deployed Mission into the same PreviewLineV2 shape the editor
  * already knows how to render/group/edit — so Modification mode reuses every bit of
  * GeneratePlanningTab's existing rendering, filtering and selection logic unchanged.
@@ -202,8 +216,10 @@ export function missionToPreviewLine(mission: Mission): PreviewLineV2 {
     siteName: mission.site?.name ?? null,
     instrumentistId: mission.instrumentist?.id ?? null,
     instrumentistName,
-    status: MISSION_STATUS_TO_PREVIEW_STATUS[mission.status ?? ""] ?? "UNCOVERED",
+    status: previewStatusOf(mission),
     existingMissionId: mission.id,
+    existingMissionStatus: mission.status ?? null,
+    existingMissionActions: mission.allowedActions ?? null,
     existingInstrumentistId: mission.instrumentist?.id ?? null,
     existingInstrumentistName: instrumentistName,
     freedFrom: false,
@@ -261,25 +277,31 @@ export function getFreedInstrumentists(lines: PreviewLineV2[], target: PreviewLi
 }
 
 /**
- * The other active line (if any) on the same day where `instrumentistId` is already
- * assigned — the reciprocal of getFreedInstrumentists(): picking this person for a new
- * slot the same day means removing them from wherever they were already placed, since
- * a person can't be in two places on the same day.
+ * D-165 — the editor's other unsaved lines of `target`'s day, sent with the roster request
+ * so the BACKEND evaluates conflicts against the day being composed (it replaces the
+ * single, client-side "already assigned elsewhere the same day" check, which ignored the
+ * times — 07:45–14:00 then 14:45–18:00 was flagged — and silently emptied the other line).
+ * Only lines the backend cannot know yet: edited saved missions (`editedKeys`) and lines
+ * never saved (no existingMissionId). Scoping only — no conflict is decided here.
  */
-export function findSameDayAssignmentElsewhere(
+export function buildRosterProposals(
   lines: PreviewLineV2[],
   target: PreviewLineV2,
-  instrumentistId: number,
-): PreviewLineV2 | null {
-  return (
-    lines.find(
-      (l) =>
-        l.date === target.date &&
-        l.instrumentistId === instrumentistId &&
-        l.status !== "SKIPPED" &&
-        lineKeyV2(l) !== lineKeyV2(target),
-    ) ?? null
-  );
+  editedKeys: ReadonlySet<string>,
+): RosterProposal[] {
+  const targetKey = lineKeyV2(target);
+  return lines
+    .filter((l) => l.date === target.date && lineKeyV2(l) !== targetKey)
+    .filter((l) => (l.existingMissionId == null ? l.instrumentistId != null && l.status !== "SKIPPED" : editedKeys.has(lineKeyV2(l))))
+    .map((l) => ({
+      missionId: l.existingMissionId ?? null,
+      instrumentistId: l.status === "SKIPPED" || l.blockedReason ? null : l.instrumentistId,
+      startTime: l.startTime,
+      endTime: l.endTime,
+      surgeonId: l.surgeonId || null,
+      siteId: l.siteId,
+      cancelled: l.status === "SKIPPED",
+    }));
 }
 
 const DAY_NAMES = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];

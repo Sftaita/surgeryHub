@@ -14644,3 +14644,237 @@ déploiement pour les sessions ouvertes.
 2026-10-23 : 165 dumps quotidiens, 1 archive uploads, 59 archives de code et 9 paires d'images
 seraient supprimés (910 Mo de fichiers, 2,5 Go d'images en taille apparente) ; aucun fichier
 modifié par le dry-run.
+
+---
+
+## D-165 — Planning : modification d'horaires sans perte d'affectation, conflits expliqués, missions en cours (2026-10-23)
+
+### Cas réel
+
+Vendredi 23/10/2026, CHIREC Delta : #1085 (Dr Schiepers, Françoise Detrembleur, 07:45–18:00) et
+#1084 (Dr Berger, sans instrumentiste, 07:45–18:00). Réalité : Philippe termine à 14:00, Françoise
+couvre ensuite Yorick de 14:45 à 18:00. Le constructeur affichait « Déjà affectée ailleurs »,
+faisait « disparaître » des affectations, le planning publié gardait Philippe jusqu'à 18:00 et
+une ligne montrait une instrumentiste sous le badge « Mission ouverte ». Lecture seule de la prod :
+#1085 est `IN_PROGRESS` depuis 05:45 (D-064), aucun audit ni `PLANNING_MODIFICATION_APPLIED` sur
+les deux missions — rien n'avait jamais été enregistré.
+
+### Causes racines
+
+1. **Contrôle « Déjà affecté ailleurs » sans horaires (frontend).** `findSameDayAssignmentElsewhere()`
+   cherchait la même instrumentiste **le même jour**, sans comparer les heures : deux créneaux
+   successifs étaient un « conflit », que les horaires soient modifiés ou non, enregistrés ou non.
+2. **Retrait implicite.** Choisir cette personne vidait l'autre ligne (instrumentiste `null`,
+   statut `UNCOVERED`) : l'affectation de Philippe « disparaissait » et, au redéploiement, la
+   mission aurait été remise au pool.
+3. **Mission `IN_PROGRESS` ignorée en silence (backend).** `PlanningModificationService` ne mutait
+   l'horaire que d'une mission `OPEN`/`ASSIGNED` ; pour #1085 le changement était compté
+   « inchangé », d'où Philippe toujours à 18:00 et un toast trompeur.
+4. **Badge incohérent.** `missionToPreviewLine()` ne connaissait qu'`ASSIGNED`/`OPEN`/`CANCELLED` :
+   `IN_PROGRESS` (et tout statut ultérieur) retombait sur `UNCOVERED` = « Mission ouverte », avec
+   l'instrumentiste affichée.
+5. **Roster contre l'état enregistré seulement + cache.** `evaluateRoster()` ne voyait que la base
+   (Philippe encore à 18:00 tant que rien n'était redéployé), et ses résultats restaient en cache
+   30 s par créneau après un redéploiement réussi.
+6. **Ordre du lot.** Une nouvelle affectation pouvait être évaluée avant le raccourcissement d'une
+   autre ligne du même lot (non bloquant en Mode Modification, mais alerte/évaluation fausse).
+
+La règle de chevauchement du backend était déjà correcte (`[début, fin)`, `A.start < B.end AND
+A.end > B.start`, `PlanningConflictDetectionService` / `MissionEligibilityService`).
+
+### Décision
+
+- **Une seule source pour les conflits : le backend.** `POST /api/planning/v2/eligible-instrumentists`
+  reçoit les autres lignes non enregistrées du jour (`ProposedSlot`) : une mission éditée compte à
+  son créneau proposé, une annulée ne compte plus, une nouvelle ligne compte. Le détail du conflit
+  (`ScheduleConflictDetail`) nomme la mission, le chirurgien, les heures, le statut et l'origine
+  `PERSISTED`/`PROPOSED`. Le contrôle client « même jour » et le retrait implicite sont supprimés ;
+  aucune ligne n'est jamais modifiée par l'édition d'une autre.
+- **Missions en cours** (choix du manager, 2026-10-23) : l'horaire **prévu** d'une mission
+  `IN_PROGRESS` reste corrigeable — heures du jour seulement, jamais site, type ou date, début
+  jamais reporté après maintenant — audit `MISSION_TIME_CHANGED_POST_DEPLOY`, statut et
+  instrumentiste conservés. Changer/retirer l'instrumentiste ou annuler reste réservé à
+  `OPEN`/`ASSIGNED`.
+- **Plus d'abandon silencieux** : tout changement non permis par le statut répond `409` et annule le
+  lot (H3). `updateSchedule()` refuse aussi une fin ≤ début.
+- **Ordre** : nouvelles affectations après les autres lignes ; dans une ligne, horaire puis
+  affectation (retrait avant horaire).
+- **Exposé au frontend via `allowedActions`** (`reschedule`, `cancel`) — l'éditeur verrouille
+  instrumentiste/annulation d'une mission commencée sans déduire de droit du statut.
+- **Statuts cohérents** : tout statut au-delà d'`ASSIGNED` s'affiche « OK » s'il a une
+  instrumentiste (+ pastille du statut réel, ex. « En cours ») ; une ligne éditée indique l'état
+  encore publié (« Publié : Mission ouverte ») ; après redéploiement, rosters, planning publié,
+  listes de missions et alertes sont invalidés.
+
+Inchangé : D-091 (un conflit reste non bloquant en Mode Modification, alerte), D-052 (missions
+existantes mutées par `MissionPostDeployService`, jamais supprimées/recréées), D-101 (revalidation
+à l'enregistrement).
+
+### Limites connues
+
+- Le chemin brouillon (`PlanningDraftService::update()`) n'expose pas d'édition d'horaire et
+  revalide toutes les lignes, y compris inchangées (corrigé séparément sur la branche non fusionnée
+  `feat/prestations-regroupees`, D-156).
+- Le roster ne reçoit que les lignes du même jour (une mission de nuit à cheval sur minuit n'existe
+  pas dans le modèle actuel).
+
+---
+
+## D-166 — Suivi des encodages : fenêtres d'ajout utilisables depuis « Corriger l'encodage », aucune relance sans instrumentiste (2026-10-23)
+
+### Constats
+
+1. **Fenêtre d'ajout cachée (mission #1079).** « Corriger l'encodage » (D-153) est un `Dialog` MUI
+   (`zIndex.modal` = 1300, piège à focus actif). Les fenêtres de l'encodage (`AddInterventionDialog`,
+   `MaterialWizard`, `EditMaterialLineDialog`, `ConfirmDeleteDialog`, `MaterialItemRequestDialog`,
+   `EditInterventionDialog`, `ConfirmChoiceChangeDialog`) reposent sur `SheetModal`, un portail
+   maison (`createPortal` vers `body`) à `z-index` 800/810, inconnu du gestionnaire de fenêtres MUI.
+   Ouvert depuis le Dialog, le sheet passait **derrière** lui, et le piège à focus du Dialog
+   reprenait le focus à chaque tentative de saisie : fenêtre visible en arrière-plan, inutilisable.
+   Sur le parcours instrumentiste, aucun Dialog MUI n'est ouvert dessous : le défaut n'apparaissait pas.
+   `SheetModal` ne gérait par ailleurs ni Échap, ni blocage du défilement, ni retour du focus.
+2. **Relances sans instrumentiste.** Tous les chemins de relance refusaient déjà une mission sans
+   instrumentiste affectée, mais la règle était recopiée à quatre endroits (`MissionVoter`,
+   `MissionActionsService`, `EncodingReminderService::isEncodingPending()`,
+   `MissionHoursReminderPolicy`). Il n'existe **aucun envoi groupé** de relances (ni endpoint, ni
+   sélection dans l'écran) : rien à filtrer de ce côté.
+
+### Décision
+
+1. `SheetModal` est construit sur `Modal` MUI (portail vers `body` conservé, `hideBackdrop`, voile et
+   animations inchangés) avec un enfant « transition » (`SheetFrame`, prop `in`) qui garde la fenêtre
+   montée pendant l'animation de fermeture. Conséquences, pour toutes les fenêtres empilées : la
+   dernière ouverte est au-dessus (même niveau `zIndex.modal`, ordre d'ouverture), elle seule est
+   accessible (les autres reçoivent `aria-hidden`) et garde le focus, Échap ne ferme qu'elle (sauf
+   `closeDisabled` pendant un enregistrement), le défilement de la page est bloqué, et le focus revient
+   au bouton d'origine dès la fermeture — y compris quand un sheet en ouvre un autre (wizard matériel →
+   « Je ne trouve pas le matériel »). Aucun `z-index` arbitraire : les toasts passent au niveau
+   `zIndex.snackbar` (au-dessus des fenêtres) et le panneau d'aide (`HelpDrawer`, ouvert par le « ? »
+   d'un sheet) au niveau `zIndex.modal`, l'ordre d'ouverture le plaçant au-dessus de la fenêtre qui
+   l'ouvre. La sémantique `role="dialog"` / `aria-modal` / `aria-label` est portée par l'élément qui
+   reçoit le focus.
+2. `EncodingReminderPolicy` (nouveau) est la définition unique : `hasReminderRecipient()`
+   (instrumentiste affectée) et `canSendManualReminder()` (instrumentiste affectée + statut
+   `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`). Elle est lue par
+   `MissionVoter::ENCODING_REMIND` (l'autorisation reste dans le Voter), par `allowedActions`
+   (`remind`), par les relances automatiques J+1/J+2/J+4 (sélection SQL puis relecture en base juste
+   avant l'envoi) et par `MissionHoursReminderPolicy` (`remind_hours` / `HOURS_REMIND`). Le handler
+   asynchrone du rappel des heures revérifie l'affectation réelle à l'envoi (inchangé).
+3. Frontend : les boutons « Relancer » et « Rappeler les heures » suivent `allowedActions` (inchangé).
+   Un refus du backend (instrumentiste retirée depuis l'ouverture du tiroir) affiche un message
+   explicite et relit la mission, ce qui retire le bouton.
+4. Les alertes de couverture du planning (missions non pourvues) ne sont pas concernées.
+
+### Comportement par chemin de relance
+
+| Chemin | Sans instrumentiste affectée |
+|---|---|
+| `POST /api/missions/{id}/encoding/remind` (manuel, D-120) | `403`, aucune notification, aucun audit ; `remind` absent d'`allowedActions` |
+| `POST /api/missions/{id}/execution/remind` (heures, D-136) | `403` ; `remind_hours` absent ; le message en file n'envoie rien si l'affectation a changé |
+| `app:encoding:send-reminders` (J+1/J+2/J+4 + escalade managers, D-143) | jamais sélectionnée ; relue avant l'envoi → `skipped`, aucune réservation ni notification |
+| Affectation ultérieure | la mission redevient éligible selon les règles habituelles |
+
+### Tests
+
+Frontend : `SheetModal.test.tsx` (3), `MissionTrackingDrawer.encodingEdit.test.tsx` (4, vrais
+composants d'encodage dans le tiroir manager — 5 de ces 7 tests échouent avec l'ancien `SheetModal`),
+`MissionTrackingDrawer.test.tsx` (+4, D-166). Backend : `EncodingReminderPolicyTest` (4),
+`MissionEncodingWorkflowControllerTest` (+2, dont retrait après sélection puis réaffectation),
+`EncodingReminderScheduleIntegrationTest` (+1, retrait entre sélection et envoi).
+
+### Limite
+
+Aucun envoi groupé de relances n'existe : s'il est créé, il devra passer par
+`EncodingReminderPolicy` mission par mission, au moment de l'envoi, et renvoyer le nombre de missions
+exclues.
+
+---
+
+## D-167 — Planning V2 : alertes de conflit synchronisées avec le planning réel (2026-10-23)
+
+### Constats (démontrés par `PlanningConflictAlertReconciliationTest`, 11 tests sur 14 en échec avant correction)
+
+Une alerte `SURGEON_CONFLICT` / `INSTRUMENTIST_CONFLICT` est portée par la mission d'identifiant
+le plus bas de la paire (ancre, D-091). Elle pouvait survivre au conflit qu'elle décrivait, pour
+quatre causes indépendantes :
+
+1. **Résolution jamais enregistrée sur le chemin d'enregistrement.**
+   `PlanningConflictDetectionService::applySync()` passait l'alerte à `RESOLVED` en mémoire sans
+   `flush()`. `PlanningModificationService::apply()` ne flushait plus rien après la synchronisation
+   avant le `commit()` : toute résolution automatique faite à l'enregistrement (« Redéployer ») était
+   perdue, quelle que soit la mission déplacée. La création, elle, était flushée par
+   `wrapInTransaction()`. Démonstration : avec un `flush()` temporaire ajouté après la
+   synchronisation, le déplacement de la mission d'id inférieur résout l'alerte.
+2. **Asymétrie selon l'identifiant.** Sans conflit, `applySync()` ne cherchait une alerte que sur la
+   mission synchronisée. L'alerte étant ancrée sur l'autre mission quand celle-ci a l'id le plus bas,
+   déplacer la mission d'id supérieur ne la réévaluait jamais (cas réel du 2026-10-23 : Schiepers
+   `IN_PROGRESS`, Berger déplacée). Démonstration : ce cas reste en échec même avec le `flush()`
+   temporaire.
+3. **« Vérifier les conflits » ne réconciliait pas.** `PlanningVersionAuditService` ne visite que
+   les missions `OPEN` / `ASSIGNED` / `CANCELLED` de la version, et s'appuyait sur la même
+   synchronisation asymétrique : une alerte ancrée sur une mission `IN_PROGRESS` (ou sur une mission
+   d'une autre version) n'était jamais revue.
+4. **Une seule alerte par mission et par type.** `findConflict()` ne renvoyait que le premier
+   chevauchement et la déduplication portait sur (mission, type) : deux conflits d'une même mission
+   étaient confondus. De plus, une alerte encore valide gardait les horaires de sa détection, et une
+   alerte `IGNORED` était recréée à l'identique à la synchronisation suivante.
+
+### Décision
+
+1. **Une alerte par paire en conflit** : (mission ancre = id inférieur, autre mission, personne,
+   type). La paire est lue dans `snapshotJson` (`conflictingMissionId`, `personId`), présent sur toutes
+   les alertes de conflit depuis D-091 : **aucune migration**. `findConflicts()` /
+   `findConflictsInPool()` renvoient tous les chevauchements ; `findConflict()` /
+   `hasConflictInPool()` restent leur premier élément (règles inchangées).
+2. **Réévaluation indépendante de l'ordre des identifiants.** Toute synchronisation se termine par
+   `reconcileConflictAlertsInvolving()` : chaque alerte de conflit `OPEN` / `ACKNOWLEDGED` où la
+   mission apparaît, **d'un côté ou de l'autre** (`mission_id` ou `conflictingMissionId`, requête
+   `PlanningAlertService::findActiveConflictAlertsInvolving()`), est réévaluée sur l'état persisté
+   des deux missions avec la règle exacte de détection (`hasConflictInPool()` : statuts actifs,
+   chevauchement `[début, fin)`, exception « double salle »), depuis les deux côtés de la paire.
+3. **Conflit disparu → `RESOLVED`**, jamais supprimée, `resolvedBy = null` (résolution système,
+   comme les résolutions automatiques existantes), note explicite :
+   « Conflit horaire résolu automatiquement après modification du planning : … » (missions qui ne se
+   chevauchent plus, mission devenue inactive, personne retirée de l'une des missions). Dérogation
+   active (D-091) : « Conflit horaire couvert par une dérogation du manager ». Lien avec la mission
+   et instantané conservés.
+4. **Conflit toujours présent** (même réduit) → l'alerte reste active ; son instantané est
+   actualisé si les horaires ont changé. Aucune nouvelle alerte tant qu'une alerte active couvre la
+   paire.
+5. **Alerte ignorée** : jamais rouverte ni recréée tant que les horaires des deux missions sont
+   ceux qu'elle décrivait. Si les horaires changent et qu'un chevauchement existe encore, c'est une
+   nouvelle situation : nouvelle alerte. Une alerte `RESOLVED` n'est jamais rouverte : un conflit qui
+   réapparaît crée une nouvelle alerte, l'ancienne reste dans l'historique.
+6. **Le service flushe lui-même** ses changements d'alertes (`syncAlertsForMission()`,
+   `syncAlertsForVersion()`, `reconcileConflictAlertsInvolving()`) : aucun appelant n'a plus à le
+   faire pour lui.
+7. **Enregistrement (`apply()`)** : les missions annulées par le lot sont aussi synchronisées. Elles
+   ne déclenchent aucune détection, mais leurs alertes de conflit sont réévaluées.
+8. **« Vérifier les conflits »** : après les contrôles existants (inchangés), réconciliation de
+   toutes les alertes de conflit actives impliquant une mission du périmètre opérationnel de la
+   version (D-125), quel que soit son statut. La détection n'est pas élargie : aucun nouveau type de
+   mission n'est scanné pour créer des alertes. Idempotent : deux vérifications sans changement ne
+   créent, ne résolvent ni ne modifient rien.
+
+### Hors périmètre (inchangé)
+
+Politique de blocage / non-blocage (D-091 : non bloquant en Mode Modification, bloquant au
+déploiement), calcul d'éligibilité, autres types d'alertes (absences, non pourvues, annulations
+d'occurrence, réaffectation, inactivité, incompatibilité) : seuls `SURGEON_CONFLICT` et
+`INSTRUMENTIST_CONFLICT` sont réconciliés. Aucune mission n'est modifiée par ce mécanisme.
+
+### Tests
+
+`PlanningConflictAlertReconciliationTest` (14, chemin réel `apply-modifications` et
+`verify-conflicts`) : alerte active, résolution en déplaçant la première ou la seconde mission,
+chevauchement réduit (alerte conservée, horaires actualisés), fin = début (pas de chevauchement),
+mission `IN_PROGRESS` raccourcie (D-165) et mission voisine déplacée, scan après résolution hors
+chemin d'enregistrement, scan après annulation de l'autre mission, deux scans sans changement,
+nouveau chevauchement après correction, plusieurs conflits sur une même mission, alerte ignorée
+non recréée, autres types d'alertes intacts.
+
+### Limite
+
+Les alertes de conflit déjà ouvertes en production sont réévaluées à la prochaine synchronisation
+d'une des deux missions ou au prochain « Vérifier les conflits » ; aucune reprise de données n'est
+lancée.

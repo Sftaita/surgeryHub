@@ -861,6 +861,77 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         self::assertNotContains(AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT->value, $this->auditEventTypesFor($submitted->getId()));
     }
 
+    /**
+     * D-166 — mission dans la fenêtre de relance (statut encore « à encoder ») mais sans
+     * instrumentiste affectée : ni 'remind' ni 'remind_hours' proposés, envoi refusé, rien
+     * n'est notifié ni audité.
+     */
+    public function test_d166_mission_without_instrumentist_offers_and_sends_no_reminder(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::IN_PROGRESS, null, new \DateTimeImmutable('-3 hours'));
+        $token   = $this->login($client, $manager);
+
+        $detail = json_decode((string) $this->getJson($client, $token, "/api/missions/{$mission->getId()}")->getContent(), true);
+        self::assertNotContains('remind', $detail['allowedActions']);
+        self::assertNotContains('remind_hours', $detail['allowedActions']);
+
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/remind")->getStatusCode());
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->postJson($client, $token, "/api/missions/{$mission->getId()}/execution/remind")->getStatusCode());
+        self::assertSame([], array_intersect($this->auditEventTypesFor($mission->getId()), [
+            AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT->value,
+            AuditEventType::MISSION_HOURS_MANUAL_REMINDER_SENT->value,
+        ]));
+        self::assertSame([], $this->em->getRepository(OutboundNotification::class)->findBy(['mission' => $mission->getId()]));
+        self::assertSame([], $this->em->getRepository(NotificationEvent::class)->findBy(['mission' => $mission->getId()]));
+    }
+
+    /**
+     * D-166 — l'affectation est relue au moment de l'envoi : instrumentiste retirée après que
+     * le manager a ouvert la mission (bouton encore affiché chez lui) → refus, aucun envoi ;
+     * une nouvelle affectation rend la relance de nouveau disponible et effective.
+     */
+    public function test_d166_instrumentist_removed_after_selection_blocks_send_and_reassignment_restores_it(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $first   = $this->createUser('ROLE_INSTRUMENTIST');
+        $second  = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, MissionStatus::IN_PROGRESS, $first);
+        $token   = $this->login($client, $manager);
+
+        // Sélection : encodage incomplet, instrumentiste affectée → relance proposée.
+        $detail = json_decode((string) $this->getJson($client, $token, "/api/missions/{$mission->getId()}")->getContent(), true);
+        self::assertContains('remind', $detail['allowedActions']);
+
+        // Retrait de l'instrumentiste par un autre canal, statut inchangé.
+        $this->em->getConnection()->executeStatement('UPDATE mission SET instrumentist_id = NULL WHERE id = ?', [$mission->getId()]);
+        $this->em->clear();
+
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/remind")->getStatusCode());
+        self::assertNotContains(AuditEventType::MISSION_ENCODING_MANUAL_REMINDER_SENT->value, $this->auditEventTypesFor($mission->getId()));
+        self::assertSame([], $this->em->getRepository(OutboundNotification::class)->findBy(['mission' => $mission->getId()]));
+        self::assertSame([], $this->em->getRepository(NotificationEvent::class)->findBy(['mission' => $mission->getId()]));
+        $detail = json_decode((string) $this->getJson($client, $token, "/api/missions/{$mission->getId()}")->getContent(), true);
+        self::assertNotContains('remind', $detail['allowedActions']);
+
+        // Affectation ultérieure : la mission redevient éligible selon les règles habituelles.
+        $this->em->getConnection()->executeStatement('UPDATE mission SET instrumentist_id = ? WHERE id = ?', [$second->getId(), $mission->getId()]);
+        $this->em->clear();
+
+        $detail = json_decode((string) $this->getJson($client, $token, "/api/missions/{$mission->getId()}")->getContent(), true);
+        self::assertContains('remind', $detail['allowedActions']);
+        $response = $this->postJson($client, $token, "/api/missions/{$mission->getId()}/encoding/remind");
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        self::assertNotEmpty($this->em->getRepository(OutboundNotification::class)->findBy(['recipientUser' => $second->getId(), 'mission' => $mission->getId()]));
+        self::assertSame([], $this->em->getRepository(OutboundNotification::class)->findBy(['recipientUser' => $first->getId(), 'mission' => $mission->getId()]), "l'ancienne instrumentiste n'est jamais relancée");
+    }
+
     // ── D-143 — horaires réels obligatoires ──────────────────────────────────
 
     /** Scénario 3 — soumission sans horaires : refus backend explicite, brouillon intact. */

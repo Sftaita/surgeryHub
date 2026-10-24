@@ -240,7 +240,13 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       );
       await refreshAfterAction();
     },
-    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
+    // D-166 — refus du backend (ex. instrumentiste retirée depuis l'ouverture du tiroir) : la
+    // mission est relue pour que le bouton suive les droits réels (allowedActions), jamais
+    // un état gardé côté écran.
+    onError: (err: any) => {
+      toast.error(err?.response?.status === 403 ? "Relance impossible pour cette mission (aucune instrumentiste affectée ou statut modifié entre-temps)." : extractErrorMessage(err));
+      void refreshAfterAction();
+    },
   });
 
   // D-148 — la fenêtre reste ouverte jusqu'à la confirmation serveur ; un seul envoi à la fois.
@@ -275,7 +281,10 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   const remindHoursMutation = useMutation({
     mutationFn: async () => remindMissionHours(missionId!),
     onSuccess: async () => { toast.success("Rappel des heures envoyé à l'instrumentiste."); await refreshAfterAction(); },
-    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
+    onError: (err: any) => {
+      toast.error(err?.response?.status === 403 ? "Rappel impossible pour cette mission (aucune instrumentiste affectée, heures déjà renseignées ou statut modifié entre-temps)." : extractErrorMessage(err));
+      void refreshAfterAction();
+    },
   });
 
   // D-153 — corrections directes du manager (heures / interventions & matériel).
