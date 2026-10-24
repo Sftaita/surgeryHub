@@ -23,6 +23,7 @@ for i in $(seq 0 799); do f="$M/all_$(d "$i")_030001.sql.gz.gpg"; echo "c$i" > "
 echo clair > "$M/all_$(d 0)_020000.sql.gz"                              # ancien dump en clair : ne sort jamais
 echo x > "$M/surgicalhub_pre_deploy_v2026.10.23-prod_$(d 0)_053708.sql.gz.gpg"
 for i in 0 50 89 91 120; do echo u > "$U/surgicalhub_$(d "$i")_031501.tar.gz.gpg"; done
+for i in 100 110 120 130; do echo m > "$U/medatwork_$(d "$i")_031501.tar.gz.gpg"; done   # volume sans archive récente
 echo u > "$U/surgicalhub_$(d 0)_031501.tar.gz"                           # archive en clair : ne sort jamais
 for i in 0 95; do echo v > "$V/surgicalhub_var_$(d "$i")_031501.tar.gz.gpg"; done
 echo SECRET > "$T/b/code/env_pre_deploy_20261023_053708"
@@ -33,7 +34,8 @@ check "dumps chiffrés copiés (800 + .sha256)" bash -c "[ \$(ls '$R/mysql' | gr
 check "aucun fichier en clair hors du serveur" bash -c "! find '$R' -type f \( -name '*.sql.gz' -o -name '*.tar.gz' \) | grep -q ."
 check "aucune copie de .env hors du serveur" bash -c "! grep -rqs SECRET '$R'"
 check "dumps d'avant déploiement dans leur propre dossier" bash -c "ls '$R/mysql-pre-deploy' | grep -q pre_deploy && ! ls '$R/mysql' | grep -q pre_deploy"
-check "uploads et var copiés" bash -c "[ \$(ls '$R/uploads' | grep -c 'gpg$') = 5 ] && [ \$(ls '$R/surgicalhub-var' | grep -c 'gpg$') = 2 ]"
+check "uploads et var copiés" bash -c "[ \$(ls '$R/uploads' | grep -c 'gpg$') = 9 ] && [ \$(ls '$R/surgicalhub-var' | grep -c 'gpg$') = 2 ]"
+check "dernière archive de CHAQUE volume vérifiée à distance" bash -c "grep -q 'uploads : surgicalhub_$(d 0)_031501.tar.gz.gpg vérifié' '$T/o1.out' && grep -q 'uploads : medatwork_$(d 100)_031501.tar.gz.gpg vérifié' '$T/o1.out'"
 check "sans option : rotation distante en dry-run, rien de supprimé" bash -c "grep -q 'à supprimer (dry-run)' '$T/o1.out' && ! grep -q deletefile '$RSTORE.log'"
 
 echo "== suppressions locales jamais répercutées"
@@ -50,9 +52,10 @@ check "rotation distante" bash -c "bash '$O' --apply-remote-rotation > '$T/o2.ou
 check "dumps : 30 derniers jours conservés" bash -c "for i in \$(seq 0 29); do [ -f '$R/mysql/all_'\$(date -u -d \"2026-10-23 03:00:00 UTC \$i days ago\" +%Y%m%d)_030001.sql.gz.gpg ] || exit 1; done"
 check "dumps : 24e mois conservé (2024-11-30), 25e supprimé (2024-10-31)" bash -c "[ -f '$R/mysql/all_20241130_030001.sql.gz.gpg' ] && [ ! -e '$R/mysql/all_20241031_030001.sql.gz.gpg' ] && [ ! -e '$R/mysql/all_20241031_030001.sql.gz.gpg.sha256' ]"
 check "dumps : 12e semaine conservée (dim. 2026-08-09), 13e supprimée (2026-08-02), jour non retenu supprimé (2026-08-08)" bash -c "[ -f '$R/mysql/all_20260809_030001.sql.gz.gpg' ] && [ ! -e '$R/mysql/all_20260802_030001.sql.gz.gpg' ] && [ ! -e '$R/mysql/all_20260808_030001.sql.gz.gpg' ]"
-check "uploads : 90 jours (0, 50, 89 conservés ; 91, 120 supprimés)" bash -c "[ \$(ls '$R/uploads' | grep -c 'gpg$') = 3 ]"
+check "uploads : 90 jours (0, 50, 89 conservés ; 91, 120 supprimés)" bash -c "[ \$(ls '$R/uploads' | grep -c '^surgicalhub_.*gpg$') = 3 ]"
+check "uploads : jamais moins des 3 plus récentes PAR volume (medatwork 100/110/120 conservés, 130 supprimé)" bash -c "[ \$(ls '$R/uploads' | grep -c '^medatwork_.*gpg$') = 3 ] && [ ! -e '$R/uploads/medatwork_$(d 130)_031501.tar.gz.gpg' ]"
 check "var : 90 jours, jamais moins des 3 plus récentes" bash -c "[ \$(ls '$R/surgicalhub-var' | grep -c 'gpg$') = 2 ]"
-check "copie locale inchangée par la rotation distante" bash -c "[ \$(ls '$U' | grep -c 'gpg$') = 5 ]"
+check "copie locale inchangée par la rotation distante" bash -c "[ \$(ls '$U' | grep -c 'gpg$') = 9 ]"
 
 echo
 echo "Résultat : $PASS réussis, $FAIL échoués"

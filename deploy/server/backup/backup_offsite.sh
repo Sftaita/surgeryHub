@@ -50,6 +50,11 @@ copy_dir() {
 
 copy_dir "$MYSQL_DIR" mysql '^all_[0-9]{8}_[0-9]{6}\.sql\.gz\.gpg$' gfs 'all_*'
 copy_dir "$MYSQL_DIR" mysql-pre-deploy '^surgicalhub_pre_deploy_.+\.sql\.gz\.gpg$' age 'surgicalhub_pre_deploy_*'
-copy_dir "$UPLOADS_DIR" uploads '^[a-z]+_[0-9]{8}_[0-9]{6}\.tar\.gz\.gpg$' age '*'
+# Uploads : une série par volume, comme en local — la dernière archive de CHAQUE volume est
+# vérifiée à distance, et le minimum de $KEEP_VOLUME_MIN archives s'applique par volume.
+for pair in $UPLOAD_VOLUMES; do
+  l="${pair##*:}"
+  copy_dir "$UPLOADS_DIR" uploads "^${l}_[0-9]{8}_[0-9]{6}\.tar\.gz\.gpg\$" age "${l}_*"
+done
 copy_dir "$VAR_DIR" surgicalhub-var "^${VAR_VOLUME}_[0-9]{8}_[0-9]{6}\\.tar\\.gz\\.gpg\$" age '*'
 exit "$rc"
