@@ -14305,6 +14305,45 @@ e-mail non vérifié, compte inconnu non créé, Google injoignable) et
 `GoogleIdTokenVerifierTest` ; frontend `apiClientSession.test.ts`,
 `AuthSessionPersistence.test.tsx`, `LoginPageSession.test.tsx`.
 
+### Avenant (2026-10-24) — reprise après D-158…D-167, avant déploiement
+
+- **Le défaut est toujours actif en production** (journal Traefik, lecture seule) : 426 des 429
+  `POST /api/auth/refresh` depuis juin répondent 401, dont 42 sur 42 du 20 au 24 octobre ;
+  114 connexions réussies en 8 jours pour 31 utilisateurs.
+- Branche mise à jour avec `main` (`cbbec05`) : seul `decisions.md` était en conflit ; aucun
+  fichier de code n'est modifié des deux côtés et `main` n'a ajouté aucune migration depuis le
+  départ de la branche. La migration `Version20261020090000` reste la seule en attente (90/90 sur
+  base jetable, conforme au mapping de `RefreshToken`).
+- Compatibilité vérifiée sur la table de production (lecture seule) : 553 lignes, dont 194 valides
+  (31 utilisateurs, toutes « Rester connecté »), colonnes d'origine identiques à celles qu'attend
+  la migration ; PHP en UTC. Une session d'avant D-157 (ligne sans famille, JWT sans `sid`) est
+  reprise sans reconnexion et rattachée à une famille au premier refresh. Un ancien frontend
+  resté en cache (qui envoie encore le JWT expiré avec le refresh) obtient 200 : le firewall
+  `auth_session` ignore l'en-tête.
+- Tests : trois tests calculaient l'échéance attendue avec `modify('+N seconds')`, qui ajoute
+  une heure quand la fenêtre traverse le passage à l'heure d'hiver (échec le 2026-10-24). Ils
+  comptent désormais en secondes écoulées, comme le code. Le test frontend de reprise réseau
+  émettait l'événement `online` avant l'abonnement : rendu déterministe.
+- Recette Playwright sur base jetable : 35 contrôles × 4 profils (Chromium et WebKit, desktop et
+  mobile), dont les trois rôles, fermeture et réouverture sur `start_url`, JWT expiré, coupure
+  réseau au lancement et pendant le refresh, réponse de refresh perdue, deux onglets, logout,
+  révocation immédiate, session antérieure, ancien frontend et appareil partagé. Sécurité, au-delà
+  de la fenêtre de 120 s : le rejeu d'un jeton volé révoque toute la session et renvoie
+  l'utilisateur légitime vers `/login`.
+
+**Risques résiduels connus**
+
+- **Onglet dupliqué sans « Rester connecté »** : le `sessionStorage` copié donne deux onglets
+  sur la même chaîne. Si l'un renouvelle deux fois pendant que l'autre reste inactif plus de
+  120 s, le réveil de l'onglet inactif est traité comme un rejeu et **les deux onglets sont
+  déconnectés** (mesuré). Ce cas ne concerne ni « Rester connecté » (`localStorage` partagé) ni
+  un nouvel onglet ordinaire, qui demande la connexion. Atténuation possible : synchroniser les
+  onglets d'une même session par `BroadcastChannel`.
+- Safari non installé sur iOS : plafond ITP de 7 jours sur le stockage (inchangé, voir plus haut).
+- Firefox n'a pas été testé (navigateur absent du poste de recette). La PWA installée n'est pas
+  automatisable : son lancement est simulé par l'ouverture de `start_url` dans un profil
+  persistant.
+
 ---
 
 ## D-158 — Absences : salles libérées quel que soit le mois, missions commencées protégées, une alerte par problème (2026-10-20)
