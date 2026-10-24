@@ -495,6 +495,21 @@ export async function fetchMissionEligibleInstrumentists(
  * mission" draft). Backend is the source of truth for ABSENT/SCHEDULE_CONFLICT/
  * NO_SITE_MEMBERSHIP — never recomputed here.
  */
+/**
+ * D-165 — one unsaved editor line of the same day, sent so the backend evaluates conflicts
+ * against the day as it is being composed (an edited mission's proposed slot replaces its
+ * saved one; a cancelled one no longer counts). Display only: saving re-validates.
+ */
+export interface RosterProposal {
+  missionId: number | null;
+  instrumentistId: number | null;
+  startTime: string;
+  endTime: string;
+  surgeonId: number | null;
+  siteId: number | null;
+  cancelled: boolean;
+}
+
 export async function fetchRosterEligibility(params: {
   siteId?: number | null;
   date: string;
@@ -503,7 +518,21 @@ export async function fetchRosterEligibility(params: {
   excludeMissionId?: number | null;
   surgeonId?: number | null;
   policy?: EligibilityEnforcementPolicy;
+  proposals?: RosterProposal[];
 }): Promise<RosterEligibilityResponse> {
+  if (params.proposals && params.proposals.length > 0) {
+    const res = await apiClient.post(`/api/planning/v2/eligible-instrumentists`, {
+      siteId: params.siteId ?? null,
+      date: params.date,
+      startTime: params.startTime,
+      endTime: params.endTime,
+      excludeMissionId: params.excludeMissionId ?? null,
+      surgeonId: params.surgeonId ?? null,
+      policy: params.policy,
+      proposals: params.proposals,
+    });
+    return res.data as RosterEligibilityResponse;
+  }
   const res = await apiClient.get(`/api/planning/v2/eligible-instrumentists`, {
     params: {
       siteId: params.siteId ?? undefined,
@@ -551,6 +580,15 @@ export async function getMyAvailableRooms(params?: {
   period?: ShiftPeriod;
 }): Promise<ReleasedRoomSlotListResponse> {
   const res = await apiClient.get("/api/me/available-rooms", { params });
+  return res.data;
+}
+
+/**
+ * D-161 — le créneau annoncé par une notification, relu par le serveur à l'ouverture (mêmes
+ * règles de visibilité que la liste). 404 `ROOM_SLOT_UNAVAILABLE` s'il ne l'est plus.
+ */
+export async function getMyAvailableRoom(slotId: number): Promise<ReleasedRoomSlotV2> {
+  const res = await apiClient.get(`/api/me/available-rooms/${slotId}`);
   return res.data;
 }
 

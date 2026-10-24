@@ -15,7 +15,7 @@ Voir aussi : [`docs/backup-and-restore.md`](backup-and-restore.md) · [`docs/pro
 
 ## Version actuelle de production
 
-**Dernier tag déployé : `v2026.10.19-prod` → commit `dd5adac`.**
+**Dernier tag déployé : `v2026.10.24-prod` → commit `fd91eaf`** (D-167, par `deploy/deploy.sh` : release `releases/fd91eaf…`, lien `current`). La version exécutée est aussi visible en bas de « Mon profil », par `app:release:show` (D-162) et par `deploy/deploy.sh status`.
 Vérifié le 2026-10-19 par requêtes HTTP réelles sur le domaine public (pas
 seulement par le tag — voir [`docs/deployment-versioning.md`](deployment-versioning.md)
 §2.2) : `/api/health` `200`, login JWT réel d'un compte jetable
@@ -37,6 +37,13 @@ réécrire une ligne existante — c'est un historique._
 
 | Tag | Commit | Date | Notes |
 |---|---|---|---|
+| `v2026.10.24-prod` | `fd91eaf` | 2026-10-24 | **D-167 — alertes de conflit Planning V2 synchronisées avec le planning réel : une alerte par paire en conflit, réévaluée sur l'état enregistré des deux missions quel que soit le côté modifié, résolue (jamais supprimée) quand le conflit disparaît, « Vérifier les conflits » réconcilie les alertes de conflit actives du périmètre opérationnel. PR #41, merge `fd91eaf` de `3992a19` (arbre identique, testé).** Tests : D-167 14/14, suites liées 245 ; backend complet (fichier par fichier) 3 027 tests, 3 ignorés, 3 échecs non liés (JWT expiré pendant une veille de la machine — 23/23 relancé ; changement d'heure du 25/10 dans `SurgeonAssignmentRefusalFunctionalTest` ; `MissionBusinessTimezoneIntegrationTest` préexistant — les deux derniers identiques sans D-167) ; Vitest 1 730/1 741, 11 timeouts sous charge (aucun test D-167, reproduits sans D-167) ; `tsc` OK ; Playwright 17/17 sur base jetable. Prod avant : `v2026.10.23-prod-2` / `2a32d0b` (release active, `REVISION`, OFFICIAL). Écart : D-167 + docs #40 ; aucune migration (89/89). Archive `surgicalhub-fd91eaf….tar.gz` : 1 749 fichiers, SHA-256 `7dc99240…54d7e9f3ef`, identique à `git archive` du commit ; build `:fd91eaf…` vérifié ; dry-run « Already at the latest version ». `activate` 2026-10-24 08:09 UTC : sauvegardes `deploy-backups/20261024_080920/` (compose, `.env`, volume `surgicalhub_var`, `previous_release` = `2a32d0b…`) + `all_20261024_080920.sql.gz` (gzip vérifié, dump complet). Contrôles : front 200, `/healthz` 200, login vide 400, `.env` 404, cache `no-cache` / assets `immutable` / asset inexistant 404, 3/3 Up sans redémarrage, worker actif, file `failed` 0, logs php/nginx sans erreur ni 5xx. Tests ciblés via l'API publique en lecture seule (compte jetable `d167-smoke-mgr@surgicalhub.internal`, supprimé, contrôle des comptes de test actifs vide ; `MAIL_SAFE_MODE` non nécessaire, aucun flux d'e-mail touché) : login + `/api/me` MANAGER, liste et détail des alertes, deux consultations identiques, aucun doublon actif par paire, D-165 (`reschedule` sur mission `IN_PROGRESS`, roster avec proposition sans écriture). Navigateur (session manager existante, aucune saisie) : onglet Alertes chargé, historique visible, aucune erreur console. 0 alerte, 0 audit, 0 envoi créés pendant les contrôles. **« Vérifier les conflits » non exécuté sur les versions réelles** : il résoudrait d'un coup les 26 alertes de conflit actives, toutes obsolètes selon les règles actuelles (16 `SURGEON_CONFLICT` double salle même site, exemptées depuis l'amendement D-091 du 2026-09-13 ; 10 `INSTRUMENTIST_CONFLICT` dont l'instrumentiste n'est plus sur les deux missions) — réconciliation laissée à la décision du manager. Tag + `deploy.sh mark` → OFFICIAL ; « Mon profil » `SurgicalHub · v2026.10.24-prod · fd91eaf`. |
+| `v2026.10.23-prod-2` | `2a32d0b` | 2026-10-23 | **D-165 — modification des horaires depuis le planning sans perte d'affectation : mission « En cours » limitée à ses heures du jour, instrumentiste verrouillé (409 explicite), conflits détaillés (proposé / planning publié), action `reschedule` ; D-166 — fenêtres d'encodage imbriquées au premier plan (« + Intervention », assistant matériel, confirmations depuis « Corriger l'encodage »), aucune relance d'encodage sans instrumentiste affectée (`EncodingReminderPolicy` : bouton, API 403, relances automatiques). PR #39, merge `2a32d0b` de `97e8da1` (arbre identique, testé).** Tests : PHPUnit 3 011/3 013 (2 échecs préexistants, reproduits à l'identique sur `e948f0f`), Vitest 1 730/1 740 (10 délais dépassés sous charge, 119/119 en isolé), `tsc` OK, parcours Playwright D-165/D-166/relances sur base jetable (desktop, 390 px, 1 024 px). Prod avant : `v2026.10.23-prod` / `e948f0f` (release active, `REVISION`, OFFICIAL). Écart : 12 commits — D-165, D-166, merges, plus D-164 (PR #36, `deploy/server/backup/`) et docs PR #37, hors périmètre de l'archive : **non installés sur le serveur par ce déploiement** ; aucune migration (89/89). Archive `surgicalhub-2a32d0b….tar.gz` : 1 748 fichiers, SHA-256 `5457a28f…f71086878`, identique octet pour octet à `git archive` du commit ; `stage` : 7 fichiers ajoutés, aucun retiré ; build `:2a32d0b…` vérifié ; dry-run « Already at the latest version ». `activate` 2026-10-23 17:18 UTC : sauvegardes `deploy-backups/20261023_171845/` (compose, `.env`, volume `surgicalhub_var`, `previous_release` = `e948f0f…`) + `all_20261023_171845.sql.gz` (gzip vérifié, dump complet). Contrôles : front 200, `/healthz` 200, login vide 400, `.env` 404, cache `no-cache` / assets `immutable` / asset inexistant 404, 3/3 Up sans redémarrage, worker actif, file `failed` 0, logs php/nginx sans erreur ni 5xx. **Tests ciblés via l'API publique, `MAIL_SAFE_MODE=on`** (retiré ensuite, `.env` identique à la sauvegarde), compte jetable `d166-smoke-mgr@surgicalhub.internal` (supprimé, jetons supprimés, contrôle des comptes de test actifs vide) : login + `/api/me` MANAGER ; suivi des encodages (liste, synthèse, compteur) ; aucune des 10 missions sans instrumentiste ne propose `remind` ; relances `POST …/encoding/remind` sur #1064 et #1079 refusées 403 ; #1081 (avec instrumentiste) propose toujours `remind` (non déclenché) ; #1085 « En cours » : `reschedule` sans `cancel` ; roster `POST /api/planning/v2/eligible-instrumentists` avec proposition (#1085 jusqu'à 14:00) : plus de conflit à 14:45, #1085 inchangée. 0 audit, 0 notification, 0 envoi créés. Contrôle navigateur (session manager existante, aucune saisie, rien enregistré) : « Corriger l'encodage » → « + Intervention » et assistant matériel au premier plan (3 niveaux, focus, défilement bloqué, Échap ferme seulement la fenêtre du dessus), pas de « Relancer » sur #1079, planning publié consultable. Tag + `deploy.sh mark` → OFFICIAL ; « Mon profil » `SurgicalHub · v2026.10.23-prod-2 · 2a32d0b`. Anomalies connues, acceptées, non corrigées : alerte `INSTRUMENTIST_CONFLICT` restant ouverte quand le chevauchement est résolu en déplaçant la mission d'id le plus élevé (« Vérifier les conflits » ne la ferme pas) ; interface manager non adaptée au mobile ; avertissement MUI (Tooltip sur bouton désactivé). Le cas réel Schiepers #1085 / Berger #1084 n'a pas été modifié (décision du manager). |
+| `v2026.10.23-prod` | `e948f0f` | 2026-10-23 | **D-163 — déploiement reproductible : releases vérifiées (`releases/<SHA>`, lien `current`), compose de production versionné (`deploy/production/docker-compose.yml`), configuration Docker livrée avec le commit, cache nginx/PWA maîtrisé, rechargement unique sur chunk obsolète (PR #34, merge `d49354d`) + correctifs de première activation : cache Symfony jetable au dry-run, vidé au rollback legacy, `src/` archivé (PR #35, merge `e948f0f`). Première activation depuis `src/`.** Tests : procédure 61/61 (Linux), cache nginx 8/8 (0/8 avec l'ancienne configuration), frontend app-version 11/11 + typage ; tests frontend instables (délais dépassés, fichiers non touchés) documentés à part, non comptés comme réussis. Prod avant : `v2026.10.21-prod-2` / `20aa821`. Écart : backend identique, aucune migration (89/89), frontend = reprise sur chunk obsolète, nginx = règles de cache ; 9 fichiers de `src/` absents de la release (4 tests supprimés de Git, 3 fichiers Docker de développement, 2 clés `config/jwt` déjà exclues des images). **Phase A** (2026-10-23 04:50 UTC) : archive `surgicalhub-e948f0f….tar.gz` (1 741 fichiers, SHA-256 `d28db030…6f91682` vérifiée sur le serveur ; empreinte erronée refusée), build `:e948f0f…` 4 min 18 sans toucher au service (images de base retéléchargées : un nettoyage Docker tiers les avait supprimées), `REVISION` et bundle = SHA, dry-run migrations « Already at the latest version » sur cache jetable ; compose résolu identique à celui en service hors contexte de build, empreintes de configuration identiques, 13 labels Traefik et 27 variables identiques. **Phase B** (05:37:08–05:37:26 UTC, `deploy.sh activate`, 18 s) : dump `all_20261023_053708.sql.gz`, `deploy-backups/20261023_053708/` (compose historique, `.env` 600, volume `surgicalhub_var` avec clés JWT et registre, `src.tar.gz`, `previous_release=legacy`), images en service retaguées `surgicalhub-{php,nginx}:rollback-legacy` (`87de14fa…`, `b15dfbad…`). Indisponibilité mesurée (sonde 0,5 s) : front toujours 200 ; API : 1 requête en échec (délai) à 05:37:16, réponses ralenties jusqu'à 05:37:23 (~6 s). Contrôles : php et worker `REVISION` = `e948f0f`, bundle nginx = SHA, 3/3 conteneurs neufs sans redémarrage, worker actif, `async` 0, `failed` 0, 0 erreur de log, 0 réponse 5xx, cron 05:40 OK ; clés JWT et registre identiques octet pour octet ; login JWT de comptes jetables `@surgicalhub.internal` (manager, chirurgien, instrumentiste) : `/api/me` rôle correct, `/api/version` 200 `PENDING_VALIDATION` · `e948f0f`, `no-store` ; jeton invalide 401, login vide 400, `.env` 404 ; comptes supprimés (0 restant). Cache : `index.html`, routes SPA, `sw.js`, manifest, icônes `no-cache` ; assets `immutable` ; ancien asset (`index-90HwQiiN.js`) et asset inexistant 404 (page nginx, jamais `index.html`). Navigateur : `vite:preloadError` → un seul rechargement, second événement < 30 s sans rechargement (pas de boucle), Service Worker actif = nouveau `sw.js`. **Après tag** (`v2026.10.23-prod` → `e948f0f`, poussé) : `deploy.sh mark` → `OFFICIAL` ; « Mon profil » : `SurgicalHub · v2026.10.23-prod · e948f0f`. Rollback : `deploy/deploy.sh rollback legacy` (non exercé en production ; couvert par les tests). Aucune donnée métier modifiée. |
+| `v2026.10.21-prod-2` | `20aa821` | 2026-10-21 | **D-162 — version de SurgicalHub en bas de « Mon profil » (manager, chirurgien, instrumentiste), sans footer permanent : commit exécuté écrit par `git archive` (`backend/REVISION`, `buildRevision.ts`, export-subst), registre des versions officielles `var/release/releases.json` (volume `surgicalhub_var`) alimenté après le tag par `app:release:mark`, `GET /api/version` (authentifié, `no-store`) (PR #32, `13b6d77`, merge `20aa821`) + documentation (PR #30, #31).** Code de `20aa821` identique au commit testé : Unit 1 074, Integration 515, Security 107, Architecture 25, Functional 1 273, frontend 1 709/1 709 + build ; sur `20aa821` : tests du versioning + architecture 35, frontend ciblé 39. Prod avant : `v2026.10.21-prod` / `f1ee401`, sources identiques (md5, 1 300 fichiers). Écart : 7 commits, 21 fichiers, aucune suppression, aucune migration, aucune dépendance, aucune configuration ; `docker/` et `.dockerignore` du serveur identiques au dépôt. Sauvegardes : `all_20261021_193846.sql.gz`, `surgicalhub_pre_deploy_D162_20261021_193846.sql.gz` (base seule), `src_pre_deploy_20261021_193846.tar.gz`, `env_pre_deploy_20261021_193846` ; images `surgicalhub-{php,nginx}:rollback-f1ee401`. Incident évité : une première archive (`git -C … archive -o`, écrite dans le worktree) a laissé partir l'ancienne archive `f1ee401` ; extraite sans effet (code identique), arrêt avant build, archive refaite par chemin absolu. `src/backend/REVISION` = `20aa821a76…` ; build `--no-cache` (`BUILD_EXIT=0`), dry-run migrations « Already at the latest version », `up -d`, `cache:clear`, restart php et worker puis nginx. Code exécuté par php et worker (787 fichiers dont `REVISION`) identique à `20aa821`. Contrôles : front 200, login vide 400, `.env` 404, 3/3 Up sans redémarrage, logs sans erreur, nginx 0 5xx, file async 0, `failed` 0. **Avant tag** : `app:release:show` `PENDING_VALIDATION` / `20aa821` ; `GET /api/version` anonyme 401 ; comptes jetables `@surgicalhub.internal` manager, chirurgien, instrumentiste via l'API publique : `/api/me` rôle correct, `/api/version` 200 `PENDING_VALIDATION` · `20aa821`, `Cache-Control: max-age=0, no-store, private`, `Pragma: no-cache`. Bundle public : chunk `AppVersionLine` portant le SHA `20aa821`, importé uniquement par les deux chunks `ProfilePage` (aucun footer ailleurs). **Après tag** (`v2026.10.21-prod-2` → `20aa821`, poussé) : `app:release:mark v2026.10.21-prod-2 --commit=20aa821` → `OFFICIAL` (registre : 1 ligne) ; marquage avec un autre commit refusé, second marquage « déjà enregistré » ; concordance tag Git = commit exécuté = `/api/version` (`v2026.10.21-prod-2` · `20aa821`) pour les trois rôles, identique après reconnexion. Comptes jetables et jetons supprimés, contrôle des comptes de test actifs vide. Empreinte des données métier inchangée (salles #28–#36, postes Deltour #3–#7, absences #66/#67, missions #429/#430 et alertes, notifications, audits). Limite assumée : la lecture visuelle de « Mon profil » dans le navigateur n'a pas été faite par l'agent (connexion interactive à la production exclue) — vérifiée par l'API et par le bundle publié, contrôle visuel laissé à l'utilisateur. Rollback non exercé en production : couvert par les tests (version restaurée, jamais celle abandonnée). |
+| `v2026.10.21-prod` | `f1ee401` | 2026-10-21 | **D-160 — rattrapage ciblé des salles libérées (`app:available-rooms:backfill --absence=<id>`, sélection validée en bloc, exécution réelle refusée sans sélection) (PR #28, `f16e2b7`, merge `69bb755`) + D-161 — salles opératoires disponibles : annonce `ROOM_SLOT_AVAILABLE` des seuls créneaux réellement créés (centre de notifications + push par défaut, e-mail désactivé pour tous et activable dans le profil, jamais d'e-mail de secours, jamais d'annonce par le rattrapage), e-mail D-114 « Libération de salle » retiré, `GET /api/me/available-rooms/{id}`, rubrique de préférences et invitation push adaptées au chirurgien (PR #29, merge `f1ee401`).** Arbre de `f1ee401` identique au commit testé : Unit 1 068, Integration 515, Security 107, Architecture 25, Functional 1 269, 0 échec ; frontend 1 691/1 700 + build OK — les 9 échecs sont des délais dépassés **préexistants et instables** (`CatalogueRequestsPage`, `MissionDetailPage` manager, `GeneratePlanningTab`), reproduits à l'identique sur le code antérieur sans ces changements ; non présentés comme réussis, correctif séparé à prévoir. Prod avant : `v2026.10.20-prod-2` / `4fe4422`, sources identiques (md5, hors clés JWT). Écart : 56 fichiers, aucune migration, aucune dépendance ; seul changement de configuration : routage async de `ReleasedRoomSlotsCreatedMessage`. 3 fichiers supprimés retirés explicitement de `src/` (`RoomReleaseCommunicationService.php` et ses deux tests). Sauvegardes : `all_20261021_181554.sql.gz`, `surgicalhub_pre_deploy_D161_20261021_181554.sql.gz` (base seule), `src_pre_deploy_20261021_181554.tar.gz`, `env_pre_deploy_20261021_181554` ; images `surgicalhub-{php,nginx}:rollback-4fe4422`. Build `--no-cache` (`BUILD_EXIT=0`), dry-run migrations « Already at the latest version », `up -d`, `cache:clear`, restart php et worker puis nginx. Code exécuté par php et worker (782 fichiers) identique à `f1ee401`. Contrôles : front 200, login vide 400, `.env` 404, 3/3 Up sans redémarrage, logs sans erreur (dépréciations INFO seulement), file async 0, `failed` 0, handler `ReleasedRoomSlotsCreatedMessage` enregistré ; bundle public contenant la nouvelle invitation. Compte chirurgien jetable `@surgicalhub.internal` via l'API publique : JWT, `/api/me` SURGEON ; `ROOM_SLOT_AVAILABLE` par défaut in-app oui / push oui / e-mail non ; e-mail activé puis désactivé, conservé après reconnexion ; affilié temporairement à Delta : liste 200 (20 salles), `GET /api/me/available-rooms/22` et `/27` 200 `AVAILABLE` reprise autorisée, salle passée #12 404 `ROOM_SLOT_UNAVAILABLE`, non affilié 404 ; affiliation, préférence et compte supprimés (2 lignes `activity_event` conservées, journal), contrôle des comptes de test actifs vide. Aucune salle ni absence créée pour tester : l'annonce réelle (in-app/push) sera observée à la prochaine absence. Empreinte inchangée avant/après déploiement et après dry-run (postes Deltour #3–#7, absences #66/#67, missions #429/#430 et alertes, 26 créneaux, 12 communications `ROOM_RELEASE`, notifications, préférences). `app:available-rooms:backfill --dry-run --absence=54,57,79,80,81,82,83` : 7 absences, 9 occurrences, 0 existante, 9 seraient créées, 0 remplacé, 0 à valider, aucune Deltour. Rattrapage réel non exécuté (en attente de validation), aucun e-mail Room Release renvoyé. |
+| `v2026.10.20-prod-2` | `4fe4422` | 2026-10-20 | **D-159 — salles libérées : remplacement de poste reconnu (un créneau dont le poste ne produit plus l'occurrence couvre l'unique poste qui le remplace), salles simultanées préservées (D-035), cas ambigus signalés « à valider », reprise et garde D-104 alignées sur le poste qui porte la capacité, création du créneau en DBAL (la violation d'unicité fermait l'EntityManager) (PR #26, `3666728`).** Merge `4fe4422` de `3666728` (arbre identique, testé : Unit 1 066, Integration 513, Security 107, Architecture 25, Functional 1 271, 0 échec ; frontend non modifié ; dry-run sur copie locale du dump prod du jour : 16 salles, 3 remplacements). Prod avant : `v2026.10.20-prod` / `de2b4fb`, code exécuté identique (md5) ; écart = documentation de `v2026.10.20-prod` (PR #25) + D-159. Sauvegardes : `all_20261020_131945.sql.gz`, `surgicalhub_pre_deploy_D159_20261020_131945.sql.gz` (base seule), `src_pre_deploy_20261020_131945.tar.gz`, copie du `.env` ; images `surgicalhub-{php,nginx}:rollback-de2b4fb`. Aucune migration : 89/89, dry-run sur la nouvelle image « Already at the latest version ». Build `--no-cache` (`BUILD_EXIT=0`), `up -d`, `cache:clear`, restart php et worker puis nginx. Sources extraites (1 298 fichiers) et code exécuté par php et worker (783 fichiers) identiques à `4fe4422`. Contrôles : front 200, login vide 400, `.env` 404, 3/3 Up sans redémarrage, logs php et worker sans erreur, nginx sans 5xx, consumer actif ; compte manager jetable `@surgicalhub.internal` (lectures seules) : JWT, `/api/me` MANAGER, `GET /api/planning/available-rooms` 200 ; compte et jeton supprimés, contrôle des comptes de test actifs vide. Missions #429/#430 et leurs alertes inchangées. `app:available-rooms:backfill --dry-run` : 23 absences, 32 occurrences, 13 existantes, 16 seraient créées, 3 remplacements reconnus (Willemart 21/10, 28/10, 04/11 → créneaux #3, #4, #21 du poste #2), 0 à valider ; 0 créneau repris en base. Rattrapage réel non exécuté (postes Deltour #3–#7 soumis à validation métier), aucun e-mail Room Release renvoyé. |
+| `v2026.10.20-prod` | `de2b4fb` | 2026-10-20 | **D-158 — absences et salles libérées (PR #24, `a6e73b6`) : salles libérées, Room Release et gestion des blocs aussi pour les mois non encore générés, missions commencées ou à activité encodée jamais annulées ni remises au pool automatiquement (`autoActionBlockedReason`), aucun créneau ni reprise tant qu'une mission active du chirurgien absent occupe la salle, alertes réancrées sur une absence chevauchante (`relatedAbsenceIds`).** Merge `de2b4fb` de `a6e73b6` (arbre identique, testé : Unit 1 066, Integration 511, Security 107, Architecture 25, Functional 1 264, 0 échec ; Vitest 1 680/1 680). Prod avant : `v2026.10.19-prod` / `dd5adac`, sources identiques au tag (1 295 fichiers) ; écart = documentation `v2026.10.19-prod` (PR #22) + D-158, aucun code D-156 ni D-157. Sauvegardes : `all_20261020_115830.sql.gz`, `surgicalhub_pre_deploy_D158_20261020_115830.sql.gz` (base seule), `src_pre_deploy_20261020_115830.tar.gz`, copie du `.env` de stack ; images précédentes `surgicalhub-{php,nginx}:rollback-dd5adac`. Aucune migration : 89/89 avant et après, dry-run sur la nouvelle image « Already at the latest version ». Build `--no-cache` depuis `/opt/stack/apps/surgicalhub` (`BUILD_EXIT=0`), `up -d`, `cache:clear`, restart php et worker puis nginx. Sources extraites et code exécuté par php et worker identiques à `de2b4fb` (md5, 1 297 et 782 fichiers) ; frontend servi = nouveau build. Contrôles : front 200, login vide 400, `.env` 404, 3/3 Up sans redémarrage, logs php et worker sans erreur, consumer actif. Test réel via l'API publique avec un compte manager jetable `@surgicalhub.internal` (lectures seules, aucun e-mail possible) : login JWT, `/api/me` MANAGER, alertes exposant `autoActionBlockedReason` et `relatedAbsenceIds`, planning chirurgien exposant `status` ; compte et jeton supprimés, contrôle des comptes de test actifs vide. Alertes #59/#60 et missions #429 (IN_PROGRESS)/#430 (SUBMITTED) non modifiées. Rattrapage des salles : `app:available-rooms:backfill --dry-run` uniquement (19 proposées, dont 3 doublons Willemart poste #2 → #35 à exclure) ; rattrapage réel non exécuté, aucun e-mail Room Release renvoyé. |
 | `v2026.10.19-prod` | `dd5adac` | 2026-10-19 | **L1–L6 (D-150 à D-155) — affectations historisées (`MissionAssignment`), refus d'affectation par le chirurgien, incompatibilités chirurgien–instrumentiste (personnes bloquées visibles, aperçu V2 jamais « OK » pour une paire bloquée), corrections manager de l'encodage et des heures avec calcul rendu obsolète, encodage chirurgien avec concurrence optimiste, activité exécutée sans instrumentiste (PR #21).** Merge `dd5adac` de `0fd401f` (arbre identique, testé : 2 946 tests backend, 2 943 réussis, 3 ignorés, 0 échec ; Vitest 1 671/1 671 ; build OK). Prod avant : `v2026.10.13-prod-2` / `574d8c8`, sources et code exécuté identiques à ce commit (seules les clés JWT en plus) ; écart = L1–L6 + documentation, aucun code D-156. Sauvegardes : `all_20261019_203846.sql.gz`, **`surgicalhub_pre_deploy_L1L6_20261019_203846.sql.gz`** (`--databases surgicalhub` seule, gzip vérifié, une seule instruction `USE`), `src_pre_deploy_20261019_203846.tar.gz`, copie du `.env` de stack ; images précédentes `surgicalhub-{php,nginx}:rollback-574d8c8`. Contrôles avant migration : 83/83, 0 mission OPEN avec instrumentiste, reprise attendue 267 ouvertes + 2 fermées, requête des calculs pré-D-153 : 0 ligne. Build `--no-cache` depuis `/opt/stack/apps/surgicalhub` (`BUILD_EXIT=0`), dry-run sur la nouvelle image (6 migrations, aucune instruction destructive), puis migrations **une par une** avec la nouvelle image (`migrations:execute --up`) : `Version20261014090000` 728 ms, `Version20261014120000` 186 ms, `Version20261015090000` 478 ms, `Version20261016090000` 63 ms, `Version20261016100000` 142 ms, `Version20261016110000` 560 ms → 89/89, `schema:validate --skip-sync` OK. Ensuite `up -d`, `cache:clear`, restart php et worker, puis **nginx**. Reprise D-150 : 267 affectations ouvertes + 2 REJECTED, toutes LEGACY, invariants à 0, `app:mission-assignment:resync` « aucune correction nécessaire ». Colonnes ajoutées vides (`version` = 1). Tables de facturation, relevés et `mission_execution` inchangées ; le manager #7 validait et calculait les missions 1072/1073 pendant la fenêtre (activité réelle, sans lien avec les migrations). Code exécuté identique à `dd5adac`, frontend servi = nouveau build. Contrôles : front 200, `/api/health` 200, login vide 400, `.env` 404, 3/3 Up, logs php, worker et nginx sans erreur ni 5xx, file `failed` à 0. **Test réel via l'API publique, `MAIL_SAFE_MODE=on`** (retiré ensuite, `.env` identique à la sauvegarde), 3 comptes jetables `@surgicalhub.internal` : 39/39 — login et `/api/me` des 3 rôles, lectures planning, missions et éligibilité (aucune exclusion L2/L3), recherche paginée des candidats, blocage manager 201, doublon 409, personne bloquée visible `blocked=true`, liste du chirurgien, 403 côté instrumentiste (confidentialité), levée 200 puis 409, refus d'affectation et déclaration sans instrumentiste refusés (403) à un chirurgien étranger, suivi et historique d'encodage, facturation firmes et calculs. Aucune alerte de planning ni notification créée ; comptes, jetons, incompatibilités et audits de test supprimés, contrôle des comptes de test actifs vide. Limite assumée : le refus d'une affectation réelle n'a pas été exécuté en production (seulement le chemin d'autorisation). DSN Sentry inchangé (rotation non autorisée). |
 | `v2026.10.13-prod-2` | `574d8c8` | 2026-10-13 | **D-149 — les notifications « tous les managers » ciblent les managers opérationnels (`findOperationalManagers()` : actifs, hors `@surgicalhub.internal`, une fois par `User`) (PR #19).** Merge `574d8c8` de `b8483c2`, arbre identique à la branche testée (c5808c7 rebasé sur `3318893`, seul conflit l'ajout D-148/D-149 dans `decisions.md`). Tests : 1 021 unitaires et 10 fichiers fonctionnels ou d'intégration verts. Prod avant : `v2026.10.13-prod` / `c0d56ee`, 1 285 fichiers identiques à ce commit (seules les clés JWT en plus). Aucune migration : dry-run « Already at the latest version », 83/83. Sauvegardes : `all_20261013_163755.sql.gz` (gzip vérifié) et `src_pre_deploy_20261013_163757.tar.gz` ; images précédentes `surgicalhub-{php,nginx}:rollback-c0d56ee`. Build depuis `/opt/stack/apps/surgicalhub` (`BUILD_EXIT=0`), `up -d`, `cache:clear`, restart php et worker, puis **nginx** : aucun 502 observé. Code exécuté identique à `574d8c8` (779 fichiers backend). Contrôles : front 200, login vide 400, `.env` 404, `/api/me` anonyme 401, login JWT réel d'un manager jetable `@surgicalhub.internal` puis `/api/me` MANAGER, 3/3 Up, logs php, worker et nginx sans erreur. Files `async` et `failed` à 0. **Sélection réelle en prod** avec le compte jetable #160 présent : `findManagersAndAdmins(true)` = 1, 160, 7, 34 ; `findOperationalManagers()` = 1, 7, 34. Aucun flux d'envoi déclenché : 0 `notification_event` et 0 `outbound_notification` depuis la bascule. Compte jetable supprimé, contrôle des comptes de test actifs vide. Le même jour, hors déploiement et sur accord : désactivation des comptes de test #31 #32 #33 #72 #73 #74 #81 et suppression de la mission de test #495 (voir l'historique des incidents). |
 | `v2026.10.13-prod` | `c0d56ee` | 2026-10-13 | **D-148 — renvoi en correction (SUBMITTED) et réouverture (VALIDATED) de l'encodage depuis « Suivi des encodages », motif obligatoire, notification `ENCODING_CORRECTION_REQUESTED` à l'instrumentiste (PR #17).** Merge `c0d56ee` de `29972b6` (arbre identique, testé : 2 845 tests backend 0 échec en UTC ; frontend D-148 125/125, suite complète 1 566/1 572 — 6 dépassements de délai sous charge, verts isolément, 2 identiques sur `origin/main` ; TypeScript + build OK). Prod avant : `v2026.10.12-prod-2` / `e332a75` (1 650 fichiers identiques à `origin/main` `6464dca`, docs seules en plus). Aucune migration (dry-run « Already at the latest version », 83/83). Sauvegardes : `all_20261013_111422.sql.gz` (gzip et contenu vérifiés), `src_pre_deploy_20261013_111422.tar.gz` ; images précédentes `surgicalhub-{php,nginx}:rollback-e332a75`. **Incident maîtrisé** : un premier build lancé par erreur dans `src/` (compose de développement) n'a produit que des images `src-*` inutilisées, supprimées ; build refait depuis `/opt/stack/apps/surgicalhub` (`BUILD_EXIT=0`). Après `up -d` puis `restart php worker`, nginx gardait l'ancienne IP de php : **API en 502 ~3–4 min (11:23→11:27 UTC)**, rétablie par `docker compose restart nginx` — à l'avenir, redémarrer nginx après php. Code exécuté identique à `c0d56ee` (753 fichiers backend) ; bundle contrôlé. Santé 200 / 400 / 404, 3/3 Up. Contrôles API (comptes jetables `@surgicalhub.internal`, 47/47) : suivi manager/admin 200, instrumentiste/chirurgien 403, anonyme 401 ; #435 #451 #1224 `reject` proposé, #434 #1225 `reopen` proposé (manager et admin), #257 ASSIGNED aucun des deux ; sans motif 422 ; instrumentiste/chirurgien 403, anonyme 401 ; préférence `ENCODING_CORRECTION_REQUESTED` (in-app oui, e-mail/push non) ; encodage et heures lisibles ; 08h00 → 11h30 = 210 min ; missions VALIDATED en lecture seule pour leur instrumentiste (`uow_changes=0`). Aucune mission CLOSED ni calcul LOCKED en prod : ces refus restent couverts par les tests. Cron relances 11:30 exit=0 (due=3, sent=0, failed=0) ; logs php/worker/nginx sans erreur depuis la reprise. **Missions 434, 435, 451, 1224, 1225 strictement inchangées** (instantané avant/après identique), 0 notification de correction, 0 renvoi/réouverture. Comptes jetables supprimés (0 résidu). |
@@ -162,94 +169,107 @@ déployer a été validée.
 > [`docs/deployment-versioning.md`](deployment-versioning.md) §3 — on
 > déploie `HEAD` en entier, ou on s'arrête et on demande validation.
 
-### 1. Préparer l'archive en local — toujours depuis `git archive`
+### 1. Préparer et vérifier l'archive en local (D-163)
+
+Toujours depuis un clone propre et à jour, et toujours avec le **SHA complet** du commit
+validé : jamais `HEAD`, jamais un nom de branche, jamais un nom d'archive générique.
 
 ```bash
-# Depuis la racine du repo, sur le commit HEAD exact qui sera déployé
-git status   # doit être propre pour les chemins déployés
-git log --oneline -1
-
-git archive --format=tar.gz -o surgicalhub_deploy.tar.gz HEAD -- backend frontend docker-compose.yml
-scp surgicalhub_deploy.tar.gz deploy@187.124.55.15:/tmp/
+git fetch origin
+SHA=$(git rev-parse origin/main)          # le commit validé dans le rapport §2
+deploy/deploy.sh paths   "$SHA"           # périmètre : compose versionné, Dockerfiles, .dockerignore, sources COPY
+deploy/deploy.sh prepare "$SHA"           # .deploy-dist/surgicalhub-<SHA>.tar.gz + .sha256
 ```
 
-**Jamais `tar` sur le répertoire de travail.** `git archive` ne contient
-que le contenu exactement committé sur `HEAD` — aucune modification non
-commitée, aucun chantier en cours (ex: `planning-v2/*` non finalisé) ne
-peut s'y glisser. C'est ce qui garantit que le tag créé en fin de
-déploiement (§7 de `deployment-versioning.md`) correspond exactement à ce
-qui tourne réellement.
+`prepare` contrôle ce qui suit et **s'arrête à la moindre anomalie** :
 
-### 2. Sauvegardes (toujours avant d'écraser quoi que ce soit)
+| Contrôle | Règle |
+|---|---|
+| Commit autorisé | SHA complet, commit fusionné sur `origin/main` |
+| Contenu | `git archive` du commit, sans aucun fichier du disque |
+| Périmètre | Dérivé de `deploy/production/docker-compose.yml` et des instructions `COPY` de ses Dockerfiles ; `docker/` est inclus |
+| Version | `backend/REVISION` et le bundle frontend portent le SHA |
+| Fichiers interdits | Aucun `.env.local`, `.env.prod`, `*.pem`, `*.key`, `var/`, `vendor/` ni `node_modules/` |
+| Empreinte | SHA-256 enregistrée |
+
+### 2. Transférer, vérifier et préparer la release sur le serveur
 
 ```bash
-ssh deploy@187.124.55.15
-
-# Dump DB
-/home/deploy/scripts/backup_mysql.sh
-
-# Code source actuellement déployé (pour rollback — voir §"Rollback" plus bas)
-tar czf /home/deploy/backups/code/src_pre_deploy_$(date +%Y%m%d_%H%M%S).tar.gz \
-  -C /opt/stack/apps/surgicalhub src
+deploy/deploy.sh upload "$SHA"   # scp → incoming/<archive>.part, SHA-256 vérifiée sur le serveur, puis renommée
+deploy/deploy.sh stage  "$SHA"   # extraction dans releases/<SHA>/ (jamais dans la release active)
 ```
 
-Noter les deux chemins produits — ils vont dans le rapport final.
+**L'archive n'est jamais extraite si l'un de ces contrôles échoue :**
+- l'empreinte calculée sur le serveur diffère de celle de l'archive locale (fichier altéré,
+  transfert incomplet, ancienne archive) ;
+- `backend/REVISION` n'est pas le SHA autorisé ;
+- l'archive contient un fichier interdit.
 
-### 3. Extraire sur le serveur
+L'extraction se fait dans un répertoire temporaire, déplacé dans `releases/<SHA>/` seulement
+une fois complet. `stage` affiche les fichiers retirés par rapport à la release active. Ils ne
+sont jamais supprimés : la nouvelle release est un arbre neuf, l'ancienne reste intacte pour le
+rollback.
+
+Hors de `releases/`, rien n'est écrit : ni `.env`, ni les volumes, ni `src/`.
+
+### 3. Construire les images (le service n'est pas touché)
 
 ```bash
-tar xzf /tmp/surgicalhub_deploy.tar.gz -C /opt/stack/apps/surgicalhub/src/
-rm /tmp/surgicalhub_deploy.tar.gz
+deploy/deploy.sh build "$SHA"        # ~5-10 min ; images surgicalhub-{php,nginx}:<SHA>
+deploy/deploy.sh migrations "$SHA"   # dry-run des migrations sur la nouvelle image (cache jetable)
 ```
 
-### 4. Vérifier les migrations avant de les exécuter
+`build` vérifie que l'image php contient `REVISION` = SHA et que le bundle nginx porte le SHA.
+En cas d'échec, rien n'est activé : les conteneurs et les images `:local` restent ceux en
+service.
+
+Relire le SQL du dry-run (`deployment-versioning.md` §4.2) avant toute activation.
+
+### 4. Activer
 
 ```bash
-docker exec surgicalhub-php php bin/console doctrine:migrations:status --env=prod
+deploy/deploy.sh activate "$SHA"
 ```
 
-Puis, une fois les nouvelles images buildées (étape 5) :
+Étapes, dans l'ordre :
+1. **Sauvegardes** : `backup_mysql.sh`, puis dans `deploy-backups/<horodatage>/` le compose en
+   service, une copie de `.env` (chmod 600) et le volume `surgicalhub_var` (registre des
+   versions D-162, clés JWT).
+2. **Bascule** : `current` → `releases/<SHA>` (remplacement atomique), installation du compose
+   versionné de cette release, et retag `surgicalhub-*:<SHA>` → `:local`.
+3. **Redémarrage** : `up -d`, `cache:clear`, redémarrage de php et du worker, **puis** de nginx.
+4. **Contrôle** : php et le worker exécutent `REVISION` = SHA.
+
+`activate` ne déclare **jamais** la version officielle (D-162) : elle reste
+`PENDING_VALIDATION` jusqu'au §7.1 de `deployment-versioning.md`.
+
+### 5. Migrations (seulement s'il y en a, après relecture du dry-run)
 
 ```bash
-docker exec surgicalhub-php php bin/console doctrine:migrations:migrate --dry-run --env=prod
+deploy/deploy.sh migrate "$SHA"   # migrate réel, cache:clear, redémarrages, status
 ```
 
-Relire le SQL produit (voir `docs/deployment-versioning.md` §4.2 pour les
-critères de relecture) **avant** d'exécuter la vraie migration à l'étape 6.
-
-### 5. Rebuild des images Docker
+### 6. Après les tests de santé : version officielle
 
 ```bash
-cd /opt/stack/apps/surgicalhub
-
-# En tâche de fond (le build prend ~5-10 min)
-nohup bash -c 'docker compose build --no-cache > /tmp/build.log 2>&1; echo "BUILD_EXIT=$?" >> /tmp/build.log' &
-until grep -q 'BUILD_EXIT=' /tmp/build.log; do sleep 15; done
-grep 'BUILD_EXIT=' /tmp/build.log
+git tag -a vYYYY.MM.DD-prod "$SHA" -m "…" && git push origin vYYYY.MM.DD-prod
+deploy/deploy.sh mark "$SHA" vYYYY.MM.DD-prod   # refuse si le tag n'est pas sur origin ou ne pointe pas sur SHA
 ```
 
-### 6. Redémarrer et migrer
+### Première utilisation (bascule depuis `src/`, une seule fois)
 
-```bash
-cd /opt/stack/apps/surgicalhub
+Avant D-163, la production était construite depuis `src/`, une copie manuelle. Ce répertoire
+contient des fichiers supprimés de Git, des visuels et une documentation datée du 2026-08-02,
+et le compose n'y était pas versionné.
 
-docker compose up -d
+La première activation (faite le 2026-10-23, `v2026.10.23-prod`) a gardé tout l'existant :
+- `src/` reste intact, et il est en plus archivé (`deploy-backups/<horodatage>/src.tar.gz`) ;
+- l'ancien compose est sauvegardé dans `deploy-backups/` ;
+- les images en service sont retaguées `surgicalhub-*:rollback-legacy`.
 
-# Migrations Doctrine (réel, après relecture du dry-run à l'étape 4)
-docker exec surgicalhub-php php bin/console doctrine:migrations:migrate \
-  --no-interaction --env=prod
-
-# Cache + restart (toujours après une migration ou un changement de code)
-docker exec surgicalhub-php php bin/console cache:clear --env=prod
-docker restart surgicalhub-php
-
-# Si des handlers Messenger ont changé, le worker doit aussi relire le nouveau code
-docker restart surgicalhub-worker
-```
-
-> **Note** : après `cache:clear`, un restart du container PHP est nécessaire
-> pour que PHP-FPM prenne en compte le nouveau cache (le cache est dans le
-> volume `surgicalhub_var`, non dans l'image).
+Pour revenir à cet état : `deploy/deploy.sh rollback legacy`. Ce retour vide aussi le cache
+Symfony, qui est sur le volume `surgicalhub_var` et a été compilé par la release quittée. `src/` ne sera retiré qu'après
+plusieurs déploiements réussis, sur décision explicite.
 
 ### 7. Vérification
 
@@ -266,7 +286,21 @@ docker exec surgicalhub-php php bin/console debug:router --env=prod | grep admin
 
 # Migrations à jour — doit dire "Already at latest version"
 docker exec surgicalhub-php php bin/console doctrine:migrations:status --env=prod
+
+# D-162/D-163 — release active et commit exécuté (= SHA déployé), PENDING_VALIDATION avant le tag
+readlink /opt/stack/apps/surgicalhub/current
+docker exec surgicalhub-php php bin/console app:release:show
 ```
+
+Après le tag Git (`deployment-versioning.md` §7.1), depuis le poste de déploiement :
+
+```bash
+deploy/deploy.sh mark "$SHA" vYYYY.MM.DD-prod   # OFFICIAL, tag et commit identiques au tag Git
+```
+
+Le registre des versions officielles se trouve dans `var/release/releases.json`, sur le volume
+`surgicalhub_var`. Il ne contient qu'un tag, un SHA et une date par ligne, et doit être conservé
+(il n'est jamais modifié à la main). La version affichée en bas de « Mon profil » en est le reflet.
 
 Tests santé complets (HTTP public, login, `/api/me`, test ciblé fonction
 modifiée) : voir [`docs/deployment-versioning.md`](deployment-versioning.md) §5.
@@ -459,7 +493,7 @@ cd /opt/stack/apps/surgicalhub && docker compose build php
 | Volume | Contenu | Backup |
 |---|---|---|
 | `surgicalhub_uploads` | Fichiers uploadés (PDFs, docs) | ✓ quotidien |
-| `surgicalhub_var` | Cache Symfony, logs, clés JWT | non (regénérable) |
+| `surgicalhub_var` | Cache Symfony, logs, clés JWT, registre des versions (D-162) | non jusqu'ici — **pas regénérable** : nouvelles clés JWT = sessions invalidées, registre perdu. Sauvegarde chiffrée quotidienne prévue par D-164 (non installée) ; avant chaque activation D-163 : `deploy-backups/` |
 
 Les uploads sont sauvegardés dans `/home/deploy/backups/uploads/` et
 synchronisés sur Google Drive. Voir [`docs/backup-and-restore.md`](backup-and-restore.md).
@@ -817,7 +851,28 @@ rollback SurgicalHub** : jamais de `zcat all_*.sql.gz | docker exec -i mysql
 mysql …`, qui rejoue toutes les bases du dump nocturne (voir
 [`backup-and-restore.md`](backup-and-restore.md) §Restaurer la base MySQL).
 
-### A. Retour du code, schéma conservé (par défaut)
+### A0. Rollback d'une release D-163 (code, configuration et images)
+
+Depuis D-163, chaque release est conservée sous `releases/<SHA>/`, avec son compose versionné
+et ses images `surgicalhub-*:<SHA>` :
+
+```bash
+deploy/deploy.sh status                     # release active et releases disponibles
+deploy/deploy.sh rollback <SHA précédent>   # current, compose et images de cette release, redémarrages
+deploy/deploy.sh rollback legacy            # retour à la configuration d'avant D-163 (src/, rollback-legacy)
+```
+
+Le rollback restaure ensemble le code backend et frontend, les Dockerfiles, la configuration
+nginx et le compose de la release visée.
+
+Il ne touche jamais à la base, à `.env`, aux volumes ni au registre des versions (D-162).
+`/api/version` affiche le commit restauré : son tag s'il avait été enregistré, sinon
+« en cours de validation ». Une version abandonnée n'est jamais affichée.
+
+Si le schéma doit aussi revenir en arrière, appliquer B ou C ci-dessous. Après tout rollback :
+`deploy/deploy.sh status` et les contrôles de santé.
+
+### A. Retour du code, schéma conservé (avant D-163 : images `rollback-*` et `src/`)
 
 Les migrations additives (colonnes nullables ou à valeur par défaut,
 nouvelles tables) laissent l'ancien code fonctionner : la base reste telle
@@ -848,6 +903,9 @@ docker compose restart nginx
 ```
 
 **Aucune** commande `doctrine:migrations:*`. Contrôles de santé habituels.
+D-162 : `docker exec surgicalhub-php php bin/console app:release:show` doit afficher le commit
+restauré, avec son tag s'il avait été enregistré. Le registre n'est jamais modifié lors d'un
+rollback.
 Avant de redéployer le nouveau code, relire l'ADR du lot : les données écrites
 par l'ancien code sur le nouveau schéma peuvent devoir être resynchronisées.
 
@@ -981,6 +1039,75 @@ crontab -l | grep send_scheduled_absence_communications
 crontab -l | grep -v 'send_scheduled_absence_communications.sh' | crontab -
 crontab -l   # confirmer l'absence de la ligne, les autres jobs intacts
 ```
+
+---
+
+## Opérations de données
+
+_Opérations manuelles sur les données de production, réalisées sur accord explicite. Ne jamais
+réécrire une entrée existante. Chaque entrée indique la date, la version déployée, la commande,
+les sauvegardes, le résultat vérifié et les données préservées._
+
+### 2026-10-21 — Rattrapage ciblé des salles libérées (D-160) : 9 salles
+
+**Version déployée** : `v2026.10.21-prod` (commit `f1ee401`).
+
+**Contexte** : avant le correctif D-158, sept absences n'avaient jamais produit leurs salles
+libérées. Le rattrapage global aurait aussi créé des salles pour les absences #66 et #67 de
+Dr Deltour, dont les postes #3 à #7 attendent une validation métier (D-159). L'option
+`--absence` (D-160) limite donc la lecture et l'écriture aux seules absences sélectionnées.
+
+**Vérification préalable** : la commande
+`app:available-rooms:backfill --dry-run --absence=54,57,79,80,81,82,83` a été relancée juste
+avant l'écriture. Résultat : 7 absences, 9 occurrences, 0 salle existante, 9 à créer,
+0 remplacée, 0 à valider, aucune ligne Deltour. Le résultat était identique au dry-run validé.
+
+**Sauvegarde préalable** : `/home/deploy/backups/mysql/surgicalhub_pre_backfill_D160_20261021_183436.sql.gz`
+(base `surgicalhub` seule).
+
+**Action réalisée** (2026-10-21 18:34 UTC) :
+`docker exec surgicalhub-php php bin/console app:available-rooms:backfill --absence=54,57,79,80,81,82,83 --env=prod`.
+Résultat : 7 absences, 9 occurrences, 0 salle existante, 9 créées, 0 remplacée, 0 à valider.
+
+| Salle | Absence | Chirurgien | Site | Date | Horaire | Poste | Audit |
+|---|---|---|---|---|---|---|---|
+| #28 | 54 | Dr Samy Ftaita | CHIREC - Hôpital Delta | 2026-12-03 | 13:00–18:00 (APRES_MIDI) | #12 | #1027 |
+| #29 | 57 | Dr Jerome De Muylder | CHIREC - Hôpital Delta | 2026-12-31 | 07:45–13:00 (MATIN) | #13 | #1028 |
+| #30 | 57 | Dr Jerome De Muylder | CHIREC - Hôpital Delta | 2026-12-28 | 07:45–18:00 (JOURNEE) | #25 | #1029 |
+| #31 | 57 | Dr Jerome De Muylder | Clinique de la Basilique - CHIREC | 2027-01-01 | 13:00–18:00 (APRES_MIDI) | #23 | #1030 |
+| #32 | 79 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2026-12-21 | 07:45–18:00 (JOURNEE) | #1 | #1031 |
+| #33 | 80 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2026-12-23 | 07:45–13:00 (MATIN) | #35 | #1032 |
+| #34 | 81 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2026-12-28 | 07:45–18:00 (JOURNEE) | #1 | #1033 |
+| #35 | 82 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2026-12-30 | 07:45–13:00 (MATIN) | #35 | #1034 |
+| #36 | 83 | Dr Etienne Willemart | CHIREC - Hôpital Delta | 2027-01-18 | 07:45–18:00 (JOURNEE) | #1 | #1035 |
+
+Chaque audit (`ROOM_SLOT_MADE_AVAILABLE`) porte l'identifiant de sa salle et de son absence.
+
+**Contrôles après exécution** :
+- **Statut** : les 9 salles sont `AVAILABLE` et aucune n'est reprise.
+- **Vérification par l'API** : vérifiées via l'API publique avec un compte chirurgien jetable
+  `@surgicalhub.internal` affilié à Delta et à la Basilique. Les 9 salles figurent dans
+  `GET /api/me/available-rooms`, et `GET /api/me/available-rooms/{id}` renvoie 200, statut
+  `AVAILABLE`, reprise autorisée. Aucune reprise n'a été effectuée. Le compte, ses affiliations
+  et son jeton ont été supprimés, et le contrôle des comptes de test actifs est vide.
+- **Doublons** : aucun doublon `(site, poste, date)` dans toute la table, et aucune salle pour
+  une autre absence.
+- **Communications** : aucune communication rétroactive. Aucun push, aucun e-mail, aucun élément
+  dans le centre de notifications, aucune communication `ROOM_RELEASE` : le rattrapage n'annonce
+  jamais (D-161). La file Messenger est restée vide.
+- **Deuxième exécution** : la même commande, relancée, compte 9 salles déjà existantes et
+  0 créée. Elle n'ajoute ni salle, ni audit, ni événement : l'empreinte est identique avant et
+  après.
+- **Données préservées** : les postes #3 à #7 de Dr Deltour, ses absences #66 et #67, ainsi
+  que les missions #429 et #430 et leurs alertes, ont une empreinte inchangée avant et après le
+  déploiement, le dry-run et le rattrapage.
+
+**Autre écriture pendant l'opération** : un appareil push a été enregistré par un
+utilisateur réel (`PUSH_SUBSCRIPTION_CREATED`). Cette écriture n'a aucun lien avec le
+rattrapage.
+
+**Pas de nouveau tag** : opération de données sans changement de code. La production reste
+`v2026.10.21-prod`.
 
 ---
 

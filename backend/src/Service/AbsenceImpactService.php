@@ -4,10 +4,12 @@ namespace App\Service;
 
 use App\Entity\Absence;
 use App\Entity\Mission;
+use App\Entity\PlanningAlert;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningAlertType;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 
 /**
  * Detects the impact of an absence (surgeon or instrumentist) on already-generated
@@ -139,6 +141,13 @@ class AbsenceImpactService
         $resolved       = [];
         foreach ($existingAlerts as $alert) {
             if (!in_array($alert->getMission()->getId(), $overlappingIds, true)) {
+                // D-158 — same rule as onAbsenceDeleted(): another absence of the same person
+                // still covering the mission keeps the problem alive — re-pointed, not resolved.
+                $replacement = $this->findOtherOverlappingAbsence($user, $alert->getMission(), $absence);
+                if ($replacement !== null) {
+                    $alert->setAbsence($replacement);
+                    continue;
+                }
                 $alert->resolve(null, 'Absence modifiée : ne chevauche plus cette mission.');
                 $resolved[] = $alert;
             }
@@ -151,6 +160,8 @@ class AbsenceImpactService
             $result = $this->alertService->createIfNotDuplicate($mission, $type, $absence, $this->snapshot($mission, $absence, $type));
             if ($result['created']) {
                 $created[] = $result['alert'];
+            } else {
+                self::recordRelatedAbsence($result['alert'], $absence);
             }
         }
 
@@ -213,6 +224,29 @@ class AbsenceImpactService
             ->getResult();
     }
 
+    /**
+     * D-158 — one active alert per (mission, type) whatever the number of overlapping absences
+     * (PlanningAlertService::findActiveAlert()); every other absence covering the same problem
+     * is kept for traceability in the snapshot, never as a second alert.
+     */
+    private static function recordRelatedAbsence(PlanningAlert $alert, Absence $absence): void
+    {
+        $absenceId = $absence->getId();
+        if ($absenceId === null || $alert->getAbsence()?->getId() === $absenceId) {
+            return;
+        }
+
+        $snapshot = $alert->getSnapshotJson();
+        $related  = array_map('intval', $snapshot['relatedAbsenceIds'] ?? []);
+        if (in_array($absenceId, $related, true)) {
+            return;
+        }
+
+        $related[] = $absenceId;
+        $snapshot['relatedAbsenceIds'] = $related;
+        $alert->setSnapshotJson($snapshot);
+    }
+
     private function snapshot(Mission $mission, Absence $absence, PlanningAlertType $type): array
     {
         return [
@@ -228,6 +262,10 @@ class AbsenceImpactService
             'absenceDateStart' => $absence->getDateStart()->format('Y-m-d'),
             'absenceDateEnd'   => $absence->getDateEnd()->format('Y-m-d'),
             'absenceReason'    => $absence->getReason(),
+            // D-158 — why a published mission was left for the manager instead of being
+            // cancelled (surgeon absent) or put back in the pool (instrumentist absent)
+            // automatically: MISSION_STARTED | ACTIVITY_ENCODED, null otherwise.
+            'autoActionBlockedReason' => AbsenceMissionProtectionPolicy::blockedReason($mission, Clock::get()->now()),
         ];
     }
 }

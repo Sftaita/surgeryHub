@@ -32,6 +32,10 @@ export function HelpDrawer({ topicId, open, onClose }: HelpDrawerProps) {
       anchor="right"
       open={open}
       onClose={onClose}
+      // D-166 — l'aide s'ouvre aussi depuis une fenêtre modale (bouton « ? » des sheets) :
+      // même niveau que les modales, l'ordre d'ouverture la place au-dessus de la fenêtre
+      // qui l'a ouverte (zIndex.drawer < zIndex.modal la cachait derrière).
+      sx={{ zIndex: (theme) => theme.zIndex.modal }}
       PaperProps={{ sx: { width: { xs: "100%", sm: 420 }, maxWidth: "100vw" } }}
     >
       {!topic ? (

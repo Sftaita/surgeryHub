@@ -14304,3 +14304,741 @@ suspension, rejeu, JWT antérieurs sans `sid`), login Google (audience, émetteu
 e-mail non vérifié, compte inconnu non créé, Google injoignable) et
 `GoogleIdTokenVerifierTest` ; frontend `apiClientSession.test.ts`,
 `AuthSessionPersistence.test.tsx`, `LoginPageSession.test.tsx`.
+
+---
+
+## D-158 — Absences : salles libérées quel que soit le mois, missions commencées protégées, une alerte par problème (2026-10-20)
+
+> Numéros D-156 et D-157 réservés par les branches `feat/prestations-regroupees` et `feat/auth-session-persistence` (non fusionnées).
+
+### Diagnostic
+
+- **Parcours chirurgien = parcours manager.** `SelfAbsenceController` (`/api/absences/mine`) et
+  `AbsenceController` appellent la même séquence `AbsenceImpactCoordinator` (H4, D-130) :
+  `AbsenceMissionReactionService` (annulation / retrait D-062), `AbsenceImpactService`
+  (alertes), neutralisation des occurrences (D-103), réconciliation (D-104), récap (D-105),
+  communications et salles libérées (D-114). Aucun contournement, aucune logique à dupliquer.
+- **Salles non libérées pour un mois non généré (bug principal).** Le coordinateur neutralise
+  d'abord les occurrences sans Mission (`PlanningOccurrenceException` `CANCELLED` /
+  `SURGEON_ABSENCE` / `sourceAbsence`), puis appelle Room Release, gestion du bloc et salles
+  libérées, qui passent toutes par `SurgeonAbsenceBlockOccurrenceResolver` — lequel excluait
+  **toute** occurrence portant une exception, y compris celle que l'absence venait de poser.
+  Résultat : pour un mois dont le planning n'était pas encore généré, aucune salle libérée,
+  aucun email Room Release, aucune information gestion du bloc. Un mois déjà généré (missions
+  `DRAFT` ou publiées) n'avait pas d'exception, d'où la différence. Cas prouvé en production
+  (Dr Willemart, Delta) : congé 02→04/11 déclaré le 09/09 alors que novembre existait en
+  brouillon (identifiants de missions 628→1038 créés puis supprimés entre le 07 et le 13/09) →
+  2 salles + email ; jours 21, 23, 28, 30/12 et 18/01 déclarés le 11/09, décembre non généré →
+  5 exceptions, 0 salle, 0 email. Les tests Lot D ne configuraient jamais de
+  `ShiftPeriodConfig`, sans lequel la neutralisation n'a pas lieu : le défaut n'y apparaissait
+  pas.
+- **Calendrier manager et rafraîchissement.** `GET /api/surgeons/{id}/planning` renvoyait les
+  missions sans leur statut (une mission annulée s'affichait comme occupée) et les écrans
+  d'absence ne rafraîchissaient pas les vues planning déjà chargées.
+- **Annulation / retrait à l'aveugle.** `AbsenceMissionReactionService` annulait toute mission
+  `OPEN|ASSIGNED` du chirurgien absent et remettait au pool toute mission `ASSIGNED` de
+  l'instrumentiste absente, **même déjà commencée** (absence rétroactive) ou encodée ; et
+  `ReleasedOperatingRoomSlotService` pouvait offrir la salle du jour alors que la mission
+  protégée l'occupait encore.
+- **Alertes.** La déduplication était déjà par (mission, type, état actif) — aucun doublon en
+  production. Mais modifier une absence résolvait l'alerte même quand une autre absence couvrait
+  encore la mission, et seule la première absence était référencée.
+
+### Décision
+
+1. **Resolver** — la neutralisation posée par l'absence elle-même (`CANCELLED`,
+   `SURGEON_ABSENCE`, `sourceAbsence` = cette absence) ne masque plus l'occurrence
+   (`resolveForWindow(..., $absence)`) ; toute autre exception (manager, autre absence déjà
+   annoncée) reste exclue. Les quatre appelants (Room Release, gestion du bloc, salles
+   libérées, rattrapage) passent l'absence. Aucun nouveau moteur, aucune modification de
+   `SurgeonSchedulePost`. Une reprise avant génération crée déjà sa Mission (D-124) ; le
+   générateur saute l'occurrence neutralisée (`SKIPPED`) et D-104 ne la restaure jamais tant
+   qu'elle est reprise.
+2. **`AbsenceMissionProtectionPolicy`** — une seule règle pour les deux rôles : une mission
+   n'est annulée (chirurgien, `OPEN|ASSIGNED`) ou remise au pool (instrumentiste, `ASSIGNED`)
+   automatiquement que si elle est **encore à venir** (`startAt > now`, `Clock`) et **sans
+   activité encodée** (interventions, matériel, heures réelles, activité déclarée sans
+   instrumentiste). `IN_PROGRESS`, `SUBMITTED`, `VALIDATED`, `CLOSED` restent hors périmètre
+   comme avant. Lue par `AbsenceImpactResolver`, `AbsenceMissionReactionService` (re-vérifiée
+   sous verrou) et `AbsenceImpactService`.
+3. **Mission protégée = signalement, jamais de mutation.** Elle garde statut, instrumentiste,
+   encodage et données financières ; l'alerte d'absence porte `autoActionBlockedReason`
+   (`MISSION_STARTED` | `ACTIVITY_ENCODED`), formulée par `AlertCard` ; aucune notification
+   d'annulation ou de remise au pool. La salle n'est ni offerte ni reprenable tant qu'une
+   Mission non `CANCELLED`/`DRAFT` du chirurgien absent l'occupe
+   (`ReleasedRoomSlotTakeoverService::findActiveOccurrenceMission()`, lue à la création du
+   créneau et sous verrou à la reprise).
+4. **Une alerte par problème.** Une absence supplémentaire couvrant le même problème est
+   ajoutée à `relatedAbsenceIds` ; une absence modifiée qui ne couvre plus la mission
+   ré-attribue l'alerte à une absence encore couvrante (même règle que la suppression, D-050),
+   sinon la résout.
+5. **Inchangé** : mission annulée → `CANCELLED` (jamais `OPEN`), instrumentiste libérée,
+   audit avec `causedByAbsenceId`, affectation clôturée (D-150), créneaux jamais rétractés,
+   unicité de la reprise (verrou + contrainte unique D-124).
+6. **Écrans fidèles au serveur.** `GET /api/surgeons/{id}/planning` renvoie `status` (mission
+   annulée affichée « Annulée — … ») ; `invalidateAfterAbsenceChange()` recharge missions,
+   plannings (manager, chirurgien, instrumentiste), mode Modification, couverture, tiroir
+   chirurgien, salles libérées et alertes après toute modification d'absence.
+
+### Données de production (constat, non régularisé)
+
+- 9 absences chirurgiens futures (#54, #57, #66, #67, #79, #80, #81, #82, #83) : 16 occurrences
+  neutralisées sans salle libérée ni email Room Release. Après déploiement :
+  `app:available-rooms:backfill --dry-run` puis exécution (créneaux) et, si souhaité,
+  rattrapage des emails par l'outil existant — sur décision explicite.
+- Absence #65 (rétroactive) : missions #429 (`IN_PROGRESS`, rien d'encodé) et #430
+  (`SUBMITTED`, 2 interventions) conservées, alertes #59/#60 ouvertes — vérification manager.
+
+Tests : `AbsenceRoomReleaseFunctionalTest` (régression Willemart mois brouillon / mois non
+généré et navigation, reprise unique avant génération + génération + suppression d'absence,
+mission commencée, absence instrumentiste, absences chevauchantes),
+`SurgeonAbsenceAfterPublicationFunctionalTest`, `AbsenceMissionProtectionPolicyTest`, horloge
+figée dans les tests d'absence existants dont les fixtures sont datées ;
+`SurgeonPlanningSection.events.test.ts`, `AlertCard.test.tsx`, `AbsencesPage.test.tsx`,
+`SelfAbsencesPage.test.tsx`.
+
+---
+
+## D-159 — Salles libérées : remplacement de poste reconnu, salles simultanées préservées (2026-10-20)
+
+### Contexte
+
+Dry-run du rattrapage après le déploiement de D-158 (`v2026.10.20-prod`) : 19 salles proposées
+au lieu de 16. Les trois en trop (Dr Willemart, mercredis 21/10, 28/10 et 04/11, MATIN, poste
+#35) existaient déjà, disponibles, sur le poste #2 : le manager a terminé le poste #2 au
+2026-09-30 (désactivé) et créé le poste #35 dès le 2026-10-01 pour le même créneau hebdomadaire
+(nouvelle instrumentiste). Les créneaux déjà publiés ne sont jamais retirés (non-rétractation),
+et l'unicité `(site, postId, date)` ne voit pas qu'un autre poste porte la même capacité : le
+rattrapage (et le temps réel, à la moindre modification des absences #42/#73) aurait ouvert une
+seconde salle pour une seule capacité opératoire.
+
+### Ce que le modèle permet de savoir
+
+- Aucune salle physique : `SurgeonSchedulePost` n'a ni salle ni lien de remplacement, et
+  `SurgeonSchedulePostService::update()` modifie un poste **sur place** (période, instrumentiste,
+  dates) sans historique.
+- L'instrumentiste ne distingue pas deux salles de façon fiable : il change lors d'un
+  remplacement (#2 Sophie Collette → #35 Salve Decorte) et le même instrumentiste figure sur trois
+  postes simultanés de Dr Deltour.
+- Seul fait fiable : un poste **produit-il encore** l'occurrence (actif, BLOCK, même chirurgien,
+  même site, même période, dates de validité et récurrence) ? Deux postes qui la produisent le
+  même jour sont deux capacités (D-035) ; un créneau dont le poste ne la produit plus est
+  « orphelin ».
+
+### Décision
+
+`ReleasedRoomCapacityMatcher` (lecture seule), pour une occurrence sans créneau propre :
+
+- aucun orphelin du même chirurgien, même site, même date, dont l'horaire chevauche (JOURNEE
+  chevauche MATIN et APRES_MIDI) → **NEW**, créée ;
+- un seul orphelin chevauchant, de même période, et ce poste est le seul poste courant sans
+  créneau propre qui chevauche cette période → **REPLACED** : la capacité existe déjà
+  (disponible ou déjà reprise), rien n'est créé ;
+- sinon (période différente qui chevauche, plusieurs candidats) → **REVIEW** : jamais créé ni
+  supprimé automatiquement ; listé « à valider » par `app:available-rooms:backfill`, journalisé
+  (warning) en temps réel.
+
+Le même rapprochement sert :
+
+- la création temps réel et le rattrapage (`resolveFutureOccurrences()` porte la décision) ;
+- la reprise : instrumentiste initial et type viennent du poste qui porte aujourd'hui la
+  capacité (`effectivePost()`), jamais de l'ancien poste ;
+- la garde D-104/D-124 : `isOccurrenceTakenOver()` reçoit le poste et considère aussi une
+  reprise faite sur l'orphelin — raccourcir l'absence ne restaure jamais l'occurrence du nouveau
+  poste sous le repreneur.
+
+`theoreticalOccurrenceDates()` reste confiné aux fichiers autorisés : le matcher passe par
+`SurgeonAbsenceBlockOccurrenceResolver::postOccursOn()`.
+
+### Création concurrente
+
+Le test de concurrence demandé a révélé un défaut préexistant (Lot D) : la création passait par
+l'ORM, et une violation de la contrainte unique `(site_id, post_id, occurrence_date)` **fermait
+l'EntityManager** malgré le `catch` — l'occurrence suivante de la même absence échouait
+(« The EntityManager is closed »). La ligne est désormais insérée en DBAL, même convention que
+`ActivityJournal` : la collision est ignorée, MySQL garde la transaction utilisable, les autres
+occurrences sont créées.
+
+### Cas de production à valider par le métier (non tranchés par le code)
+
+- Dr Deltour, jeudi : postes #6 et #7 tous deux JOURNEE, alors que le planning généré le
+  2026-09-13 porte une mission JOURNEE et une mission APRES_MIDI chaque jeudi et que le créneau
+  #18 (05/11) a été créé sur le poste #7 en APRES_MIDI : le poste #7 a été modifié sur place.
+  Deux salles JOURNEE seraient libérées les 24/12 et 31/12.
+- Dr Deltour, mercredi : postes #3 JOURNEE, #4 MATIN, #5 APRES_MIDI, tous avec la même
+  instrumentiste ; trois missions générées chaque mercredi. Trois créneaux seraient libérés le
+  23/12. Aucun n'est fusionné.
+
+### Tests
+
+`ReleasedRoomPostReplacementFunctionalTest` (remplacement → une seule salle, au rattrapage, dans
+le calendrier et à la reprise ; deux salles simultanées conservées même après le remplacement de
+l'une ; JOURNEE + MATIN + APRES_MIDI jamais fusionnés ; période différente → à valider, rien
+créé ni retiré ; capacité déjà reprise jamais réofferte ; rattrapage répété sans création ;
+modification temps réel de l'absence après remplacement, sans doublon ni restauration sous le
+repreneur), `ReleasedRoomPostReplacementConcurrencyTest` (création concurrente du même créneau
+sur deux connexions MySQL ; double reprise d'une capacité remplacée). Sans le correctif, 6 des 7
+tests fonctionnels et le test de création concurrente échouent ; la garde de réconciliation et
+l'instrumentiste de reprise ont chacun un test qui échoue isolément sans leur correction.
+
+---
+
+## D-160 — Rattrapage des salles libérées : liste autorisée d'absences (2026-10-20)
+
+### Contexte
+
+Après D-159 (`v2026.10.20-prod-2`), le dry-run prod propose 16 salles, dont 7 pour Dr Deltour
+(absences #66/#67) dont les postes #3–#7 attendent une validation métier : le poste #7, APRES_MIDI
+du 2026-06-23 au 2026-10-10 (sauvegardes quotidiennes), a été passé en JOURNEE le 2026-10-10
+depuis l'interface manager, alors que les missions du jeudi restent JOURNEE + APRES_MIDI ; le
+mercredi, JOURNEE, MATIN et APRES_MIDI coexistent sans preuve de trois salles. La commande ne
+savait traiter que toutes les absences à la fois : impossible de rattraper Willemart, De Muylder
+et Ftaita sans créer aussi les salles Deltour.
+
+### Décision
+
+`app:available-rooms:backfill --absence=<id>` (répétable, ou `--absence=54,57,79`) :
+
+- liste autorisée : seules les absences sélectionnées sont lues et passées à
+  `onAbsenceUpdated()` — aucune lecture ni écriture pour les autres ;
+- même sélection en `--dry-run` et en exécution réelle, rappelée en tête du résultat
+  (« Sélection : #54, #57, … ») ;
+- validation stricte de toute la sélection avant le moindre traitement : identifiant non entier
+  positif, en double, absence inconnue, terminée (`dateEnd` passée), qui ne concerne pas un
+  chirurgien ou dont le chirurgien est introuvable → liste des erreurs, code `INVALID`, rien
+  n'est traité ni écrit, même pour les identifiants valides ;
+- l'exécution réelle exige une sélection explicite ; seul `--dry-run` parcourt encore toutes les
+  absences (un oubli d'option ne peut plus créer les salles d'absences non validées) ;
+- inchangé : chemin d'écriture temps réel, rapprochement D-159 (remplacé / à valider), idempotence
+  par la contrainte unique, aucun e-mail ni communication.
+
+### Tests
+
+`AvailableRoomsBackfillCommandTest` : exécution réelle sans sélection refusée ; lecture et
+écriture limitées à la sélection (créneaux et audits `ROOM_SLOT_MADE_AVAILABLE`) ; dry-run et
+réel identiques sur la même sélection ; formes répétée et séparée par des virgules
+équivalentes ; 12 sélections invalides ou non admissibles refusées en dry-run comme en réel sans
+aucune écriture ; rejeu idempotent sous sélection ; protection D-159 conservée sous sélection.
+Les tests existants passent désormais une sélection explicite (absence supprimée → « inconnue »,
+absence corrompue → refusée sélectionnée, ignorée sans blocage dans le parcours global). Chaque
+garde (validation, sélection, refus sans sélection) a été retirée isolément : 3, 7 et 1 tests
+échouent. Dry-run sur copie locale du dump prod du 2026-10-20 avec `--absence=54,57,79,80,81,82,83`
+: 7 absences, 9 occurrences, 9 salles, 0 remplacée, 0 à valider, aucune ligne Deltour.
+
+
+## D-161 — Salles opératoires disponibles : push par défaut, e-mail sur option (2026-10-21)
+
+### Contexte
+
+Chaque absence d'un chirurgien envoyait automatiquement l'e-mail « Libération de salle »
+(D-114, `RoomReleaseCommunicationService`) à tous les chirurgiens actifs affiliés au site, sans
+préférence individuelle possible (contournement volontaire du résolveur, ADR D-114) : en
+production, 11 e-mails par absence (absences #91 à #93, 2026-10-20). Cet e-mail était calculé
+sur les occurrences théoriques du planning, et non sur les créneaux réellement créés : il pouvait
+annoncer une salle qui n'existait pas (mission déjà commencée, D-158 ; poste remplacé, D-159).
+
+### Décision
+
+1. **Nouvelle catégorie `ROOM_SLOT_AVAILABLE`**, destinée aux chirurgiens et configurable.
+   Défauts produit (`DefaultNotificationPreferenceResolver`) : centre de notifications et push
+   activés, **e-mail désactivé**. Elle passe par l'architecture existante
+   (`NotificationDispatcher`) : aucune seconde architecture de notifications.
+2. **Annonce séparée de la création.** `ReleasedOperatingRoomSlotService::onAbsenceCreated()`
+   et `onAbsenceUpdated()` renvoient les identifiants des créneaux réellement créés par l'appel.
+   Seul `AbsenceImpactCoordinator` les transmet (`ReleasedRoomSlotsCreatedMessage`, asynchrone)
+   à `ReleasedRoomAvailabilityNotifier`. Le rattrapage (`app:available-rooms:backfill`, D-160)
+   crée des créneaux sans jamais les annoncer, sauf décision explicite ultérieure.
+3. **Ciblage inchangé.** Le réglage de site `notifyColleaguesEnabled` est conservé (désactivé :
+   aucune annonce, la salle reste visible dans SurgicalHub). Sont visés les chirurgiens actifs
+   affiliés au site, jamais le chirurgien absent : ce sont exactement ceux que
+   `ReleasedRoomSlotVoter::TAKE_OVER` autorise à reprendre la salle. Un créneau qui n'est plus
+   `AVAILABLE`, ou déjà passé, n'est annoncé à personne.
+4. **Un envoi par opération.** Le mode BATCH du dispatcher crée un élément dans le centre de
+   notifications par salle, mais un seul push et un seul e-mail par destinataire et par
+   opération. L'idempotence repose sur la clé `room_slot:{id}` : un rejeu Messenger ou une
+   nouvelle modification de l'absence n'annonce jamais deux fois la même salle.
+5. **Pas d'e-mail de secours.** La politique e-mail reste `WHEN_ENABLED` : sans abonnement
+   push, aucun e-mail n'est envoyé (push `SKIPPED / NO_PUSH_SUBSCRIPTION`) et le centre de
+   notifications reste le seul canal.
+6. **L'e-mail D-114 « Libération de salle » est retiré.** `RoomReleaseCommunicationService`
+   et les écritures `ROOM_RELEASE` du journal sont supprimés. Les communications historiques
+   restent lisibles. Le rattrapage manager des communications (D-114 Lot C) classe désormais
+   ce volet `RETIRED` : seule la Gestion du bloc reste rattrapable.
+7. **Deep link revérifié.** Le push et l'élément du centre de notifications ouvrent
+   `/app/s/planning/salles-disponibles?slot={id}`. La page relit le créneau via
+   `GET /api/me/available-rooms/{id}`, avec les mêmes règles de visibilité que la liste. Le
+   serveur répond 404 `ROOM_SLOT_UNAVAILABLE` quand la salle n'est plus disponible. La reprise
+   reste revérifiée sous verrou.
+8. **Préférences du chirurgien.** La rubrique « Notifications — Salles opératoires
+   disponibles » (profil) propose deux interrupteurs persistés en base (`NotificationPreference`).
+   Elle affiche à part l'état réel du push sur l'appareil (autorisation du navigateur et
+   abonnement), avec un bouton d'autorisation. La catégorie n'apparaît pas une seconde fois dans
+   la liste générique.
+9. **Invitation à activer le push (existante, D-143), adaptée au chirurgien.** La bannière
+   non bloquante de l'espace chirurgien (ordinateur et PWA) explique désormais l'intérêt pour
+   les salles disponibles. La permission n'est demandée qu'au clic ; le bouton « Plus tard »
+   reporte l'invitation de 7 jours, puis de 14 jours, puis ne la propose plus. Un refus du
+   navigateur n'est jamais redemandé, et le message qui suit un refus ne promet plus d'e-mail
+   de secours au chirurgien. Hors application installée, iOS ne prend pas en charge le push :
+   rien ne s'affiche alors.
+
+### Comptes existants
+
+Aucune migration. Audit de production du 2026-10-21 :
+- aucune ligne `notification_preference` n'existe pour cette nouvelle catégorie, ni pour aucune
+  préférence individuelle de l'ancien e-mail (qui n'en avait pas) ;
+- les 8 lignes existantes concernent d'autres types, et aucune n'est supprimée ni modifiée.
+
+Tous les chirurgiens, existants comme nouveaux, reçoivent donc le nouveau défaut : e-mail
+désactivé. Les seuls choix antérieurs étaient organisationnels : `notifyColleaguesEnabled`,
+activé sur les trois sites. Ils sont conservés.
+
+Deux chirurgiens actifs sur treize ont un abonnement push. Les autres ne verront les nouvelles
+salles que dans le centre de notifications tant qu'ils n'auront pas autorisé le push ou activé
+l'e-mail.
+
+### Hors périmètre
+
+- Une salle rendue par son repreneur, ou rouverte par l'absence du repreneur (D-124), n'était
+  pas annoncée avant ce changement et ne l'est toujours pas.
+- Aucune notification rétroactive pour les salles créées par le rattrapage D-160.
+
+---
+
+## D-162 — Version de SurgicalHub en bas des paramètres utilisateur (2026-10-21)
+
+### Contexte
+
+Rien dans l'application n'indiquait la version qui tourne. Seuls le tag Git `*-prod` et
+`docs/production.md` la documentaient (deployment-versioning.md §1). La procédure impose de
+créer le tag **après** les tests de santé. Le build ne peut donc pas connaître le tag
+officiel, alors qu'un rollback doit afficher la version restaurée.
+
+Audit : l'archive `git archive -- backend frontend docker-compose.yml` ne contient ni `docker/`
+ni `.git`. Les Dockerfiles de production (`src/docker/`, copiés le 2026-08-02) ne sont pas
+mis à jour par la procédure. Le mécanisme ne doit donc dépendre d'aucune modification de
+Dockerfile ni d'argument de build.
+
+### Décision
+
+1. **Commit exécuté = `git archive`.** `backend/REVISION` et
+   `frontend/src/app/features/app-version/buildRevision.ts` contiennent `$Format:%H$`, avec
+   l'attribut `export-subst`. L'archive obligatoire y écrit le SHA exact du commit, ce qui
+   suffit pour les images php, worker et nginx (bundle). Dans un clone, la valeur littérale
+   signifie « développement ».
+2. **Version officielle = registre écrit après validation.** Le fichier est
+   `var/release/releases.json`, sur le volume persistant `surgicalhub_var` ; chaque ligne
+   contient un tag, un SHA et une date. Il est alimenté par
+   `app:release:mark <tag> --commit=<sha>` après le tag Git (§7.1). La commande refuse un
+   format de tag invalide, un SHA différent du code exécuté, et un tag réutilisé pour un autre
+   commit ; elle est idempotente et écrit de façon atomique.
+3. **`GET /api/version`** (utilisateur authentifié, `Cache-Control: no-store, private`)
+   renvoie `{application, status, version, commit}`. Valeurs de `status` :
+   - `OFFICIAL` : le commit exécuté figure dans le registre ;
+   - `PENDING_VALIDATION` : le tag n'est pas encore enregistré, ou le registre est illisible
+     (jamais un tag supposé) ;
+   - `DEVELOPMENT` : pas de SHA (clone de travail).
+
+   Un rollback retrouve le tag du commit restauré, sans aucune action sur le registre. La
+   réponse ne contient qu'un tag et un SHA court : aucun secret, aucun chemin.
+4. **Affichage.** `AppVersionLine` est un composant unique, placé en bas de « Mon profil »
+   (paramètres utilisateur) des trois rôles. Il n'y a pas de footer permanent. Format :
+   `SurgicalHub · vYYYY.MM.DD-prod · <sha>`. La version est relue à chaque ouverture, sans
+   cache.
+
+   Si le bundle chargé (PWA en cache) a été construit d'un autre commit que celui du serveur,
+   le composant propose « Actualiser ». `index.html` est revalidé grâce à son ETag.
+5. **Procédure.** La procédure ajoute trois contrôles obligatoires
+   (deployment-versioning.md §4.3, §5 et §7.1, production.md, production-checklist.md) :
+   - `REVISION` = SHA validé après l'extraction ;
+   - `app:release:show` = `PENDING_VALIDATION` avant le tag ;
+   - cohérence entre le tag Git, `app:release:show` (`OFFICIAL`) et la version affichée, après
+     `app:release:mark`.
+
+### Hors périmètre, signalé
+
+- `src/docker/` et le `.dockerignore` de production ne suivent pas la procédure `git archive`.
+  Ils sont restés figés depuis le 2026-08-02 : un changement de Dockerfile ou de configuration
+  nginx dans le dépôt n'atteint jamais la production. À traiter séparément.
+- `index.html` est servi sans en-tête `Cache-Control` (ETag seulement). Une navigation normale
+  peut afficher un ancien bundle pendant une durée heuristique ; « Actualiser » le revalide.
+- Les versions déployées avant D-162 ne figurent pas dans le registre. La première ligne sera
+  écrite au déploiement de D-162.
+
+---
+
+## D-163 — Déploiement reproductible : releases vérifiées, configuration Docker livrée, cache maîtrisé (2026-10-22)
+
+### Constats (audit en lecture seule du 2026-10-22, production `v2026.10.21-prod-2` / `20aa821`)
+
+**Problèmes déjà présents**
+
+1. **Configuration Docker hors procédure.** L'archive `git archive -- backend frontend
+   docker-compose.yml` n'inclut ni `docker/` ni `.dockerignore`. Sur le serveur, ces fichiers
+   datent d'une copie manuelle du 2026-08-02. Ils sont identiques au dépôt aujourd'hui, mais
+   par hasard : toute modification de Dockerfile, de nginx ou d'entrypoint serait restée en
+   dépôt.
+2. **Compose de production non versionné.** `/opt/stack/apps/surgicalhub/docker-compose.yml`
+   (du 2026-06-23) n'existe pas dans le dépôt. Le `docker-compose.yml` extrait dans `src/` est
+   celui du développement, et il n'est pas utilisé. Le compose n'est copié ni par la sauvegarde
+   `src_pre_deploy`, ni par les sauvegardes quotidiennes.
+3. **Fichiers supprimés de Git toujours construits.** L'extraction sur place ne supprime rien :
+   `src/backend/tests/` contenait 4 tests retirés de Git, copiés dans l'image php. `src/`
+   contient aussi des visuels, une documentation figée au 2026-08-02 et un `.claude/`, envoyés
+   dans le contexte de build.
+4. **Ancienne archive déployable par erreur.** Le nom d'archive était générique et rien ne
+   comparait l'archive transférée au commit autorisé (incident du 2026-10-21, arrêté
+   manuellement avant le build).
+5. **Cache frontend non maîtrisé.** `index.html`, `sw.js`, le manifest et les assets étaient
+   servis sans `Cache-Control` (cache heuristique), et les assets hashés sans cache long.
+   Surtout, un asset absent renvoyait `index.html` en `200 text/html` : après un déploiement,
+   un onglet ou une PWA ouverts chargeant un ancien chunk recevaient du HTML comme JavaScript.
+   Le frontend ne gérait pas `vite:preloadError`.
+6. **Sauvegardes incomplètes ou défaillantes** (scripts serveur, hors dépôt) :
+   - `surgicalhub_var` (registre des versions D-162, clés JWT) n'est jamais sauvegardé ;
+   - l'expression `find` de `rotate_backups.sh` est mal parenthésée : aucun dump `.sql.gz`
+     n'est jamais supprimé (149 dumps de plus de 30 jours le 2026-10-22) ;
+   - `backups/code` (927 Mo) n'est ni tourné ni copié hors serveur ;
+   - 26 paires d'images `rollback-*` s'accumulent, avec 11 Go de cache de build.
+7. **Risque faible** : `backend/.env`, versionné et copié dans l'image, contient une valeur
+   `JWT_PASSPHRASE` de développement. Elle diffère de la production, qui la remplace par son
+   `.env`.
+
+**Risques futurs (sans correction)** : un changement nginx ou Dockerfile jamais livré ; un
+build contenant du code supprimé ; une archive d'une autre version extraite ; un rollback qui
+ne restaure pas la configuration (compose non versionné) ; des écrans cassés après chaque
+déploiement pour les sessions ouvertes.
+
+### Décision
+
+1. **Compose versionné.** `deploy/production/docker-compose.yml` reprend la configuration en
+   service : même projet `surgicalhub`, mêmes conteneurs, réseaux, volumes et labels Traefik.
+   `docker compose config` est identique à celle de production, au contexte de build près
+   (`./src` → release).
+2. **Périmètre dérivé, pas supposé.** `deploy.sh paths` le calcule à partir du compose
+   versionné et des `COPY` de ses Dockerfiles. Aujourd'hui : `backend`, `frontend`,
+   `docker/php/{Dockerfile.prod,entrypoint.prod.sh}`, `docker/nginx/{Dockerfile.prod,prod.conf}`,
+   `.dockerignore` et le compose.
+3. **Releases vérifiées.** Le nom de l'archive porte le SHA complet. La SHA-256 est calculée
+   localement, puis vérifiée sur le serveur avant tout renommage ou extraction. Sont aussi
+   vérifiés : `backend/REVISION` = SHA, l'absence de fichiers interdits, et un commit fusionné
+   sur `origin/main`.
+
+   L'extraction se fait dans un staging, puis dans `releases/<SHA>/` ; `current` est un lien
+   remplacé atomiquement. Aucune suppression n'a lieu sur place, et `.env`, les volumes et
+   `src/` ne sont jamais écrits.
+4. **Build sans risque.** Les images sont construites sous `:<SHA>` depuis la release, sans
+   toucher au service, et leur `REVISION` est vérifiée. Ensuite seulement : sauvegardes
+   (MySQL, compose, `.env`, volume `surgicalhub_var`), bascule, retag `:<SHA>` → `:local`,
+   redémarrages, et contrôle du code exécuté par php et le worker.
+5. **Version officielle (D-162).** Ni `activate` ni `rollback` ne l'écrivent. `deploy.sh mark`
+   exige un tag présent sur `origin` qui pointe sur le SHA, et que ce SHA soit la release active.
+6. **Rollback complet.** `deploy.sh rollback <SHA>` restaure ensemble la release, son compose et
+   ses images. `rollback legacy` revient à la configuration d'avant D-163 (compose sauvegardé,
+   `src/`, images `rollback-legacy`).
+7. **Cache** (`docker/nginx/prod.conf`) :
+   - `/assets/*` : `public, max-age=31536000, immutable`, et 404 si absent (jamais de HTML) ;
+   - `index.html`, routes SPA, `sw.js`, manifest, icônes : `no-cache` (revalidés par ETag) ;
+   - API inchangée (`private` ; `/api/version` en `no-store`).
+
+   Côté frontend, `vite:preloadError` recharge la page une seule fois (garde de 30 s), en
+   complément de « Actualiser » (D-162).
+
+### Tests
+
+- **Procédure :** `deploy/tests/run.sh` (58 contrôles), exécuté sous Linux par
+  `deploy/tests/run-in-docker.sh`, avec de vrais commits, `git archive` et export-subst, un
+  faux serveur et un faux Docker. Il couvre :
+  - périmètre et livraison d'une modification Docker ;
+  - refus d'un commit hors `main`, d'un SHA abrégé ou d'une clé ;
+  - ancienne archive, archive altérée (locale ou distante), transfert manquant ;
+  - fichier supprimé de Git absent de la nouvelle release mais conservé dans l'ancienne ;
+  - `.env` et `src/` intacts ;
+  - échec de build sans activation ;
+  - première activation depuis `src/` ;
+  - rollback complet, et rollback vers l'état d'avant D-163 ;
+  - `mark` et `migrate` refusés si le commit n'est pas en service.
+- **Cache :** `deploy/tests/nginx-cache.sh` (8 contrôles) sur un vrai nginx. La configuration
+  d'avant D-163 les échoue tous, la nouvelle les passe tous.
+- **Frontend :** reprise après chunk obsolète (anti-boucle, stockage indisponible).
+
+### Hors périmètre, à décider
+
+- Corriger `rotate_backups.sh`, sauvegarder `surgicalhub_var` chaque nuit, tourner
+  `backups/code` et les images `rollback-*` : ce sont des scripts serveur hors dépôt.
+- Retirer `src/` après quelques déploiements D-163 réussis.
+- Retirer `JWT_PASSPHRASE` de `backend/.env`.
+
+---
+
+## D-164 — Sauvegardes serveur versionnées, chiffrées, avec rétention et tests de restauration (2026-10-23)
+
+### Constats (audit D-163 du 2026-10-22)
+
+- `rotate_backups.sh` : `find A B -name '*.sql.gz' -o -name '*.tar.gz' -mtime +30` applique
+  `-mtime` au seul second motif ; aucun dump n'a jamais été supprimé (151 de plus de 30 jours).
+- `surgicalhub_var` (clés JWT, registre des versions D-162) n'a jamais été sauvegardé ; la
+  documentation le disait « regénérable », ce qui est faux pour les clés JWT et le registre.
+- Les dumps et uploads partent en clair sur Google Drive, par `rclone sync` : une suppression
+  locale efface aussi la copie distante.
+- `backups/code` (archives de code, copies de `.env` parfois en 664), les images `rollback-*` et
+  le cache de build ne sont jamais tournés.
+- Les scripts n'étaient pas versionnés.
+
+### Décision
+
+1. Scripts versionnés dans `deploy/server/backup/`, installés par `install.sh` (diff d'abord ;
+   scripts puis crontab, chacun sur option explicite). Configuration surchargeable
+   (`~/.config/surgicalhub-backup.conf`).
+2. Chiffrement gpg AES-256 de toute sauvegarde (dumps, uploads, var), à la création, avec une
+   passphrase (600) conservée aussi hors du serveur — même convention que MedClick. Chaque fichier
+   est relu (déchiffrement, gzip, « Dump completed ») avant d'être publié, et porte un `.sha256`.
+3. Hors serveur : `rclone copy` des seuls fichiers chiffrés, vérifié par `rclone check`, vers un
+   dossier distinct ; rétention distante indépendante (dry-run par défaut).
+4. Rotation locale validée le 2026-10-23 (`docs/backup-and-restore.md`) : dry-run par défaut ;
+   `--apply` refusé sans test de restauration réussi depuis moins de 35 jours. La plus récente de
+   chaque série est toujours conservée ; seuls les noms au format exact d'une série sont
+   concernés ; images protégées (active, précédente, legacy, `:local`, utilisées par un conteneur).
+5. `restore_test.sh` restaure réellement : dump dans un MySQL jetable sans réseau, clés JWT
+   (appariement privée/publique), registre des versions, lecture des uploads.
+
+### Tests
+
+`tests/rotation.sh` (31) et `tests/e2e-docker.sh` (15, vrai Docker). Dry-run en production le
+2026-10-23 : 165 dumps quotidiens, 1 archive uploads, 59 archives de code et 9 paires d'images
+seraient supprimés (910 Mo de fichiers, 2,5 Go d'images en taille apparente) ; aucun fichier
+modifié par le dry-run.
+
+---
+
+## D-165 — Planning : modification d'horaires sans perte d'affectation, conflits expliqués, missions en cours (2026-10-23)
+
+### Cas réel
+
+Vendredi 23/10/2026, CHIREC Delta : #1085 (Dr Schiepers, Françoise Detrembleur, 07:45–18:00) et
+#1084 (Dr Berger, sans instrumentiste, 07:45–18:00). Réalité : Philippe termine à 14:00, Françoise
+couvre ensuite Yorick de 14:45 à 18:00. Le constructeur affichait « Déjà affectée ailleurs »,
+faisait « disparaître » des affectations, le planning publié gardait Philippe jusqu'à 18:00 et
+une ligne montrait une instrumentiste sous le badge « Mission ouverte ». Lecture seule de la prod :
+#1085 est `IN_PROGRESS` depuis 05:45 (D-064), aucun audit ni `PLANNING_MODIFICATION_APPLIED` sur
+les deux missions — rien n'avait jamais été enregistré.
+
+### Causes racines
+
+1. **Contrôle « Déjà affecté ailleurs » sans horaires (frontend).** `findSameDayAssignmentElsewhere()`
+   cherchait la même instrumentiste **le même jour**, sans comparer les heures : deux créneaux
+   successifs étaient un « conflit », que les horaires soient modifiés ou non, enregistrés ou non.
+2. **Retrait implicite.** Choisir cette personne vidait l'autre ligne (instrumentiste `null`,
+   statut `UNCOVERED`) : l'affectation de Philippe « disparaissait » et, au redéploiement, la
+   mission aurait été remise au pool.
+3. **Mission `IN_PROGRESS` ignorée en silence (backend).** `PlanningModificationService` ne mutait
+   l'horaire que d'une mission `OPEN`/`ASSIGNED` ; pour #1085 le changement était compté
+   « inchangé », d'où Philippe toujours à 18:00 et un toast trompeur.
+4. **Badge incohérent.** `missionToPreviewLine()` ne connaissait qu'`ASSIGNED`/`OPEN`/`CANCELLED` :
+   `IN_PROGRESS` (et tout statut ultérieur) retombait sur `UNCOVERED` = « Mission ouverte », avec
+   l'instrumentiste affichée.
+5. **Roster contre l'état enregistré seulement + cache.** `evaluateRoster()` ne voyait que la base
+   (Philippe encore à 18:00 tant que rien n'était redéployé), et ses résultats restaient en cache
+   30 s par créneau après un redéploiement réussi.
+6. **Ordre du lot.** Une nouvelle affectation pouvait être évaluée avant le raccourcissement d'une
+   autre ligne du même lot (non bloquant en Mode Modification, mais alerte/évaluation fausse).
+
+La règle de chevauchement du backend était déjà correcte (`[début, fin)`, `A.start < B.end AND
+A.end > B.start`, `PlanningConflictDetectionService` / `MissionEligibilityService`).
+
+### Décision
+
+- **Une seule source pour les conflits : le backend.** `POST /api/planning/v2/eligible-instrumentists`
+  reçoit les autres lignes non enregistrées du jour (`ProposedSlot`) : une mission éditée compte à
+  son créneau proposé, une annulée ne compte plus, une nouvelle ligne compte. Le détail du conflit
+  (`ScheduleConflictDetail`) nomme la mission, le chirurgien, les heures, le statut et l'origine
+  `PERSISTED`/`PROPOSED`. Le contrôle client « même jour » et le retrait implicite sont supprimés ;
+  aucune ligne n'est jamais modifiée par l'édition d'une autre.
+- **Missions en cours** (choix du manager, 2026-10-23) : l'horaire **prévu** d'une mission
+  `IN_PROGRESS` reste corrigeable — heures du jour seulement, jamais site, type ou date, début
+  jamais reporté après maintenant — audit `MISSION_TIME_CHANGED_POST_DEPLOY`, statut et
+  instrumentiste conservés. Changer/retirer l'instrumentiste ou annuler reste réservé à
+  `OPEN`/`ASSIGNED`.
+- **Plus d'abandon silencieux** : tout changement non permis par le statut répond `409` et annule le
+  lot (H3). `updateSchedule()` refuse aussi une fin ≤ début.
+- **Ordre** : nouvelles affectations après les autres lignes ; dans une ligne, horaire puis
+  affectation (retrait avant horaire).
+- **Exposé au frontend via `allowedActions`** (`reschedule`, `cancel`) — l'éditeur verrouille
+  instrumentiste/annulation d'une mission commencée sans déduire de droit du statut.
+- **Statuts cohérents** : tout statut au-delà d'`ASSIGNED` s'affiche « OK » s'il a une
+  instrumentiste (+ pastille du statut réel, ex. « En cours ») ; une ligne éditée indique l'état
+  encore publié (« Publié : Mission ouverte ») ; après redéploiement, rosters, planning publié,
+  listes de missions et alertes sont invalidés.
+
+Inchangé : D-091 (un conflit reste non bloquant en Mode Modification, alerte), D-052 (missions
+existantes mutées par `MissionPostDeployService`, jamais supprimées/recréées), D-101 (revalidation
+à l'enregistrement).
+
+### Limites connues
+
+- Le chemin brouillon (`PlanningDraftService::update()`) n'expose pas d'édition d'horaire et
+  revalide toutes les lignes, y compris inchangées (corrigé séparément sur la branche non fusionnée
+  `feat/prestations-regroupees`, D-156).
+- Le roster ne reçoit que les lignes du même jour (une mission de nuit à cheval sur minuit n'existe
+  pas dans le modèle actuel).
+
+---
+
+## D-166 — Suivi des encodages : fenêtres d'ajout utilisables depuis « Corriger l'encodage », aucune relance sans instrumentiste (2026-10-23)
+
+### Constats
+
+1. **Fenêtre d'ajout cachée (mission #1079).** « Corriger l'encodage » (D-153) est un `Dialog` MUI
+   (`zIndex.modal` = 1300, piège à focus actif). Les fenêtres de l'encodage (`AddInterventionDialog`,
+   `MaterialWizard`, `EditMaterialLineDialog`, `ConfirmDeleteDialog`, `MaterialItemRequestDialog`,
+   `EditInterventionDialog`, `ConfirmChoiceChangeDialog`) reposent sur `SheetModal`, un portail
+   maison (`createPortal` vers `body`) à `z-index` 800/810, inconnu du gestionnaire de fenêtres MUI.
+   Ouvert depuis le Dialog, le sheet passait **derrière** lui, et le piège à focus du Dialog
+   reprenait le focus à chaque tentative de saisie : fenêtre visible en arrière-plan, inutilisable.
+   Sur le parcours instrumentiste, aucun Dialog MUI n'est ouvert dessous : le défaut n'apparaissait pas.
+   `SheetModal` ne gérait par ailleurs ni Échap, ni blocage du défilement, ni retour du focus.
+2. **Relances sans instrumentiste.** Tous les chemins de relance refusaient déjà une mission sans
+   instrumentiste affectée, mais la règle était recopiée à quatre endroits (`MissionVoter`,
+   `MissionActionsService`, `EncodingReminderService::isEncodingPending()`,
+   `MissionHoursReminderPolicy`). Il n'existe **aucun envoi groupé** de relances (ni endpoint, ni
+   sélection dans l'écran) : rien à filtrer de ce côté.
+
+### Décision
+
+1. `SheetModal` est construit sur `Modal` MUI (portail vers `body` conservé, `hideBackdrop`, voile et
+   animations inchangés) avec un enfant « transition » (`SheetFrame`, prop `in`) qui garde la fenêtre
+   montée pendant l'animation de fermeture. Conséquences, pour toutes les fenêtres empilées : la
+   dernière ouverte est au-dessus (même niveau `zIndex.modal`, ordre d'ouverture), elle seule est
+   accessible (les autres reçoivent `aria-hidden`) et garde le focus, Échap ne ferme qu'elle (sauf
+   `closeDisabled` pendant un enregistrement), le défilement de la page est bloqué, et le focus revient
+   au bouton d'origine dès la fermeture — y compris quand un sheet en ouvre un autre (wizard matériel →
+   « Je ne trouve pas le matériel »). Aucun `z-index` arbitraire : les toasts passent au niveau
+   `zIndex.snackbar` (au-dessus des fenêtres) et le panneau d'aide (`HelpDrawer`, ouvert par le « ? »
+   d'un sheet) au niveau `zIndex.modal`, l'ordre d'ouverture le plaçant au-dessus de la fenêtre qui
+   l'ouvre. La sémantique `role="dialog"` / `aria-modal` / `aria-label` est portée par l'élément qui
+   reçoit le focus.
+2. `EncodingReminderPolicy` (nouveau) est la définition unique : `hasReminderRecipient()`
+   (instrumentiste affectée) et `canSendManualReminder()` (instrumentiste affectée + statut
+   `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`). Elle est lue par
+   `MissionVoter::ENCODING_REMIND` (l'autorisation reste dans le Voter), par `allowedActions`
+   (`remind`), par les relances automatiques J+1/J+2/J+4 (sélection SQL puis relecture en base juste
+   avant l'envoi) et par `MissionHoursReminderPolicy` (`remind_hours` / `HOURS_REMIND`). Le handler
+   asynchrone du rappel des heures revérifie l'affectation réelle à l'envoi (inchangé).
+3. Frontend : les boutons « Relancer » et « Rappeler les heures » suivent `allowedActions` (inchangé).
+   Un refus du backend (instrumentiste retirée depuis l'ouverture du tiroir) affiche un message
+   explicite et relit la mission, ce qui retire le bouton.
+4. Les alertes de couverture du planning (missions non pourvues) ne sont pas concernées.
+
+### Comportement par chemin de relance
+
+| Chemin | Sans instrumentiste affectée |
+|---|---|
+| `POST /api/missions/{id}/encoding/remind` (manuel, D-120) | `403`, aucune notification, aucun audit ; `remind` absent d'`allowedActions` |
+| `POST /api/missions/{id}/execution/remind` (heures, D-136) | `403` ; `remind_hours` absent ; le message en file n'envoie rien si l'affectation a changé |
+| `app:encoding:send-reminders` (J+1/J+2/J+4 + escalade managers, D-143) | jamais sélectionnée ; relue avant l'envoi → `skipped`, aucune réservation ni notification |
+| Affectation ultérieure | la mission redevient éligible selon les règles habituelles |
+
+### Tests
+
+Frontend : `SheetModal.test.tsx` (3), `MissionTrackingDrawer.encodingEdit.test.tsx` (4, vrais
+composants d'encodage dans le tiroir manager — 5 de ces 7 tests échouent avec l'ancien `SheetModal`),
+`MissionTrackingDrawer.test.tsx` (+4, D-166). Backend : `EncodingReminderPolicyTest` (4),
+`MissionEncodingWorkflowControllerTest` (+2, dont retrait après sélection puis réaffectation),
+`EncodingReminderScheduleIntegrationTest` (+1, retrait entre sélection et envoi).
+
+### Limite
+
+Aucun envoi groupé de relances n'existe : s'il est créé, il devra passer par
+`EncodingReminderPolicy` mission par mission, au moment de l'envoi, et renvoyer le nombre de missions
+exclues.
+
+---
+
+## D-167 — Planning V2 : alertes de conflit synchronisées avec le planning réel (2026-10-23)
+
+### Constats (démontrés par `PlanningConflictAlertReconciliationTest`, 11 tests sur 14 en échec avant correction)
+
+Une alerte `SURGEON_CONFLICT` / `INSTRUMENTIST_CONFLICT` est portée par la mission d'identifiant
+le plus bas de la paire (ancre, D-091). Elle pouvait survivre au conflit qu'elle décrivait, pour
+quatre causes indépendantes :
+
+1. **Résolution jamais enregistrée sur le chemin d'enregistrement.**
+   `PlanningConflictDetectionService::applySync()` passait l'alerte à `RESOLVED` en mémoire sans
+   `flush()`. `PlanningModificationService::apply()` ne flushait plus rien après la synchronisation
+   avant le `commit()` : toute résolution automatique faite à l'enregistrement (« Redéployer ») était
+   perdue, quelle que soit la mission déplacée. La création, elle, était flushée par
+   `wrapInTransaction()`. Démonstration : avec un `flush()` temporaire ajouté après la
+   synchronisation, le déplacement de la mission d'id inférieur résout l'alerte.
+2. **Asymétrie selon l'identifiant.** Sans conflit, `applySync()` ne cherchait une alerte que sur la
+   mission synchronisée. L'alerte étant ancrée sur l'autre mission quand celle-ci a l'id le plus bas,
+   déplacer la mission d'id supérieur ne la réévaluait jamais (cas réel du 2026-10-23 : Schiepers
+   `IN_PROGRESS`, Berger déplacée). Démonstration : ce cas reste en échec même avec le `flush()`
+   temporaire.
+3. **« Vérifier les conflits » ne réconciliait pas.** `PlanningVersionAuditService` ne visite que
+   les missions `OPEN` / `ASSIGNED` / `CANCELLED` de la version, et s'appuyait sur la même
+   synchronisation asymétrique : une alerte ancrée sur une mission `IN_PROGRESS` (ou sur une mission
+   d'une autre version) n'était jamais revue.
+4. **Une seule alerte par mission et par type.** `findConflict()` ne renvoyait que le premier
+   chevauchement et la déduplication portait sur (mission, type) : deux conflits d'une même mission
+   étaient confondus. De plus, une alerte encore valide gardait les horaires de sa détection, et une
+   alerte `IGNORED` était recréée à l'identique à la synchronisation suivante.
+
+### Décision
+
+1. **Une alerte par paire en conflit** : (mission ancre = id inférieur, autre mission, personne,
+   type). La paire est lue dans `snapshotJson` (`conflictingMissionId`, `personId`), présent sur toutes
+   les alertes de conflit depuis D-091 : **aucune migration**. `findConflicts()` /
+   `findConflictsInPool()` renvoient tous les chevauchements ; `findConflict()` /
+   `hasConflictInPool()` restent leur premier élément (règles inchangées).
+2. **Réévaluation indépendante de l'ordre des identifiants.** Toute synchronisation se termine par
+   `reconcileConflictAlertsInvolving()` : chaque alerte de conflit `OPEN` / `ACKNOWLEDGED` où la
+   mission apparaît, **d'un côté ou de l'autre** (`mission_id` ou `conflictingMissionId`, requête
+   `PlanningAlertService::findActiveConflictAlertsInvolving()`), est réévaluée sur l'état persisté
+   des deux missions avec la règle exacte de détection (`hasConflictInPool()` : statuts actifs,
+   chevauchement `[début, fin)`, exception « double salle »), depuis les deux côtés de la paire.
+3. **Conflit disparu → `RESOLVED`**, jamais supprimée, `resolvedBy = null` (résolution système,
+   comme les résolutions automatiques existantes), note explicite :
+   « Conflit horaire résolu automatiquement après modification du planning : … » (missions qui ne se
+   chevauchent plus, mission devenue inactive, personne retirée de l'une des missions). Dérogation
+   active (D-091) : « Conflit horaire couvert par une dérogation du manager ». Lien avec la mission
+   et instantané conservés.
+4. **Conflit toujours présent** (même réduit) → l'alerte reste active ; son instantané est
+   actualisé si les horaires ont changé. Aucune nouvelle alerte tant qu'une alerte active couvre la
+   paire.
+5. **Alerte ignorée** : jamais rouverte ni recréée tant que les horaires des deux missions sont
+   ceux qu'elle décrivait. Si les horaires changent et qu'un chevauchement existe encore, c'est une
+   nouvelle situation : nouvelle alerte. Une alerte `RESOLVED` n'est jamais rouverte : un conflit qui
+   réapparaît crée une nouvelle alerte, l'ancienne reste dans l'historique.
+6. **Le service flushe lui-même** ses changements d'alertes (`syncAlertsForMission()`,
+   `syncAlertsForVersion()`, `reconcileConflictAlertsInvolving()`) : aucun appelant n'a plus à le
+   faire pour lui.
+7. **Enregistrement (`apply()`)** : les missions annulées par le lot sont aussi synchronisées. Elles
+   ne déclenchent aucune détection, mais leurs alertes de conflit sont réévaluées.
+8. **« Vérifier les conflits »** : après les contrôles existants (inchangés), réconciliation de
+   toutes les alertes de conflit actives impliquant une mission du périmètre opérationnel de la
+   version (D-125), quel que soit son statut. La détection n'est pas élargie : aucun nouveau type de
+   mission n'est scanné pour créer des alertes. Idempotent : deux vérifications sans changement ne
+   créent, ne résolvent ni ne modifient rien.
+
+### Hors périmètre (inchangé)
+
+Politique de blocage / non-blocage (D-091 : non bloquant en Mode Modification, bloquant au
+déploiement), calcul d'éligibilité, autres types d'alertes (absences, non pourvues, annulations
+d'occurrence, réaffectation, inactivité, incompatibilité) : seuls `SURGEON_CONFLICT` et
+`INSTRUMENTIST_CONFLICT` sont réconciliés. Aucune mission n'est modifiée par ce mécanisme.
+
+### Tests
+
+`PlanningConflictAlertReconciliationTest` (14, chemin réel `apply-modifications` et
+`verify-conflicts`) : alerte active, résolution en déplaçant la première ou la seconde mission,
+chevauchement réduit (alerte conservée, horaires actualisés), fin = début (pas de chevauchement),
+mission `IN_PROGRESS` raccourcie (D-165) et mission voisine déplacée, scan après résolution hors
+chemin d'enregistrement, scan après annulation de l'autre mission, deux scans sans changement,
+nouveau chevauchement après correction, plusieurs conflits sur une même mission, alerte ignorée
+non recréée, autres types d'alertes intacts.
+
+### Limite
+
+Les alertes de conflit déjà ouvertes en production sont réévaluées à la prochaine synchronisation
+d'une des deux missions ou au prochain « Vérifier les conflits » ; aucune reprise de données n'est
+lancée.

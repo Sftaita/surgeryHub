@@ -324,3 +324,18 @@ docker compose exec php php bin/console app:create-dev-user \
 
 Une fois le compte créé, connecte-toi sur https://localhost:5173 avec ces
 identifiants.
+
+## Production (D-163)
+
+Ce document couvre le développement. En production :
+- **Compose** : le compose est `deploy/production/docker-compose.yml`, versionné. Il est
+  installé par `deploy/deploy.sh` dans `/opt/stack/apps/surgicalhub/docker-compose.yml` et ne
+  doit jamais être édité sur le serveur.
+- **Images** : elles sont construites depuis `docker/php/Dockerfile.prod` et
+  `docker/nginx/Dockerfile.prod`, à partir de la release extraite (`releases/<SHA>/`).
+- **Cache nginx** : les règles sont dans `docker/nginx/prod.conf`.
+- **Livraison** : toute modification de `docker/`, du compose de production ou de
+  `.dockerignore` est livrée avec le commit (périmètre de `deploy/deploy.sh paths`).
+- **Procédure** : `docs/production.md` §1-6 et `docs/deployment-versioning.md` §4.3.
+- **Tests** : `bash deploy/tests/run-in-docker.sh` pour la procédure, et
+  `NGINX_TEST_IMAGE=<image nginx avec curl> bash deploy/tests/nginx-cache.sh` pour le cache.

@@ -196,3 +196,21 @@ describe("H4 (D-130) — informations d'absence N1 / N2", () => {
     expect(formatNotificationTitle({ eventType: "ABSENCE_OCCURRENCE_UNCOVERED" })).not.toBe("Notification");
   });
 });
+
+describe("ROOM_SLOT_AVAILABLE (D-161) — texte construit depuis le payload serveur", () => {
+  it("titre et corps : site, date, horaire", () => {
+    const n = {
+      eventType: "ROOM_SLOT_AVAILABLE",
+      payload: { roomSlotId: 42, siteName: "CHIREC Delta", dayLabel: "23 décembre", startTime: "07:45", endTime: "13:00", periodLabel: "matin" },
+    };
+    expect(formatNotificationTitle(n)).toBe("Salle opératoire disponible");
+    expect(formatNotificationBody(n)).toBe("CHIREC Delta — 23 décembre, 07:45–13:00. Une salle vient de se libérer et peut être récupérée.");
+  });
+
+  it("sans horaire configuré : la période remplace l'horaire", () => {
+    expect(formatNotificationBody({
+      eventType: "ROOM_SLOT_AVAILABLE",
+      payload: { siteName: "CHIREC Delta", dayLabel: "23 décembre", startTime: null, endTime: null, periodLabel: "journée" },
+    })).toBe("CHIREC Delta — 23 décembre, journée. Une salle vient de se libérer et peut être récupérée.");
+  });
+});

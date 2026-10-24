@@ -9,10 +9,13 @@ use App\Entity\ShiftPeriodConfig;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\ReleasedRoomSlotStatus;
 use App\Enum\ShiftPeriod;
 use App\Repository\ReleasedOperatingRoomSlotRepository;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Psr\Log\LoggerInterface;
 
 /**
  * « Salles libérées » (Lot D, post D-114) — collaborateur indépendant supplémentaire, même
@@ -55,20 +58,31 @@ class ReleasedOperatingRoomSlotService
         private readonly ReleasedOperatingRoomSlotRepository $slots,
         private readonly AuditService $audit,
         private readonly ReleasedRoomSlotTakeoverService $takeovers,
+        private readonly ReleasedRoomCapacityMatcher $capacity,
+        private readonly LoggerInterface $logger,
     ) {
     }
 
-    public function onAbsenceCreated(Absence $absence, User $actor): void
+    /**
+     * D-161 — renvoie les identifiants des créneaux réellement créés par CET appel : leur
+     * annonce aux chirurgiens est une opération distincte (ReleasedRoomSlotsCreatedMessage,
+     * dispatchée par AbsenceImpactCoordinator), jamais faite ici — le rattrapage
+     * (AvailableRoomsBackfillCommand) crée des créneaux sans jamais les annoncer.
+     *
+     * @return list<int>
+     */
+    public function onAbsenceCreated(Absence $absence, User $actor): array
     {
-        $this->react($absence, $actor);
+        return $this->react($absence, $actor);
     }
 
-    public function onAbsenceUpdated(Absence $absence, User $actor): void
+    /** @return list<int> identifiants des créneaux réellement créés (voir onAbsenceCreated()) */
+    public function onAbsenceUpdated(Absence $absence, User $actor): array
     {
         // Une extension de congé révèle de nouvelles occurrences (créées ci-dessous, déjà
         // filtrées par existsFor()) ; un raccourcissement ne révèle jamais rien de nouveau et
         // ne touche jamais les lignes déjà créées (aucune suppression ici, par construction).
-        $this->react($absence, $actor);
+        return $this->react($absence, $actor);
     }
 
     /**
@@ -80,7 +94,11 @@ class ReleasedOperatingRoomSlotService
      * est l'unique appelant qui persiste ; le dry-run de la commande de backfill n'appelle
      * jamais que celle-ci.
      *
-     * @return list<array{site: Hospital, post: SurgeonSchedulePost, date: \DateTimeImmutable, period: ShiftPeriod, surgeon: User, alreadyExists: bool}>
+     * D-159 — `capacity` (null quand `alreadyExists`) : NEW = à créer ; REPLACED = la capacité
+     * existe déjà sur le créneau d'un ancien poste remplacé (disponible ou déjà repris) ;
+     * REVIEW = cas ambigu, jamais créé automatiquement (voir ReleasedRoomCapacityMatcher).
+     *
+     * @return list<array{site: Hospital, post: SurgeonSchedulePost, date: \DateTimeImmutable, period: ShiftPeriod, surgeon: User, alreadyExists: bool, capacity: ?array{decision: string, slot: ?ReleasedOperatingRoomSlot, reason: ?string}}>
      */
     public function resolveFutureOccurrences(Absence $absence): array
     {
@@ -90,7 +108,7 @@ class ReleasedOperatingRoomSlotService
         }
 
         $today = new \DateTimeImmutable('today');
-        $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd());
+        $bySite = $this->resolver->resolveForWindow($surgeon, $absence->getDateStart(), $absence->getDateEnd(), $absence);
         if (empty($bySite)) {
             return [];
         }
@@ -111,13 +129,21 @@ class ReleasedOperatingRoomSlotService
                     continue;
                 }
 
+                // D-158 — the absent surgeon's Mission for this occurrence is still active
+                // (already started or encoded: never cancelled blindly) — the room is not free.
+                if ($this->takeovers->findActiveOccurrenceMission($surgeon, $site, $date, $post->getPeriod()) !== null) {
+                    continue;
+                }
+
+                $alreadyExists = $this->slots->existsFor($site->getId(), $post->getId(), $date);
                 $result[] = [
                     'site' => $site,
                     'post' => $post,
                     'date' => $date,
                     'period' => $post->getPeriod(),
                     'surgeon' => $surgeon,
-                    'alreadyExists' => $this->slots->existsFor($site->getId(), $post->getId(), $date),
+                    'alreadyExists' => $alreadyExists,
+                    'capacity' => $alreadyExists ? null : $this->capacity->classify($post, $date),
                 ];
             }
         }
@@ -125,8 +151,11 @@ class ReleasedOperatingRoomSlotService
         return $result;
     }
 
-    private function react(Absence $absence, User $actor): void
+    /** @return list<int> */
+    private function react(Absence $absence, User $actor): array
     {
+        $created = [];
+
         // D-124 — l'absent peut aussi être un REPRENEUR : sa Mission de reprise vient d'être
         // annulée par AbsenceMissionReactionService (appelé avant ce collaborateur) — rendre la
         // salle plutôt que la laisser CLAIMED sur une Mission annulée.
@@ -136,37 +165,58 @@ class ReleasedOperatingRoomSlotService
             if ($occurrence['alreadyExists']) {
                 continue;
             }
-
-            $slot = new ReleasedOperatingRoomSlot();
-            $slot->setSite($occurrence['site']);
-            $slot->setPostId($occurrence['post']->getId());
-            $slot->setSchedulePost($occurrence['post']);
-            $slot->setOccurrenceDate($occurrence['date']);
-            $slot->setPeriod($occurrence['period']);
-            $slot->setSurgeon($occurrence['surgeon']);
-            $slot->setSourceAbsence($absence);
-
-            $config = $this->shiftPeriodConfig($occurrence['site'], $occurrence['period']);
-            if ($config !== null) {
-                $slot->setStartTime($config->getStartTime());
-                $slot->setEndTime($config->getEndTime());
+            // D-159 — un poste remplacé n'ouvre jamais une seconde salle pour la même capacité ;
+            // un cas ambigu n'est jamais tranché automatiquement.
+            $capacity = $occurrence['capacity'];
+            if ($capacity['decision'] === ReleasedRoomCapacityMatcher::REVIEW) {
+                $this->logger->warning('Released room slot not created: ambiguous post replacement, business validation required.', [
+                    'absenceId' => $absence->getId(),
+                    'postId' => $occurrence['post']->getId(),
+                    'occurrenceDate' => $occurrence['date']->format('Y-m-d'),
+                    'reason' => $capacity['reason'],
+                ]);
+            }
+            if ($capacity['decision'] !== ReleasedRoomCapacityMatcher::NEW) {
+                continue;
             }
 
-            $this->em->persist($slot);
+            $config = $this->shiftPeriodConfig($occurrence['site'], $occurrence['period']);
 
             try {
-                // Un flush par slot, jamais un seul flush groupé en fin de boucle : une
-                // course concurrente sur UN (site, post, date) ne doit jamais faire échouer
-                // la création des autres occurrences de cette même réaction.
-                $this->em->flush();
+                // Une ligne par occurrence, insérée directement (même convention que
+                // ActivityJournal) : une course concurrente sur UN (site, post, date) ne doit
+                // jamais faire échouer la création des autres occurrences de cette réaction.
+                // D-159 — via l'ORM, la violation de la contrainte unique fermait
+                // l'EntityManager : l'occurrence suivante échouait (« EntityManager is closed »).
+                $this->em->getConnection()->insert('released_operating_room_slot', [
+                    'site_id' => $occurrence['site']->getId(),
+                    'post_id' => $occurrence['post']->getId(),
+                    'schedule_post_id' => $occurrence['post']->getId(),
+                    'occurrence_date' => $occurrence['date'],
+                    'period' => $occurrence['period']->value,
+                    'start_time' => $config?->getStartTime(),
+                    'end_time' => $config?->getEndTime(),
+                    'surgeon_id' => $occurrence['surgeon']->getId(),
+                    'source_absence_id' => $absence->getId(),
+                    'status' => ReleasedRoomSlotStatus::AVAILABLE->value,
+                    'created_at' => new \DateTimeImmutable(),
+                ], [
+                    'occurrence_date' => Types::DATE_IMMUTABLE,
+                    'start_time' => Types::TIME_IMMUTABLE,
+                    'end_time' => Types::TIME_IMMUTABLE,
+                    'created_at' => Types::DATETIME_IMMUTABLE,
+                ]);
             } catch (UniqueConstraintViolationException) {
                 // La ligne existe déjà (créée entretemps par une exécution concurrente) —
                 // jamais une erreur pour l'appelant, même esprit que le claim atomique du
                 // Lot B : la contrainte unique est le dernier garde-fou, pas le mécanisme
-                // principal d'idempotence.
-                $this->em->detach($slot);
+                // principal d'idempotence. MySQL garde la transaction utilisable.
                 continue;
             }
+
+            /** @var ReleasedOperatingRoomSlot $slot */
+            $slot = $this->em->find(ReleasedOperatingRoomSlot::class, (int) $this->em->getConnection()->lastInsertId());
+            $created[] = (int) $slot->getId();
 
             // D-124 — « salle rendue disponible », uniquement pour une ligne réellement créée
             // par CETTE exécution (jamais pour un doublon concurrent détaché ci-dessus).
@@ -195,6 +245,8 @@ class ReleasedOperatingRoomSlotService
             ]);
             $this->em->flush();
         }
+
+        return $created;
     }
 
     private function shiftPeriodConfig(Hospital $site, ShiftPeriod $period): ?ShiftPeriodConfig

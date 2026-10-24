@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -451,8 +451,12 @@ describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le s
     expect(within(dianeOption).getByText(/Absente/)).toBeInTheDocument();
   });
 
-  it("affiche 'Déjà affecté ailleurs' et libère l'autre poste au moment de la réaffectation (préview locale, non persistée)", async () => {
+  // D-165 — formerly a client-side same-day check flagged « Déjà affecté ailleurs » for two
+  // SUCCESSIVE slots and silently emptied the other line when the person was picked.
+  it("D-165 — deux postes successifs le même jour : aucune alerte locale, l'autre poste garde son instrumentiste, le backend reçoit les lignes proposées", async () => {
     const user = userEvent.setup();
+    const roster = planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>;
+    roster.mockClear();
     const preview: PreviewResponseV2 = {
       lines: [
         line({ postId: 1, status: "COVERED", instrumentistId: 9, instrumentistName: "Diane Lefebvre", startTime: "08:00", endTime: "13:00" }),
@@ -469,24 +473,26 @@ describe("GeneratePlanningTab — indicateurs congé / déjà affecté dans le s
     await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
     await screen.findByText("À pourvoir");
 
-    // Only the UNCOVERED line's trigger reads "À pourvoir" — the COVERED one already shows a name.
     await user.click(screen.getByText("À pourvoir"));
     const popoverLabel = await screen.findByText("Instrumentiste");
     const input = popoverLabel.closest("div")!.querySelector("input")!;
     await user.click(input);
 
+    // The unsaved 08:00–13:00 line goes with the roster request: the BACKEND decides.
+    await waitFor(() => expect(roster).toHaveBeenCalledWith(expect.objectContaining({
+      startTime: "14:00", endTime: "18:00",
+      proposals: [expect.objectContaining({ missionId: null, instrumentistId: 9, startTime: "08:00", endTime: "13:00" })],
+    })));
+
     const dianeOption = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Diane Lefebvre"))!;
-    // Backend has no opinion on this (the "other slot" is an unsaved Preview line, not a
-    // persisted Mission) — this stays a purely local, non-blocking warning, still selectable.
-    expect(within(dianeOption).getByText("Déjà affecté ailleurs")).toBeInTheDocument();
+    expect(within(dianeOption).queryByText("Déjà affecté ailleurs")).not.toBeInTheDocument();
     expect(dianeOption).not.toHaveAttribute("aria-disabled", "true");
     await user.click(dianeOption);
 
-    // Diane now covers the previously-uncovered slot; her original slot is freed instead of
-    // silently double-booking her, and both lines are marked as locally edited.
-    await waitFor(() => expect(screen.getAllByText("Édité")).toHaveLength(2));
-    expect(screen.getAllByText("À pourvoir")).toHaveLength(1);
-    expect(screen.getAllByText("Diane Lefebvre").length).toBeGreaterThanOrEqual(1);
+    // Only the edited line is touched; the 08:00–13:00 line keeps Diane (never emptied).
+    await waitFor(() => expect(screen.getAllByText("Édité")).toHaveLength(1));
+    expect(screen.queryByText("À pourvoir")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Diane Lefebvre").length).toBeGreaterThanOrEqual(2);
   });
 
   it("D-102 — un conflit d'horaire (backend) bloque la sélection en Génération (STRICT_ASSIGNMENT)", async () => {
@@ -631,6 +637,183 @@ describe("GeneratePlanningTab — Mode Modification (éditeur unifié)", () => {
     // surfaced instead as a PlanningAlert rather than a hard block.
     expect(marcOption).not.toHaveAttribute("aria-disabled", "true");
     expect(within(marcOption).getByText(/Conflit d'horaire/)).toBeInTheDocument();
+  });
+
+  // D-165 — cas réel du vendredi 23/10/2026 : Schiepers #1085 (En cours, Françoise,
+  // 07:45–18:00) et Berger #1084 (ouverte, 07:45–18:00).
+  describe("cas Schiepers / Berger (D-165)", () => {
+    const realGet = (apiClient.get as ReturnType<typeof vi.fn>).getMockImplementation()! as (url: string, config?: { params?: Record<string, unknown> }) => Promise<unknown>;
+    const francoise = { id: 24, email: "f@x.fr", firstname: "Françoise", lastname: "Detrembleur" };
+    function mockDay(schiepersStatus: string, schiepersActions: string[]) {
+      (apiClient.get as ReturnType<typeof vi.fn>).mockImplementation((url: string, config?: { params?: Record<string, unknown> }) => {
+        if (url === "/api/instrumentists") {
+          return Promise.resolve({ data: { items: [{ id: 24, displayName: "Françoise Detrembleur" }, { id: 10, displayName: "Marc Petit" }] } });
+        }
+        if (url === "/api/missions" && config?.params?.planningScopeOf) {
+          return Promise.resolve({ data: { total: 2, page: 1, limit: 500, items: [
+            {
+              id: 1085, type: "BLOCK", schedulePrecision: "EXACT", status: schiepersStatus, allowedActions: schiepersActions,
+              startAt: "2026-10-23T07:45:00+02:00", endAt: "2026-10-23T18:00:00+02:00", site: { id: 1, name: "CHIREC Delta" },
+              surgeon: { id: 31, email: "ps@x.fr", firstname: "Philippe", lastname: "Schiepers" }, instrumentist: francoise,
+            },
+            {
+              id: 1084, type: "BLOCK", schedulePrecision: "EXACT", status: "OPEN", allowedActions: ["view", "view_publications", "cancel", "dispatch", "reschedule"],
+              startAt: "2026-10-23T07:45:00+02:00", endAt: "2026-10-23T18:00:00+02:00", site: { id: 1, name: "CHIREC Delta" },
+              surgeon: { id: 32, email: "yb@x.fr", firstname: "Yorick", lastname: "Berger" }, instrumentist: null,
+            },
+          ] } });
+        }
+        return realGet(url, config);
+      });
+    }
+    const rosterWith = (francoiseCandidate: Record<string, unknown>) => ({
+      policy: "PLANNING_MODIFICATION",
+      candidates: [
+        { id: 24, name: "Françoise Detrembleur", email: "f@x.fr", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null, ...francoiseCandidate },
+        { id: 10, name: "Marc Petit", email: "marc@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null },
+      ],
+    });
+
+    beforeEach(() => {
+      mockHistoryWithOneVersion();
+      (planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>).mockReset();
+      (planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>).mockResolvedValue(rosterWith({}));
+      (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mockReset();
+    });
+    afterEach(() => {
+      (apiClient.get as ReturnType<typeof vi.fn>).mockImplementation(realGet);
+    });
+
+    async function openDay(user: ReturnType<typeof userEvent.setup>) {
+      renderTab();
+      await user.click(await screen.findByText("Modifier"));
+      await screen.findByText("Philippe Schiepers");
+    }
+
+    function rowOf(surgeon: string): HTMLElement {
+      // The surgeon header's next sibling rows belong to it; each test day has one line per surgeon.
+      // (The inspector also shows the selected line's surgeon: keep the list's group header.)
+      const header = screen.getAllByText(surgeon).map((el) => el.closest("div")!).find((div) => /\d+ poste/.test(div.textContent ?? ""))!;
+      return header.parentElement!.querySelectorAll<HTMLElement>(":scope > div")[1];
+    }
+
+    it("une mission En cours affectée s'affiche « OK · En cours », jamais « Mission ouverte »", { timeout: 30000 }, async () => {
+      mockDay("IN_PROGRESS", ["view", "remind", "reschedule"]);
+      const user = userEvent.setup();
+      await openDay(user);
+
+      const schiepers = rowOf("Philippe Schiepers");
+      expect(within(schiepers).getByText("Françoise Detrembleur")).toBeInTheDocument();
+      expect(within(schiepers).getByText("OK")).toBeInTheDocument();
+      expect(within(schiepers).getByTestId("line-mission-status")).toHaveTextContent("· En cours");
+      expect(within(schiepers).queryByText("Mission ouverte")).not.toBeInTheDocument();
+      expect(within(rowOf("Yorick Berger")).getByText("Mission ouverte")).toBeInTheDocument();
+    });
+
+    it("mission En cours : seuls ses horaires sont modifiables (instrumentiste, remise au pool et annulation verrouillées)", { timeout: 30000 }, async () => {
+      mockDay("IN_PROGRESS", ["view", "remind", "reschedule"]);
+      const user = userEvent.setup();
+      await openDay(user);
+
+      await user.click(within(rowOf("Philippe Schiepers")).getByText("Françoise Detrembleur"));
+      expect(await screen.findByLabelText("Fin")).toBeEnabled();
+      expect(screen.getByLabelText("Début")).toBeEnabled();
+      expect(screen.getByTestId("inspector-locked")).toHaveTextContent("seuls les horaires prévus du jour");
+      expect(screen.getByRole("button", { name: "Annuler la mission" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Remettre au pool (ouverte)" })).not.toBeInTheDocument();
+      const picker = screen.getByText("Instrumentiste").closest("div")!.querySelector("input")!;
+      expect(picker).toBeDisabled();
+    });
+
+    it("Philippe 07:45–14:00 puis Françoise affectée à Yorick 14:45–18:00 : rien n'est retiré, les modifications proposées partent au roster et au redéploiement", { timeout: 30000 }, async () => {
+      mockDay("IN_PROGRESS", ["view", "remind", "reschedule"]);
+      (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mockResolvedValue({ created: 0, updated: 2, cancelled: 0, released: 0, unchanged: 0, functionalChanges: 2, usersNotified: 3, emailsSent: 3 });
+      const roster = planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>;
+      const user = userEvent.setup();
+      await openDay(user);
+
+      // 1. Philippe finishes at 14:00.
+      await user.click(within(rowOf("Philippe Schiepers")).getByText("Françoise Detrembleur"));
+      const end = await screen.findByLabelText("Fin");
+      await user.clear(end);
+      await user.type(end, "14:00");
+
+      // 2. Yorick starts at 14:45.
+      await user.click(within(rowOf("Yorick Berger")).getByText("À pourvoir"));
+      const start = await screen.findByLabelText("Début");
+      await user.clear(start);
+      await user.type(start, "14:45");
+
+      // 3. The roster for Yorick's slot carries Philippe's PROPOSED slot (07:45–14:00).
+      await waitFor(() => expect(roster).toHaveBeenLastCalledWith(expect.objectContaining({
+        excludeMissionId: 1084, startTime: "14:45", endTime: "18:00",
+        proposals: [expect.objectContaining({ missionId: 1085, instrumentistId: 24, startTime: "07:45", endTime: "14:00", cancelled: false })],
+      })));
+
+      const input = screen.getByText("Instrumentiste").closest("div")!.querySelector("input")!;
+      await user.click(input);
+      const option = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Françoise Detrembleur"))!;
+      expect(option).not.toHaveAttribute("aria-disabled", "true");
+      expect(within(option).queryByText(/Déjà affect/)).not.toBeInTheDocument();
+      await user.click(option);
+
+      // Françoise stays on Philippe's line too — no implicit release, no « Mission ouverte ».
+      await waitFor(() => expect(within(rowOf("Yorick Berger")).getByText("Françoise Detrembleur")).toBeInTheDocument());
+      expect(within(rowOf("Philippe Schiepers")).getByText("Françoise Detrembleur")).toBeInTheDocument();
+      expect(within(rowOf("Philippe Schiepers")).queryByText("Mission ouverte")).not.toBeInTheDocument();
+      // Yorick's line says what is still published.
+      expect(within(rowOf("Yorick Berger")).getByTestId("line-edited")).toHaveAttribute("title", expect.stringContaining("Publié : Mission ouverte"));
+
+      await user.click(screen.getByRole("button", { name: "Redéployer" }));
+      await waitFor(() => expect(planningV2Api.applyModifications).toHaveBeenCalled());
+      const [, lines] = (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(lines).toEqual(expect.arrayContaining([
+        expect.objectContaining({ existingMissionId: 1085, startTime: "07:45", endTime: "14:00", instrumentistId: 24 }),
+        expect.objectContaining({ existingMissionId: 1084, startTime: "14:45", endTime: "18:00", instrumentistId: 24, status: "COVERED" }),
+      ]));
+    });
+
+    it("explique un vrai conflit : mission responsable, chirurgien, horaires et origine (publié / proposé)", { timeout: 30000 }, async () => {
+      mockDay("ASSIGNED", ["view", "cancel", "reassign", "reschedule"]);
+      (planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>).mockResolvedValue(rosterWith({
+        eligible: false, selectable: true, reasons: ["SCHEDULE_CONFLICT"],
+        conflict: { missionId: 1085, siteName: "CHIREC Delta", surgeonName: "Philippe Schiepers", missionStatus: "ASSIGNED", source: "PERSISTED", startAt: "2026-10-23T07:45:00+02:00", endAt: "2026-10-23T18:00:00+02:00" },
+      }));
+      const user = userEvent.setup();
+      await openDay(user);
+
+      await user.click(within(rowOf("Yorick Berger")).getByText("À pourvoir"));
+      const input = (await screen.findByText("Instrumentiste")).closest("div")!.querySelector("input")!;
+      await user.click(input);
+      const option = (await screen.findAllByRole("option")).find((o) => o.textContent?.includes("Françoise Detrembleur"))!;
+      expect(within(option).getByText("Conflit d'horaire · Dr Philippe Schiepers 07:45–18:00")).toBeInTheDocument();
+      await user.click(option);
+
+      expect(await screen.findByTestId("inspector-conflict")).toHaveTextContent(
+        "Françoise Detrembleur est déjà affectée au Dr Philippe Schiepers (CHIREC Delta) de 07:45 à 18:00 — planning publié.",
+      );
+    });
+
+    it("après Redéployer, les rosters d'éligibilité en cache sont invalidés (plus de conflit fantôme)", { timeout: 30000 }, async () => {
+      mockDay("ASSIGNED", ["view", "cancel", "reassign", "reschedule"]);
+      (planningV2Api.applyModifications as ReturnType<typeof vi.fn>).mockResolvedValue({ created: 0, updated: 1, cancelled: 0, released: 0, unchanged: 1, functionalChanges: 1, usersNotified: 2, emailsSent: 2 });
+      const roster = planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>;
+      const user = userEvent.setup();
+      await openDay(user);
+
+      await user.click(within(rowOf("Philippe Schiepers")).getByText("Françoise Detrembleur"));
+      const end = await screen.findByLabelText("Fin");
+      await user.clear(end);
+      await user.type(end, "14:00");
+      await user.click(screen.getByRole("button", { name: "Redéployer" }));
+      await screen.findByText(/changement de planning|changements de planning/);
+
+      // Re-open the same line: its roster is fetched again, never served from the pre-save cache.
+      const callsBefore = roster.mock.calls.length;
+      await user.click(screen.getByRole("button", { name: "Continuer la modification" }));
+      await user.click(within(rowOf("Philippe Schiepers")).getByText("Françoise Detrembleur"));
+      await waitFor(() => expect(roster.mock.calls.length).toBeGreaterThan(callsBefore));
+    });
   });
 
   it("un 401 définitif sur Redéployer n'affiche jamais de succès, ne perd pas l'édition locale, et affiche le message de session expirée", async () => {
@@ -946,6 +1129,23 @@ describe("GeneratePlanningTab — Vérifier les conflits (Lot 6, D-106)", () => 
 
     expect(await screen.findByText("Vérification terminée")).toBeInTheDocument();
     expect(await screen.findByText(/Aucun conflit détecté/)).toBeInTheDocument();
+    expect(screen.queryByText(/obsolète/)).not.toBeInTheDocument();
+  });
+
+  it("D-167 — aucun conflit mais alerte obsolète résolue → la résolution est annoncée", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.verifyConflicts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      checkedMissions: 3, issuesFound: 0, automaticCorrections: 0, alertsCreated: 0, alertsResolved: 1, issues: [],
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+    await user.click(screen.getByRole("button", { name: "Vérifier les conflits" }));
+
+    expect(await screen.findByText(/Aucun conflit détecté/)).toBeInTheDocument();
+    expect(screen.getByText(/1 alerte obsolète résolue/)).toBeInTheDocument();
   });
 
   it("corrections trouvées → résumé avec les compteurs", async () => {

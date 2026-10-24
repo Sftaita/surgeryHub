@@ -21,6 +21,7 @@ import {
   PersonSearchSelect, type PersonOption, personOptionsQueryKey, fetchActivePersonOptions,
 } from "../../../features/planning-manager/components/PersonSearchSelect";
 import { AbsenceReminderDialog } from "../../../features/planning-manager/components/AbsenceReminderDialog";
+import { invalidateAfterAbsenceChange } from "../../../features/missions/dispatch/missionDispatch.api";
 
 type AbsenceMode = "period" | "isolatedDays";
 type QuickFilter = "ALL" | PersonRole;
@@ -173,6 +174,8 @@ export default function AbsencesPage() {
     onSettled: () => {
       submittingRef.current = false;
       qc.invalidateQueries({ queryKey: ["absences"] });
+      // D-158 — the absence may have cancelled/released published missions: refetch the planning.
+      void invalidateAfterAbsenceChange(qc);
     },
   });
 
@@ -217,7 +220,10 @@ export default function AbsencesPage() {
       if (ctx?.previous) qc.setQueryData(absencesKey, ctx.previous);
       toast.error(extractError(err));
     },
-    onSettled: () => { qc.invalidateQueries({ queryKey: ["absences"] }); },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["absences"] });
+      void invalidateAfterAbsenceChange(qc);
+    },
   });
 
   // Communication des absences chirurgiens — Lot B (D-114). Jamais de déduction locale :

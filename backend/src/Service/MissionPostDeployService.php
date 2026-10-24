@@ -56,6 +56,9 @@ class MissionPostDeployService
     /** D-151 — `origin` of a RELEASED lifecycle message caused by the surgeon's refusal. */
     public const ORIGIN_SURGEON_REFUSAL = 'SURGEON_REFUSAL';
 
+    /** D-165 — statuses whose planned schedule a manager may still correct (updateSchedule()). */
+    public const RESCHEDULABLE_STATUSES = [MissionStatus::OPEN, MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS];
+
     /** D-150 — sole writer of the instrumentist of a published mission and of its affectation history. */
     private readonly MissionAssignmentService $assignments;
 
@@ -831,6 +834,11 @@ class MissionPostDeployService
      * Modification mode; the individual PATCH /api/missions/{id} endpoint stays DRAFT-only
      * for its existing purpose, unrelated to this new post-deploy path.
      *
+     * D-165 — an IN_PROGRESS mission keeps a correctable PLANNED schedule (the surgeon
+     * finishes at 14:00 instead of 18:00): only its times on the same day, never its site,
+     * type or date, and never a start moved after now (it has started). Status and
+     * instrumentist are untouched; anything else is refused explicitly (409).
+     *
      * $notify — see release() doc.
      */
     public function updateSchedule(
@@ -843,8 +851,19 @@ class MissionPostDeployService
         bool $notify = true,
         EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
     ): void {
-        if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
-            throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to change its schedule');
+        if (!in_array($mission->getStatus(), self::RESCHEDULABLE_STATUSES, true)) {
+            throw new ConflictHttpException('Mission must be OPEN, ASSIGNED or IN_PROGRESS to change its schedule');
+        }
+        if ($mission->getStatus() === MissionStatus::IN_PROGRESS) {
+            $this->guardInProgressReschedule($mission, $startAt, $endAt, $site, $type);
+        }
+        $effectiveStart = $startAt ?? $mission->getStartAt();
+        $effectiveEnd   = $endAt ?? $mission->getEndAt();
+        if ($effectiveStart !== null && $effectiveEnd !== null && $effectiveEnd <= $effectiveStart) {
+            throw new ConflictHttpException(sprintf(
+                'Mission #%d : l\'heure de fin (%s) doit être après l\'heure de début (%s).',
+                $mission->getId(), $effectiveEnd->format('H:i'), $effectiveStart->format('H:i'),
+            ));
         }
 
         $fromStartAt = $mission->getStartAt();
@@ -1267,6 +1286,34 @@ class MissionPostDeployService
     {
         if ($person !== null && $mission->getId() !== null) {
             $this->communications?->withdraw($mission, $person, $reason, $role);
+        }
+    }
+
+    /**
+     * D-165 — what may change on an IN_PROGRESS mission: its planned times on the same day.
+     * Its start, already passed, can only be corrected to another past instant.
+     */
+    private function guardInProgressReschedule(Mission $mission, ?\DateTimeImmutable $startAt, ?\DateTimeImmutable $endAt, ?Hospital $site, ?MissionType $type): void
+    {
+        $refuse = static fn (string $what) => new ConflictHttpException(sprintf(
+            'Mission #%d en cours : %s. Seuls ses horaires prévus du jour peuvent être corrigés.',
+            $mission->getId(), $what,
+        ));
+
+        if ($site !== null && $site->getId() !== $mission->getSite()?->getId()) {
+            throw $refuse('son site ne peut plus être modifié');
+        }
+        if ($type !== null && $type !== $mission->getType()) {
+            throw $refuse('son type ne peut plus être modifié');
+        }
+        $day = $mission->getStartAt()?->format('Y-m-d');
+        foreach ([$startAt, $endAt] as $instant) {
+            if ($instant !== null && $day !== null && $instant->format('Y-m-d') !== $day) {
+                throw $refuse('sa date ne peut plus être modifiée');
+            }
+        }
+        if ($startAt !== null && $startAt != $mission->getStartAt() && $startAt > Clock::get()->now()) {
+            throw $refuse(sprintf('elle a commencé, son début ne peut pas être reporté à %s', $startAt->format('H:i')));
         }
     }
 

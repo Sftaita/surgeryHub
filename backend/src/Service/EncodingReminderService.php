@@ -69,12 +69,7 @@ class EncodingReminderService
     public const SEND_HOUR = 9;
 
     /** Statuts où l'encodage est encore attendu de l'instrumentiste (soumission possible). */
-    private const PENDING_STATUSES = [
-        MissionStatus::ASSIGNED,
-        MissionStatus::IN_PROGRESS,
-        MissionStatus::ENCODING_IN_PROGRESS,
-        MissionStatus::DECLARED,
-    ];
+    private const PENDING_STATUSES = EncodingReminderPolicy::REMINDABLE_STATUSES;
 
     /** Plus ancienne fin de mission encore concernée : J+4 + 24 h de rattrapage. */
     private const LOOKBACK_DAYS = 5;
@@ -136,7 +131,8 @@ class EncodingReminderService
     /** L'encodage de cette mission est-il encore attendu de l'instrumentiste ? */
     public static function isEncodingPending(Mission $mission): bool
     {
-        return $mission->getInstrumentist() !== null
+        // D-166 — sans instrumentiste affectée, aucune relance automatique (EncodingReminderPolicy).
+        return EncodingReminderPolicy::hasReminderRecipient($mission)
             && in_array($mission->getStatus(), self::PENDING_STATUSES, true)
             && $mission->getEncodingLockedAt() === null
             && $mission->getInvoiceGeneratedAt() === null;

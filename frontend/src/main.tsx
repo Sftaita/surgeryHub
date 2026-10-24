@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./app/App";
 import { AppProviders } from "./app/providers/AppProviders";
+import { installStaleBundleRecovery } from "./app/features/app-version/staleBundleRecovery";
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -12,6 +13,9 @@ Sentry.init({
   tracesSampleRate: 0.1,
   sendDefaultPii: true,
 });
+
+// D-163 — chunk d'un ancien bundle introuvable après un déploiement : un rechargement.
+installStaleBundleRecovery();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <BrowserRouter>

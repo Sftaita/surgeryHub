@@ -15,6 +15,7 @@ use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -107,11 +108,19 @@ use Symfony\Component\Messenger\MessageBusInterface;
  */
 class AbsenceMissionReactionService
 {
-    /** Instrumentist absence is only ever actionable against a mission that is ASSIGNED. */
-    private const INSTRUMENTIST_ACTIONABLE_STATUSES = [MissionStatus::ASSIGNED];
+    /**
+     * Instrumentist absence is only ever actionable against a mission that is ASSIGNED — since
+     * D-158 only while still to come and without encoded activity (AbsenceMissionProtectionPolicy,
+     * re-checked under the mission lock in processInstrumentistAbsence()).
+     */
+    private const INSTRUMENTIST_ACTIONABLE_STATUSES = AbsenceMissionProtectionPolicy::INSTRUMENTIST_ACTIONABLE_STATUSES;
 
-    /** Surgeon absence is actionable against a mission that is OPEN or already ASSIGNED. */
-    private const SURGEON_ACTIONABLE_STATUSES = [MissionStatus::OPEN, MissionStatus::ASSIGNED];
+    /**
+     * Surgeon absence is actionable against a mission that is OPEN or already ASSIGNED â€” since
+     * D-158 only while still to come and without encoded activity (AbsenceMissionProtectionPolicy,
+     * re-checked under the mission lock in processSurgeonAbsence()).
+     */
+    private const SURGEON_ACTIONABLE_STATUSES = AbsenceMissionProtectionPolicy::ACTIONABLE_STATUSES;
 
     public function __construct(
         private readonly EntityManagerInterface $em,
@@ -264,7 +273,7 @@ class AbsenceMissionReactionService
         return $summaries;
     }
 
-    /** @return array<string, mixed>|null null if the mission was no longer ASSIGNED under lock */
+    /** @return array<string, mixed>|null null if the mission was no longer ASSIGNED under lock, or is not auto-releasable (D-158) */
     private function processInstrumentistAbsence(Mission $mission, User $actor, Absence $absence): ?array
     {
         $reason = sprintf(
@@ -279,8 +288,11 @@ class AbsenceMissionReactionService
         $this->em->wrapInTransaction(function () use ($mission, $actor, $reason, $absence, &$captured, &$summary): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
 
-            if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
-                return; // handled concurrently between the overlap query and now
+            // Status handled concurrently between the overlap query and now, or (D-158) a
+            // mission already started / carrying encoded activity: never put back in the pool —
+            // left as is, AbsenceImpactService raises the manager's absence alert.
+            if (!AbsenceMissionProtectionPolicy::canAutoRelease($mission, Clock::get()->now())) {
+                return;
             }
 
             $instrumentist = $mission->getInstrumentist();
@@ -328,7 +340,7 @@ class AbsenceMissionReactionService
         return $summary;
     }
 
-    /** @return array<string, mixed>|null null if the mission was no longer OPEN|ASSIGNED under lock */
+    /** @return array<string, mixed>|null null if the mission was no longer OPEN|ASSIGNED under lock, or is not auto-cancellable (D-158) */
     private function processSurgeonAbsence(Mission $mission, User $actor, Absence $absence): ?array
     {
         $reason = sprintf(
@@ -343,13 +355,16 @@ class AbsenceMissionReactionService
         $this->em->wrapInTransaction(function () use ($mission, $actor, $reason, $absence, &$captured, &$summary): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
 
-            if (!in_array($mission->getStatus(), self::SURGEON_ACTIONABLE_STATUSES, true)) {
-                return; // handled concurrently between the overlap query and now
+            // Status handled concurrently between the overlap query and now, or (D-158) a
+            // mission already started / carrying encoded activity: never cancelled blindly â€”
+            // left as is, AbsenceImpactService raises the manager's SURGEON_ABSENCE alert.
+            if (!AbsenceMissionProtectionPolicy::canAutoCancel($mission, Clock::get()->now())) {
+                return;
             }
 
             $instrumentist = $mission->getInstrumentist();
             $captured = [
-                'instrumentist'         => $instrumentist,
+                'instrumentist'       => $instrumentist,
                 'fromInstrumentistId'   => $instrumentist?->getId(),
                 'fromInstrumentistName' => $instrumentist !== null ? self::displayName($instrumentist) : null,
             ];

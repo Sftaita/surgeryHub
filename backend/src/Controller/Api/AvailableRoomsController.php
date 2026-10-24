@@ -134,6 +134,28 @@ class AvailableRoomsController extends AbstractController
     }
 
     /**
+     * D-161 — le créneau annoncé par une notification « Salle opératoire disponible », relu
+     * au moment de l'ouverture : mêmes règles de visibilité que `myList()` (sites affiliés,
+     * jamais le passé, jamais une salle reprise par un confrère). 404 `ROOM_SLOT_UNAVAILABLE`
+     * quand il ne l'est plus — le frontend n'en déduit rien d'autre ; la reprise elle-même
+     * reste revérifiée sous verrou par `take-over`.
+     */
+    #[Route('/api/me/available-rooms/{id}', name: 'api_me_available_rooms_show', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function myShow(int $id, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        if (!in_array('ROLE_SURGEON', $currentUser->getRoles(), true)) {
+            throw $this->createAccessDeniedException();
+        }
+
+        $slot = $this->slots->findVisibleToSurgeon($id, $this->affiliatedSiteIds($currentUser), (int) $currentUser->getId());
+        if ($slot === null) {
+            return $this->json(['error' => ['code' => 'ROOM_SLOT_UNAVAILABLE', 'message' => 'Cette salle n\'est plus disponible.']], 404);
+        }
+
+        return $this->json($this->toPayload($slot));
+    }
+
+    /**
      * Endpoint léger pour le badge CTA du planning chirurgien (revue 2026-09-07) — un seul
      * `SELECT COUNT`, jamais la liste complète. Mêmes filtres/scoping que `myList()`.
      */

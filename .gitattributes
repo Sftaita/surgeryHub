@@ -1,1 +1,6 @@
 *.sh text eol=lf
+
+# Version de production : git archive remplace $Format:%H$ par le SHA exact du commit
+# archivé (export-subst). Dans un clone, ces fichiers gardent la valeur littérale = développement.
+backend/REVISION export-subst
+frontend/src/app/features/app-version/buildRevision.ts export-subst

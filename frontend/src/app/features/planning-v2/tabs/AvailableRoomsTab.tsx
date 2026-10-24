@@ -52,7 +52,7 @@ export function AvailableRoomsTab() {
     <Box>
       <Typography sx={{ fontSize: 14, color: planningV2Colors.textMuted, maxWidth: 560, mb: 2 }}>
         Créneaux opératoires BLOCK réellement libérés par les chirurgiens — visibles ici
-        indépendamment des emails « Libération de salle » (envoyés ou non).
+        indépendamment de leur annonce aux chirurgiens (notifications « Salle opératoire disponible »).
       </Typography>
 
       <Stack direction="row" spacing={1.25} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>

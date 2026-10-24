@@ -74,15 +74,17 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
     `information_schema` avec repro) ; `migrations:status` doit alors être à jour. Ne jamais
     supprimer `export_log`, ni marquer une version exécutée sans cette comparaison.
 
-## 5. Déploiement
+## 5. Déploiement — `deploy/deploy.sh` (D-163)
 
-- [ ] Archive créée via `git archive --format=tar.gz HEAD -- backend frontend docker-compose.yml` (**jamais** `tar` sur le répertoire de travail)
-- [ ] Archive transférée (`scp`) et extraite dans `/opt/stack/apps/surgicalhub/src/`
-- [ ] Build Docker : `docker compose build --no-cache` → `BUILD_EXIT=0` confirmé
-- [ ] Restart : `docker compose up -d` → 3 containers recréés
-- [ ] Migrations exécutées : `doctrine:migrations:migrate --no-interaction --env=prod`
-- [ ] `cache:clear --env=prod` puis `docker restart surgicalhub-php`
-- [ ] `docker restart surgicalhub-worker` si des handlers Messenger ont changé
+- [ ] `SHA` = SHA **complet** du commit validé en §0 (jamais `HEAD`, jamais une branche)
+- [ ] `deploy/deploy.sh paths $SHA` relu : compose versionné, Dockerfiles, `.dockerignore`, sources COPY (`docker/` inclus)
+- [ ] `deploy/deploy.sh prepare $SHA` → REVISION = SHA, aucun fichier interdit, SHA-256 notée
+- [ ] `deploy/deploy.sh upload $SHA` → empreinte vérifiée sur le serveur (sinon : arrêt, rien n'est extrait)
+- [ ] `deploy/deploy.sh stage $SHA` → `releases/$SHA` créé ; fichiers retirés relus
+- [ ] `deploy/deploy.sh build $SHA` → images `:$SHA` vérifiées (en cas d'échec : arrêt, rien n'est activé)
+- [ ] `deploy/deploy.sh migrations $SHA` → dry-run relu (§4)
+- [ ] `deploy/deploy.sh activate $SHA` → sauvegardes notées (dump, `deploy-backups/<horodatage>`), php et worker = SHA
+- [ ] `deploy/deploy.sh migrate $SHA` seulement si des migrations sont en attente
 
 ## 6. Tests santé obligatoires
 
@@ -95,6 +97,7 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] `docker logs surgicalhub-php --tail 30` — pas d'erreur/exception/critique liée au déploiement
 - [ ] `docker logs surgicalhub-worker --tail 15` — worker actif, consumer démarré
 - [ ] `doctrine:migrations:status --env=prod` → « Already at latest version »
+- [ ] D-162 : `app:release:show` → commit exécuté = commit déployé, statut `PENDING_VALIDATION`
 
 ## 7. Test ciblé — si une fonctionnalité majeure a été modifiée
 
@@ -118,6 +121,9 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] Commit déployé déjà présent sur `origin` (vérifié — sinon push `main`/branche d'abord)
 - [ ] `git tag -a vYYYY.MM.DD-prod -m "..."` créé
 - [ ] `git push origin vYYYY.MM.DD-prod`
+- [ ] D-162/D-163 : `deploy/deploy.sh mark $SHA vYYYY.MM.DD-prod` (tag vérifié sur origin, release active = SHA)
+- [ ] D-162 : cohérence vérifiée — commit du tag = commit exécuté (`app:release:show`, statut `OFFICIAL`) = version affichée en bas de « Mon profil » / `GET /api/version`
+- [ ] Après un rollback (`deploy/deploy.sh rollback <SHA>`) : `deploy/deploy.sh status` et `app:release:show` affichent la version restaurée
 - [ ] Table "Historique des versions déployées" de `docs/production.md` mise à jour (nouvelle ligne ajoutée, aucune ligne existante modifiée)
 
 ## En cas de problème — rollback

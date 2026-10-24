@@ -989,6 +989,10 @@ coexister. `remind_hours` n'est présent que si `MissionHoursReminderPolicy` le 
 pertinent : instrumentiste affecté, mission terminée (`endAt <= now`), aucune heure réelle
 (source `PLANNED`), statut `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|DECLARED`, encodage ni
 verrouillé ni facturé — même condition que `MissionVoter::HOURS_REMIND`.
+**D-166 :** aucune relance sans instrumentiste affectée — `remind` et `remind_hours` ne sont
+jamais servis pour une mission non pourvue, désaffectée ou réalisée sans instrumentiste (D-155),
+et réapparaissent dès qu'une instrumentiste est affectée. Règle unique :
+`EncodingReminderPolicy` (Voter, `allowedActions`, relances automatiques, rappel des heures).
 
 **Corrections directes du manager (D-153) :** `edit_encoding` (interventions, matériel) et
 `edit_hours` (heures réelles) sont proposés au manager / admin en `DECLARED`, `ASSIGNED`,
@@ -2339,6 +2343,9 @@ Même format de params que `GET /api/instrumentists/{id}/planning`.
 **Réponse — 200 :** Tableau d'événements FullCalendar.
 
 Le `title` de chaque événement est le nom de l'instrumentiste assigné (ou l'email, ou `"Mission #id"`).
+`status` (D-158) est le statut de la mission tel qu'enregistré (toutes les missions du chirurgien
+sont renvoyées, y compris `CANCELLED`) : le calendrier affiche une mission annulée comme telle,
+jamais comme un créneau occupé.
 
 ```json
 [
@@ -2348,6 +2355,7 @@ Le `title` de chaque événement est le nom de l'instrumentiste assigné (ou l'e
     "start": "2026-03-14T08:00:00+01:00",
     "end": "2026-03-14T12:00:00+01:00",
     "allDay": false,
+    "status": "ASSIGNED",
     "instrumentist": { "id": 5, "firstname": "Ole", "lastname": "Salve" },
     "site": { "id": 2, "name": "Delta" }
   }
@@ -3220,7 +3228,11 @@ automatiquement par `POST /api/absences`, `PATCH /api/absences/{id}`, `POST
 un `SURGEON`, deux communications indépendantes peuvent se déclencher par site concerné (au
 moins une occurrence `BLOCK` future de son planning habituel dans la période de l'absence,
 jamais `CONSULTATION`) :
-- **Libération de salle (Lot A)** — `notifyColleaguesEnabled` : un email individuel à chaque
+- **Libération de salle (Lot A)** — **retiré par D-161** : plus aucun e-mail automatique aux
+  confrères. Les salles réellement créées sont annoncées par la notification
+  `ROOM_SLOT_AVAILABLE` (push par défaut, e-mail seulement si le chirurgien l'a activé ; voir
+  `GET /api/me/notification-preferences`). `notifyColleaguesEnabled` gouverne désormais cette
+  annonce. Comportement historique : un email individuel à chaque
   chirurgien collègue actif affilié au site (le chirurgien absent exclu). Aucune
   correction/rétractation : raccourcir ou supprimer l'absence ne déclenche jamais rien pour ce
   flux ; un allongement révélant de nouvelles occurrences BLOCK jamais annoncées déclenche un
@@ -3510,6 +3522,15 @@ l'espace chirurgien, contrairement au manager ci-dessus.
 
 **Query params :** `siteId?`, `status?`, `page?`, `limit?`, `dateFrom?`/`dateTo?`, `period?`
 (mêmes formats/bornes que l'endpoint manager).
+
+#### `GET /api/me/available-rooms/{id}` (D-161)
+
+**AuthZ :** `ROLE_SURGEON` (403 sinon). Le créneau annoncé par une notification « Salle
+opératoire disponible », relu à l'ouverture, avec exactement les mêmes règles de visibilité que
+`GET /api/me/available-rooms` : sites du chirurgien, jamais le passé, jamais une salle reprise
+par un confrère. Réponse `200` : même forme qu'un élément de la liste (`status`,
+`allowedActions`, …). `404` `{"error": {"code": "ROOM_SLOT_UNAVAILABLE"}}` quand le créneau
+n'existe pas ou n'est plus visible. La reprise reste revérifiée par `take-over`.
 
 #### `GET /api/me/available-rooms/count`
 
@@ -4196,7 +4217,18 @@ mission n'est modifiée, personne n'est notifié, et la trace est un
 | `existingMissionId` | int \| null | `null` = nouvelle mission à créer (`MissionPostDeployService::createPostDeploy()`). Sinon, ID de la `Mission` existante à muter. |
 | `status` | string | `"SKIPPED"` = annuler la mission (`release()` si `ASSIGNED`, `cancel()` si `OPEN`). Toute autre valeur = pas d'annulation. |
 | `instrumentistId` | int \| null | Comparé à l'instrumentiste courant de la mission — `null`→valeur = `assign()`, valeur→`null` = `release()` **sauf si le chirurgien de cette Mission est actuellement absent** (D-112) : dans ce cas la Mission est réconciliée en `CANCELLED` (jamais `OPEN`) via `AbsenceMissionReactionService::reconcileMissionAgainstCurrentAbsences()`, quel que soit le `status` envoyé par le client. valeur→autre valeur = `reassign()`. |
-| `date`/`startTime`/`endTime`/`siteId`/`missionType` | — | Comparés à l'état courant ; tout écart sur une mission `OPEN`/`ASSIGNED` déclenche `updateSchedule()`. |
+| `date`/`startTime`/`endTime`/`siteId`/`missionType` | — | Comparés à l'état courant ; tout écart sur une mission `OPEN`/`ASSIGNED` déclenche `updateSchedule()`. D-165 : aussi sur une mission `IN_PROGRESS`, pour ses **seules heures du jour** (début jamais reporté après maintenant). |
+
+**D-165 — refus explicites et ordre d'application.** Un changement que le statut de la mission
+n'autorise pas répond `409 CONFLICT` (message nommant la mission, son chirurgien, sa date et son
+statut) et annule tout le lot — auparavant il était compté « inchangé » sans rien faire :
+changement ou retrait d'instrumentiste et annulation hors `OPEN`/`ASSIGNED` (ex. mission « En
+cours ») ; horaire/site/type au-delà d'`IN_PROGRESS` ; sur une mission `IN_PROGRESS`, site, type ou
+date ; heure de fin ≤ heure de début (tout statut). Les lignes qui donnent un **nouvel**
+instrumentiste à une mission existante sont appliquées **après** toutes les autres
+(annulations, retraits, horaires), et dans une ligne l'horaire est appliqué avant la nouvelle
+affectation : l'éligibilité est toujours évaluée sur les horaires finaux du lot (Dr A raccourci
+à 14:00 avant qu'elle soit affectée au Dr B à 14:45).
 
 Une ligne dont l'`existingMissionId` référence une mission déjà mutée ailleurs (ou étrangère à cette version) est **silencieusement ignorée** (pas d'échec du lot entier).
 
@@ -4405,6 +4437,14 @@ Deux catégories de résultat, jamais confondues :
 `RESTORED_ASSIGNED` | `RESTORED_OPEN` | `RESTORED` | `ALERT_CREATED`.
 
 **Idempotent** : un second appel sans mutation entre-temps retourne `issuesFound: 0`.
+
+**Réconciliation des alertes de conflit (D-167)** : en plus de la détection, le scan
+réévalue toutes les alertes `SURGEON_CONFLICT` / `INSTRUMENTIST_CONFLICT` actives
+(`OPEN`/`ACKNOWLEDGED`) impliquant une mission du périmètre opérationnel de la version
+(D-125), quel que soit le statut de la mission (y compris `IN_PROGRESS`) et quel que soit
+son côté de la paire. Une alerte dont le conflit a disparu passe à `RESOLVED` (jamais
+supprimée) et est comptée dans `alertsResolved`. Deux scans sans changement : `alertsCreated`
+et `alertsResolved` à 0, aucune alerte modifiée.
 
 **Réponse — 400 :** la version n'est pas `ACTIVE` (`DRAFT` a son propre chemin de
 revalidation au déploiement ; `ARCHIVED` est superseded).
@@ -4615,6 +4655,17 @@ créer/modifier une exception avec `source = SURGEON_ABSENCE`.
 | `POST /api/planning/alerts/{id}/open-as-available` | Vide l'instrumentiste, mission → `OPEN`, résout l'alerte |
 | `GET /api/planning/alerts/{id}/eligible-instrumentists` | D-102 (Lot 2) — roster complet du site, annoté d'éligibilité (jamais filtré) : `{missionId, policy, candidates: CandidateEligibility[]}`, chaque candidat portant `sites: string[]` en plus (ajouté Batch 12, conservé). Toujours `STRICT_ASSIGNMENT`. Délègue à `evaluateAllCandidates()`/`serializeCandidate()`, plus de logique dupliquée dans `PlanningAlertActionService` |
 | `GET /api/planning/v2/eligible-instrumentists` | D-102 (Lot 2, nouveau) — roster éligibilité pour un créneau hypothétique/sans mission persistée (Preview Editor : ligne éditée, bulk-assign, création de mission en Mode Modification). Query : `siteId?`, `date`, `startTime`, `endTime` (requis), `excludeMissionId?`, `policy?`. Réponse : `{policy, candidates: CandidateEligibility[]}`. Délègue à `evaluateRoster()` (4 requêtes DB) |
+| `POST /api/planning/v2/eligible-instrumentists` | D-165 — même roster, évalué contre la journée **en cours d'édition**. Body JSON : mêmes champs que la query GET + `proposals[]` (≤ 200) : `{missionId: int\|null, instrumentistId: int\|null, startTime, endTime, date?, surgeonId?, siteId?, cancelled?}` — les autres lignes non enregistrées de l'éditeur ce jour-là. Une mission existante proposée est évaluée à son créneau/instrumentiste **proposé** (sa ligne enregistrée ne compte plus ; `cancelled: true` → ne compte plus du tout) ; une nouvelle ligne avec instrumentiste compte comme une mission. Règle de chevauchement `[début, fin)` : `A.start < B.end && B.start < A.end` (07:45–14:00 et 14:00–18:00 ne se chevauchent pas). Rien n'est écrit ; chaque enregistrement revalide (D-101). |
+
+Chaque alerte porte aussi `autoActionBlockedReason` (D-158) : pour une alerte d'absence
+(`SURGEON_ABSENCE`, `REASSIGNMENT_REQUIRED`, `INSTRUMENTIST_ABSENCE`), `MISSION_STARTED`
+(mission déjà commencée au moment où l'absence est enregistrée) ou `ACTIVITY_ENCODED`
+(interventions, matériel, heures réelles ou activité déclarée sans instrumentiste) explique
+pourquoi la mission publiée n'a été ni annulée (chirurgien absent) ni remise au pool
+(instrumentiste absente) automatiquement ; `null` sinon. `relatedAbsenceIds` (D-158) liste les
+autres absences qui couvrent le même problème : une seule alerte active par (mission, type),
+`absence` restant l'absence de référence (ré-attribuée à une absence encore couvrante si la
+première est modifiée ou supprimée).
 
 `CandidateEligibility` (forme partagée par les 3 endpoints ci-dessus, D-102) :
 `{ id, name, email, eligible, selectable, reasons: string[], unavailability: {type: "ABSENCE", dateStart, dateEnd} | null, conflict: {missionId, siteName, startAt, endAt} | null, sites?: string[] }`
@@ -4626,8 +4677,19 @@ Statuts : `OPEN`/`ACKNOWLEDGED`/`RESOLVED`/`IGNORED`. Répéter la même transit
 idempotent (200, pas d'erreur — la première résolution gagne). Croiser les deux états
 terminaux (`RESOLVED`↔`IGNORED`) ou agir sur un état terminal → `409 CONFLICT`.
 Types : `SURGEON_ABSENCE`, `INSTRUMENTIST_ABSENCE`, `REASSIGNMENT_REQUIRED`,
-`OCCURRENCE_CANCELLED`, `SURGEON_CONFLICT`, `INSTRUMENTIST_CONFLICT` (les deux derniers
-sont définis mais pas encore déclenchés — voir freeze §G).
+`OCCURRENCE_CANCELLED`, `SURGEON_CONFLICT`, `INSTRUMENTIST_CONFLICT` (déclenchés depuis
+D-091 ; ainsi que `INSTRUMENTIST_INACTIVE` (D-106) et `SURGEON_INCOMPATIBILITY` (D-152)).
+
+**Alertes de conflit (D-167)** : une alerte par paire en conflit (mission d'id inférieur qui
+porte l'alerte, `conflict.conflictingMissionId`, personne, type) ; une mission en conflit avec
+deux autres porte deux alertes. Après chaque enregistrement (`apply-modifications`), chaque
+alerte de conflit active impliquant une mission touchée, de l'un ou l'autre côté, est
+réévaluée sur l'état enregistré : conflit disparu → `RESOLVED` automatiquement
+(`resolvedBy` `null`, `resolutionNote` « Conflit horaire résolu automatiquement après
+modification du planning : … ») ; conflit toujours présent, même réduit → l'alerte reste
+active et `conflict` reflète les horaires courants. Une alerte `IGNORED` n'est pas recréée tant
+que les horaires des deux missions sont inchangés ; une alerte `RESOLVED` n'est jamais
+rouverte (un conflit qui réapparaît crée une nouvelle alerte).
 
 #### Génération de planning V2 (Batch 9)
 
@@ -6133,7 +6195,10 @@ manager / admin uniquement (`403` sinon). Au plus 200 lignes, les plus récentes
 aucun statut : simple envoi de notification + trace d'audit.
 
 **AuthZ :** `MissionVoter::ENCODING_REMIND` — Manager/Admin uniquement, mission avec
-instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`.
+instrumentiste assigné, statut parmi `DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS`
+(**D-166** : `EncodingReminderPolicy::canSendManualReminder()`). L'affectation est lue sur la
+mission en base au moment de la requête : une instrumentiste retirée après l'ouverture de la
+mission par le manager → `403`, rien n'est envoyé ni audité.
 
 **Body (optionnel, H5a) :** `{ "batchId": "uuid" }` — identifiant de l'action du manager
 (8–64 caractères `[A-Za-z0-9-]`) : une requête rejouée avec le même lot n'envoie jamais une
@@ -6171,8 +6236,14 @@ seconde relance. Absent → la corrélation de la requête.
 
 | Code | Description |
 |---|---|
-| `403` | Non manager, mission sans instrumentiste, ou statut hors fenêtre |
+| `403` | Non manager, mission sans instrumentiste (y compris retirée depuis l'affichage, D-166), ou statut hors fenêtre |
 | `409` | D-143 — relance manuelle déjà envoyée il y a moins de 10 minutes |
+
+**Relances automatiques (D-143, `app:encoding:send-reminders`) — D-166 :** une mission sans
+instrumentiste affectée n'est jamais sélectionnée ; l'état est relu en base juste avant chaque
+envoi (instrumentiste retirée entre la sélection et l'envoi → `skipped`, aucune réservation,
+aucune notification, aucune escalade J+4). **Aucun envoi groupé** de relances manuelles n'existe
+(pas d'endpoint) ; la réponse de l'endpoint unitaire est inchangée.
 
 ---
 
@@ -7184,6 +7255,11 @@ complété ou corrigé interventions / matériel ; une notification par série d
 regroupées sur 2 h ; payload `missionId`, `missionDate`, `siteName`, `surgeonName`, jamais de
 détail d'encodage) — configurable, mêmes défauts. `CATALOGUE_REQUEST_CREATED` annonce l'auteur
 réel de la demande (instrumentiste, chirurgien, manager), jamais « un instrumentiste » par défaut.
+**D-161 :** `ROOM_SLOT_AVAILABLE` (chirurgien : une salle de l'un de ses sites vient de se
+libérer et peut être reprise ; payload `roomSlotId`, `siteName`, `occurrenceDate`, `dayLabel`,
+`startTime`, `endTime`, `periodLabel`) — configurable, défauts in-app oui / **push oui** /
+**e-mail non**, pour tous les comptes existants comme nouveaux. Jamais d'e-mail de secours sans
+abonnement push.
 
 ```
 PATCH /api/me/notification-preferences/{type}
@@ -7200,7 +7276,35 @@ exactement leur comportement précédent. `400` si `{type}` n'est pas une valeur
 **Frontend :** `frontend/src/app/features/notifications/NotificationPreferencesSection.tsx`,
 monté sur les deux pages Profil (manager et instrumentiste). Le canal push n'y est pas
 proposé — il dépend d'un abonnement d'appareil (voir §40), pas d'un simple booléen par
-catégorie.
+catégorie. **D-161 :** exception, `ROOM_SLOT_AVAILABLE` a sa rubrique dédiée
+(`RoomAvailabilityNotificationsCard`, profil chirurgien) avec les interrupteurs push et e-mail
+(`pushEnabled`, `emailEnabled`), l'état réel du push sur l'appareil affiché à part ; elle
+n'apparaît pas dans la liste générique.
+
+### 41.2b Version de l'application (D-162)
+
+```
+GET /api/version
+```
+
+**AuthZ :** tout utilisateur authentifié (`401` sinon). **Jamais mise en cache**
+(`Cache-Control: no-store, max-age=0, private`).
+
+```json
+{ "application": "SurgicalHub", "status": "OFFICIAL", "version": "v2026.10.21-prod", "commit": "f1ee401" }
+```
+
+`status` :
+- `OFFICIAL` : le commit exécuté a été enregistré comme version officielle par
+  `app:release:mark`, après le tag Git ;
+- `PENDING_VALIDATION` : déploiement pas encore validé, ou registre illisible ; `version` vaut
+  `null` ;
+- `DEVELOPMENT` : clone de travail ; `version` et `commit` valent `null`.
+
+`commit` est le SHA court du code réellement exécuté (`backend/REVISION`, écrit par
+`git archive`). Aucune autre donnée n'est exposée.
+
+**Frontend :** `AppVersionLine`, en bas de « Mon profil » des trois rôles.
 
 ### 41.3 Badge "offres non lues" (instrumentiste)
 
@@ -8452,3 +8556,30 @@ interventions / matériel conservés, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENT
   `FIRM_*`. Une mission classique sans instrumentiste reste `409 FINANCIAL_CALCULATION_INELIGIBLE`.
 - Renvoi en correction / réouverture : `ENCODING_CORRECTION_REQUESTED` au **chirurgien**
   (lien `/app/s/missions/{id}/encoding`).
+
+### D-165 — détail du conflit dans `CandidateEligibility.conflict`
+
+Tous les rosters d'éligibilité (`GET /api/missions/{id}/eligible-instrumentists`,
+`GET /api/planning/alerts/{id}/eligible-instrumentists`, `GET|POST /api/planning/v2/eligible-instrumentists`)
+enrichissent `conflict` (champs existants inchangés) :
+
+```json
+{
+  "missionId": 1085,
+  "siteName": "CHIREC - Hôpital Delta",
+  "startAt": "2026-10-23T07:45:00+02:00",
+  "endAt": "2026-10-23T18:00:00+02:00",
+  "surgeonName": "Phillipe Schiepers",
+  "missionStatus": "IN_PROGRESS",
+  "source": "PERSISTED"
+}
+```
+
+`source` : `PERSISTED` (mission enregistrée — publiée, ou brouillon si `missionStatus = DRAFT`)
+ou `PROPOSED` (ligne proposée dans l'éditeur, non enregistrée — `missionId` `null` pour une
+nouvelle ligne). Un conflit avec une mission enregistrée est signalé en priorité.
+
+`allowedActions` (manager / admin) gagne `reschedule` sur une mission `OPEN`, `ASSIGNED` ou
+`IN_PROGRESS` : son horaire prévu est corrigeable depuis le planning (`IN_PROGRESS` : heures du
+jour seulement). L'éditeur de planning en Mode Modification n'autorise le changement
+d'instrumentiste et l'annulation que si `cancel` est présent (`OPEN`/`ASSIGNED`).

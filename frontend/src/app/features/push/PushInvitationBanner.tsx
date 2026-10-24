@@ -19,8 +19,23 @@ const GRAY_900 = "#16202B";
  *  - « Plus tard » reporte l'invitation (7 j, puis 14 j, puis plus jamais) ; la carte
  *    « Notifications » du profil reste l'entrée permanente.
  * Le centre de notifications et les e-mails de secours fonctionnent sans push.
+ *
+ * D-161 — texte propre au chirurgien (salles opératoires disponibles) : pour lui, un refus
+ * n'active AUCUN e-mail de secours — les salles restent visibles dans le centre de
+ * notifications, et l'e-mail ne s'active que dans son profil, volontairement.
  */
-export function PushInvitationBanner() {
+const COPY = {
+  instrumentist: {
+    body: "Activez les notifications pour recevoir vos rappels de mission, les modifications de planning et les informations qui nécessitent votre attention.",
+    denied: "Notifications refusées — vos rappels vous parviendront par e-mail.",
+  },
+  surgeon: {
+    body: "Activez les notifications pour être prévenu dès qu'une salle opératoire se libère sur l'un de vos sites, et des informations qui nécessitent votre attention.",
+    denied: "Notifications refusées — les salles disponibles restent visibles dans le centre de notifications de SurgicalHub.",
+  },
+} as const;
+
+export function PushInvitationBanner({ scope = "instrumentist" }: { scope?: "instrumentist" | "surgeon" }) {
   const { status, subscribe } = usePushNotifications();
   const [visible, setVisible] = React.useState(() => shouldShowPushInvitation());
   const [justDenied, setJustDenied] = React.useState(false);
@@ -35,7 +50,7 @@ export function PushInvitationBanner() {
     return (
       <Box role="status" data-testid="push-invitation-denied" sx={bannerSx}>
         <Box sx={{ flex: 1, minWidth: 0, fontSize: 12.5, color: GRAY_500, lineHeight: 1.4 }}>
-          Notifications refusées — vos rappels vous parviendront par e-mail.{" "}
+          {COPY[scope].denied}{" "}
           {platform === "ios"
             ? "Pour les réactiver : Réglages iOS → Notifications → SurgicalHub."
             : "Pour les réactiver : paramètres du site dans votre navigateur (icône à côté de l'adresse) → Notifications."}
@@ -59,7 +74,7 @@ export function PushInvitationBanner() {
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Box sx={{ fontSize: 13, fontWeight: 800, color: GRAY_900 }}>Ne manquez aucune information importante</Box>
         <Box sx={{ fontSize: 11.5, color: GRAY_500, lineHeight: 1.35, mt: "2px" }}>
-          Activez les notifications pour recevoir vos rappels de mission, les modifications de planning et les informations qui nécessitent votre attention.
+          {COPY[scope].body}
         </Box>
         <Box sx={{ display: "flex", gap: "14px", alignItems: "center", mt: "8px" }}>
           <Box

@@ -35,13 +35,13 @@ import {
   aggregateGenerated, aggregateDeploy, type AggregatedGenerated, type AggregatedDeploy,
   severityOf, filterLines, countBySeverity, type SeverityFilter,
   groupLinesByDayAndSurgeon, formatDayHeader,
-  lineKeyV2, getFreedInstrumentists, findSameDayAssignmentElsewhere, missionToPreviewLine,
+  lineKeyV2, getFreedInstrumentists, buildRosterProposals, missionToPreviewLine,
 } from "../api/generatePreviewGrouping";
 import { useRosterEligibility, useMergedRosterEligibility, type RosterSlot } from "../api/useRosterEligibility";
-import { candidateGhostLabel, eligibilityReasonLabel } from "../api/eligibilityReasons";
+import { candidateGhostLabel, conflictSentence, eligibilityReasonLabel } from "../api/eligibilityReasons";
 import { useToast } from "../../../ui/toast/useToast";
 import { SearchableSelect, type SearchableOption } from "../components/SearchableSelect";
-import { Inspector, type NewMissionDraft } from "../components/Inspector";
+import { Inspector, type LineEditability, type NewMissionDraft } from "../components/Inspector";
 import { PersonAvatar, EmptyAvatar } from "../../../ui/avatar/PersonAvatar";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 import { planningV2Colors, planningV2Radii, planningV2Shadows } from "../theme/tokens";
@@ -63,6 +63,17 @@ const STATUS_TOKENS: Record<PreviewLineStatus, { label: string; fg: string; bg: 
   MODIFIED:  { label: "Modifié",              fg: "#3B6296", bg: "#EFF4FB", dot: "#7AA0D4", icon: <SyncOutlinedIcon sx={{ fontSize: 14 }} /> },
   CONFLICT:  { label: "Conflit",              fg: "#A8554F", bg: "#FBF2F1", dot: "#D58A84", icon: <ErrorOutlineOutlinedIcon sx={{ fontSize: 14 }} /> },
   SKIPPED:   { label: "Chirurgien absent",    fg: "#8A6420", bg: "#FAF5E9", dot: "#DBAB4E", icon: <EventBusyOutlinedIcon sx={{ fontSize: 14 }} /> },
+};
+
+// D-165 — labels of a saved mission's own status once past OPEN/ASSIGNED (mirrors
+// App\Enum\MissionStatus::label()), shown next to the coverage badge in Mode Modification.
+const MISSION_STATUS_LABELS: Record<string, string> = {
+  IN_PROGRESS: "En cours",
+  ENCODING_IN_PROGRESS: "Encodage en cours",
+  DECLARED: "Déclarée",
+  SUBMITTED: "Soumise",
+  VALIDATED: "Validée",
+  CLOSED: "Clôturée",
 };
 
 // D-152 — a CONFLICT line whose instrumentist is incompatible with the surgeon.
@@ -511,6 +522,13 @@ export function GeneratePlanningTab() {
       setNewLines([]);
       setSelectedLineKey(null);
       setIsCreatingMission(false);
+      // D-165 — every screen showing these missions or their availability: the eligibility
+      // rosters (cached per slot — a stale one kept reporting the old conflict after a
+      // successful save), the published planning, mission lists and alerts.
+      queryClient.invalidateQueries({ queryKey: ["planning-v2", "roster-eligibility"] });
+      queryClient.invalidateQueries({ queryKey: ["planning-v2", "alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["planning-schedule"] });
+      queryClient.invalidateQueries({ queryKey: ["missions"] });
       // The mutation itself is already confirmed applied server-side above — but the list
       // still shows what was on screen *before* the redeploy until this refetch lands. If it
       // fails (session expired between the two requests, network blip…), that stale view
@@ -615,6 +633,20 @@ export function GeneratePlanningTab() {
   const dayGroups = groupLinesByDayAndSurgeon(filteredLines);
   const severityCounts = countBySeverity(effectiveLines);
   const dirtyCount = editedLines.size;
+  const baseByKey = React.useMemo(() => new Map(lines.map((l) => [lineKeyV2(l), l])), [lines]);
+
+  // D-165 — what the backend lets the manager change on a saved mission in Mode
+  // Modification, read from its `allowedActions` (never derived from its status here):
+  // `reschedule` → times (also while IN_PROGRESS), `cancel` → instrumentist and
+  // cancellation (OPEN/ASSIGNED only). Preview/new lines are fully editable.
+  function editabilityOf(line: PreviewLineV2): LineEditability {
+    if (!isModification || line.existingMissionId == null || !line.existingMissionActions) {
+      return { schedule: true, instrumentist: true, cancel: true };
+    }
+    const actions = line.existingMissionActions;
+    const open = actions.includes("cancel");
+    return { schedule: actions.includes("reschedule"), instrumentist: open, cancel: open };
+  }
 
   // ── Line edit helpers ──────────────────────────────────────────────────────
 
@@ -654,13 +686,9 @@ export function GeneratePlanningTab() {
         blockedReason: null,
         status: line.status === "SKIPPED" ? "UNCOVERED" : (line.status === "UNCOVERED" || line.status === "CONFLICT" ? "COVERED" : line.status),
       });
-
-      // They can't be in two places the same day — clear their other slot instead of
-      // silently double-booking them (non-blocking: the reassignment itself still goes through).
-      const elsewhere = findSameDayAssignmentElsewhere(effectiveLines, line, newId);
-      if (elsewhere) {
-        handleEditLine(lineKeyV2(elsewhere), { instrumentistId: null, instrumentistName: null, status: "UNCOVERED" });
-      }
+      // D-165 — never touch another line here: a real overlap is reported by the backend
+      // roster (who, when, saved or proposed) and, on save, by the backend itself; a
+      // same-day but successive slot (07:45–14:00 then 14:45–18:00) is not a conflict.
     }
   }
 
@@ -680,7 +708,7 @@ export function GeneratePlanningTab() {
       const next = new Map(prev);
       for (const key of selectedKeys) {
         const line = effectiveLines.find((l) => lineKeyV2(l) === key);
-        if (!line || line.status === "SKIPPED") continue;
+        if (!line || line.status === "SKIPPED" || !editabilityOf(line).instrumentist) continue;
         next.set(key, {
           ...(next.get(key) ?? {}),
           instrumentistId: inst.id,
@@ -699,6 +727,8 @@ export function GeneratePlanningTab() {
     setEditedLines((prev) => {
       const next = new Map(prev);
       for (const key of selectedKeys) {
+        const line = effectiveLines.find((l) => lineKeyV2(l) === key);
+        if (line && !editabilityOf(line).cancel) continue;
         // Clear the instrumentist together with the status — a SKIPPED line must never keep
         // showing a stale name/avatar as if still assigned (matches handleInstrumentistChange).
         next.set(key, { ...(next.get(key) ?? {}), status: "SKIPPED" as PreviewLineStatus, instrumentistId: null, instrumentistName: null, blockedReason: null });
@@ -783,6 +813,10 @@ export function GeneratePlanningTab() {
   // ABSENT/SCHEDULE_CONFLICT/INACTIVE/NO_SITE_MEMBERSHIP — never recomputed client-side.
   // PLANNING_MODIFICATION in Mode Modification (SCHEDULE_CONFLICT stays non-blocking,
   // surfaced as a PlanningAlert per D-091), STRICT_ASSIGNMENT in Génération.
+  // D-165 — the editor's other unsaved lines of that day go with the request, so the
+  // backend's SCHEDULE_CONFLICT reflects the day being composed (and says whether the
+  // conflict is with a saved mission or a proposed line) — never decided client-side.
+  const editedKeys = React.useMemo(() => new Set(editedLines.keys()), [editedLines]);
   const selectedLineSlot: RosterSlot | null = selectedLine
     ? {
         siteId: selectedLine.siteId,
@@ -791,6 +825,7 @@ export function GeneratePlanningTab() {
         endTime: selectedLine.endTime,
         excludeMissionId: selectedLine.existingMissionId,
         surgeonId: selectedLine.surgeonId,
+        proposals: buildRosterProposals(effectiveLines, selectedLine, editedKeys),
       }
     : null;
   const selectedLineRosterQuery = useRosterEligibility(
@@ -799,12 +834,9 @@ export function GeneratePlanningTab() {
   );
 
   // Per-option annotations scoped to the line currently selected — the backend roster
-  // already reflects that exact slot for ABSENT/SCHEDULE_CONFLICT (persisted Missions)/
-  // INACTIVE/NO_SITE_MEMBERSHIP; while it's loading (or nothing is selected), fall back to
-  // the raw unannotated list rather than blocking the picker. Layered on top: a purely
-  // local, preview-only "already assigned elsewhere the same day" check — this can't come
-  // from the backend since these Preview lines aren't persisted Missions yet, so it stays
-  // client-side, non-blocking, and doesn't override a harder backend-sourced ghost.
+  // reflects that exact slot for ABSENT/SCHEDULE_CONFLICT (saved missions AND, D-165, the
+  // editor's proposed lines)/INACTIVE/NO_SITE_MEMBERSHIP. A non-blocking conflict (Mode
+  // Modification, D-091) stays selectable, muted, with who/when in its badge.
   const instrumentistOptionsForSelected: SearchableOption[] = React.useMemo(() => {
     if (!selectedLine) return instrumentistOptions;
     // D-152 — until the backend roster for this slot is known, nobody is selectable: a
@@ -820,14 +852,21 @@ export function GeneratePlanningTab() {
           disabled: true, badge: candidateGhostLabel(c) ?? undefined,
         };
       }
-      const elsewhere = findSameDayAssignmentElsewhere(effectiveLines, selectedLine, c.id);
       return {
         id: c.id, label: c.name, avatarUrl: base?.avatarUrl,
-        muted: !!elsewhere,
-        badge: elsewhere ? "Déjà affecté ailleurs" : (candidateGhostLabel(c) ?? undefined),
+        muted: c.reasons.includes("SCHEDULE_CONFLICT"),
+        badge: candidateGhostLabel(c) ?? undefined,
       };
     });
-  }, [instrumentistOptions, selectedLine, selectedLineRosterQuery.data, effectiveLines]);
+  }, [instrumentistOptions, selectedLine, selectedLineRosterQuery.data]);
+
+  // D-165 — why the line's CURRENT instrumentist is in conflict, in full ("X est déjà
+  // affectée au Dr Y de 07:45 à 18:00 — planning publié."), straight from the roster.
+  const selectedConflictMessage = React.useMemo(() => {
+    if (!selectedLine || selectedLine.instrumentistId === null) return null;
+    const current = selectedLineRosterQuery.data?.candidates.find((c) => c.id === selectedLine.instrumentistId);
+    return current ? conflictSentence(current) : null;
+  }, [selectedLine, selectedLineRosterQuery.data]);
 
   // D-152 — only freed instrumentists the backend roster accepts for this line (never one
   // blocked by its surgeon, never before the roster is known).
@@ -844,8 +883,11 @@ export function GeneratePlanningTab() {
     () => [...selectedKeys]
       .map((key) => effectiveLines.find((l) => lineKeyV2(l) === key))
       .filter((l): l is PreviewLineV2 => !!l && l.status !== "SKIPPED")
-      .map((l) => ({ siteId: l.siteId, date: l.date, startTime: l.startTime, endTime: l.endTime, excludeMissionId: l.existingMissionId, surgeonId: l.surgeonId })),
-    [selectedKeys, effectiveLines],
+      .map((l) => ({
+        siteId: l.siteId, date: l.date, startTime: l.startTime, endTime: l.endTime, excludeMissionId: l.existingMissionId, surgeonId: l.surgeonId,
+        proposals: buildRosterProposals(effectiveLines, l, editedKeys),
+      })),
+    [selectedKeys, effectiveLines, editedKeys],
   );
   const bulkRoster = useMergedRosterEligibility(bulkSlots, isModification ? "PLANNING_MODIFICATION" : "STRICT_ASSIGNMENT");
   const bulkInstrumentistOptions: SearchableOption[] = React.useMemo(() => {
@@ -1102,9 +1144,18 @@ export function GeneratePlanningTab() {
         <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Vérification terminée</DialogTitle>
         <DialogContent>
           {verifyResult && verifyResult.issuesFound === 0 ? (
-            <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
-              Aucun conflit détecté — {verifyResult.checkedMissions} mission{verifyResult.checkedMissions > 1 ? "s" : ""} vérifiée{verifyResult.checkedMissions > 1 ? "s" : ""}.
-            </Typography>
+            <Stack spacing={1.5}>
+              <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
+                Aucun conflit détecté — {verifyResult.checkedMissions} mission{verifyResult.checkedMissions > 1 ? "s" : ""} vérifiée{verifyResult.checkedMissions > 1 ? "s" : ""}.
+              </Typography>
+              {/* D-167 — a stale alert resolved by the scan is not an anomaly, but the manager
+                  must still learn that it left the Alertes tab. */}
+              {verifyResult.alertsResolved > 0 && (
+                <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted }}>
+                  · {verifyResult.alertsResolved} alerte{verifyResult.alertsResolved > 1 ? "s" : ""} obsolète{verifyResult.alertsResolved > 1 ? "s" : ""} résolue{verifyResult.alertsResolved > 1 ? "s" : ""} — le conflit n&apos;existe plus
+                </Typography>
+              )}
+            </Stack>
           ) : verifyResult && (
             <Stack spacing={1.5}>
               <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textStrong, fontWeight: 600 }}>
@@ -1670,6 +1721,17 @@ export function GeneratePlanningTab() {
                           // D-125 — a pre-existing, already-published mission is never modified by
                           // generate() (backend R-01): shown as the existing reality, not editable here.
                           const lockedExisting = !isModification && !!line.existingMissionStatus && line.existingMissionStatus !== "DRAFT";
+                          const editability = editabilityOf(line);
+                          // D-165 — a saved mission past OPEN/ASSIGNED shows its real status
+                          // (e.g. « OK · En cours ») inside the coverage badge.
+                          const startedLabel = isModification && line.existingMissionStatus && !["OPEN", "ASSIGNED", "CANCELLED", "DRAFT"].includes(line.existingMissionStatus)
+                            ? MISSION_STATUS_LABELS[line.existingMissionStatus] ?? line.existingMissionStatus
+                            : null;
+                          // D-165 — an edited line says what is still published until it is saved.
+                          const base = dirty ? baseByKey.get(key) : undefined;
+                          const previousLabel = base && (base.status !== line.status || base.instrumentistId !== line.instrumentistId)
+                            ? `${isModification ? "Publié" : "Avant"} : ${STATUS_TOKENS[base.status].label}${base.instrumentistName && base.instrumentistId !== line.instrumentistId ? ` · ${base.instrumentistName}` : ""}`
+                            : null;
                           return (
                             <Stack
                               key={lIdx} direction="row" alignItems="center" spacing={1.5}
@@ -1683,7 +1745,7 @@ export function GeneratePlanningTab() {
                             >
                               <Checkbox
                                 size="small"
-                                disabled={lockedExisting}
+                                disabled={lockedExisting || !editability.instrumentist}
                                 checked={selectedKeys.has(key)}
                                 onClick={(e) => e.stopPropagation()}
                                 onChange={() => toggleSelected(key)}
@@ -1706,7 +1768,8 @@ export function GeneratePlanningTab() {
                                   <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textSecondary }}>/</Typography>
                                 ) : line.instrumentistName ? (
                                   <Stack
-                                    direction="row" alignItems="center" spacing={0.9} sx={{ minWidth: 0, opacity: line.blockedReason ? 0.5 : 1 }}
+                                    // D-165 — the name never collapses to its avatar behind the chips.
+                                    direction="row" alignItems="center" spacing={0.9} sx={{ minWidth: 72, opacity: line.blockedReason ? 0.5 : 1 }}
                                     aria-label={line.blockedReason ? `${line.instrumentistName} — Bloqué, instrumentiste incompatible avec le chirurgien` : undefined}
                                   >
                                     <PersonAvatar name={line.instrumentistName} photoUrl={resolveApiAssetUrl(line.instrumentistPhotoPath)} size="xs" />
@@ -1720,7 +1783,7 @@ export function GeneratePlanningTab() {
                                     </Typography>
                                   </>
                                 )}
-                                {line.status !== "SKIPPED" && !lockedExisting && (
+                                {line.status !== "SKIPPED" && !lockedExisting && !dirty && (
                                   <EditOutlinedIcon sx={{ fontSize: 13, color: planningV2Colors.textSecondary, flex: "none" }} />
                                 )}
                                 {lockedExisting && (
@@ -1746,6 +1809,9 @@ export function GeneratePlanningTab() {
                                 {dirty && (
                                   <Chip
                                     label="Édité" size="small"
+                                    data-testid="line-edited"
+                                    // D-165 — what is still published/saved until this edit is applied.
+                                    title={`${previousLabel ? `${previousLabel}. ` : ""}${isModification ? "Modification locale — rien n'est publié avant « Redéployer »." : "Modification locale, pas encore enregistrée."}`}
                                     onDelete={(e) => { e.stopPropagation(); handleResetLine(key); }}
                                     sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: planningV2Colors.warnBg, color: planningV2Colors.warnFg, flex: "none" }}
                                   />
@@ -1759,6 +1825,15 @@ export function GeneratePlanningTab() {
                               }}>
                                 <Box sx={{ width: 6, height: 6, borderRadius: "999px", bgcolor: tokens.dot }} />
                                 {tokens.label}
+                                {startedLabel && (
+                                  <Box
+                                    component="span" data-testid="line-mission-status"
+                                    title={editability.schedule ? "Mission commencée : seuls ses horaires prévus du jour peuvent être corrigés." : "Mission commencée : plus modifiable depuis le planning."}
+                                    sx={{ fontWeight: 600, color: planningV2Colors.textStrong }}
+                                  >
+                                    · {startedLabel}
+                                  </Box>
+                                )}
                               </Box>
                             </Stack>
                           );
@@ -1864,6 +1939,9 @@ export function GeneratePlanningTab() {
           onCancelMission={() => selectedLine && handleCancelMission(selectedLine)}
           onReleaseMission={() => selectedLine && handleReleaseMission(selectedLine)}
           onReset={() => selectedLineKey && handleResetLine(selectedLineKey)}
+          editability={selectedLine ? editabilityOf(selectedLine) : undefined}
+          conflictMessage={selectedConflictMessage}
+          previousLine={selectedLine && selectedLineKey && editedLines.has(selectedLineKey) ? baseByKey.get(selectedLineKey) ?? null : null}
           canAddMission={isModification || (draftVersionId !== null && !draftScopeNeedsConfirmation)}
           isCreating={isCreatingMission}
           surgeonOptions={surgeonOptions}

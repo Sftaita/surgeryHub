@@ -349,7 +349,7 @@ final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
         self::assertCount(0, array_filter($transport->getSent(), fn ($e) => $e->getMessage() instanceof SendTemplatedEmailMessage), 'aucun email dispatché par une preview');
     }
 
-    public function test_preview_classifies_will_send_and_will_send_now_correctly(): void
+    public function test_preview_classifies_retired_room_release_and_will_send_now_correctly(): void
     {
         $cutoff = new \DateTimeImmutable('2026-09-01');
         $today = new \DateTimeImmutable('today');
@@ -368,11 +368,12 @@ final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
 
         $item = $this->findItem($preview, $absence->getId());
         $site0 = $item['sites'][0];
-        self::assertSame('WILL_SEND', $site0['roomRelease']['status']);
-        self::assertSame(1, $site0['roomRelease']['recipientCount']);
+        // D-161 — the « Libération de salle » email no longer exists: never retroactive.
+        self::assertSame('RETIRED', $site0['roomRelease']['status']);
+        self::assertSame(0, $site0['roomRelease']['recipientCount']);
         self::assertSame('WILL_SEND_NOW', $site0['blockManagement']['status']);
         self::assertTrue($item['selectable']);
-        self::assertGreaterThanOrEqual(1, $preview['summary']['roomReleaseEmailsPotential']);
+        self::assertSame(0, $preview['summary']['roomReleaseEmailsPotential']);
         self::assertGreaterThanOrEqual(1, $preview['summary']['blockManagementImmediate']);
     }
 
@@ -392,29 +393,42 @@ final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
 
         $item = $this->findItem($preview, $absence->getId());
         $site0 = $item['sites'][0];
-        self::assertSame('DISABLED', $site0['roomRelease']['status']);
+        self::assertSame('RETIRED', $site0['roomRelease']['status']);
         self::assertSame('DISABLED', $site0['blockManagement']['status']);
         self::assertFalse($item['selectable']);
         self::assertGreaterThanOrEqual(1, $preview['summary']['noActionAbsences']);
     }
 
-    public function test_preview_classifies_no_recipient_when_no_eligible_colleague(): void
+    /**
+     * D-161 — a site with colleague notifications on and an eligible colleague: the room
+     * release alone never makes an absence selectable, and executing the catch-up never
+     * writes a ROOM_RELEASE communication, never queues an email, never announces a room.
+     */
+    public function test_room_release_is_retired_never_selectable_and_never_sent_retroactively(): void
     {
         $cutoff = new \DateTimeImmutable('2026-09-01');
         $today = new \DateTimeImmutable('today');
         $surgeon = $this->makeUser();
+        $colleague = $this->makeUser('ROLE_SURGEON', 'Colleague', 'Test');
         $site = $this->makeSite();
         $this->affiliate($surgeon, $site);
+        $this->affiliate($colleague, $site);
         $this->enableColleagues($site);
         $this->makePost($surgeon, $site, $today, $today->format('Y-m-d'));
-        // Aucun autre chirurgien affilié à ce site.
 
         $absence = $this->makeAbsence($surgeon, $today->format('Y-m-d'), $today->modify('+5 days')->format('Y-m-d'), new \DateTimeImmutable('2026-09-05'));
 
-        $preview = $this->service->preview($cutoff);
+        $item = $this->findItem($this->service->preview($cutoff), $absence->getId());
+        self::assertSame('RETIRED', $item['sites'][0]['roomRelease']['status']);
+        self::assertFalse($item['selectable']);
 
-        $item = $this->findItem($preview, $absence->getId());
-        self::assertSame('NO_RECIPIENT', $item['sites'][0]['roomRelease']['status']);
+        /** @var InMemoryTransport $transport */
+        $transport = self::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+        $result = $this->service->execute($cutoff, [$absence->getId()], $surgeon);
+        self::assertSame('PROCESSED', $result['results'][0]['status']);
+        self::assertSame(0, $result['results'][0]['newCommunicationCount']);
+        self::assertSame([], $transport->getSent(), 'no email, no room announcement from a catch-up');
     }
 
     public function test_preview_classifies_missing_config_when_enabled_but_invalid(): void
@@ -542,8 +556,8 @@ final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
 
         $item = $this->findItem($preview, $absence->getId());
         $site0 = $item['sites'][0] ?? null;
-        // Room release : plus aucune occurrence future → NO_FUTURE_BLOCK.
-        self::assertSame('NO_FUTURE_BLOCK', $site0['roomRelease']['status']);
+        // D-161 — room release retired.
+        self::assertSame('RETIRED', $site0['roomRelease']['status']);
         // Gestion du bloc : jamais de notification rétroactive pour un congé déjà terminé.
         self::assertSame('ABSENCE_ALREADY_ENDED', $site0['blockManagement']['status']);
         self::assertFalse($item['selectable']);
@@ -576,7 +590,7 @@ final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
 
         $comms = $this->em->createQueryBuilder()->select('c')->from(SurgeonAbsenceCommunication::class, 'c')
             ->where('c.absence = :a')->setParameter('a', $absence)->getQuery()->getResult();
-        self::assertCount(2, $comms, 'exactement une ROOM_RELEASE + une BLOCK_MANAGEMENT_ABSENCE, jamais de doublon après deux exécutions');
+        self::assertCount(1, $comms, 'exactement une BLOCK_MANAGEMENT_ABSENCE (D-161 : plus de ROOM_RELEASE), jamais de doublon après deux exécutions');
     }
 
     // ── §13 : absence supprimée entre preview et execute ────────────────────
@@ -620,131 +634,6 @@ final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
         self::assertCount(0, $blockComms, 'jamais de communication gestion du bloc pour un congé déjà terminé');
     }
 
-    // ── §12 : rattrapage partiel Room Release ───────────────────────────────
-
-    /**
-     * Revue finale (§12) — un site déjà partiellement annoncé (1 date sur 3, par exemple un
-     * envoi manuel ou un déploiement partiel antérieur au Lot C) ne doit recevoir que le
-     * delta réel des dates jamais annoncées, jamais une réannonce complète ; un second
-     * rattrapage n'envoie plus rien.
-     */
-    public function test_execute_sends_only_the_new_room_release_occurrences_when_one_was_already_announced(): void
-    {
-        $cutoff = new \DateTimeImmutable('2026-09-01');
-        $today = new \DateTimeImmutable('today');
-        $surgeon = $this->makeUser('ROLE_SURGEON', 'Partial', 'Catchup');
-        $colleague = $this->makeUser('ROLE_SURGEON', 'Colleague', 'Test');
-        $site = $this->makeSite();
-        $this->affiliate($surgeon, $site);
-        $this->affiliate($colleague, $site);
-        $this->enableColleagues($site);
-
-        $anchor = $today->modify('+3 days');
-        $post = $this->makePost($surgeon, $site, $anchor, $anchor->format('Y-m-d'));
-        // Absence couvrant 3 occurrences hebdomadaires du même post (+3, +10, +17 jours).
-        $absence = $this->makeAbsence($surgeon, $anchor->format('Y-m-d'), $anchor->modify('+20 days')->format('Y-m-d'), new \DateTimeImmutable('2026-09-05'));
-
-        // Simule un envoi partiel déjà réalisé avant ce rattrapage : seule la 1ère occurrence
-        // a déjà été annoncée.
-        $journal = self::getContainer()->get(AbsenceCommunicationJournalService::class);
-        $journal->recordRoomRelease(
-            $this->em->find(Absence::class, $absence->getId()),
-            $this->em->find(Hospital::class, $site->getId()),
-            $this->em->find(User::class, $surgeon->getId()),
-            occurrences: [['postId' => $post->getId(), 'date' => $anchor->format('Y-m-d'), 'period' => 'MATIN']],
-            recipients: [$this->em->find(User::class, $colleague->getId())],
-            subject: 'Libération de salle — Test',
-            body: '<p>Test</p>',
-        );
-
-        $result = $this->service->execute($cutoff, [$absence->getId()], $surgeon);
-        self::assertSame('PROCESSED', $result['results'][0]['status']);
-        self::assertSame(1, $result['results'][0]['newCommunicationCount'], 'un seul nouveau delta ROOM_RELEASE (2 dates restantes), jamais 2 communications ni une réannonce de la 1ère date');
-
-        $this->em->clear();
-        $comms = $this->em->createQueryBuilder()->select('c')->from(SurgeonAbsenceCommunication::class, 'c')
-            ->where('c.absence = :a')->andWhere('c.type = :t')
-            ->setParameter('a', $absence->getId())->setParameter('t', AbsenceCommunicationType::ROOM_RELEASE)
-            ->orderBy('c.revisionNumber', 'ASC')
-            ->getQuery()->getResult();
-        self::assertCount(2, $comms, 'la communication pré-existante (revision 0) + le delta du rattrapage (revision 1), jamais fusionnées ni dupliquées');
-        self::assertCount(1, $comms[0]->getOccurrencesSnapshot());
-        self::assertCount(2, $comms[1]->getOccurrencesSnapshot(), 'le delta ne contient que les 2 dates jamais annoncées');
-
-        // Un second rattrapage n'a plus rien à annoncer.
-        $result2 = $this->service->execute($cutoff, [$absence->getId()], $surgeon);
-        self::assertSame(0, $result2['results'][0]['newCommunicationCount'], 'plus aucune date à annoncer — un relaunch doit être un pur no-op');
-    }
-
-    // ── §15 : configuration modifiée entre preview et execute ───────────────
-
-    /**
-     * Revue finale (§15) — `execute()` ne fait jamais confiance à une preview passée : la
-     * configuration du site est relue en temps réel au moment de l'exécution. Un site
-     * désactivé entretemps ne doit plus rien envoyer, même si une preview antérieure promettait
-     * WILL_SEND.
-     */
-    public function test_execute_sends_nothing_when_colleagues_notification_was_disabled_after_preview(): void
-    {
-        $cutoff = new \DateTimeImmutable('2026-09-01');
-        $today = new \DateTimeImmutable('today');
-        $surgeon = $this->makeUser();
-        $colleague = $this->makeUser('ROLE_SURGEON', 'Colleague', 'Test');
-        $site = $this->makeSite();
-        $this->affiliate($surgeon, $site);
-        $this->affiliate($colleague, $site);
-        $this->enableColleagues($site);
-        $this->makePost($surgeon, $site, $today, $today->format('Y-m-d'));
-
-        $absence = $this->makeAbsence($surgeon, $today->format('Y-m-d'), $today->modify('+5 days')->format('Y-m-d'), new \DateTimeImmutable('2026-09-05'));
-
-        $previewBefore = $this->service->preview($cutoff);
-        self::assertSame('WILL_SEND', $this->findItem($previewBefore, $absence->getId())['sites'][0]['roomRelease']['status']);
-
-        // Le manager désactive la fonction avant que le rattrapage ne soit réellement exécuté.
-        $config = $this->em->getRepository(AbsenceCommunicationSiteConfig::class)->findOneBy(['site' => $this->em->find(Hospital::class, $site->getId())]);
-        $config->setNotifyColleaguesEnabled(false);
-        $this->em->flush();
-
-        $result = $this->service->execute($cutoff, [$absence->getId()], $surgeon);
-        self::assertSame('PROCESSED', $result['results'][0]['status']);
-        self::assertSame(0, $result['results'][0]['newCommunicationCount'], 'la config actuelle (désactivée) doit gouverner execute(), jamais la preview obsolète');
-
-        $comms = $this->em->createQueryBuilder()->select('c')->from(SurgeonAbsenceCommunication::class, 'c')
-            ->where('c.absence = :a')->setParameter('a', $absence->getId())->getQuery()->getResult();
-        self::assertCount(0, $comms);
-    }
-
-    /**
-     * Revue finale (§15) — symétrique : un site activé APRÈS la preview (qui annonçait
-     * DISABLED) doit pouvoir être réellement traité par execute(), puisqu'il revalide tout
-     * côté serveur au moment de l'exécution.
-     */
-    public function test_execute_processes_a_site_enabled_after_a_preview_that_showed_disabled(): void
-    {
-        $cutoff = new \DateTimeImmutable('2026-09-01');
-        $today = new \DateTimeImmutable('today');
-        $surgeon = $this->makeUser();
-        $colleague = $this->makeUser('ROLE_SURGEON', 'Colleague', 'Test');
-        $site = $this->makeSite();
-        $this->affiliate($surgeon, $site);
-        $this->affiliate($colleague, $site);
-        // Pas de enableColleagues() pour l'instant : DISABLED.
-        $this->makePost($surgeon, $site, $today, $today->format('Y-m-d'));
-
-        $absence = $this->makeAbsence($surgeon, $today->format('Y-m-d'), $today->modify('+5 days')->format('Y-m-d'), new \DateTimeImmutable('2026-09-05'));
-
-        $previewBefore = $this->service->preview($cutoff);
-        self::assertSame('DISABLED', $this->findItem($previewBefore, $absence->getId())['sites'][0]['roomRelease']['status']);
-
-        // Le manager active la fonction avant l'exécution réelle du rattrapage.
-        $this->enableColleagues($this->em->find(Hospital::class, $site->getId()));
-
-        $result = $this->service->execute($cutoff, [$absence->getId()], $surgeon);
-        self::assertSame('PROCESSED', $result['results'][0]['status']);
-        self::assertSame(1, $result['results'][0]['newCommunicationCount'], 'désormais activée — execute() doit créer la communication, jamais rester bloqué sur l\'état DISABLED de la preview');
-    }
-
     // ── §17 : granularité transactionnelle par absence ──────────────────────
 
     /**
@@ -766,6 +655,8 @@ final class AbsenceCommunicationBackfillServiceTest extends KernelTestCase
         $this->affiliate($surgeonB, $site);
         $this->affiliate($colleague, $site);
         $this->enableColleagues($site);
+        // D-161 — the block-management communication is the only one left to catch up.
+        $this->configureBlockManagement($site, true, delayDays: 0);
         $this->makePost($surgeonA, $site, $today, $today->format('Y-m-d'));
         $this->makePost($surgeonB, $site, $today, $today->format('Y-m-d'));
 

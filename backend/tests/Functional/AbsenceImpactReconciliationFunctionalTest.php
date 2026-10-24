@@ -26,6 +26,7 @@ use App\MessageHandler\PlanningRestoredAfterAbsenceMessageHandler;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
@@ -37,6 +38,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
 {
+    // D-158 — "now" frozen before the fixture dates: a surgeon absence only cancels a
+    // mission still to come (AbsenceMissionProtectionPolicy).
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'Lot4ReconcileTest123!';
 
     private EntityManagerInterface $em;
@@ -44,6 +49,7 @@ final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-01-15 00:00:00');
         parent::setUp();
         self::ensureKernelShutdown();
     }

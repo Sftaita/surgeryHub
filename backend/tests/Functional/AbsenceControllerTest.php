@@ -16,6 +16,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
@@ -26,6 +27,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class AbsenceControllerTest extends WebTestCase
 {
+    // D-158 — "now" frozen before the fixture dates: a surgeon absence only cancels a
+    // mission still to come (AbsenceMissionProtectionPolicy).
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'Batch11Test123!';
 
     private EntityManagerInterface $em;
@@ -33,6 +38,7 @@ final class AbsenceControllerTest extends WebTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-01-15 00:00:00');
         parent::setUp();
         self::ensureKernelShutdown();
     }

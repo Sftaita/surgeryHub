@@ -169,7 +169,7 @@ export interface AbsenceCommunicationSiteSettingUpdateV2 {
 
 // ── Communication des absences chirurgiens — Lot C (D-114) : rattrapage ──────
 
-export type BackfillRoomReleaseStatus = "WILL_SEND" | "NO_NEW_OCCURRENCE" | "NO_RECIPIENT" | "NO_FUTURE_BLOCK" | "DISABLED";
+export type BackfillRoomReleaseStatus = "WILL_SEND" | "NO_NEW_OCCURRENCE" | "NO_RECIPIENT" | "NO_FUTURE_BLOCK" | "DISABLED" | "RETIRED";
 export type BackfillBlockManagementStatus = "WILL_SEND_NOW" | "WILL_SCHEDULE" | "ALREADY_PROCESSED" | "DISABLED" | "MISSING_CONFIG" | "ABSENCE_ALREADY_ENDED";
 
 export interface BackfillSiteActionV2 {
@@ -325,6 +325,10 @@ export interface PlanningAlertV2 {
   mission: PlanningAlertMissionV2;
   absence: { id: number; dateStart: string; dateEnd: string; reason: string | null } | null;
   conflict: PlanningAlertConflictV2 | null;
+  /** D-158 — absence alerts: why the mission was not cancelled / put back in the pool automatically. */
+  autoActionBlockedReason?: "MISSION_STARTED" | "ACTIVITY_ENCODED" | null;
+  /** D-158 — other absences covering the same problem (one alert, every reference kept). */
+  relatedAbsenceIds?: number[];
   actions: PlanningAlertActionsV2;
 }
 
@@ -369,6 +373,12 @@ export interface PreviewLineV2 {
    * preview). Anything but DRAFT is never modified by generate() — shown as reality, locked.
    */
   existingMissionStatus?: string | null;
+  /**
+   * D-165 — Modification: the mission's backend `allowedActions` — `reschedule` (times
+   * editable, also while IN_PROGRESS) and `cancel` (instrumentist and cancellation
+   * editable: OPEN/ASSIGNED only). Absent for a preview/new line (everything editable).
+   */
+  existingMissionActions?: string[] | null;
   /** D-125 — Modification: nominative request state of the mission (backend `targetedOffer`). */
   pendingOfferName?: string | null;
   offerDeclinedByName?: string | null;
@@ -538,10 +548,16 @@ export interface UnavailabilityDetail {
 }
 
 export interface ConflictDetail {
-  missionId: number;
+  /** null when the conflict is a new line proposed in the editor (never saved). */
+  missionId: number | null;
   siteName: string | null;
   startAt: string | null;
   endAt: string | null;
+  /** D-165 — who/what the conflict is with, as decided by the backend. */
+  surgeonName?: string | null;
+  missionStatus?: string | null;
+  /** PERSISTED = a saved mission; PROPOSED = an unsaved line of the editor (POST roster). */
+  source?: "PERSISTED" | "PROPOSED";
 }
 
 /**

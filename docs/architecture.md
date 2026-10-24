@@ -1840,8 +1840,11 @@ PlanningVersionAuditService::verify()   — orchestrateur pur, aucune règle mé
         │       → restauration oubliée, jamais si une absence/décision manager la justifie encore
         ├── PlanningConflictDetectionService::syncAlertsForMission()
         │       → SCHEDULE_CONFLICT (D-091, inchangé) — jamais une mutation, toujours une PlanningAlert
-        └── PlanningAlertService::createIfNotDuplicate()/resolve()
-                → INSTRUMENTIST_INACTIVE (D-106) — alerte uniquement, décision utilisateur explicite
+        ├── PlanningAlertService::createIfNotDuplicate()/resolve()
+        │       → INSTRUMENTIST_INACTIVE (D-106) — alerte uniquement, décision utilisateur explicite
+        └── PlanningConflictDetectionService::reconcileConflictAlertsInvolving()  (D-167)
+                → toutes les alertes de conflit actives du périmètre opérationnel, tout statut de
+                  mission, des deux côtés de la paire : RESOLVED si le conflit a disparu
 ```
 
 Chaque primitive réutilisée est déjà individuellement idempotente (garde de statut,
@@ -1850,7 +1853,42 @@ Chaque primitive réutilisée est déjà individuellement idempotente (garde de 
 transactionnelle ; une anomalie isolée est journalisée et n'interrompt jamais le reste du
 scan. Voir docs/decisions.md D-106 pour le détail des catégories et des choix de conception.
 
-### Communication des absences chirurgiens — Lot A « Libération de salle » (D-114)
+### Salles opératoires disponibles — annonce aux chirurgiens (D-161)
+
+Remplace l'e-mail automatique « Libération de salle » (Lot A ci-dessous, retiré) : la création
+technique d'un créneau et son annonce sont deux opérations distinctes.
+
+```
+AbsenceImpactCoordinator (création / modification d'absence)
+        │
+        ├── ReleasedOperatingRoomSlotService::onAbsenceCreated()/onAbsenceUpdated()
+        │       → renvoie les ids des créneaux RÉELLEMENT créés par cet appel
+        │         (déjà existant, poste remplacé, à valider, collision : jamais renvoyés)
+        └── ReleasedRoomSlotsCreatedMessage (async, seulement si ≥ 1 créneau créé)
+                ▼
+        ReleasedRoomAvailabilityNotifier::announce()
+                ├── relit les créneaux : encore AVAILABLE et pas passés
+                ├── AbsenceCommunicationSiteConfig::notifyColleaguesEnabled (site)
+                ├── UserRepository::findSurgeonsAffiliatedToSite() — actifs, jamais l'absent
+                └── NotificationDispatcher::dispatchBatch() — ROOM_SLOT_AVAILABLE
+                        in-app par salle, 1 push + 1 e-mail max par destinataire et opération,
+                        canaux décidés par NotificationPreferenceResolver
+                        (défaut : in-app + push, e-mail désactivé), clé `room_slot:{id}`
+
+AvailableRoomsBackfillCommand → ReleasedOperatingRoomSlotService (création seule, jamais d'annonce)
+```
+
+Le push et l'élément in-app ouvrent `/app/s/planning/salles-disponibles?slot={id}`. La page
+relit le créneau (`GET /api/me/available-rooms/{id}`, mêmes règles de visibilité que la liste),
+et la reprise reste revérifiée sous verrou (D-124). Les préférences du chirurgien sont dans
+`RoomAvailabilityNotificationsCard` (profil) : push et e-mail sont deux interrupteurs
+indépendants, l'état réel du push sur l'appareil est affiché à part, et l'e-mail n'est jamais
+activé automatiquement.
+
+### Communication des absences chirurgiens — Lot A « Libération de salle » (D-114) — retiré par D-161
+
+> D-161 : `RoomReleaseCommunicationService` est supprimé, plus aucune communication
+> `ROOM_RELEASE` n'est écrite. La description ci-dessous reste pour lire l'historique.
 
 Nouvelle couche, indépendante des réactions D-062/D-103/D-104/D-105/D-107/D-112 ci-dessus
 (aucune Mission/PlanningAlert/PlanningOccurrenceException mutée) : quand un chirurgien
@@ -1865,7 +1903,8 @@ RoomReleaseCommunicationService::onAbsenceCreated()/onAbsenceUpdated()
         │
         ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow()
         │       → réutilise PlanningGeneratorServiceV2::theoreticalOccurrenceDates()
-        │       → filtre type=BLOCK, exclut les occurrences déjà exceptées, groupe par site
+        │       → filtre type=BLOCK, exclut les occurrences déjà exceptées (sauf la
+        │         neutralisation posée par CETTE absence, D-158), groupe par site
         ├── AbsenceCommunicationSiteConfig (site) — notifyColleaguesEnabled ?
         ├── filtre "occurrences encore futures" + (sur update) delta vs déjà annoncé
         ├── UserRepository::findSurgeonsAffiliatedToSite() — collègues actifs, exclut l'absent
@@ -2111,15 +2150,31 @@ AbsenceController::create()/update() / SelfAbsenceController équivalents
 ReleasedOperatingRoomSlotService::onAbsenceCreated()/onAbsenceUpdated()
         │
         ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow() (même resolver que
-        │       Lots A/B/C — aucun second moteur de récurrence)
+        │       Lots A/B/C — aucun second moteur de récurrence ; D-158 : la neutralisation
+        │       posée par l'absence elle-même ne masque pas l'occurrence, mois non généré inclus)
+        ├── D-158 : occurrence ignorée si une Mission non CANCELLED/DRAFT du chirurgien
+        │       absent l'occupe encore (mission commencée / encodée, jamais annulée)
         ├── existsFor(site, postId, date) — idempotence applicative avant la contrainte
         │       unique DB (site_id, post_id, occurrence_date), dernier garde-fou
+        ├── D-159 : ReleasedRoomCapacityMatcher::classify() — un créneau du même chirurgien,
+        │       même site, même date, dont le poste ne porte plus l'occurrence (poste remplacé)
+        │       couvre déjà la capacité : NEW (créé) / REPLACED (rien) / REVIEW (rien, signalé)
         ├── ShiftPeriodConfig (site, période, actif) → startTime/endTime snapshotés,
         │       sinon restent NULL (jamais d'horaire inventé)
-        └── persist + flush par slot (jamais un flush groupé — une collision unique sur UNE
+        └── INSERT DBAL par slot (D-159 ; jamais un flush groupé — une collision unique sur UNE
               occurrence ne doit jamais faire échouer les autres occurrences de la même
-              réaction)
+              réaction, ni fermer l'EntityManager)
 ```
+
+**Remplacement de poste (D-159)** : le modèle ne connaît aucune salle physique. Deux postes
+qui produisent l'occurrence le même jour sont deux salles (D-035), jamais rapprochés ; un
+créneau dont le poste ne produit plus l'occurrence (terminé, désactivé, période ou récurrence
+modifiée) est « orphelin » et couvre l'unique poste courant qui le remplace. Le même
+rapprochement sert la reprise (instrumentiste et type du poste qui porte aujourd'hui la
+capacité) et la garde D-104 (`isOccurrenceTakenOver()` : une reprise faite sur l'ancien poste
+empêche de restaurer l'occurrence du nouveau). Tout cas ambigu (période différente qui
+chevauche, plusieurs candidats) n'est jamais créé ni supprimé : il est listé « à valider » par
+le backfill et journalisé en temps réel.
 
 **Non-rétractation structurelle** : aucune méthode `onAbsenceDeleted()`/de suppression
 n'existe sur ce service — un raccourcissement ou une suppression d'absence ne retire jamais
@@ -2139,7 +2194,11 @@ supprimée le 2026-09-07 après un audit prod ayant révélé un angle mort stru
 absence sans communication `ROOM_RELEASE`, ex. site avec `notifyColleaguesEnabled=false`,
 restait invisible). Répond à « quelles salles ont réellement été libérées et ont encore une
 occurrence future ? », jamais à « quels emails ont déjà été envoyés ? » — voir
-`docs/decisions.md`, correction du 2026-09-07.
+`docs/decisions.md`, correction du 2026-09-07. D-160 : `--absence=<id>` (répétable ou séparé
+par des virgules) est une liste autorisée — même sélection lue en dry-run et écrite en réel,
+validée en entier avant tout traitement (malformé, doublon, inconnue, terminée, non-chirurgien
+→ refus complet, code `INVALID`) ; l'exécution réelle exige une sélection, seul `--dry-run`
+parcourt encore toutes les absences.
 
 Endpoints : `GET /api/planning/available-rooms` (manager, `PlanningVoter::PLANNING_MANAGE`)
 et `GET /api/me/available-rooms` (chirurgien, scopé `SiteMembership`) — voir `docs/api.md`
@@ -2301,11 +2360,13 @@ ligne sur les `Mission` réelles de ce même brouillon, jamais un nouveau ②) e
 **Alertes (Batch 3–5)** : `PlanningAlert` détecte l'impact d'une absence sur des
 missions déjà générées/publiées (`AbsenceImpactService`), jamais avant. Types
 implémentés : `SURGEON_ABSENCE`, `INSTRUMENTIST_ABSENCE`, `REASSIGNMENT_REQUIRED`,
-`OCCURRENCE_CANCELLED`. `SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT` sont définis mais
-pas encore déclenchés — le détecteur de conflit actuel (preview, en mémoire) est scopé
-au site/groupe d'un seul appel de génération ; un instrumentiste multi-site doublement
-réservé via deux générations séparées sur des sites différents n'est jamais détecté
-aujourd'hui (gap documenté dans le freeze §G, pas corrigé).
+`OCCURRENCE_CANCELLED`. `SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT` sont déclenchés
+depuis D-091 par `PlanningConflictDetectionService` (inter-sites, inter-versions). D-167 : une
+alerte par paire en conflit (ancrée sur la mission d'id inférieur, paire lue dans
+`snapshotJson`), réévaluée sur l'état persisté des deux missions à chaque synchronisation de
+l'une d'elles (`reconcileConflictAlertsInvolving()`, indépendant de l'ordre des identifiants) et
+par « Vérifier les conflits » ; résolue (jamais supprimée) quand le conflit disparaît. Le
+service flushe lui-même ses changements d'alertes.
 
 **Réaction automatique aux absences (D-062)** : `AbsenceImpactService` conserve
 intégralement son contrat "jamais de mutation" — `AbsenceController` appelle en plus,

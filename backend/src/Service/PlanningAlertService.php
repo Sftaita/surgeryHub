@@ -9,6 +9,7 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningAlertStatus;
 use App\Enum\PlanningAlertType;
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\QueryBuilder;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
@@ -72,6 +73,76 @@ class PlanningAlertService
         $this->em->persist($alert);
 
         return ['alert' => $alert, 'created' => true];
+    }
+
+    /**
+     * D-167 — every alert (any status, oldest first) of one conflicting pair: the alert
+     * holder $anchor (the lower-id mission), the other mission and the person, as carried by
+     * snapshotJson since D-091. One anchor can hold several pairs (one per conflict).
+     *
+     * @return PlanningAlert[]
+     */
+    public function findConflictAlertsForPair(Mission $anchor, PlanningAlertType $type, int $conflictingMissionId, int $personId): array
+    {
+        /** @var PlanningAlert[] $alerts */
+        $alerts = $this->em->createQueryBuilder()
+            ->select('a')
+            ->from(PlanningAlert::class, 'a')
+            ->where('a.mission = :mission')
+            ->andWhere('a.type = :type')
+            ->setParameter('mission', $anchor)
+            ->setParameter('type', $type)
+            ->orderBy('a.id', 'ASC')
+            ->getQuery()
+            ->getResult();
+
+        return array_values(array_filter($alerts, static function (PlanningAlert $alert) use ($conflictingMissionId, $personId): bool {
+            $snapshot = $alert->getSnapshotJson();
+            return (int) ($snapshot['conflictingMissionId'] ?? 0) === $conflictingMissionId
+                && (int) ($snapshot['personId'] ?? 0) === $personId;
+        }));
+    }
+
+    /**
+     * D-167 — every OPEN/ACKNOWLEDGED SURGEON_CONFLICT/INSTRUMENTIST_CONFLICT alert in which
+     * one of these missions takes part, whichever side: as the alert holder (mission_id) or
+     * as the conflicting mission recorded in its snapshot. The second side lives in JSON, so
+     * it is matched in SQL (MySQL JSON_EXTRACT), restricted to active conflict alerts by the
+     * status index — never by scanning the history.
+     *
+     * @param int[] $missionIds
+     * @return PlanningAlert[]
+     */
+    public function findActiveConflictAlertsInvolving(array $missionIds): array
+    {
+        $missionIds = array_values(array_unique(array_map('intval', $missionIds)));
+        if ($missionIds === []) {
+            return [];
+        }
+
+        $ids = $this->em->getConnection()->fetchFirstColumn(
+            "SELECT id FROM planning_alert
+              WHERE status IN (:statuses) AND type IN (:types)
+                AND (mission_id IN (:missionIds)
+                     OR CAST(JSON_UNQUOTE(JSON_EXTRACT(snapshot_json, '$.conflictingMissionId')) AS UNSIGNED) IN (:missionIds))
+              ORDER BY id",
+            [
+                'statuses'   => [PlanningAlertStatus::OPEN->value, PlanningAlertStatus::ACKNOWLEDGED->value],
+                'types'      => [PlanningAlertType::SURGEON_CONFLICT->value, PlanningAlertType::INSTRUMENTIST_CONFLICT->value],
+                'missionIds' => $missionIds,
+            ],
+            [
+                'statuses'   => ArrayParameterType::STRING,
+                'types'      => ArrayParameterType::STRING,
+                'missionIds' => ArrayParameterType::INTEGER,
+            ],
+        );
+
+        if ($ids === []) {
+            return [];
+        }
+
+        return $this->em->getRepository(PlanningAlert::class)->findBy(['id' => array_map('intval', $ids)], ['id' => 'ASC']);
     }
 
     /** @return PlanningAlert[] all OPEN/ACKNOWLEDGED alerts currently tied to this absence. */
@@ -261,6 +332,11 @@ class PlanningAlertService
                 'reason'    => $absence->getReason(),
             ] : null,
             'conflict' => $this->serializeConflict($alert),
+            // D-158 — snapshot value (MISSION_STARTED | ACTIVITY_ENCODED | null): why the absent
+            // surgeon's mission was left for the manager instead of being cancelled automatically.
+            'autoActionBlockedReason' => $alert->getSnapshotJson()['autoActionBlockedReason'] ?? null,
+            // D-158 — other absences covering the same problem (one alert, every reference kept).
+            'relatedAbsenceIds' => array_map('intval', $alert->getSnapshotJson()['relatedAbsenceIds'] ?? []),
             'actions' => $this->computeActionFlags($alert),
         ];
     }

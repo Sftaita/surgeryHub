@@ -4,7 +4,7 @@ import {
   mergePreviewResponses, aggregateGenerated, aggregateDeploy,
   severityOf, filterLines, countBySeverity,
   groupLinesByDayAndSurgeon, formatDayHeader,
-  lineKeyV2, getFreedInstrumentists, findSameDayAssignmentElsewhere,
+  lineKeyV2, getFreedInstrumentists, buildRosterProposals,
   missionToPreviewLine,
 } from "./generatePreviewGrouping";
 import type { PreviewLineV2, PreviewResponseV2, GeneratedPlanningV2 } from "./planningV2.types";
@@ -242,33 +242,39 @@ describe("getFreedInstrumentists()", () => {
   });
 });
 
-describe("findSameDayAssignmentElsewhere()", () => {
-  it("finds another active line the same day already using this instrumentist", () => {
-    const busyLine = line({ date: "2026-06-01", postId: 1, status: "COVERED", instrumentistId: 7 });
-    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED" });
+// D-165 — the editor sends its other unsaved lines of the day; the backend decides conflicts.
+describe("buildRosterProposals()", () => {
+  // Cas réel du 23/10/2026 : Schiepers #1085 (Françoise, raccourcie à 14:00) et Berger #1084.
+  const philippe = line({ date: "2026-10-23", postId: 1085, existingMissionId: 1085, surgeonId: 11, startTime: "07:45", endTime: "14:00", instrumentistId: 24, instrumentistName: "Françoise Detrembleur" });
+  const yorick = line({ date: "2026-10-23", postId: 1084, existingMissionId: 1084, surgeonId: 12, startTime: "14:45", endTime: "18:00", status: "UNCOVERED" });
 
-    const found = findSameDayAssignmentElsewhere([busyLine, target], target, 7);
-    expect(found).not.toBeNull();
-    expect(found?.postId).toBe(1);
+  it("sends an edited saved mission at its proposed slot, never the target line itself", () => {
+    const proposals = buildRosterProposals([philippe, yorick], yorick, new Set(["m1085", "m1084"]));
+    expect(proposals).toEqual([
+      { missionId: 1085, instrumentistId: 24, startTime: "07:45", endTime: "14:00", surgeonId: 11, siteId: 1, cancelled: false },
+    ]);
   });
 
-  it("ignores a SKIPPED line even if it references the same instrumentist", () => {
-    const skippedLine = line({ date: "2026-06-01", postId: 1, status: "SKIPPED", instrumentistId: 7 });
-    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED" });
-
-    expect(findSameDayAssignmentElsewhere([skippedLine, target], target, 7)).toBeNull();
+  it("does not send an unedited saved mission (the backend already has it)", () => {
+    expect(buildRosterProposals([philippe, yorick], yorick, new Set(["m1084"]))).toEqual([]);
   });
 
-  it("ignores assignments on a different day", () => {
-    const otherDay = line({ date: "2026-06-02", postId: 1, status: "COVERED", instrumentistId: 7 });
-    const target = line({ date: "2026-06-01", postId: 2, status: "UNCOVERED" });
-
-    expect(findSameDayAssignmentElsewhere([otherDay, target], target, 7)).toBeNull();
+  it("sends a never-saved line holding an instrumentist, but not an empty one", () => {
+    const drafted = line({ date: "2026-10-23", postId: -1, instrumentistId: 7, startTime: "08:00", endTime: "12:00" });
+    const empty = line({ date: "2026-10-23", postId: -2, instrumentistId: null, status: "UNCOVERED" });
+    const proposals = buildRosterProposals([drafted, empty, yorick], yorick, new Set());
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({ missionId: null, instrumentistId: 7, startTime: "08:00", endTime: "12:00" });
   });
 
-  it("never matches the target line itself", () => {
-    const target = line({ date: "2026-06-01", postId: 2, status: "COVERED", instrumentistId: 7 });
-    expect(findSameDayAssignmentElsewhere([target], target, 7)).toBeNull();
+  it("marks an edited saved mission cancelled (SKIPPED) so its saved slot no longer counts", () => {
+    const cancelled = { ...philippe, status: "SKIPPED" as const, instrumentistId: null, instrumentistName: null };
+    expect(buildRosterProposals([cancelled, yorick], yorick, new Set(["m1085"]))[0]).toMatchObject({ missionId: 1085, cancelled: true, instrumentistId: null });
+  });
+
+  it("ignores other days", () => {
+    const otherDay = line({ date: "2026-10-22", postId: -3, instrumentistId: 24 });
+    expect(buildRosterProposals([otherDay, yorick], yorick, new Set())).toEqual([]);
   });
 });
 
@@ -326,6 +332,23 @@ describe("missionToPreviewLine()", () => {
   it("maps a CANCELLED mission to a SKIPPED line", () => {
     const result = missionToPreviewLine(makeMission({ status: "CANCELLED" }));
     expect(result.status).toBe("SKIPPED");
+  });
+
+  // D-165 — an IN_PROGRESS mission with its instrumentist used to fall back to UNCOVERED
+  // ("Mission ouverte") while still showing the instrumentist.
+  it("maps an IN_PROGRESS mission to a COVERED line, keeping its real status and actions", () => {
+    const result = missionToPreviewLine(makeMission({ status: "IN_PROGRESS", allowedActions: ["view", "reschedule"] }));
+    expect(result.status).toBe("COVERED");
+    expect(result.instrumentistName).toBe("Diane Lefebvre");
+    expect(result.existingMissionStatus).toBe("IN_PROGRESS");
+    expect(result.existingMissionActions).toEqual(["view", "reschedule"]);
+  });
+
+  it("maps any other past-ASSIGNED status by coverage, never to « Mission ouverte » with an instrumentist", () => {
+    for (const status of ["SUBMITTED", "VALIDATED", "CLOSED", "DECLARED"] as const) {
+      expect(missionToPreviewLine(makeMission({ status })).status).toBe("COVERED");
+    }
+    expect(missionToPreviewLine(makeMission({ status: "DECLARED", instrumentist: null })).status).toBe("UNCOVERED");
   });
 });
 

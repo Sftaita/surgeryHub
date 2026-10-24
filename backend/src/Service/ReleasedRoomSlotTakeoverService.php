@@ -4,10 +4,12 @@ namespace App\Service;
 
 use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Entity\Absence;
+use App\Entity\Hospital;
 use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\ReleasedOperatingRoomSlot;
 use App\Entity\ShiftPeriodConfig;
+use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionChangeType;
@@ -66,6 +68,8 @@ class ReleasedRoomSlotTakeoverService
         private readonly AuditService $audit,
         private readonly MessageBusInterface $bus,
         private readonly ?AuthorizationCheckerInterface $authorization = null,
+        // D-159 — optional only so the hand-wired concurrency tests can build the service; always autowired.
+        private readonly ?ReleasedRoomCapacityMatcher $capacity = null,
     ) {
     }
 
@@ -130,6 +134,12 @@ class ReleasedRoomSlotTakeoverService
                 );
             }
 
+            // D-158 — la Mission du chirurgien absent est restée active (déjà commencée ou
+            // encodée : jamais annulée à l'aveugle) : la salle est toujours occupée.
+            if ($sourceSurgeon !== null && $this->findActiveOccurrenceMission($sourceSurgeon, $site, $slot->getOccurrenceDate(), $slot->getPeriod()) !== null) {
+                throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_AVAILABLE, 'Cette salle n\'est plus disponible.');
+            }
+
             $originalMission = $slot->getOriginalMission() ?? $this->findOriginalMission($slot);
             $schedule = $this->resolveSchedule($slot, $originalMission);
             if ($schedule === null) {
@@ -155,8 +165,11 @@ class ReleasedRoomSlotTakeoverService
                 );
             }
 
-            $initialInstrumentist = $this->resolveInitialInstrumentist($slot, $originalMission);
-            $type = $slot->getSchedulePost()?->getType() ?? $originalMission?->getType() ?? MissionType::BLOCK;
+            // D-159 — créneau publié sur un poste depuis remplacé : le poste qui porte aujourd'hui
+            // cette capacité donne l'instrumentiste et le type, jamais l'ancien poste.
+            $post = $this->capacity?->effectivePost($slot) ?? $slot->getSchedulePost();
+            $initialInstrumentist = $this->resolveInitialInstrumentist($slot, $originalMission, $post);
+            $type = $post?->getType() ?? $originalMission?->getType() ?? MissionType::BLOCK;
 
             $mission = $this->postDeploy->createPostDeploy(
                 planningVersion: $originalMission?->getPlanningVersion(),
@@ -360,15 +373,22 @@ class ReleasedRoomSlotTakeoverService
             ->getSingleScalarResult() > 0;
     }
 
-    /** D-104 guard, pre-generation variant — same rule for a neutralized Post occurrence (D-103). */
-    public function isOccurrenceTakenOver(int $postId, \DateTimeImmutable $occurrenceDate): bool
+    /**
+     * D-104 guard, pre-generation variant — same rule for a neutralized Post occurrence (D-103).
+     * D-159 — also when the take-over was made on the slot of a post this one replaced.
+     */
+    public function isOccurrenceTakenOver(SurgeonSchedulePost $post, \DateTimeImmutable $occurrenceDate): bool
     {
+        if ($this->capacity !== null) {
+            return $this->capacity->isCapacityTakenOver($post, $occurrenceDate);
+        }
+
         return (int) $this->em->createQueryBuilder()
             ->select('COUNT(s.id)')->from(ReleasedOperatingRoomSlot::class, 's')
             ->where('s.postId = :postId')
             ->andWhere('s.occurrenceDate = :date')
             ->andWhere('s.status = :claimed')
-            ->setParameter('postId', $postId)
+            ->setParameter('postId', $post->getId())
             ->setParameter('date', $occurrenceDate, Types::DATE_IMMUTABLE)
             ->setParameter('claimed', ReleasedRoomSlotStatus::CLAIMED)
             ->getQuery()
@@ -412,19 +432,43 @@ class ReleasedRoomSlotTakeoverService
             return null;
         }
 
-        $day = $this->businessDay($slot->getOccurrenceDate());
+        return $this->findOccurrenceMission($surgeon, $site, $slot->getOccurrenceDate(), $slot->getPeriod(), [MissionStatus::CANCELLED], true);
+    }
+
+    /**
+     * D-158 — the absent surgeon's Mission for this occurrence that is still part of the
+     * operational reality (neither CANCELLED nor a mere DRAFT): an absence declared after the
+     * mission started, or on a mission with encoded activity, never cancels it
+     * (AbsenceMissionProtectionPolicy) — the room is then NOT free. Read by
+     * ReleasedOperatingRoomSlotService (no slot created) and takeOver() (no double occupation).
+     */
+    public function findActiveOccurrenceMission(User $surgeon, Hospital $site, \DateTimeImmutable $occurrenceDate, ShiftPeriod $period): ?Mission
+    {
+        return $this->findOccurrenceMission($surgeon, $site, $occurrenceDate, $period, [MissionStatus::CANCELLED, MissionStatus::DRAFT], false);
+    }
+
+    /**
+     * Mission carries no Post FK: the occurrence is matched the same way the rest of the
+     * absence engine does — same surgeon, same site, same (Brussels) day, and a start hour
+     * consistent with the period. Most recent first.
+     *
+     * @param list<MissionStatus> $statuses
+     */
+    private function findOccurrenceMission(User $surgeon, Hospital $site, \DateTimeImmutable $occurrenceDate, ShiftPeriod $period, array $statuses, bool $statusIn): ?Mission
+    {
+        $day = $this->businessDay($occurrenceDate);
 
         /** @var list<Mission> $candidates */
         $candidates = $this->em->createQueryBuilder()
             ->select('m')->from(Mission::class, 'm')
             ->where('m.surgeon = :surgeon')
             ->andWhere('m.site = :site')
-            ->andWhere('m.status = :cancelled')
+            ->andWhere($statusIn ? 'm.status IN (:statuses)' : 'm.status NOT IN (:statuses)')
             ->andWhere('m.startAt >= :dayStart')
             ->andWhere('m.startAt <= :dayEnd')
             ->setParameter('surgeon', $surgeon)
             ->setParameter('site', $site)
-            ->setParameter('cancelled', MissionStatus::CANCELLED)
+            ->setParameter('statuses', $statuses)
             ->setParameter('dayStart', $day->setTime(0, 0, 0))
             ->setParameter('dayEnd', $day->setTime(23, 59, 59))
             ->orderBy('m.id', 'DESC')
@@ -433,7 +477,7 @@ class ReleasedRoomSlotTakeoverService
 
         foreach ($candidates as $mission) {
             $hour = (int) $mission->getStartAt()?->format('G');
-            $matches = match ($slot->getPeriod()) {
+            $matches = match ($period) {
                 ShiftPeriod::MATIN => $hour < 12,
                 ShiftPeriod::APRES_MIDI => $hour >= 12,
                 default => true,
@@ -488,7 +532,7 @@ class ReleasedRoomSlotTakeoverService
      * MISSION_CANCELLED_POST_DEPLOY snapshot — cancel() already cleared the FK), otherwise the
      * Post's theoretical partner (D-107 — planning not generated yet).
      */
-    private function resolveInitialInstrumentist(ReleasedOperatingRoomSlot $slot, ?Mission $originalMission): ?User
+    private function resolveInitialInstrumentist(ReleasedOperatingRoomSlot $slot, ?Mission $originalMission, ?SurgeonSchedulePost $post): ?User
     {
         if ($originalMission !== null) {
             /** @var AuditEvent|null $cancelEvent */
@@ -508,7 +552,7 @@ class ReleasedRoomSlotTakeoverService
             return $instrumentistId !== null ? $this->em->find(User::class, (int) $instrumentistId) : null;
         }
 
-        return $slot->getSchedulePost()?->getInstrumentist();
+        return $post?->getInstrumentist();
     }
 
     /** @return array<string, mixed> */

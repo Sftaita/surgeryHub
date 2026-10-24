@@ -97,7 +97,8 @@ final class EmailThroughDispatcherTest extends TestCase
         foreach (['src/Service/BillingDocumentMailer.php', 'src/Service/AbsenceCommunicationDeliverySender.php'] as $file) {
             self::assertStringContainsString('TransactionalEmailSender', $this->sources()[$file], "$file delivers through the common traced layer");
         }
-        foreach (['src/Service/RoomReleaseCommunicationService.php', 'src/Service/BlockManagementCommunicationService.php', 'src/Command/SendScheduledAbsenceCommunicationsCommand.php'] as $file) {
+        // D-161 — RoomReleaseCommunicationService removed: rooms are announced through NotificationDispatcher.
+        foreach (['src/Service/BlockManagementCommunicationService.php', 'src/Command/SendScheduledAbsenceCommunicationsCommand.php'] as $file) {
             self::assertStringContainsString('deliverySender->send(', $this->sources()[$file], "$file hands its D-114 deliveries to AbsenceCommunicationDeliverySender");
         }
     }
