@@ -15153,8 +15153,24 @@ déploiement.
    (`deployment-versioning.md` §2.4) ; `prepare` en affiche un résumé. Les correctifs P0/P1 absents
    de la release sortent en tête. Le rapport ne bloque pas et ne fusionne rien : le périmètre reste
    une décision explicite.
-4. **Contrôle régulier** : workflow GitHub Actions hebdomadaire et sur PR (partie Git seulement,
+4. **Contrôle régulier** : workflow GitHub Actions quotidien et sur PR (partie Git seulement,
    jeton GitHub en lecture, aucun secret, aucun accès serveur). Seul un registre invalide échoue.
+5. **Corrections après examen (2026-10-25)** :
+   - **contrôle avant release** : son échec n'est plus silencieux. `prepare` s'arrête si
+     l'inventaire ne peut pas s'exécuter ; avant, `… | sed || true` masquait un plantage.
+     Contournement : `WORK_INVENTORY=off`, explicite et affiché. Un fetch ou une liste des PR en
+     échec est signalé « Non vérifié » ;
+   - **instantané CI** : il est comparé uniquement dans le même contexte ; avant, une PR pouvait
+     relire et écraser l'instantané d'une autre PR, et le cache hebdomadaire expirait (éviction
+     après 7 jours). Désormais seul l'audit quotidien de main l'écrit, un audit partiel ne
+     l'écrase pas, et l'écriture est atomique ;
+   - **serveur** : chaque section a son propre statut ; avant, une commande en échec, comme une
+     crontab illisible ou Docker indisponible, donnait une section vide comptée comme vérifiée,
+     voire de faux écarts de crontab. Les sections en échec sont « Non vérifié » et la
+     vérification est « incomplète ». Ce défaut existait dans les tests sous Windows : le faux
+     serveur n'avait pas de lien `current` et passait pour vérifié ;
+   - **données sensibles** : masquage des secrets et des e-mails dans le rapport, le JSON et
+     l'instantané ; registre sans nom de personne.
 
 ### Limites
 

@@ -37,11 +37,12 @@
       "kind": "docs",
       "priority": "P3",
       "userImpact": "Aucun.",
-      "status": "pr-ouverte",
-      "statusSince": "2026-10-24",
+      "status": "valide-production",
+      "statusSince": "2026-10-25",
+      "prodEvidence": "PR #43 fusionnée (6835405) sur accord de l'utilisateur ; documentation seulement, rien à déployer.",
       "refs": { "branches": ["docs/deploy-v2026.10.24-prod-2"], "prs": [43], "worktrees": ["SurgicalHub-docs-d157"] },
-      "nextAction": "Fusionner la PR #43 sur accord.",
-      "lastReviewed": "2026-10-24"
+      "nextAction": "Aucune.",
+      "lastReviewed": "2026-10-25"
     },
     {
       "id": "D-164",
@@ -68,7 +69,7 @@
     {
       "id": "D-169",
       "title": "Registre des travaux et inventaire automatique avant chaque release",
-      "description": "Registre docs/work-registry.json, inventaire deploy/work-inventory/inventory.mjs (Git, PR, worktrees, serveur en lecture seule), deploy.sh pending, workflow hebdomadaire et sur PR.",
+      "description": "Registre docs/work-registry.json, inventaire deploy/work-inventory/inventory.mjs (Git, PR, worktrees, serveur en lecture seule), deploy.sh pending, workflow quotidien et sur PR. Corrections du 2026-10-25 : échec du contrôle avant release bloquant et explicite, instantané CI limité à l'audit de main avec contexte vérifié, vérification serveur section par section (« incomplet » / « Non vérifié »), masquage des secrets et e-mails.",
       "kind": "ops",
       "priority": "P2",
       "userImpact": "Aucun direct ; empêche qu'un correctif terminé (comme D-157) reste oublié.",
@@ -76,8 +77,8 @@
       "statusSince": "2026-10-24",
       "refs": { "decision": "D-169", "branches": ["chore/work-registry"], "prs": [44], "worktrees": ["SurgicalHub-work-registry"] },
       "validationNeeded": "Examen du fonctionnement et du rapport d'inventaire par l'utilisateur, puis accord explicite de fusion.",
-      "nextAction": "PR #44 ouverte le 2026-10-24 : attendre l'examen de l'utilisateur ; ne pas fusionner sans accord.",
-      "lastReviewed": "2026-10-24"
+      "nextAction": "PR #44 corrigée le 2026-10-25 (3 points d'examen + données sensibles) : attendre la validation du rapport final ; ne pas fusionner sans accord.",
+      "lastReviewed": "2026-10-25"
     },
     {
       "id": "D-168",
@@ -103,10 +104,10 @@
       "userImpact": "Instrumentiste sur deux salles simultanées du même chirurgien : encodage et facturation en double aujourd'hui.",
       "status": "bloque",
       "statusSince": "2026-10-19",
-      "blockedReason": "Branche jamais poussée (ce poste seulement), 61 commits de retard et conflits avec main (D-150 à D-167 touchent les mêmes fichiers) ; suite frontend non relancée après les derniers changements ; arbitrage des postes Deltour #3–#5 non appliqué.",
+      "blockedReason": "Branche jamais poussée (ce poste seulement), 61 commits de retard et conflits avec main (D-150 à D-167 touchent les mêmes fichiers) ; suite frontend non relancée après les derniers changements ; arbitrage des postes #3–#5 du chirurgien concerné non appliqué.",
       "refs": { "decision": "D-156", "branches": ["feat/prestations-regroupees"], "worktrees": ["SurgicalHub-prestations"], "migrations": ["Version20261018090000", "Version20261019090000"] },
       "pendingOps": [
-        { "type": "reprise-donnees", "status": "en-attente", "description": "PATCH des postes Deltour #4/#5 (instrumentiste à assigner) pour les générations futures", "validation": "accord explicite" }
+        { "type": "reprise-donnees", "status": "en-attente", "description": "PATCH des postes #4/#5 du chirurgien concerné (instrumentiste à assigner) pour les générations futures", "validation": "accord explicite" }
       ],
       "validationNeeded": "Accord pour pousser la branche (sauvegarde distante), puis pour le rebase et la recette.",
       "nextAction": "Pousser la branche sur origin pour ne pas dépendre de ce poste, puis rebase sur main et recette complète.",
@@ -145,21 +146,21 @@
       "lastReviewed": "2026-10-24"
     },
     {
-      "id": "D-159-DELTOUR",
-      "title": "Salles libérées des absences Deltour #66/#67 (postes #3–#7)",
-      "description": "Le rattrapage D-160 a couvert 7 absences / 9 salles le 2026-10-21. Les absences #66/#67 de Dr Deltour restent sans salle libérée : ses postes #3–#7 ont été modifiés le 2026-10-10 et attendent une validation métier ; missions #429/#430 et alertes #59/#60 associées.",
+      "id": "D-159-ABSENCES-66-67",
+      "title": "Salles libérées des absences #66/#67 (postes #3–#7)",
+      "description": "Le rattrapage D-160 a couvert 7 absences / 9 salles le 2026-10-21. Les absences #66/#67 du chirurgien concerné restent sans salle libérée : ses postes #3–#7 ont été modifiés le 2026-10-10 et attendent une validation métier ; missions #429/#430 et alertes #59/#60 associées.",
       "kind": "data",
       "priority": "P2",
-      "userImpact": "Chirurgiens : salles libérées par les absences de Dr Deltour non proposées.",
+      "userImpact": "Chirurgiens : salles libérées par les absences #66/#67 non proposées.",
       "status": "bloque",
       "statusSince": "2026-10-21",
-      "blockedReason": "Validation métier des postes Deltour #3–#7 attendue.",
+      "blockedReason": "Validation métier des postes #3–#7 attendue.",
       "refs": { "decision": "D-159", "prs": [26, 28] },
       "pendingOps": [
-        { "type": "validation", "status": "en-attente", "description": "Valider les postes Deltour #3–#7 (JOURNEE/MATIN/APRES_MIDI, instrumentistes)", "validation": "utilisateur" },
+        { "type": "validation", "status": "en-attente", "description": "Valider les postes #3–#7 (JOURNEE/MATIN/APRES_MIDI, instrumentistes)", "validation": "utilisateur" },
         { "type": "reprise-donnees", "status": "en-attente", "description": "app:available-rooms:backfill --dry-run --absence=66,67 puis réel sur accord", "validation": "accord explicite" }
       ],
-      "nextAction": "Présenter les postes Deltour pour validation.",
+      "nextAction": "Présenter les postes #3–#7 pour validation.",
       "lastReviewed": "2026-10-24"
     },
     {
@@ -198,7 +199,7 @@
     },
     {
       "id": "D-149-DATA",
-      "title": "Compte instrumentiste@surgicalhub.be (#62) et missions OPEN passées",
+      "title": "Compte générique #62 et missions OPEN passées",
       "description": "Le compte #62 (actif, dans le pool OPEN, reçoit de vrais e-mails et push) ressemble à un compte générique ou de test ; missions OPEN passées 396, 490, 491, 492, 1052.",
       "kind": "data",
       "priority": "P2",

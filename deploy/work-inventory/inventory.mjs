@@ -12,14 +12,20 @@
 //   node deploy/work-inventory/inventory.mjs --check-registry  validation du registre seulement
 //
 // Options : --json, --summary, --offline (pas d'API GitHub), --no-snapshot, --deep (commits
-// inaccessibles), --fail-on untracked,urgent,registry,server (code de sortie 1 ; défaut : jamais),
-// --repo <dir>, --registry <fichier>, --main <ref>, --now <date ISO> (tests).
+// inaccessibles), --fail-on untracked,urgent,registry,server,unverified (code de sortie 1 ; défaut :
+// jamais), --repo <dir>, --registry <fichier>, --main <ref>, --now <date ISO> (tests).
 // Environnement : INVENTORY_SSH (défaut « ssh -o ConnectTimeout=20 -o BatchMode=yes surgicalhub-prod »),
 // GITHUB_TOKEN (facultatif, lecture des PR), INVENTORY_SNAPSHOT (fichier de l'audit précédent).
+// Code de sortie 3 : inventaire interrompu (rien n'est vérifié) ; 2 : option invalide.
+//
+// Toute vérification impossible ou partielle (fetch, PR, section du serveur, conflits) est listée
+// en tête du rapport comme « Non vérifié » ; jamais « conforme » par défaut. Les secrets reconnus
+// (KEY=valeur, mots de passe en argument, jetons, identifiants d'URL, clés privées) et les adresses
+// e-mail sont masqués dans le rapport, le JSON et l'instantané.
 //
 // Le script n'écrit jamais rien sur le serveur ni dans le dépôt suivi. Il écrit seulement, sauf
-// --no-snapshot, l'instantané de l'audit dans <git-common-dir>/work-inventory/last.json (hors suivi),
-// et, avec --fetch, des refs de suivi locales (refs/remotes/origin/pr/*).
+// --no-snapshot ou vérification incomplète, l'instantané de l'audit dans
+// <git-common-dir>/work-inventory/last.json (hors suivi), et, avec --fetch, des refs de suivi locales.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -53,7 +59,8 @@ for (let i = 0; i < argv.length; i++) {
 }
 function usage(msg) {
   if (msg) console.error(`ERREUR : ${msg}`);
-  const head = fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 22).map((l) => l.replace(/^\/\/ ?/, ''));
+  const src = fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1);
+  const head = src.slice(0, src.findIndex((l) => !l.startsWith('//'))).map((l) => l.replace(/^\/\/ ?/, ''));
   console.error(head.join('\n'));
   process.exit(msg ? 2 : 0);
 }
@@ -72,6 +79,31 @@ function gitOk(args, cwd = repo) { return spawnSync('git', args, { cwd, encoding
 function gitTry(args, cwd = repo) { const r = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }); return r.status === 0 ? r.stdout : null; }
 const lines = (s) => (s || '').split('\n').map((l) => l.replace(/\r$/, '')).filter((l) => l.length);
 const short = (sha) => (sha || '').slice(0, 7);
+const firstLine = (s) => (s || '').trim().split('\n')[0].trim();
+
+// Masquage des données sensibles : le rapport peut être publié (résumé GitHub Actions d'un dépôt
+// public) et reprend des lignes du serveur (crontab, erreurs ssh) et du registre.
+const SECRET_ASSIGN = /\b([A-Za-z0-9_]*(?:PASS(?:WORD|WD)?|PWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIALS?|AUTH)[A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s"',;]+)/gi;
+function redact(v) {
+  return String(v)
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[clé privée masquée]')
+    .replace(SECRET_ASSIGN, '$1=[masqué]')
+    .replace(/(?<![\w./~-])(--?(?:password|passwd|passphrase|token|secret)[= ])("[^"]*"|'[^']*'|[^\s"',;]+)/gi, '$1[masqué]')
+    .replace(/\b(mysql(?:dump|admin)?\b[^\n]*?\s-p)(?=[^\s])[^\s"',;]+/g, '$1[masqué]')
+    .replace(/(\/\/[^/\s:@]+):[^@\s/]+@/g, '$1:[masqué]@')
+    .replace(/\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{12,}/gi, '$1 [masqué]')
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,})\b/g, '[masqué]')
+    .replace(/\b([A-Za-z0-9])[A-Za-z0-9._%+-]*@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})\b/g, '$1…@$2');
+}
+// Masque toutes les chaînes d'un objet (avant JSON.stringify : un masquage sur le texte JSON
+// pourrait avaler une guillemet et casser le document).
+function redactDeep(v) {
+  if (typeof v === 'string') return redact(v);
+  if (Array.isArray(v)) return v.map(redactDeep);
+  if (v instanceof Set) return [...v].map(redactDeep);
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redactDeep(x)]));
+  return v;
+}
 
 // ── Registre ───────────────────────────────────────────────────────────────────
 const STATUSES = {
@@ -135,9 +167,13 @@ function validateRegistry(r) {
 function collectGit(registry) {
   const settings = registry.settings || {};
   const remote = settings.remote || 'origin';
+  let fetchError = null;
   if (opt.fetch) {
-    gitTry(['fetch', '--prune', '--tags', '--quiet', remote]);
-    gitTry(['fetch', '--quiet', remote, `+refs/pull/*/head:refs/remotes/${remote}/pr/*`]);
+    // Un fetch en échec ne doit pas passer inaperçu : le rapport porterait sur des refs périmées.
+    for (const args of [['fetch', '--prune', '--tags', '--quiet', remote], ['fetch', '--quiet', remote, `+refs/pull/*/head:refs/remotes/${remote}/pr/*`]]) {
+      const r = spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+      if (r.status !== 0) { fetchError = `git fetch ${remote} en échec (${firstLine(r.stderr) || `code ${r.status}`}) : refs locales, peut-être périmées`; break; }
+    }
   }
   const mainRef = opt.main || settings.mainRef || `${remote}/main`;
   const mainSha = git(['rev-parse', mainRef]).trim();
@@ -220,7 +256,7 @@ function collectGit(registry) {
   let release = null;
   if (opt.release) release = collectRelease(opt.release, prodTag, branchList, mainSha);
 
-  return { remote, mainRef, mainSha, prodTag, mainNotInProd, mergedPrsNotInProd, branches: branchList, worktrees, stashes, unreachable,
+  return { remote, mainRef, mainSha, prodTag, fetchError, mainNotInProd, mergedPrsNotInProd, branches: branchList, worktrees, stashes, unreachable,
     migrations: { main: mainMigs.size, prod: prodMigs.size, notInProd: migrationsNotInProd }, release };
 }
 
@@ -346,9 +382,11 @@ async function collectPrs(registry, g) {
       source = 'github';
     } catch (e) { prs.clear(); source = `git (API GitHub indisponible : ${e.message})`; }
   }
+  let unverified = false;
   if (source !== 'github') {
-    const out = gitTry(['ls-remote', g.remote, 'refs/pull/*/head']) || '';
-    for (const l of lines(out)) {
+    const out = gitTry(['ls-remote', g.remote, 'refs/pull/*/head']);
+    if (out === null) { unverified = true; source = `${source} ; git ls-remote ${g.remote} en échec : liste des PR non vérifiée`; }
+    for (const l of lines(out || '')) {
       const [sha, ref] = l.split('\t'); const n = Number(ref.split('/')[2]);
       const known = gitOk(['cat-file', '-e', `${sha}^{commit}`]);
       let state = 'inconnu';
@@ -359,23 +397,48 @@ async function collectPrs(registry, g) {
       prs.set(n, { number: n, state, head: sha, headRef: null, title: null, createdAt: null, unverified: state !== 'merged' });
     }
   }
-  return { list: [...prs.values()].sort((a, b) => b.number - a.number), source };
+  return { list: [...prs.values()].sort((a, b) => b.number - a.number), source, unverified };
 }
 
 // ── Serveur (lecture seule) ────────────────────────────────────────────────────
+// Chaque section émet « @@check <section> ok » ou « @@check <section> fail <motif> » : une commande
+// en échec (docker indisponible, crontab illisible, sortie non reconnue…) rend la vérification
+// INCOMPLÈTE et la section « Non vérifié », au lieu d'une section vide prise pour conforme.
 const SERVER_SCRIPT = String.raw`
 set +e
 A="$APP_ROOT"; D="${'$'}{DOCKER:-docker}"
-echo "@@release $(basename "$(readlink "$A/current" 2>/dev/null)" 2>/dev/null)"
-echo "@@revision $(tr -d '\r\n ' < "$A/current/backend/REVISION" 2>/dev/null)"
-$D exec "$PHP" php bin/console app:release:show 2>/dev/null | sed -n 's/^ *Statut *\([A-Z_]*\).*/@@relstatus \1/p; s/^ *Version officielle *\([^ ]*\).*/@@reltag \1/p; s/^ *Commit exécuté *\([0-9a-f]*\).*/@@relcommit \1/p'
-$D exec "$PHP" php bin/console doctrine:migrations:status --env=prod 2>/dev/null | sed -n 's/.*| *Executed Unavailable *| *\([0-9]*\).*/@@mig unavailable \1/p; s/.*| *Executed *| *\([0-9]*\).*/@@mig executed \1/p; s/.*| *New *| *\([0-9]*\).*/@@mig new \1/p; s/.*| *Available *| *\([0-9]*\).*/@@mig available \1/p'
-for f in $SCRIPTS; do if [ -f "$f" ]; then echo "@@script $f $(tr -d '\r' < "$f" | sha256sum | cut -d' ' -f1)"; else echo "@@script $f MISSING"; fi; done
-for d in $WATCH; do [ -d "$d" ] && find "$d" -maxdepth 2 -type f -printf '@@listing %p\n'; done
-echo "@@crontab"; crontab -l 2>/dev/null; echo "@@endcrontab"
-for c in $CONTAINERS; do echo "@@container $c $($D inspect -f '{{.State.Status}} {{.RestartCount}}' "$c" 2>/dev/null || echo absent)"; done
+chk() { if [ "$1" = 0 ]; then echo "@@check $2 ok"; else echo "@@check $2 fail code $1"; fi; }
+rel=$(readlink "$A/current" 2>/dev/null); rc=$?; [ -n "$rel" ] || rc=${'$'}{rc/#0/1}
+echo "@@release $(basename "$rel" 2>/dev/null)"; chk $rc release
+rev=$(tr -d '\r\n ' < "$A/current/backend/REVISION" 2>/dev/null); rc=$?; [ -n "$rev" ] || rc=${'$'}{rc/#0/1}
+echo "@@revision $rev"; chk $rc revision
+$D version > /dev/null 2>&1; dk=$?; chk $dk docker
+if [ "$dk" = 0 ]; then
+  out=$($D exec "$PHP" php bin/console app:release:show 2>/dev/null); chk $? release-registry
+  printf '%s\n' "$out" | sed -n 's/^ *Statut *\([A-Z_]*\).*/@@relstatus \1/p; s/^ *Version officielle *\([^ ]*\).*/@@reltag \1/p; s/^ *Commit exécuté *\([0-9a-f]*\).*/@@relcommit \1/p'
+  out=$($D exec "$PHP" php bin/console doctrine:migrations:status --env=prod 2>/dev/null); chk $? migrations
+  printf '%s\n' "$out" | sed -n 's/.*| *Executed Unavailable *| *\([0-9]*\).*/@@mig unavailable \1/p; s/.*| *Executed *| *\([0-9]*\).*/@@mig executed \1/p; s/.*| *New *| *\([0-9]*\).*/@@mig new \1/p; s/.*| *Available *| *\([0-9]*\).*/@@mig available \1/p'
+  for c in $CONTAINERS; do echo "@@container $c $($D inspect -f '{{.State.Status}} {{.RestartCount}}' "$c" 2>/dev/null || echo absent)"; done
+  chk 0 containers
+fi
+command -v sha256sum > /dev/null 2>&1; chk $? scripts
+for f in $SCRIPTS; do
+  if [ ! -e "$f" ]; then echo "@@script $f MISSING"
+  elif [ ! -r "$f" ]; then echo "@@script $f UNREADABLE"
+  else h=$(tr -d '\r' < "$f" | sha256sum | cut -d' ' -f1); echo "@@script $f ${'$'}{h:-UNREADABLE}"; fi
+done
+for d in $WATCH; do
+  if [ -d "$d" ]; then find "$d" -maxdepth 2 -type f -printf '@@listing %p\n'; chk $? "listing:$d"; else echo "@@check listing:$d fail dossier absent"; fi
+done
+cron=$(crontab -l 2>&1); rc=$?
+if [ "$rc" = 0 ]; then echo "@@crontab"; printf '%s\n' "$cron"; echo "@@endcrontab"; chk 0 crontab
+elif printf '%s' "$cron" | grep -qi '^no crontab'; then echo "@@crontab"; echo "@@endcrontab"; chk 0 crontab
+else chk $rc crontab; fi
 echo "@@end"
 `;
+const SECTION_LABELS = { release: 'release active (lien current)', revision: 'REVISION', docker: 'Docker', 'release-registry': 'registre des versions (app:release:show)',
+  migrations: 'migrations', containers: 'conteneurs', scripts: 'empreintes des scripts', crontab: 'crontab' };
+const sectionLabel = (k) => SECTION_LABELS[k] || (k.startsWith('listing:') ? `contenu de ${k.slice(8)}` : k);
 
 function collectServer(g) {
   const manifestPath = path.join(repo, 'deploy', 'production', 'server-reference', 'manifest.json');
@@ -388,28 +451,41 @@ function collectServer(g) {
     `WATCH=${q((m.watchDirs || []).join(' '))}`, `CONTAINERS=${q(m.app.containers.join(' '))}`,
   ].join(' ');
   const r = spawnSync(sshCmd[0], [...sshCmd.slice(1), `${env} bash -s`], { input: SERVER_SCRIPT, encoding: 'utf8', timeout: 120000, maxBuffer: 64 * 1024 * 1024 });
-  if (r.status !== 0 || !/@@end/.test(r.stdout || '')) return { status: 'Non vérifié', reason: `serveur injoignable ou sortie incomplète (code ${r.status}) ${(r.stderr || '').trim().split('\n')[0] || ''}`.trim() };
-  const out = { status: 'vérifié', scripts: [], unlisted: [], containers: [], migrations: {}, crontab: { added: [], removed: [] } };
-  const cron = []; let inCron = false; const listed = [];
+  if (r.status !== 0 || !/@@end/.test(r.stdout || '')) return { status: 'Non vérifié', reason: redact(`serveur injoignable ou sortie incomplète (code ${r.status}) ${firstLine(r.stderr)}`.trim()) };
+  const out = { status: 'vérifié', checks: {}, incomplete: [], scripts: [], unlisted: [], containers: [], migrations: {}, crontab: { added: [], removed: [] } };
+  const cron = []; let inCron = false; let cronSeen = false; const listed = [];
   for (const l of (r.stdout || '').split('\n').map((x) => x.replace(/\r$/, ''))) {
-    if (l === '@@crontab') { inCron = true; continue; }
+    if (l === '@@crontab') { inCron = true; cronSeen = true; continue; }
     if (l === '@@endcrontab') { inCron = false; continue; }
     if (inCron) { cron.push(l); continue; }
     const [tag, ...rest] = l.split(' ');
-    if (tag === '@@release') out.release = rest.join(' ') || null;
+    if (tag === '@@check') out.checks[rest[0]] = rest[1] === 'ok' ? 'ok' : rest.slice(2).join(' ') || 'échec';
+    else if (tag === '@@release') out.release = rest.join(' ') || null;
     else if (tag === '@@revision') out.revision = rest.join(' ') || null;
     else if (tag === '@@relstatus') out.releaseStatus = rest[0];
     else if (tag === '@@reltag') out.releaseTag = rest[0];
     else if (tag === '@@relcommit') out.releaseCommit = rest[0];
     else if (tag === '@@mig') out.migrations[rest[0]] = Number(rest[1]);
-    else if (tag === '@@script') out.scripts.push({ path: rest[0], actual: rest[1] === 'MISSING' ? null : rest[1] });
+    else if (tag === '@@script') out.scripts.push({ path: rest[0], actual: ['MISSING', 'UNREADABLE'].includes(rest[1]) ? null : rest[1], unreadable: rest[1] === 'UNREADABLE' });
     else if (tag === '@@listing') listed.push(rest.join(' '));
     else if (tag === '@@container') out.containers.push({ name: rest[0], state: rest[1], restarts: rest[2] === undefined ? null : Number(rest[2]) });
   }
+  // Sections attendues : absentes ou à la sortie non reconnue → incomplètes.
+  const expect = ['release', 'revision', 'docker', 'release-registry', 'migrations', 'containers', 'scripts', 'crontab', ...(m.watchDirs || []).map((d) => `listing:${d}`)];
+  for (const k of expect) if (!(k in out.checks)) out.checks[k] = out.checks.docker && out.checks.docker !== 'ok' && ['release-registry', 'migrations', 'containers'].includes(k) ? 'Docker indisponible' : 'section absente de la sortie';
+  if (out.checks['release-registry'] === 'ok' && !out.releaseStatus) out.checks['release-registry'] = 'sortie non reconnue';
+  if (out.checks.migrations === 'ok' && !(Number.isFinite(out.migrations.executed) && Number.isFinite(out.migrations.new))) out.checks.migrations = 'sortie non reconnue';
+  if (out.checks.crontab === 'ok' && !cronSeen) out.checks.crontab = 'sortie non reconnue';
+  if (out.checks.scripts === 'ok' && out.scripts.some((x) => x.unreadable)) out.checks.scripts = `illisible(s) : ${out.scripts.filter((x) => x.unreadable).map((x) => x.path).join(', ')}`;
+  out.incomplete = Object.entries(out.checks).filter(([, v]) => v !== 'ok').map(([k, v]) => ({ section: k, label: sectionLabel(k), reason: v }));
+  if (out.incomplete.length) out.status = 'incomplet';
+  const ok = (k) => out.checks[k] === 'ok';
+  out.verifiedSections = Object.keys(out.checks).filter(ok);
   // Scripts : versionnés (comparés au contenu de main) ou hors dépôt (comparés à l'empreinte de référence).
   for (const s of out.scripts) {
     const ref = m.scripts.find((x) => x.path === s.path);
     s.source = ref.source || null; s.note = ref.note || null; s.item = ref.item || null;
+    if (s.unreadable) { s.state = 'Non vérifié (illisible)'; continue; }
     if (ref.source) {
       const blob = gitTry(['show', `${g.mainSha}:${ref.source}`]);
       s.expected = blob === null ? null : crypto.createHash('sha256').update(blob.replace(/\r/g, '')).digest('hex');
@@ -420,17 +496,34 @@ function collectServer(g) {
     }
   }
   const known = new Set(m.scripts.map((s) => s.path));
-  out.unlisted = listed.filter((p) => !known.has(p)).sort();
-  // Crontab : comparaison ligne à ligne avec la référence versionnée.
-  const normCron = (ls) => ls.map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim() !== '');
-  const refCron = normCron(fs.readFileSync(path.join(repo, m.crontabReference), 'utf8').split('\n').map((l) => l.replace(/\r$/, '')));
-  const live = normCron(cron);
-  out.crontab.added = live.filter((l) => !refCron.includes(l));
-  out.crontab.removed = refCron.filter((l) => !live.includes(l));
+  const listingOk = (m.watchDirs || []).every((d) => ok(`listing:${d}`));
+  out.unlisted = listingOk ? listed.filter((p) => !known.has(p)).sort() : [];
+  // Crontab : comparaison ligne à ligne avec la référence versionnée, seulement si elle a été lue.
+  if (ok('crontab')) {
+    const normCron = (ls) => ls.map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim() !== '');
+    const refCron = normCron(fs.readFileSync(path.join(repo, m.crontabReference), 'utf8').split('\n').map((l) => l.replace(/\r$/, '')));
+    const live = normCron(cron);
+    out.crontab.added = live.filter((l) => !refCron.includes(l));
+    out.crontab.removed = refCron.filter((l) => !live.includes(l));
+  }
   out.prodTagSha = g.prodTag?.sha || null;
   out.releaseMatchesTag = !!(out.release && g.prodTag && out.release === g.prodTag.sha);
   out.revisionMatchesRelease = !!(out.release && out.revision === out.release);
   return out;
+}
+const serverOk = (server, section) => !!server && (server.status === 'vérifié' || (server.status === 'incomplet' && server.checks[section] === 'ok'));
+
+// Toutes les vérifications impossibles ou partielles, en tête du rapport.
+function unverifiedList(g, prs, server) {
+  const u = [];
+  if (g.fetchError) u.push(`Git : ${g.fetchError}`);
+  if (prs.unverified) u.push(`PR : ${prs.source}`);
+  if (server && server.status === 'Non vérifié') u.push(`Serveur : ${server.reason}`);
+  if (server && server.status === 'incomplet') for (const x of server.incomplete) u.push(`Serveur — ${x.label} : ${x.reason}`);
+  const noConflictCheck = g.branches.filter((b) => b.conflicts === null).length;
+  if (noConflictCheck) u.push(`Conflits avec main : ${noConflictCheck} branche(s) non vérifiée(s) (git merge-tree indisponible, Git < 2.38)`);
+  for (const w of g.worktrees) if (w.statusError) u.push(`Worktree ${w.name} : git status en échec`);
+  return u;
 }
 
 // ── Analyse : croisement avec le registre ──────────────────────────────────────
@@ -474,7 +567,7 @@ function analyse(registry, g, prs, server) {
     d.inRelease = g.release ? (shas.length > 0 && !notMerged && shas.every((s) => inRelease(s))) : null;
     // Cohérence statut déclaré / état calculé.
     if (['fusionne', 'deploye', 'valide-production'].includes(it.status) && notMerged) d.warnings.push(`statut « ${STATUSES[it.status]} » mais du code n'est pas dans main`);
-    if (['deploye', 'valide-production'].includes(it.status) && shas.length && !allInProd) d.warnings.push(`statut « ${STATUSES[it.status]} » mais le code n'est pas dans le tag de prod ${g.prodTag?.name || ''}`.trim());
+    if (['deploye', 'valide-production'].includes(it.status) && shas.length && !allInProd && !(it.kind === 'docs' && !notMerged)) d.warnings.push(`statut « ${STATUSES[it.status]} » mais le code n'est pas dans le tag de prod ${g.prodTag?.name || ''}`.trim());
     if (it.status === 'pr-ouverte' && prStates.length && prStates.every((p) => p.state === 'merged')) d.warnings.push('statut « PR ouverte » mais la PR est fusionnée : mettre à jour le registre');
     if (['pr-ouverte', 'teste', 'developpe', 'en-developpement'].includes(it.status) && !notMerged && shas.length) d.warnings.push(`statut « ${STATUSES[it.status]} » mais tout le code est déjà dans main`);
     for (const b of branchStates) if (b.exists === false) d.warnings.push(`branche « ${b.name} » introuvable`);
@@ -512,9 +605,9 @@ function analyse(registry, g, prs, server) {
       || g.mergedPrsNotInProd.some((m) => m.pr && refIndex.prs.has(m.pr) && gitOk(['merge-base', '--is-ancestor', c.sha, m.sha]));
     if (!tracked) untracked.push({ kind: 'commit-main', ref: short(c.sha), detail: `fusionné, non déployé : ${c.subject}` });
   }
-  if (server?.status === 'vérifié') {
+  if (server && server.status !== 'Non vérifié') {
     const trackedPaths = new Set(items.flatMap((it) => it.refs?.serverPaths || []));
-    for (const s of server.scripts) if (!/^conforme/.test(s.state) && !s.state.startsWith('absent (') && !trackedPaths.has(s.path) && !s.item) untracked.push({ kind: 'serveur', ref: s.path, detail: s.state });
+    if (serverOk(server, 'scripts')) for (const s of server.scripts) if (!/^conforme/.test(s.state) && !s.state.startsWith('absent (') && !trackedPaths.has(s.path) && !s.item) untracked.push({ kind: 'serveur', ref: s.path, detail: s.state });
     for (const p of server.unlisted) untracked.push({ kind: 'serveur', ref: p, detail: 'fichier présent sur le serveur, absent du manifeste' });
     for (const l of server.crontab.added) untracked.push({ kind: 'crontab', ref: '+', detail: l });
     for (const l of server.crontab.removed) untracked.push({ kind: 'crontab', ref: '−', detail: l });
@@ -530,11 +623,26 @@ function snapshotKeys(g, prs, server, a) {
   for (const w of g.worktrees) if (w.dirty?.length) for (const f of w.notPreserved || []) keys.push(`dirty:${w.name}:${f}`);
   for (const c of g.mainNotInProd) keys.push(`main:${c.sha}`);
   for (const u of a.untracked) keys.push(`untracked:${u.kind}:${u.ref}:${u.detail}`);
-  if (server?.status === 'vérifié') {
+  if (serverOk(server, 'scripts')) {
     for (const s of server.scripts) keys.push(`script:${s.path}:${s.state}:${s.actual}`);
   }
   for (const d of a.derived) for (const op of d.openOps) keys.push(`op:${d.id}:${op.description}`);
-  return [...new Set(keys)];
+  return [...new Set(keys.map(redact))];
+}
+// Contexte de l'audit : on ne compare que deux audits du même dépôt, de la même ref principale,
+// avec ou sans serveur, et la même source des PR ; sinon tout paraîtrait « nouveau » ou « disparu ».
+function snapshotScope(g, prs) {
+  const url = (gitTry(['remote', 'get-url', g.remote]) || '').trim().replace(/\/\/[^@/]*@/, '//').replace(/\.git$/, '');
+  const slug = (url.match(/github\.com[:/](.+)$/) || [])[1] || path.basename(url) || g.remote;
+  return `${slug}|${g.mainRef}|${opt.server ? 'avec serveur' : 'sans serveur'}|PR ${prs.source === 'github' ? 'API GitHub' : 'git'}`;
+}
+function readSnapshot(file, scope) {
+  if (!fs.existsSync(file)) return { status: 'absent', previous: null, added: [], removed: [] };
+  let prev;
+  try { prev = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return { status: 'illisible', reason: e.message, previous: null, added: [], removed: [] }; }
+  if (!prev || !Array.isArray(prev.keys) || typeof prev.generatedAt !== 'string') return { status: 'illisible', reason: 'format inattendu', previous: null, added: [], removed: [] };
+  if (prev.scope !== scope) return { status: 'autre-contexte', previous: prev.generatedAt, scope: prev.scope || 'inconnu', added: [], removed: [] };
+  return { status: 'ok', previous: prev.generatedAt, ageDays: daysSince(prev.generatedAt), keys: prev.keys };
 }
 function snapshotFile() {
   if (process.env.INVENTORY_SNAPSHOT) return process.env.INVENTORY_SNAPSHOT;
@@ -543,7 +651,7 @@ function snapshotFile() {
 }
 
 // ── Rendu ──────────────────────────────────────────────────────────────────────
-function render(registry, g, prs, server, a, news, regErrors) {
+function render(registry, g, prs, server, a, news, regErrors, unverified) {
   const out = [];
   const p = (s = '') => out.push(s);
   const items = registry.items || [];
@@ -552,8 +660,10 @@ function render(registry, g, prs, server, a, news, regErrors) {
   p(`# Travaux en attente — SurgicalHub (${NOW.toISOString().slice(0, 16).replace('T', ' ')} UTC)`);
   p();
   p(`- main : \`${short(g.mainSha)}\` (${g.mainRef}) · tag de prod : ${g.prodTag ? `\`${g.prodTag.name}\` → \`${short(g.prodTag.sha)}\`` : 'aucun'}`);
-  p(`- PR : source ${prs.source} · serveur : ${server ? (server.status === 'vérifié' ? 'vérifié (lecture seule)' : `Non vérifié — ${server.reason}`) : 'Non vérifié (option --server non utilisée)'}`);
+  const srv = !server ? 'non contrôlé (option --server non utilisée)' : server.status === 'vérifié' ? 'vérifié (lecture seule)' : server.status === 'incomplet' ? `**vérification INCOMPLÈTE** (${server.incomplete.length} section(s) non vérifiée(s))` : `**Non vérifié** — ${server.reason}`;
+  p(`- PR : source ${prs.source} · serveur : ${srv}`);
   if (g.release) p(`- **Release prévue : \`${short(g.release.sha)}\`**${g.release.onMain ? '' : ' — ATTENTION : absente de main'} (${g.release.files} fichier(s) modifiés depuis la prod)`);
+  if (unverified.length) { p(); p(`## ⚠ Non vérifié (${unverified.length}) — le rapport est partiel sur ces points`); unverified.forEach((e) => p(`- ${e}`)); }
   if (regErrors.length) { p(); p(`## ⛔ Registre invalide (${regErrors.length})`); regErrors.forEach((e) => p(`- ${e}`)); }
 
   const urgent = a.derived.filter((d) => d.urgent).sort((x, y) => prio(x.id) - prio(y.id));
@@ -617,20 +727,25 @@ function render(registry, g, prs, server, a, news, regErrors) {
   if (g.unreachable) p(`- Commits inaccessibles (--deep) : ${g.unreachable.length}${g.unreachable.length ? ` — plus récents : ${g.unreachable.slice(0, 5).map((c) => `\`${short(c.sha)}\` ${c.subject}`).join(' ; ')}` : ''}`);
 
   p(); p('## 7. Serveur de production');
-  if (!server) p('Non vérifié (lancer avec --server).');
-  else if (server.status !== 'vérifié') p(`Non vérifié — ${server.reason}`);
+  if (!server) p('Non contrôlé (lancer avec --server).');
+  else if (server.status === 'Non vérifié') p(`Non vérifié — ${server.reason}`);
   else {
-    p(`- Release active \`${short(server.release)}\`, REVISION \`${short(server.revision)}\`, registre : ${server.releaseStatus || '?'} ${server.releaseTag || ''} — ${server.releaseMatchesTag ? 'conforme au tag de prod' : `**différente du tag de prod (${short(server.prodTagSha)})**`}${server.revisionMatchesRelease ? '' : ' · **REVISION ≠ release**'}`);
+    const nv = (k) => `Non vérifié (${server.checks[k]})`;
+    for (const x of server.incomplete) p(`- **Non vérifié — ${x.label}** : ${x.reason}`);
+    if (serverOk(server, 'release') && serverOk(server, 'revision')) p(`- Release active \`${short(server.release)}\`, REVISION \`${short(server.revision)}\`, registre : ${server.releaseStatus || '?'} ${server.releaseTag || ''} — ${server.releaseMatchesTag ? 'conforme au tag de prod' : `**différente du tag de prod (${short(server.prodTagSha)})**`}${server.revisionMatchesRelease ? '' : ' · **REVISION ≠ release**'}`);
+    else p(`- Release active : ${nv(serverOk(server, 'release') ? 'revision' : 'release')}`);
     const mg = server.migrations;
-    p(`- Migrations : ${mg.executed ?? '?'} exécutées, ${mg.new ?? '?'} nouvelles, ${mg.unavailable ?? '?'} indisponibles${mg.new > 0 ? ' — **MIGRATIONS NON APPLIQUÉES**' : ''}${mg.unavailable > 0 ? ' — **ANOMALIE : migrations exécutées absentes du code**' : ''}`);
+    if (serverOk(server, 'migrations')) p(`- Migrations : ${mg.executed} exécutées, ${mg.new} nouvelles, ${mg.unavailable ?? 0} indisponibles${mg.new > 0 ? ' — **MIGRATIONS NON APPLIQUÉES**' : ''}${mg.unavailable > 0 ? ' — **ANOMALIE : migrations exécutées absentes du code**' : ''}`);
+    else p(`- Migrations : ${nv('migrations')}`);
     for (const s of server.scripts) if (!/^conforme/.test(s.state)) p(`- Script \`${s.path}\` : **${s.state}**${s.source ? ` (source ${s.source})` : ''}${s.note ? ` — ${s.note}` : ''}`);
-    p(`- Scripts conformes : ${server.scripts.filter((s) => /^conforme/.test(s.state)).length}/${server.scripts.length}`);
+    p(`- Scripts conformes : ${server.scripts.filter((s) => /^conforme/.test(s.state)).length}/${server.scripts.length}${serverOk(server, 'scripts') ? '' : ` — ${nv('scripts')}`}`);
     for (const f of server.unlisted) p(`- Fichier serveur absent du manifeste : \`${f}\``);
-    if (server.crontab.added.length || server.crontab.removed.length) {
+    if (!serverOk(server, 'crontab')) p(`- Crontab : ${nv('crontab')}`);
+    else if (server.crontab.added.length || server.crontab.removed.length) {
       p('- **Crontab différente de la référence versionnée** :');
       server.crontab.added.forEach((l) => p(`  - \`+ ${l}\``)); server.crontab.removed.forEach((l) => p(`  - \`− ${l}\``));
     } else p('- Crontab identique à la référence versionnée.');
-    p(`- Conteneurs : ${server.containers.map((c) => `${c.name} ${c.state}`).join(', ')}`);
+    p(`- Conteneurs : ${serverOk(server, 'containers') ? server.containers.map((c) => `${c.name} ${c.state}`).join(', ') : nv('containers')}`);
   }
 
   const ops = a.derived.flatMap((d) => d.openOps.map((op) => ({ d, op }))).sort((x, y) => prio(x.d.id) - prio(y.d.id));
@@ -651,12 +766,16 @@ function render(registry, g, prs, server, a, news, regErrors) {
     p(); p('## 10. Risques de conflit avec la release prévue');
     for (const o of g.release.overlaps) p(`- \`${o.branch}\` touche aussi : ${o.files.slice(0, 8).join(', ')}${o.files.length > 8 ? ` (+${o.files.length - 8})` : ''}`);
   }
-  p(); p(`## Nouveau depuis le dernier audit${news.previous ? ` (${news.previous})` : ''}`);
-  if (!news.previous) p('Premier audit sur ce poste : pas de comparaison.');
+  p(); p(`## Nouveau depuis le dernier audit${news.status === 'ok' ? ` (${news.previous})` : ''}`);
+  if (news.status === 'absent') p('Non vérifié : aucun instantané précédent (premier audit, ou cache expiré en CI).');
+  else if (news.status === 'illisible') p(`Non vérifié : instantané précédent illisible (${news.reason}).`);
+  else if (news.status === 'autre-contexte') p(`Non vérifié : l'instantané précédent (${news.previous}) provient d'un autre contexte (${news.scope}) ; comparaison impossible.`);
   else if (!news.added.length) p('Rien de nouveau.');
   else news.added.slice(0, 40).forEach((k) => p(`- ${k}`));
   if (news.added.length > 40) p(`- … et ${news.added.length - 40} autre(s)`);
-  if (news.previous && news.removed.length) p(`- Disparu depuis : ${news.removed.length} élément(s) (intégré, déployé ou supprimé)`);
+  if (news.status === 'ok' && news.removed.length) p(`- Disparu depuis : ${news.removed.length} élément(s) (intégré, déployé ou supprimé)`);
+  if (news.status === 'ok' && news.ageDays > (registry.settings?.snapshotMaxDays ?? 8)) p(`- Attention : instantané vieux de ${news.ageDays} jours.`);
+  p(`- Instantané de cet audit : ${news.saved}`);
   return out.join('\n');
 
   function finishSummary() {
@@ -674,28 +793,45 @@ if (opt.checkOnly) {
   if (regErrors.length) { console.error(`Registre invalide (${regErrors.length}) :\n- ${regErrors.join('\n- ')}`); process.exit(1); }
   console.log(`Registre valide : ${registry.items.length} élément(s).`); process.exit(0);
 }
-const g = collectGit(registry);
-const prs = await collectPrs(registry, g);
-const server = opt.server ? collectServer(g) : null;
-const a = analyse(registry, g, prs, server);
-const keys = snapshotKeys(g, prs, server, a);
-const snapFile = snapshotFile();
-let news = { previous: null, added: [], removed: [] };
-if (fs.existsSync(snapFile)) {
-  try {
-    const prev = JSON.parse(fs.readFileSync(snapFile, 'utf8'));
-    const old = new Set(prev.keys); const cur = new Set(keys);
-    news = { previous: prev.generatedAt, added: keys.filter((k) => !old.has(k)), removed: prev.keys.filter((k) => !cur.has(k)) };
-  } catch { /* instantané illisible : ignoré */ }
+let g, prs, server, a, unverified, news;
+try {
+  g = collectGit(registry);
+  prs = await collectPrs(registry, g);
+  server = opt.server ? collectServer(g) : null;
+  a = analyse(registry, g, prs, server);
+  unverified = unverifiedList(g, prs, server);
+  const keys = snapshotKeys(g, prs, server, a);
+  const snapFile = snapshotFile();
+  const scope = snapshotScope(g, prs);
+  const prev = readSnapshot(snapFile, scope);
+  news = prev.status === 'ok'
+    ? (() => { const old = new Set(prev.keys); const cur = new Set(keys); return { ...prev, keys: undefined, added: keys.filter((k) => !old.has(k)), removed: prev.keys.filter((k) => !cur.has(k)) }; })()
+    : prev;
+  // Un audit partiel n'écrase pas l'instantané : au prochain audit, ce qui n'a pas pu être vu
+  // apparaîtrait à tort comme « nouveau ».
+  if (!opt.snapshot) news.saved = 'non enregistré (--no-snapshot)';
+  else if (unverified.length) news.saved = 'non enregistré (vérifications incomplètes)';
+  else {
+    try {
+      fs.mkdirSync(path.dirname(snapFile), { recursive: true });
+      const tmp = `${snapFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ generatedAt: NOW.toISOString(), scope, keys }, null, 1));
+      fs.renameSync(tmp, snapFile);
+      news.saved = 'enregistré';
+    } catch (e) { news.saved = `ÉCHEC de l'enregistrement (${e.message})`; unverified.push(`Instantané : enregistrement impossible (${e.message})`); }
+  }
+} catch (e) {
+  console.error(`ERREUR : inventaire interrompu — ${redact(firstLine(e.stderr ? String(e.stderr) : '') || firstLine(e.message))}. Rien n'a été vérifié.`);
+  process.exit(3);
 }
-if (opt.snapshot) { fs.mkdirSync(path.dirname(snapFile), { recursive: true }); fs.writeFileSync(snapFile, JSON.stringify({ generatedAt: NOW.toISOString(), keys }, null, 1)); }
 
-if (opt.json) console.log(JSON.stringify({ generatedAt: NOW.toISOString(), git: g, prs, server, analysis: a, news, registryErrors: regErrors }, null, 2));
-else console.log(render(registry, g, prs, server, a, news, regErrors));
+if (opt.json) console.log(JSON.stringify(redactDeep({ generatedAt: NOW.toISOString(), git: g, prs, server, analysis: a, news, unverified, registryErrors: regErrors }), null, 2));
+else console.log(redact(render(registry, g, prs, server, a, news, regErrors, unverified)));
 
 const fail = [];
 if (opt.failOn.includes('registry') && regErrors.length) fail.push('registre invalide');
 if (opt.failOn.includes('untracked') && a.untracked.length) fail.push(`${a.untracked.length} travail(aux) non suivi(s)`);
 if (opt.failOn.includes('urgent') && a.derived.some((d) => d.forgotten || (g.release && d.urgent && !d.inRelease))) fail.push('correctif P0/P1 oublié');
+if (opt.failOn.includes('unverified') && unverified.length) fail.push(`${unverified.length} vérification(s) incomplète(s)`);
 if (opt.failOn.includes('server') && server && (server.status !== 'vérifié' || server.scripts.some((s) => !/^conforme|^absent \(/.test(s.state)) || server.crontab.added.length || server.crontab.removed.length || (server.migrations.new > 0))) fail.push('écart serveur');
 if (fail.length) { console.error(`\nÉchec demandé (--fail-on) : ${fail.join(', ')}`); process.exit(1); }

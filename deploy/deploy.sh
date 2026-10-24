@@ -103,19 +103,25 @@ remote() { # remote <commande> <args...> — exécute deploy/remote.sh sur le se
   fi
 }
 
-# D-169 — rapport des développements non déployés. Signalement seulement : ne bloque jamais le
-# déploiement (le périmètre se décide explicitement), mais un correctif P0/P1 absent de la release
-# ressort en tête. WORK_INVENTORY=off le désactive (tests isolés).
+# D-169 — rapport des développements non déployés. Les CONSTATS ne bloquent pas le déploiement (le
+# périmètre se décide explicitement ; un correctif P0/P1 absent de la release ressort en tête), mais
+# un contrôle qui n'a pas pu s'exécuter arrête prepare : jamais d'échec silencieux. WORK_INVENTORY=off
+# le désactive explicitement (tests isolés, ou passer outre en connaissance de cause) et le signale.
 inventory() { node "$ROOT/deploy/work-inventory/inventory.mjs" --repo "$ROOT" "$@"; }
 pending_summary() {
-  [ "${WORK_INVENTORY:-on}" = off ] && return 0
-  if command -v node > /dev/null 2>&1 && [ -f "$ROOT/deploy/work-inventory/inventory.mjs" ]; then
-    echo "── Travaux en attente (D-169, non bloquant ; détail : deploy/deploy.sh pending $1)"
-    inventory --release "$1" --summary --no-snapshot 2>&1 | sed 's/^/   /' || true
-    echo "──"
-  else
-    echo "── Rapport des travaux en attente NON produit (node absent) : lancer deploy/deploy.sh pending $1"
+  if [ "${WORK_INVENTORY:-on}" = off ]; then
+    echo "── ATTENTION : contrôle des travaux en attente DÉSACTIVÉ (WORK_INVENTORY=off) : rien n'a été vérifié (D-169)." >&2
+    return 0
   fi
+  command -v node > /dev/null 2>&1 \
+    || die "contrôle des travaux en attente (D-169) impossible : node absent. Installer node, ou WORK_INVENTORY=off pour passer outre en connaissance de cause."
+  echo "── Travaux en attente (D-169 ; constats non bloquants ; détail : deploy/deploy.sh pending $1)"
+  local out rc=0
+  out=$(inventory --fetch --release "$1" --summary --no-snapshot 2>&1) || rc=$?
+  printf '%s\n' "$out" | sed 's/^/   /'
+  [ "$rc" -eq 0 ] \
+    || die "contrôle des travaux en attente NON EFFECTUÉ (code $rc) : release non préparée. Corriger l'erreur ci-dessus, ou WORK_INVENTORY=off pour passer outre en connaissance de cause."
+  echo "──"
 }
 cmd_pending() {
   command -v node > /dev/null 2>&1 || die "node est requis pour le rapport des travaux en attente (D-169)."

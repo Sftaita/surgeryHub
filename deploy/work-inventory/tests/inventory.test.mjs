@@ -58,12 +58,20 @@ before(() => {
   // Le faux « ssh » exécute la commande localement, avec docker et crontab simulés.
   write(path.join(STUB, 'docker'), `#!/usr/bin/env bash
 case "$*" in
+  *migrations:status*) [ -n "$STUB_MIG_FAIL" ] && exit 1; [ -n "$STUB_MIG_GARBAGE" ] && { echo 'sortie inattendue'; exit 0; };;
+esac
+case "$*" in
   *app:release:show*) printf '  Commit exécuté       %s\\n  Statut               OFFICIAL\\n  Version officielle   v2026.10.01-prod\\n' "$(cat '${SRV.replace(/\\/g, '/')}/app/current-sha')";;
   *migrations:status*) printf '| Migrations | Executed | 3 |\\n| | Executed Unavailable | 0 |\\n| | Available | 4 |\\n| | New | 1 |\\n';;
   inspect*) echo "running 0";;
 esac
 `);
-  write(path.join(STUB, 'crontab'), `#!/usr/bin/env bash\ncat '${SRV.replace(/\\/g, '/')}/crontab.txt'\n`);
+  write(path.join(STUB, 'crontab'), `#!/usr/bin/env bash
+[ -n "$STUB_CRON_FAIL" ] && { echo 'crontab: permission denied' >&2; exit 1; }
+cat '${SRV.replace(/\\/g, '/')}/crontab.txt'
+[ -n "$STUB_CRON_EXTRA" ] && printf '%s\\n' "$STUB_CRON_EXTRA"
+exit 0
+`);
   // PATH POSIX : sous Git Bash, « C:/… » couperait PATH au deux-points.
   const posix = (p) => p.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`);
   write(path.join(STUB, 'fake-ssh.sh'), `#!/usr/bin/env bash\nexport PATH="${posix(STUB)}:$PATH"\nexec bash -c "\${@: -1}"\n`);
@@ -80,14 +88,16 @@ esac
   write(path.join(SRV, 'app', 'current-sha'), A);
   fs.mkdirSync(path.join(SRV, 'app', 'releases', A, 'backend'), { recursive: true });
   write(path.join(SRV, 'app', 'releases', A, 'backend', 'REVISION'), A);
-  // « current » : lien symbolique réel si possible, sinon fichier texte lu par readlink (Git Bash sans droits).
-  try { fs.symlinkSync(`releases/${A}`, path.join(SRV, 'app', 'current'), 'dir'); } catch { /* voir ci-dessous */ }
+  // « current » : lien symbolique réel ; sous Windows sans droits, jonction (lue par readlink de Git Bash).
+  try { fs.symlinkSync(`releases/${A}`, path.join(SRV, 'app', 'current'), 'dir'); } catch {
+    fs.symlinkSync(path.join(SRV, 'app', 'releases', A), path.join(SRV, 'app', 'current'), 'junction');
+  }
 
   git(['checkout', '-q', '-b', 'feat/merged']);
   commit('feat: fonctionnalité fusionnée', { 'backend/src/Merged.php': '<?php\n', 'backend/migrations/Version20261010000000.php': '<?php\n' }, '2026-10-10T10:00:00Z');
   git(['checkout', '-q', 'main']);
   git(['merge', '--no-ff', '-q', '-m', 'Merge pull request #5 from x/feat/merged', 'feat/merged'], WORK, at('2026-10-11T10:00:00Z'));
-  commit('docs: note', { 'docs/note.md': 'x\n' }, '2026-10-12T10:00:00Z');
+  const docSha = commit('docs: note', { 'docs/note.md': 'x\n' }, '2026-10-12T10:00:00Z');
   git(['push', '-q', 'origin', 'main', '--tags']);
 
   // n° 1 : branche poussée avec un commit non fusionné, absente du registre.
@@ -118,6 +128,9 @@ esac
     items: [
       { id: 'FIX-1', title: 'Déconnexions', description: 'd', kind: 'fix', priority: 'P1', userImpact: 'tous', status: 'teste', statusSince: '2026-10-15',
         refs: { branches: ['fix/deconnexions'], prs: [7] }, nextAction: 'déployer', lastReviewed: '2026-10-24' },
+      { id: 'DOC-1', title: 'Documentation fusionnée', description: 'd', kind: 'docs', priority: 'P3', userImpact: 'aucun', status: 'valide-production',
+        prodEvidence: 'fusionnée', refs: { commits: [docSha] }, nextAction: 'aucune', lastReviewed: '2026-10-24',
+        pendingOps: [{ type: 'validation', status: 'en-attente', description: "Fichier ~/.x-passphrase créée par l'utilisateur" }] },
       { id: 'FEAT-5', title: 'Fusionnée', description: 'd', kind: 'feature', priority: 'P2', userImpact: 'u', status: 'deploye', statusSince: '2026-10-11',
         refs: { prs: [5], commits: ['feat/merged'] }, nextAction: 'vérifier', lastReviewed: '2026-10-24' },
       { id: 'DATA-1', title: 'Reprise', description: 'd', kind: 'data', priority: 'P2', userImpact: 'u', status: 'bloque', blockedReason: 'décision',
@@ -152,6 +165,7 @@ test('3. PR fusionnée mais absente du tag de prod → « fusionné, absent du t
   assert.ok(r.git.mainNotInProd.some((c) => c.subject === 'docs: note' && !c.app), 'docs hors archive applicative');
   const d = r.analysis.derived.find((x) => x.id === 'FEAT-5');
   assert.equal(d.code, 'fusionné, absent du tag de prod');
+  assert.deepEqual(r.analysis.derived.find((x) => x.id === 'DOC-1').warnings, [], 'documentation dans main : rien à déployer');
   assert.ok(d.warnings.some((w) => /pas dans le tag de prod/.test(w)), 'statut « Déployé » incohérent signalé');
 });
 
@@ -159,6 +173,8 @@ test('4. migrations : fusionnée non déployée (Git) et non appliquée (serveur
   const r = json(['--no-snapshot', '--server']);
   assert.deepEqual(r.git.migrations.notInProd, ['Version20261010000000']);
   assert.equal(r.server.status, 'vérifié', JSON.stringify(r.server));
+  assert.equal(r.server.releaseMatchesTag, true, 'release active lue et conforme au tag');
+  assert.deepEqual(r.unverified, []);
   assert.equal(r.server.migrations.new, 1);
   assert.match(run(['--no-snapshot', '--server']).stdout, /MIGRATIONS NON APPLIQUÉES/);
 });
@@ -237,4 +253,92 @@ test('instantané : signale ce qui est nouveau depuis le dernier audit', () => {
   assert.ok(r.news.previous);
   assert.ok(r.news.added.some((k) => k.startsWith('commit:feat/nouvelle:')), JSON.stringify(r.news.added));
   assert.ok(!r.news.added.some((k) => k.startsWith('commit:feat/non-suivie:')), 'déjà connu au dernier audit');
+});
+
+test('serveur partiel : crontab illisible et migrations en échec → « incomplet », sections Non vérifié, aucun faux écart', () => {
+  const env = { STUB_CRON_FAIL: '1', STUB_MIG_FAIL: '1' };
+  const r = json(['--no-snapshot', '--server'], env);
+  assert.equal(r.server.status, 'incomplet');
+  assert.deepEqual(r.server.incomplete.map((x) => x.section).sort(), ['crontab', 'migrations']);
+  assert.deepEqual(r.server.crontab, { added: [], removed: [] }, 'crontab non lue : pas de lignes « retirées » inventées');
+  assert.ok(!r.analysis.untracked.some((u) => u.kind === 'crontab'));
+  assert.ok(r.unverified.some((u) => /crontab/.test(u)) && r.unverified.some((u) => /migrations/.test(u)));
+  assert.equal(r.server.scripts.find((x) => x.path.endsWith('legacy.sh')).state, 'modifié hors dépôt', 'les sections lues restent exploitées');
+  const txt = run(['--no-snapshot', '--server'], env).stdout;
+  assert.match(txt, /## ⚠ Non vérifié \(2\)/);
+  assert.match(txt, /serveur : \*\*vérification INCOMPLÈTE\*\*/);
+  assert.match(txt, /- Crontab : Non vérifié \(code 1\)/);
+  assert.match(txt, /- Migrations : Non vérifié/);
+  assert.doesNotMatch(txt, /Crontab identique/);
+  assert.equal(run(['--no-snapshot', '--server', '--fail-on', 'unverified'], env).status, 1);
+  assert.equal(run(['--no-snapshot', '--server', '--fail-on', 'server'], env).status, 1);
+  // Sortie de commande non reconnue (code 0 mais rien d'exploitable) : non vérifié aussi.
+  const g = json(['--no-snapshot', '--server'], { STUB_MIG_GARBAGE: '1' });
+  assert.equal(g.server.checks.migrations, 'sortie non reconnue');
+});
+
+test('données sensibles masquées dans le rapport, le JSON et l\'instantané', () => {
+  assert.match(run(['--no-snapshot']).stdout, /~\/\.x-passphrase créée par l'utilisateur/, 'pas de faux positif sur du texte ordinaire');
+  const line = '0 1 * * * MYSQL_PWD=hunter2secret /x/a.sh --password=abc123xyz https://bob:s3cr3tpw@backup.example/x -H "Authorization: Bearer abcdefghijklmnop12345" ' + 'ghp' + '_' + 'abcdefghij'.repeat(3) + ' mail admin@example.com';
+  const env = { STUB_CRON_EXTRA: line };
+  const txt = run(['--no-snapshot', '--server'], env).stdout;
+  const js = run(['--json', '--no-snapshot', '--server'], env).stdout;
+  for (const out of [txt, js]) {
+    for (const secret of ['hunter2secret', 'abc123xyz', 's3cr3tpw', 'abcdefghijklmnop12345', 'ghp' + '_abcdefghij', 'admin@example.com']) assert.ok(!out.includes(secret), `fuite : ${secret}`);
+  }
+  assert.match(txt, /MYSQL_PWD=\[masqué\]/);
+  assert.match(txt, /a…@example\.com/);
+  JSON.parse(js);   // le masquage ne casse pas le JSON
+  fs.rmSync(SNAP, { force: true });
+  run(['--server'], env);
+  const snap = fs.readFileSync(SNAP, 'utf8');
+  assert.ok(!snap.includes('hunter2secret') && !snap.includes('s3cr3tpw'), 'instantané masqué');
+  fs.rmSync(SNAP, { force: true });
+});
+
+test('instantané fiable : absent, illisible ou d\'un autre contexte → Non vérifié ; audit partiel non enregistré', () => {
+  fs.rmSync(SNAP, { force: true });
+  assert.match(run(['--no-snapshot']).stdout, /Non vérifié : aucun instantané précédent/);
+  let r = json([]);
+  assert.equal(r.news.status, 'absent');
+  assert.equal(r.news.saved, 'enregistré');
+  const good = fs.readFileSync(SNAP, 'utf8');
+  // Même contexte : comparaison faite.
+  assert.equal(json(['--no-snapshot']).news.status, 'ok');
+  // Autre contexte (audit avec serveur comparé à un audit sans serveur) : pas de fausses nouveautés.
+  r = json(['--no-snapshot', '--server']);
+  assert.equal(r.news.status, 'autre-contexte');
+  assert.deepEqual(r.news.added, []);
+  assert.match(run(['--no-snapshot', '--server']).stdout, /provient d'un autre contexte/);
+  // Audit partiel : l'instantané précédent n'est pas écrasé.
+  r = json(['--server'], { STUB_CRON_FAIL: '1' });
+  assert.equal(r.news.saved, 'non enregistré (vérifications incomplètes)');
+  assert.equal(fs.readFileSync(SNAP, 'utf8'), good);
+  // Instantané illisible : signalé, pas ignoré en silence.
+  write(SNAP, '{ tronqué');
+  r = json(['--no-snapshot']);
+  assert.equal(r.news.status, 'illisible');
+  assert.match(run(['--no-snapshot']).stdout, /Non vérifié : instantané précédent illisible/);
+  fs.rmSync(SNAP, { force: true });
+});
+
+test('fetch et liste des PR en échec → Non vérifié en tête, --fail-on unverified échoue', () => {
+  const url = git(['remote', 'get-url', 'origin']).trim();
+  git(['remote', 'set-url', 'origin', path.join(T, 'depot-inexistant.git')]);
+  try {
+    const r = json(['--no-snapshot', '--fetch']);
+    assert.ok(r.git.fetchError && /git fetch origin en échec/.test(r.git.fetchError));
+    assert.equal(r.prs.unverified, true);
+    const txt = run(['--no-snapshot', '--fetch', '--summary']).stdout;
+    assert.match(txt, /## ⚠ Non vérifié/);
+    assert.match(txt, /refs locales, peut-être périmées/);
+    assert.equal(run(['--no-snapshot', '--fetch', '--fail-on', 'unverified']).status, 1);
+  } finally { git(['remote', 'set-url', 'origin', url]); }
+});
+
+test('inventaire interrompu → code 3 et message explicite (jamais un rapport vide)', () => {
+  const r = run(['--no-snapshot', '--main', 'refs/remotes/origin/inexistante']);
+  assert.equal(r.status, 3);
+  assert.match(r.stderr, /inventaire interrompu .* Rien n'a été vérifié/);
+  assert.equal(r.stdout, '');
 });

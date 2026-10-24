@@ -52,6 +52,19 @@ check "la configuration Docker est livrée" bash -c "tar tzf '$ARCH_A' | grep -q
 check "aucun .env de production ni clé" bash -c "! tar tzf '$ARCH_A' | grep -E '\.pem$|\.env\.local$|\.env\.prod$'"
 refused "SHA abrégé refusé" bash "$D" prepare "${A:0:7}"
 
+echo "== Contrôle des travaux en attente avant prepare (D-169) : jamais d'échec silencieux"
+FAKEBIN="$T/fakebin"; mkdir -p "$FAKEBIN"
+printf '#!/usr/bin/env bash\necho "Résumé simulé de l inventaire"\n' > "$FAKEBIN/node"; chmod +x "$FAKEBIN/node"
+check "inventaire réussi : résumé affiché, prepare poursuit" bash -c "WORK_INVENTORY=on PATH='$FAKEBIN':\"\$PATH\" bash '$D' prepare '$A' > '$T/prep.out' 2>&1 && grep -q 'Résumé simulé' '$T/prep.out'"
+printf '#!/usr/bin/env bash\necho "TypeError: panne simulée" >&2\nexit 3\n' > "$FAKEBIN/node"
+refused "inventaire en échec : prepare refusé" env WORK_INVENTORY=on PATH="$FAKEBIN:$PATH" bash "$D" prepare "$A"
+check "… avec le code et l'erreur affichés" bash -c "grep -q 'NON EFFECTUÉ (code 3)' '$T/out' && grep -q 'panne simulée' '$T/out'"
+if ! command -v node > /dev/null 2>&1; then
+  refused "node absent : prepare refusé" env WORK_INVENTORY=on bash "$D" prepare "$A"
+  check "… avec le motif affiché" grep -q 'node absent' "$T/out"
+fi
+check "WORK_INVENTORY=off : contournement explicite et signalé" bash -c "bash '$D' prepare '$A' > '$T/prep.out' 2>&1 && grep -q 'DÉSACTIVÉ (WORK_INVENTORY=off)' '$T/prep.out'"
+
 echo "== commit B : configuration Docker modifiée + fichier suivi supprimé"
 echo "# modification B" >> "$R/docker/nginx/prod.conf"
 DELETED=backend/templates/emails/absence_room_release.html.twig

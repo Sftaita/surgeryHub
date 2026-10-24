@@ -16,7 +16,7 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] `doctrine:migrations:status --env=prod` exécuté sur le serveur → noter `Current`/`Executed Unavailable`/`New`
 - [ ] Écart calculé (`git log --oneline <commit-serveur>..HEAD`) et rapport produit (gabarit §2.3 de `deployment-versioning.md`)
 - [ ] **Anomalie DB-vs-code vérifiée explicitement** (la base est-elle plus avancée que ce que laisse supposer le commit déployé ?)
-- [ ] **D-169 : `deploy/deploy.sh pending $SHA` produit et affiché** — correctifs P0/P1 absents de la release (chacun inclus, ou exclu avec sa raison écrite), travaux non suivis, PR et branches en attente, modifications locales, migrations et opérations serveur en attente, risques de conflit ; tout « Non vérifié » mentionné
+- [ ] **D-169 : `deploy/deploy.sh pending $SHA` produit et affiché** — correctifs P0/P1 absents de la release (chacun inclus, ou exclu avec sa raison écrite), travaux non suivis, PR et branches en attente, modifications locales, migrations et opérations serveur en attente, risques de conflit ; tout « Non vérifié » mentionné (y compris une vérification serveur « incomplète ») ; un `WORK_INVENTORY=off` éventuel consigné avec sa raison
 - [ ] Registre `docs/work-registry.json` mis à jour pour les chantiers de la release (statut, preuve de production après validation)
 
 ## 1. Règle anti-cherry-pick

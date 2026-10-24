@@ -187,16 +187,37 @@ décisions humaines `docs/work-registry.json`. Il liste, dans cet ordre :
 7. les incohérences du registre et ce qui est nouveau depuis le dernier audit ;
 8. les branches qui modifient les mêmes fichiers que la release (risque de conflit).
 
-**Le rapport signale, il ne décide pas** : il ne bloque pas le déploiement et ne fusionne rien. Le
-périmètre de la release reste une décision explicite, consignée dans le rapport §2.3 (« Décision »).
-Tout correctif P0/P1 absent de la release y est mentionné avec la raison de son exclusion. Ce qui
-n'a pas pu être vérifié (serveur injoignable, API GitHub indisponible) est écrit « Non vérifié »,
-jamais supposé conforme. `deploy/deploy.sh prepare` affiche aussi un résumé non bloquant.
+**Le rapport signale, il ne décide pas** : ses constats ne bloquent pas le déploiement et il ne
+fusionne rien. Le périmètre de la release reste une décision explicite, consignée dans le rapport
+§2.3 (« Décision »). Tout correctif P0/P1 absent de la release y est mentionné avec la raison de son
+exclusion.
+
+**Jamais d'échec silencieux** :
+
+- `deploy/deploy.sh prepare` affiche le résumé et **s'arrête si le contrôle n'a pas pu s'exécuter**
+  (node absent, inventaire interrompu : code 3). `WORK_INVENTORY=off` passe outre explicitement et
+  l'affiche ; à consigner dans le rapport de déploiement.
+- Toute vérification impossible ou partielle est listée en tête, sous « ⚠ Non vérifié », jamais
+  supposée conforme : fetch en échec (refs peut-être périmées), liste des PR, serveur injoignable,
+  et **chaque section du serveur séparément** (release, REVISION, Docker, registre des versions,
+  migrations, conteneurs, empreintes, dossiers surveillés, crontab). Une section en échec ou à la
+  sortie non reconnue rend la vérification « incomplète » et n'est pas comparée (pas de faux écart).
+  `--fail-on unverified` fait échouer le rapport dans ce cas.
+- **Données sensibles** : le rapport, le JSON et l'instantané masquent les secrets reconnus
+  (`*PASS*=`, `*TOKEN*=`, `--password`, `mysql -p…`, identifiants dans une URL, jetons `Bearer`/GitHub,
+  clés privées) et les adresses e-mail. Le dépôt est public : le registre ne nomme aucune personne
+  (identifiants techniques seulement) et ne contient aucun secret.
 
 Le registre est mis à jour dans la PR qui fait évoluer un chantier (statut, prochaine action,
 opérations), et `deploy/production/server-reference/` dans la PR de toute installation ou
-modification serveur. Le même rapport (sans le serveur) tourne chaque lundi et sur chaque PR
+modification serveur. Le même rapport (sans le serveur) tourne chaque jour et sur chaque PR
 (`.github/workflows/work-inventory.yml`).
+
+**Instantané (« nouveau depuis le dernier audit »)** : il n'est comparé qu'à un audit du même
+contexte (dépôt, ref principale, avec ou sans serveur, source des PR) ; absent, illisible ou d'un
+autre contexte, la section l'écrit « Non vérifié ». Un audit incomplet n'écrase pas l'instantané.
+En CI, seul l'audit quotidien de `main` l'enregistre (cache `work-inventory-main-*`, quotidien pour
+rester sous l'éviction de 7 jours) ; une PR le lit sans l'écrire.
 
 ---
 
