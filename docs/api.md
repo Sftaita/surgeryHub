@@ -4438,6 +4438,14 @@ Deux catégories de résultat, jamais confondues :
 
 **Idempotent** : un second appel sans mutation entre-temps retourne `issuesFound: 0`.
 
+**Réconciliation des alertes de conflit (D-167)** : en plus de la détection, le scan
+réévalue toutes les alertes `SURGEON_CONFLICT` / `INSTRUMENTIST_CONFLICT` actives
+(`OPEN`/`ACKNOWLEDGED`) impliquant une mission du périmètre opérationnel de la version
+(D-125), quel que soit le statut de la mission (y compris `IN_PROGRESS`) et quel que soit
+son côté de la paire. Une alerte dont le conflit a disparu passe à `RESOLVED` (jamais
+supprimée) et est comptée dans `alertsResolved`. Deux scans sans changement : `alertsCreated`
+et `alertsResolved` à 0, aucune alerte modifiée.
+
 **Réponse — 400 :** la version n'est pas `ACTIVE` (`DRAFT` a son propre chemin de
 revalidation au déploiement ; `ARCHIVED` est superseded).
 
@@ -4669,8 +4677,19 @@ Statuts : `OPEN`/`ACKNOWLEDGED`/`RESOLVED`/`IGNORED`. Répéter la même transit
 idempotent (200, pas d'erreur — la première résolution gagne). Croiser les deux états
 terminaux (`RESOLVED`↔`IGNORED`) ou agir sur un état terminal → `409 CONFLICT`.
 Types : `SURGEON_ABSENCE`, `INSTRUMENTIST_ABSENCE`, `REASSIGNMENT_REQUIRED`,
-`OCCURRENCE_CANCELLED`, `SURGEON_CONFLICT`, `INSTRUMENTIST_CONFLICT` (les deux derniers
-sont définis mais pas encore déclenchés — voir freeze §G).
+`OCCURRENCE_CANCELLED`, `SURGEON_CONFLICT`, `INSTRUMENTIST_CONFLICT` (déclenchés depuis
+D-091 ; ainsi que `INSTRUMENTIST_INACTIVE` (D-106) et `SURGEON_INCOMPATIBILITY` (D-152)).
+
+**Alertes de conflit (D-167)** : une alerte par paire en conflit (mission d'id inférieur qui
+porte l'alerte, `conflict.conflictingMissionId`, personne, type) ; une mission en conflit avec
+deux autres porte deux alertes. Après chaque enregistrement (`apply-modifications`), chaque
+alerte de conflit active impliquant une mission touchée, de l'un ou l'autre côté, est
+réévaluée sur l'état enregistré : conflit disparu → `RESOLVED` automatiquement
+(`resolvedBy` `null`, `resolutionNote` « Conflit horaire résolu automatiquement après
+modification du planning : … ») ; conflit toujours présent, même réduit → l'alerte reste
+active et `conflict` reflète les horaires courants. Une alerte `IGNORED` n'est pas recréée tant
+que les horaires des deux missions sont inchangés ; une alerte `RESOLVED` n'est jamais
+rouverte (un conflit qui réapparaît crée une nouvelle alerte).
 
 #### Génération de planning V2 (Batch 9)
 

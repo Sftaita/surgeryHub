@@ -1129,6 +1129,23 @@ describe("GeneratePlanningTab — Vérifier les conflits (Lot 6, D-106)", () => 
 
     expect(await screen.findByText("Vérification terminée")).toBeInTheDocument();
     expect(await screen.findByText(/Aucun conflit détecté/)).toBeInTheDocument();
+    expect(screen.queryByText(/obsolète/)).not.toBeInTheDocument();
+  });
+
+  it("D-167 — aucun conflit mais alerte obsolète résolue → la résolution est annoncée", async () => {
+    mockHistoryWithOneVersion();
+    (planningV2Api.verifyConflicts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      checkedMissions: 3, issuesFound: 0, automaticCorrections: 0, alertsCreated: 0, alertsResolved: 1, issues: [],
+    });
+    const user = userEvent.setup();
+    renderTab();
+
+    await user.click(await screen.findByText("Modifier"));
+    await screen.findByText("Modification · Planning déployé");
+    await user.click(screen.getByRole("button", { name: "Vérifier les conflits" }));
+
+    expect(await screen.findByText(/Aucun conflit détecté/)).toBeInTheDocument();
+    expect(screen.getByText(/1 alerte obsolète résolue/)).toBeInTheDocument();
   });
 
   it("corrections trouvées → résumé avec les compteurs", async () => {

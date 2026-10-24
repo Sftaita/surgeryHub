@@ -1836,8 +1836,11 @@ PlanningVersionAuditService::verify()   — orchestrateur pur, aucune règle mé
         │       → restauration oubliée, jamais si une absence/décision manager la justifie encore
         ├── PlanningConflictDetectionService::syncAlertsForMission()
         │       → SCHEDULE_CONFLICT (D-091, inchangé) — jamais une mutation, toujours une PlanningAlert
-        └── PlanningAlertService::createIfNotDuplicate()/resolve()
-                → INSTRUMENTIST_INACTIVE (D-106) — alerte uniquement, décision utilisateur explicite
+        ├── PlanningAlertService::createIfNotDuplicate()/resolve()
+        │       → INSTRUMENTIST_INACTIVE (D-106) — alerte uniquement, décision utilisateur explicite
+        └── PlanningConflictDetectionService::reconcileConflictAlertsInvolving()  (D-167)
+                → toutes les alertes de conflit actives du périmètre opérationnel, tout statut de
+                  mission, des deux côtés de la paire : RESOLVED si le conflit a disparu
 ```
 
 Chaque primitive réutilisée est déjà individuellement idempotente (garde de statut,
@@ -2353,11 +2356,13 @@ ligne sur les `Mission` réelles de ce même brouillon, jamais un nouveau ②) e
 **Alertes (Batch 3–5)** : `PlanningAlert` détecte l'impact d'une absence sur des
 missions déjà générées/publiées (`AbsenceImpactService`), jamais avant. Types
 implémentés : `SURGEON_ABSENCE`, `INSTRUMENTIST_ABSENCE`, `REASSIGNMENT_REQUIRED`,
-`OCCURRENCE_CANCELLED`. `SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT` sont définis mais
-pas encore déclenchés — le détecteur de conflit actuel (preview, en mémoire) est scopé
-au site/groupe d'un seul appel de génération ; un instrumentiste multi-site doublement
-réservé via deux générations séparées sur des sites différents n'est jamais détecté
-aujourd'hui (gap documenté dans le freeze §G, pas corrigé).
+`OCCURRENCE_CANCELLED`. `SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT` sont déclenchés
+depuis D-091 par `PlanningConflictDetectionService` (inter-sites, inter-versions). D-167 : une
+alerte par paire en conflit (ancrée sur la mission d'id inférieur, paire lue dans
+`snapshotJson`), réévaluée sur l'état persisté des deux missions à chaque synchronisation de
+l'une d'elles (`reconcileConflictAlertsInvolving()`, indépendant de l'ordre des identifiants) et
+par « Vérifier les conflits » ; résolue (jamais supprimée) quand le conflit disparaît. Le
+service flushe lui-même ses changements d'alertes.
 
 **Réaction automatique aux absences (D-062)** : `AbsenceImpactService` conserve
 intégralement son contrat "jamais de mutation" — `AbsenceController` appelle en plus,

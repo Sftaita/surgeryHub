@@ -14787,3 +14787,94 @@ composants d'encodage dans le tiroir manager — 5 de ces 7 tests échouent avec
 Aucun envoi groupé de relances n'existe : s'il est créé, il devra passer par
 `EncodingReminderPolicy` mission par mission, au moment de l'envoi, et renvoyer le nombre de missions
 exclues.
+
+---
+
+## D-167 — Planning V2 : alertes de conflit synchronisées avec le planning réel (2026-10-23)
+
+### Constats (démontrés par `PlanningConflictAlertReconciliationTest`, 11 tests sur 14 en échec avant correction)
+
+Une alerte `SURGEON_CONFLICT` / `INSTRUMENTIST_CONFLICT` est portée par la mission d'identifiant
+le plus bas de la paire (ancre, D-091). Elle pouvait survivre au conflit qu'elle décrivait, pour
+quatre causes indépendantes :
+
+1. **Résolution jamais enregistrée sur le chemin d'enregistrement.**
+   `PlanningConflictDetectionService::applySync()` passait l'alerte à `RESOLVED` en mémoire sans
+   `flush()`. `PlanningModificationService::apply()` ne flushait plus rien après la synchronisation
+   avant le `commit()` : toute résolution automatique faite à l'enregistrement (« Redéployer ») était
+   perdue, quelle que soit la mission déplacée. La création, elle, était flushée par
+   `wrapInTransaction()`. Démonstration : avec un `flush()` temporaire ajouté après la
+   synchronisation, le déplacement de la mission d'id inférieur résout l'alerte.
+2. **Asymétrie selon l'identifiant.** Sans conflit, `applySync()` ne cherchait une alerte que sur la
+   mission synchronisée. L'alerte étant ancrée sur l'autre mission quand celle-ci a l'id le plus bas,
+   déplacer la mission d'id supérieur ne la réévaluait jamais (cas réel du 2026-10-23 : Schiepers
+   `IN_PROGRESS`, Berger déplacée). Démonstration : ce cas reste en échec même avec le `flush()`
+   temporaire.
+3. **« Vérifier les conflits » ne réconciliait pas.** `PlanningVersionAuditService` ne visite que
+   les missions `OPEN` / `ASSIGNED` / `CANCELLED` de la version, et s'appuyait sur la même
+   synchronisation asymétrique : une alerte ancrée sur une mission `IN_PROGRESS` (ou sur une mission
+   d'une autre version) n'était jamais revue.
+4. **Une seule alerte par mission et par type.** `findConflict()` ne renvoyait que le premier
+   chevauchement et la déduplication portait sur (mission, type) : deux conflits d'une même mission
+   étaient confondus. De plus, une alerte encore valide gardait les horaires de sa détection, et une
+   alerte `IGNORED` était recréée à l'identique à la synchronisation suivante.
+
+### Décision
+
+1. **Une alerte par paire en conflit** : (mission ancre = id inférieur, autre mission, personne,
+   type). La paire est lue dans `snapshotJson` (`conflictingMissionId`, `personId`), présent sur toutes
+   les alertes de conflit depuis D-091 : **aucune migration**. `findConflicts()` /
+   `findConflictsInPool()` renvoient tous les chevauchements ; `findConflict()` /
+   `hasConflictInPool()` restent leur premier élément (règles inchangées).
+2. **Réévaluation indépendante de l'ordre des identifiants.** Toute synchronisation se termine par
+   `reconcileConflictAlertsInvolving()` : chaque alerte de conflit `OPEN` / `ACKNOWLEDGED` où la
+   mission apparaît, **d'un côté ou de l'autre** (`mission_id` ou `conflictingMissionId`, requête
+   `PlanningAlertService::findActiveConflictAlertsInvolving()`), est réévaluée sur l'état persisté
+   des deux missions avec la règle exacte de détection (`hasConflictInPool()` : statuts actifs,
+   chevauchement `[début, fin)`, exception « double salle »), depuis les deux côtés de la paire.
+3. **Conflit disparu → `RESOLVED`**, jamais supprimée, `resolvedBy = null` (résolution système,
+   comme les résolutions automatiques existantes), note explicite :
+   « Conflit horaire résolu automatiquement après modification du planning : … » (missions qui ne se
+   chevauchent plus, mission devenue inactive, personne retirée de l'une des missions). Dérogation
+   active (D-091) : « Conflit horaire couvert par une dérogation du manager ». Lien avec la mission
+   et instantané conservés.
+4. **Conflit toujours présent** (même réduit) → l'alerte reste active ; son instantané est
+   actualisé si les horaires ont changé. Aucune nouvelle alerte tant qu'une alerte active couvre la
+   paire.
+5. **Alerte ignorée** : jamais rouverte ni recréée tant que les horaires des deux missions sont
+   ceux qu'elle décrivait. Si les horaires changent et qu'un chevauchement existe encore, c'est une
+   nouvelle situation : nouvelle alerte. Une alerte `RESOLVED` n'est jamais rouverte : un conflit qui
+   réapparaît crée une nouvelle alerte, l'ancienne reste dans l'historique.
+6. **Le service flushe lui-même** ses changements d'alertes (`syncAlertsForMission()`,
+   `syncAlertsForVersion()`, `reconcileConflictAlertsInvolving()`) : aucun appelant n'a plus à le
+   faire pour lui.
+7. **Enregistrement (`apply()`)** : les missions annulées par le lot sont aussi synchronisées. Elles
+   ne déclenchent aucune détection, mais leurs alertes de conflit sont réévaluées.
+8. **« Vérifier les conflits »** : après les contrôles existants (inchangés), réconciliation de
+   toutes les alertes de conflit actives impliquant une mission du périmètre opérationnel de la
+   version (D-125), quel que soit son statut. La détection n'est pas élargie : aucun nouveau type de
+   mission n'est scanné pour créer des alertes. Idempotent : deux vérifications sans changement ne
+   créent, ne résolvent ni ne modifient rien.
+
+### Hors périmètre (inchangé)
+
+Politique de blocage / non-blocage (D-091 : non bloquant en Mode Modification, bloquant au
+déploiement), calcul d'éligibilité, autres types d'alertes (absences, non pourvues, annulations
+d'occurrence, réaffectation, inactivité, incompatibilité) : seuls `SURGEON_CONFLICT` et
+`INSTRUMENTIST_CONFLICT` sont réconciliés. Aucune mission n'est modifiée par ce mécanisme.
+
+### Tests
+
+`PlanningConflictAlertReconciliationTest` (14, chemin réel `apply-modifications` et
+`verify-conflicts`) : alerte active, résolution en déplaçant la première ou la seconde mission,
+chevauchement réduit (alerte conservée, horaires actualisés), fin = début (pas de chevauchement),
+mission `IN_PROGRESS` raccourcie (D-165) et mission voisine déplacée, scan après résolution hors
+chemin d'enregistrement, scan après annulation de l'autre mission, deux scans sans changement,
+nouveau chevauchement après correction, plusieurs conflits sur une même mission, alerte ignorée
+non recréée, autres types d'alertes intacts.
+
+### Limite
+
+Les alertes de conflit déjà ouvertes en production sont réévaluées à la prochaine synchronisation
+d'une des deux missions ou au prochain « Vérifier les conflits » ; aucune reprise de données n'est
+lancée.
