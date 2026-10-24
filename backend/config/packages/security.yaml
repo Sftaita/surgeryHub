@@ -41,6 +41,16 @@ security:
                 - App\Security\MedVueIntegration\MedVueIntegrationAuthenticator
             entry_point: App\Security\MedVueIntegration\MedVueIntegrationAuthenticator
 
+        # D-157 — refresh et logout d'une session d'appareil : AUCUN authentificateur JWT ici.
+        # Sur le firewall `api`, l'authentificateur JWT (priorité -10) passait avant
+        # `refresh_jwt` (-50) : le jeton d'accès expiré que le client envoie encore faisait
+        # répondre « Expired JWT Token » avant même la lecture du refresh token (déconnexion
+        # à chaque expiration), et un logout ne révoquait rien. AuthSessionController lit le
+        # seul refresh token du corps (DeviceSessionService).
+        auth_session:
+            pattern: ^/api/auth/(refresh|logout)$
+            security: false
+
         # API protégée par JWT
         api:
             pattern: ^/api
@@ -49,10 +59,6 @@ security:
             provider: app_user_provider
             user_checker: App\Security\UserChecker
             jwt: ~
-            refresh_jwt:
-                check_path: /api/auth/refresh
-            logout:
-                path: /api/auth/logout
 
         # Firewall "site" (si tu ajoutes des pages non-API un jour)
         main:

@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Entity\User;
 use App\Repository\UserRepository;
+use App\Security\Session\DeviceSessionService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
@@ -31,6 +32,7 @@ class UserEmailChangeService
         private readonly UserAuditService $userAuditService,
         private readonly NotificationService $notifications,
         private readonly ValidatorInterface $validator,
+        private readonly DeviceSessionService $sessions,
     ) {
     }
 
@@ -64,6 +66,11 @@ class UserEmailChangeService
         $target->setEmail($newEmail);
         $this->userAuditService->userEmailChanged($actor, $target, $oldEmail, $newEmail);
         $this->em->flush();
+
+        // D-063 — un changement d'e-mail termine les sessions ouvertes (reconnexion voulue).
+        // D-157 — fermeture explicite (refresh tokens supprimés) au lieu de sessions orphelines
+        // qui échouaient seulement au refresh suivant.
+        $this->sessions->revokeAllForIdentifier($oldEmail);
 
         $warnings = [];
 

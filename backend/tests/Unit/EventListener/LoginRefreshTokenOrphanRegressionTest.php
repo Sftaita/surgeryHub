@@ -5,6 +5,9 @@ namespace App\Tests\Unit\EventListener;
 use App\Entity\RefreshToken;
 use App\Entity\User;
 use App\EventListener\AuthenticationSuccessListener;
+use App\Repository\UserRepository;
+use App\Security\Session\DeviceSessionService;
+use Doctrine\ORM\EntityManagerInterface;
 use Gesdinet\JWTRefreshTokenBundle\EventListener\AttachRefreshTokenOnSuccessListener;
 use Gesdinet\JWTRefreshTokenBundle\Generator\RefreshTokenGenerator;
 use Gesdinet\JWTRefreshTokenBundle\Model\RefreshTokenManagerInterface;
@@ -13,6 +16,7 @@ use Gesdinet\JWTRefreshTokenBundle\Request\Extractor\RequestBodyExtractor;
 use Gesdinet\JWTRefreshTokenBundle\Request\Extractor\RequestCookieExtractor;
 use Gesdinet\JWTRefreshTokenBundle\Request\Extractor\RequestParameterExtractor;
 use Lexik\Bundle\JWTAuthenticationBundle\Event\AuthenticationSuccessEvent;
+use Lexik\Bundle\JWTAuthenticationBundle\Services\JWTTokenManagerInterface;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Symfony\Component\EventDispatcher\EventDispatcher;
@@ -33,6 +37,19 @@ use Symfony\Component\HttpFoundation\Response;
  */
 final class LoginRefreshTokenOrphanRegressionTest extends TestCase
 {
+    /** D-157 — real DeviceSessionService whose EM persist lands in the mocked Gesdinet manager. */
+    private function sessions(RefreshTokenManagerInterface $manager): DeviceSessionService
+    {
+        $em = $this->createMock(EntityManagerInterface::class);
+        $em->method('persist')->willReturnCallback(function (object $entity) use ($manager) {
+            if ($entity instanceof RefreshToken) {
+                $manager->save($entity);
+            }
+        });
+
+        return new DeviceSessionService($em, new RefreshTokenGenerator($manager), $this->createMock(UserRepository::class), new NullLogger(), $this->createMock(JWTTokenManagerInterface::class));
+    }
+
     private function buildGesdinetListener(RefreshTokenManagerInterface $manager, RequestStack $requestStack): AttachRefreshTokenOnSuccessListener
     {
         $chain = new ChainExtractor();
@@ -69,7 +86,7 @@ final class LoginRefreshTokenOrphanRegressionTest extends TestCase
         });
         $manager->method('getClass')->willReturn(RefreshToken::class);
 
-        $ourListener = new AuthenticationSuccessListener($manager, new RefreshTokenGenerator($manager), $requestStack, new NullLogger());
+        $ourListener = new AuthenticationSuccessListener($this->sessions($manager), $requestStack, new NullLogger());
         $gesdinetListener = $this->buildGesdinetListener($manager, $requestStack);
 
         $dispatcher = new EventDispatcher();
@@ -97,7 +114,8 @@ final class LoginRefreshTokenOrphanRegressionTest extends TestCase
         $returnedToken = $event->getData()['refresh_token'];
         self::assertSame($createdTokens[0]->getRefreshToken(), $returnedToken);
 
-        $expectedValid = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_DEFAULT.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expectedValid = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_DEFAULT);
         self::assertEqualsWithDelta($expectedValid->getTimestamp(), $createdTokens[0]->getValid()->getTimestamp(), 5);
     }
 
@@ -118,7 +136,7 @@ final class LoginRefreshTokenOrphanRegressionTest extends TestCase
         });
         $manager->method('getClass')->willReturn(RefreshToken::class);
 
-        $ourListener = new AuthenticationSuccessListener($manager, new RefreshTokenGenerator($manager), $requestStack, new NullLogger());
+        $ourListener = new AuthenticationSuccessListener($this->sessions($manager), $requestStack, new NullLogger());
         $gesdinetListener = $this->buildGesdinetListener($manager, $requestStack);
 
         $dispatcher = new EventDispatcher();
@@ -136,7 +154,8 @@ final class LoginRefreshTokenOrphanRegressionTest extends TestCase
         $returnedToken = $event->getData()['refresh_token'];
         self::assertSame($createdTokens[0]->getRefreshToken(), $returnedToken);
 
-        $expectedValid = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_REMEMBER_ME.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expectedValid = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_REMEMBER_ME);
         self::assertEqualsWithDelta($expectedValid->getTimestamp(), $createdTokens[0]->getValid()->getTimestamp(), 5);
     }
 
@@ -155,7 +174,7 @@ final class LoginRefreshTokenOrphanRegressionTest extends TestCase
             $createdTokens[] = $token;
         });
 
-        $ourListener = new AuthenticationSuccessListener($manager, new RefreshTokenGenerator($manager), $requestStack, new NullLogger());
+        $ourListener = new AuthenticationSuccessListener($this->sessions($manager), $requestStack, new NullLogger());
         $gesdinetListener = $this->buildGesdinetListener($manager, $requestStack);
 
         $dispatcher = new EventDispatcher();
