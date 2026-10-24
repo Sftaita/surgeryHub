@@ -33,8 +33,9 @@ case "$mode" in
   --apply-crontab)
     ssh "$HOST" "set -e; [ -x '$DEST/backup_mysql.sh' ] || { echo 'scripts non installés (--apply-scripts)'; exit 1; }
       [ -f \"\$HOME/.surgicalhub-backup-passphrase\" ] || { echo 'passphrase absente : refus'; exit 1; }
+      ! crontab -l | grep -q 'scripts/surgicalhub-backup/' || { echo 'crontab D-164 déjà installée : rien à faire'; exit 1; }
       b=/home/deploy/backups/cron/crontab_before_d164_\$(date +%Y%m%d_%H%M%S).txt; crontab -l > \"\$b\"
-      { crontab -l | grep -vE '$OLD_LINES'; echo; echo '# D-164 — sauvegardes SurgicalHub (deploy/server/backup)'; grep -vE '^\s*(#|$)' '$DEST/crontab.proposed'; } | crontab -
+      { crontab -l | grep -vE '$OLD_LINES'; echo; echo '# D-164 — sauvegardes SurgicalHub (deploy/server/backup)'; echo 'CRON_TZ=UTC'; grep -vE '^\s*(#|$)' '$DEST/crontab.proposed'; } | crontab -
       echo \"crontab remplacée ; ancienne version : \$b\"" ;;
   *) echo "option inconnue : $mode" >&2; exit 2 ;;
 esac

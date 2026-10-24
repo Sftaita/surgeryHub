@@ -14645,6 +14645,21 @@ déploiement pour les sessions ouvertes.
 seraient supprimés (910 Mo de fichiers, 2,5 Go d'images en taille apparente) ; aucun fichier
 modifié par le dry-run.
 
+### Avenant (2026-10-24) — audit avant installation
+
+- Copie hors serveur des uploads : une série par volume. Avant, seule la dernière archive de nom le
+  plus grand était vérifiée à distance (celle de `medatwork` ne l'était jamais), et le minimum de 3
+  archives s'appliquait à tous les volumes ensemble.
+- `backup_mysql.sh` : le mot de passe root n'apparaît plus dans les arguments de `docker exec`
+  (`-e MYSQL_PWD` sans valeur, repris de l'environnement).
+- `install.sh --apply-crontab` refuse une seconde installation et fixe `CRON_TZ=UTC` pour son bloc
+  (la crontab du serveur alterne plusieurs `CRON_TZ`).
+- Audit du serveur : l'ancien `rotate_backups.sh` a été corrigé hors dépôt le 2026-10-23, après
+  archivage de 150 dumps dans `…/archive-mysql-20261023/`, et `archive_mysql_weekly.sh` a été ajouté.
+  Avant l'étape 3, il faut l'adapter aux `*.gpg` ou décider de l'arrêter
+  (`docs/backup-and-restore.md`, « État réel du serveur »). Les chiffres du dry-run du 2026-10-23
+  sont dépassés.
+
 ---
 
 ## D-165 — Planning : modification d'horaires sans perte d'affectation, conflits expliqués, missions en cours (2026-10-23)

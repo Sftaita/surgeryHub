@@ -82,6 +82,19 @@ check "mauvaise passphrase : déchiffrement refusé" bash -c "! bash '$HERE/rest
 cp "$T/pass.ok" "$PASSFILE"
 check "sauvegardes intactes après les refus : nouveau test réussi" bash -c "bash '$HERE/restore_test.sh' > /dev/null 2>&1"
 
+echo "== restauration depuis la copie hors serveur (Drive simulé : tests/rclone-stub.sh)"
+export RCLONE="$HERE/tests/rclone-stub.sh" RSTORE="$T/drive" REMOTE_BASE="gdrive:SH"; mkdir -p "$T/drive"
+check "backup_offsite.sh : copie vérifiée" bash -c "bash '$HERE/backup_offsite.sh' > '$T/off.out' 2>&1"
+mkdir -p "$T/local-aside"; mv "$T/b/mysql" "$T/b/surgicalhub-var" "$T/b/uploads" "$T/local-aside/"   # plus aucune sauvegarde locale
+check "restore_test.sh --from-remote réussi SANS aucune copie locale" bash -c "bash '$HERE/restore_test.sh' --from-remote > '$T/rr.out' 2>&1"
+grep -E 'téléchargé|OK|ÉCHEC|lignes' "$T/rr.out" | sed 's/^\[[^]]*\] \[restore-test\] /     /'
+check "dump, var et uploads téléchargés depuis le Drive" bash -c "[ \$(grep -c 'téléchargé depuis le Drive' '$T/rr.out') = 3 ]"
+check "données distantes restaurées : 3 utilisateurs, JWT appariées, registre" bash -c "grep -q 'surgicalhub.user : 3 lignes' '$T/rr.out' && grep -q 'clés JWT restaurées et appariées' '$T/rr.out' && grep -q 'registre des versions restauré' '$T/rr.out'"
+check "marqueur distinct .restore-test-remote-ok" test -f "$T/b/.restore-test-remote-ok"
+R=$(ls "$T/drive/SH/mysql" | grep -E 'gpg$' | tail -1); printf '\x00' | dd of="$T/drive/SH/mysql/$R" bs=1 seek=150 conv=notrunc 2>/dev/null
+rm -f "$T/b/.restore-test-remote-ok"
+check "copie distante altérée : refus, pas de marqueur" bash -c "! bash '$HERE/restore_test.sh' --from-remote > /dev/null 2>&1 && [ ! -f '$T/b/.restore-test-remote-ok' ]"
+
 echo
 echo "Résultat : $PASS réussis, $FAIL échoués"
 [ "$FAIL" -eq 0 ]

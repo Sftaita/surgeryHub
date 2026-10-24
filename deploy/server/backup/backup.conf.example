@@ -23,7 +23,7 @@
 #BUILD_CACHE_MAX_GB=8
 #BUILD_CACHE_UNTIL=168h
 
-# Rétention hors serveur (indépendante, proposée — à valider)
+# Rétention hors serveur (indépendante, validée le 2026-10-23)
 #REMOTE_KEEP_DAILY_DAYS=30
 #REMOTE_KEEP_WEEKLY=12
 #REMOTE_KEEP_MONTHLY=24
