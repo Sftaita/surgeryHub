@@ -7,7 +7,7 @@ vi.mock("../auth/authApi", () => ({
 
 import { apiClient } from "./apiClient";
 import { refreshTokens } from "../auth/authApi";
-import { AUTH_STORAGE_KEY, writeAuth, readAuth } from "../auth/authStorage";
+import { AUTH_STORAGE_KEY, writeAuth, readAuth, isPersistentAuth } from "../auth/authStorage";
 import { SESSION_EXPIRED_EVENT } from "../auth/sessionExpiredEvent";
 
 /** D-157 — interceptor rules that keep an active session alive (see also apiClient.test.ts). */
@@ -124,7 +124,7 @@ describe("apiClient — session persistante (D-157)", () => {
     expect(readAuth()).toEqual({ accessToken: "new-access", refreshToken: "new-refresh" });
   });
 
-  it("la rotation du refresh token reste dans le stockage choisi (appareil partagé → sessionStorage)", async () => {
+  it("la rotation du refresh token garde le type de session (appareil partagé → liée au navigateur)", async () => {
     localStorage.clear();
     writeAuth({ accessToken: "old-access", refreshToken: "old-refresh" }, false);
     refresh.mockResolvedValue({ accessToken: "new-access", refreshToken: "new-refresh" });
@@ -135,8 +135,10 @@ describe("apiClient — session persistante (D-157)", () => {
 
     await apiClient.get("/api/me");
 
-    expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
-    expect(JSON.parse(sessionStorage.getItem(AUTH_STORAGE_KEY) ?? "{}").refreshToken).toBe("new-refresh");
+    const stored = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) ?? "{}");
+    expect(stored.refreshToken).toBe("new-refresh");
+    expect(stored.browserSession).toBeTruthy();
+    expect(isPersistentAuth()).toBe(false);
   });
 
   it("refresh refusé (401) pour un ancien jeton alors qu'un autre onglet a déjà une session plus récente : rien n'est effacé", async () => {

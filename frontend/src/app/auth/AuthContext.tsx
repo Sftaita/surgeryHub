@@ -124,7 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [state.status, restore]);
 
   /**
-   * OTHER TABS (D-157) — a logout in another tab removes the shared persistent session: follow
+   * OTHER TABS (D-157) — a logout in another tab removes the shared session: follow
    * it here; a login in another tab while this one shows /login restores this one too.
    */
   useEffect(() => {
@@ -162,7 +162,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ status: "loading" });
 
     const tokens = await loginRequest(email, password, rememberMe);
-    // D-157 — "Rester connecté" → localStorage ; sinon sessionStorage (fermée avec le navigateur).
+    // D-157 — "Rester connecté" : la session survit à la fermeture du navigateur ; sinon elle se
+    // termine avec lui. Dans les deux cas, tous les onglets partagent la même session.
     writeAuth(tokens, rememberMe);
 
     const me = await apiClient.get("/api/me");

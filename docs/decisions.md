@@ -14247,8 +14247,10 @@ worker (`sw.js` ne cache que `/icons/` et `manifest.json`), mutex de refresh (co
   serveur impossible », nouvelles tentatives (3 s, 10 s, 30 s, puis toutes les 60 s), au retour du
   réseau et au retour au premier plan. Aucune redirection vers `/login`.
 - « Rester connecté sur cet appareil » (coché par défaut) : `localStorage`, survit à la fermeture
-  du navigateur, au redémarrage et à la fermeture de la PWA. Décoché (appareil partagé) :
-  `sessionStorage`, la session se termine avec le navigateur (et après 1 jour sans utilisation).
+  du navigateur, au redémarrage et à la fermeture de la PWA. Décoché (appareil partagé) : la
+  session se termine avec le navigateur (et après 1 jour sans utilisation). Dans les deux cas,
+  une seule session par navigateur, partagée par tous ses onglets (voir l'avenant « onglets
+  dupliqués » ci-dessous).
 - Onglets : un logout dans un onglet déconnecte les autres ; une connexion dans un onglet
   restaure celui resté sur `/login`.
 - Expiration réelle : « Votre session a expiré. Veuillez vous reconnecter. »
@@ -14269,7 +14271,7 @@ worker (`sw.js` ne cache que `/icons/` et `manifest.json`), mutex de refresh (co
 - iOS suspend et tue souvent la PWA : au retour au premier plan, aucune page n'est rechargée ;
   la première requête reçoit 401 si le JWT a expiré et déclenche le refresh. Les minuteries
   étant gelées en arrière-plan, la restauration est aussi relancée sur `visibilitychange` et
-  `online`. Appareil partagé (sessionStorage) : une PWA tuée par iOS perd sa session — attendu.
+  `online`. Appareil partagé : une PWA tuée par iOS perd sa session — attendu.
 - Vérifié avec le moteur WebKit (Playwright, profil iPhone) : persistance après fermeture et
   relance, JWT expiré, serveur coupé puis rétabli, logout. Ce n'est pas un iPhone réel (pas d'ITP
   ni de mode standalone) : à confirmer sur appareil lors de la recette.
@@ -14333,16 +14335,55 @@ e-mail non vérifié, compte inconnu non créé, Google injoignable) et
 
 **Risques résiduels connus**
 
-- **Onglet dupliqué sans « Rester connecté »** : le `sessionStorage` copié donne deux onglets
-  sur la même chaîne. Si l'un renouvelle deux fois pendant que l'autre reste inactif plus de
-  120 s, le réveil de l'onglet inactif est traité comme un rejeu et **les deux onglets sont
-  déconnectés** (mesuré). Ce cas ne concerne ni « Rester connecté » (`localStorage` partagé) ni
-  un nouvel onglet ordinaire, qui demande la connexion. Atténuation possible : synchroniser les
-  onglets d'une même session par `BroadcastChannel`.
+- ~~Onglet dupliqué sans « Rester connecté »~~ : corrigé avant le déploiement, voir l'avenant
+  suivant.
 - Safari non installé sur iOS : plafond ITP de 7 jours sur le stockage (inchangé, voir plus haut).
 - Firefox n'a pas été testé (navigateur absent du poste de recette). La PWA installée n'est pas
   automatisable : son lancement est simulé par l'ouverture de `start_url` dans un profil
   persistant.
+
+### Avenant (2026-10-24) — onglets dupliqués : une seule session par navigateur
+
+**Problème reproduit** (Chromium, avant correction) : sans « Rester connecté », la session était
+dans le `sessionStorage`, propre à chaque onglet. « Dupliquer l'onglet » en copie le contenu :
+deux onglets tenaient alors deux copies indépendantes de la même chaîne de refresh tokens. Quand
+l'onglet actif renouvelait deux fois pendant que la copie restait inactive plus de 120 s, le
+réveil de la copie présentait un jeton déjà tourné dont le successeur avait servi : le serveur y
+voyait, à juste titre, un rejeu de jeton volé et révoquait la session. Résultat mesuré : refresh
+401, famille supprimée, **les deux onglets renvoyés sur `/login`**. Avec « Rester connecté »
+(`localStorage` partagé), le problème n'existait pas.
+
+**Décision** : corriger côté client, sans toucher à la règle serveur. Le serveur ne peut pas
+distinguer une copie périmée d'un vol ; assouplir la détection de rejeu (fenêtre plus longue,
+tolérance par appareil…) rouvrirait la réutilisation d'anciens jetons. La cause est d'avoir deux
+copies de la chaîne dans un même navigateur : il n'y en a plus qu'une.
+
+- Les deux types de session sont stockés dans le `localStorage`, partagé par tous les onglets du
+  navigateur : chaque onglet lit le jeton courant au moment de l'utiliser, et l'événement `storage`
+  propage rotations et déconnexions. Un onglet dupliqué, gelé ou rouvert ne détient jamais de
+  copie périmée.
+- « Rester connecté » : entrée `{accessToken, refreshToken}`, format inchangé (les sessions
+  existantes en production sont reprises telles quelles).
+- Appareil partagé : l'entrée porte en plus `browserSession`, l'identifiant aléatoire d'un cookie
+  de session du navigateur (`surgicalhub.auth.bs`, sans date d'expiration, `SameSite=Strict`,
+  `Secure` en HTTPS, posé par le frontend, ignoré par le serveur et **ne contenant aucun jeton**).
+  À la fermeture du navigateur, le cookie disparaît : la lecture suivante trouve un identifiant
+  différent et efface l'entrée. La session se termine donc toujours avec le navigateur.
+- Cookies bloqués : la session non persistante reste dans le `sessionStorage` de l'onglet
+  (ancien comportement, dernier recours).
+- Changement de comportement : sans « Rester connecté », un nouvel onglet du même navigateur
+  partage désormais la session (il demandait la connexion), comme pour une session par cookie.
+- Sécurité : la rotation, la fenêtre de grâce de 120 s et la révocation de toute la famille sur
+  rejeu sont inchangées. Le `sessionStorage` comme les cookies de session sont aussi écrits sur
+  disque par les navigateurs (restauration de session) : stocker la session « appareil partagé »
+  dans le `localStorage` jusqu'à la prochaine ouverture ne l'expose pas davantage, et le serveur
+  la plafonne toujours à 1 jour sans utilisation.
+
+**Vérifications** : Vitest (`authStorage.test.ts` et tests de session mis à jour) ; recette
+sécurité et concurrence sur Chromium et WebKit, 17/17 chacun : onglet dupliqué inactif plus de
+120 s, avec et sans « Rester connecté », toujours connecté et session intacte ; deux onglets
+dupliqués qui renouvellent au même instant, aucun 401 ; rejeu d'un jeton volé toujours révoqué.
+Recette complète 36 contrôles × 4 profils (Chromium et WebKit, desktop et mobile), 144/144.
 
 ---
 

@@ -143,7 +143,7 @@ describe("AuthContext — persistance de session (D-157)", () => {
     expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
   });
 
-  it("appareil partagé (non coché) : session en sessionStorage seulement — fermer le navigateur la termine", async () => {
+  it("appareil partagé (non coché) : session partagée par les onglets, liée au navigateur — le fermer la termine", async () => {
     (loginRequest as ReturnType<typeof vi.fn>).mockResolvedValue({ accessToken: "a", refreshToken: "r" });
     get.mockResolvedValue(me);
 
@@ -151,13 +151,17 @@ describe("AuthContext — persistance de session (D-157)", () => {
     await act(async () => screen.getByText("login").click());
 
     await waitFor(() => expect(status()).toBe("authenticated"));
-    expect(sessionStorage.getItem(AUTH_STORAGE_KEY)).not.toBeNull();
-    expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) ?? "{}").browserSession).toBeTruthy();
     expect(loginRequest).toHaveBeenCalledWith("user@example.com", "secret", false);
 
-    // Simulated browser restart: sessionStorage is gone, nothing persistent remains.
+    // Another tab of the same browser (duplicated or new) reads the same session: one token chain.
     sessionStorage.clear();
+    expect(readAuth()).toEqual({ accessToken: "a", refreshToken: "r" });
+
+    // Simulated browser restart: the browser-session cookie is gone, the entry is dropped.
+    document.cookie = "surgicalhub.auth.bs=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
     expect(readAuth()).toBeNull();
+    expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
   });
 
   it("réouverture du navigateur / de la PWA : la session persistante est restaurée sans formulaire", async () => {
