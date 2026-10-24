@@ -72,11 +72,11 @@
       "kind": "ops",
       "priority": "P2",
       "userImpact": "Aucun direct ; empêche qu'un correctif terminé (comme D-157) reste oublié.",
-      "status": "teste",
+      "status": "pr-ouverte",
       "statusSince": "2026-10-24",
-      "refs": { "decision": "D-169", "branches": ["chore/work-registry"], "worktrees": ["SurgicalHub-work-registry"] },
-      "validationNeeded": "Revue du registre initial et accord pour la PR et la fusion.",
-      "nextAction": "Présenter le rapport initial ; ouvrir la PR sur accord.",
+      "refs": { "decision": "D-169", "branches": ["chore/work-registry"], "prs": [44], "worktrees": ["SurgicalHub-work-registry"] },
+      "validationNeeded": "Examen du fonctionnement et du rapport d'inventaire par l'utilisateur, puis accord explicite de fusion.",
+      "nextAction": "PR #44 ouverte le 2026-10-24 : attendre l'examen de l'utilisateur ; ne pas fusionner sans accord.",
       "lastReviewed": "2026-10-24"
     },
     {
