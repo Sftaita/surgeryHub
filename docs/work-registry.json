@@ -1,0 +1,348 @@
+{
+  "description": "Registre des travaux SurgicalHub (D-169). Seules les décisions humaines sont saisies ici : statut, priorité, impact, prochaine action, validations, opérations hors code. Tout ce qui est vérifiable (commits non fusionnés, PR, déploiement, migrations, scripts serveur, crontab, modifications locales) est CALCULÉ par deploy/work-inventory/inventory.mjs, qui signale aussi tout travail absent de ce registre. Statuts : a-analyser, en-developpement, developpe, teste, pr-ouverte, fusionne, deploye, valide-production, bloque, abandonne. Opérations : installation-serveur, reprise-donnees, activation-configuration, validation (statut en-attente, en-cours, fait, abandonne).",
+  "settings": {
+    "github": "Sftaita/surgeryHub",
+    "remote": "origin",
+    "mainRef": "origin/main",
+    "staleDays": 3,
+    "reviewMaxDays": 14,
+    "ignoredDirtyPaths": ["backend/config/reference.php"],
+    "deployPerimeter": ["backend/", "frontend/", "docker/", "deploy/production/docker-compose.yml", ".dockerignore"]
+  },
+  "items": [
+    {
+      "id": "D-157",
+      "title": "Sessions persistantes : fin des déconnexions répétées",
+      "description": "Le JWT expiré était envoyé à /api/auth/refresh (authentificateur JWT avant refresh_jwt) : 373/376 refresh en 401 en production depuis juin, déconnexion à chaque expiration. Correctif : firewall auth_session, sessions par appareil avec rotation, fenêtre glissante, révocation effective (claim sid), login Google durci.",
+      "kind": "fix",
+      "priority": "P1",
+      "userImpact": "Tous les utilisateurs doivent se reconnecter régulièrement, même avec « Rester connecté ».",
+      "status": "pr-ouverte",
+      "statusSince": "2026-10-20",
+      "refs": { "decision": "D-157", "branches": ["feat/auth-session-persistence"], "prs": [23], "worktrees": ["SurgicalHub-auth-session"], "migrations": ["Version20261020090000"] },
+      "pendingOps": [
+        { "type": "reprise-donnees", "status": "en-attente", "description": "Migration Version20261020090000 (sessions par appareil) à jouer au déploiement", "validation": "accord de déploiement" }
+      ],
+      "validationNeeded": "Rapport de reprise (rebase, tests, recette) puis accord explicite de déploiement.",
+      "nextAction": "Actualiser depuis main, résoudre les conflits, retester (rôles, PWA, mobile, réseau), plan de déploiement — repris en priorité le 2026-10-24 dans la session principale.",
+      "lastReviewed": "2026-10-24",
+      "notes": "Testé le 2026-10-20 (backend 2959, vitest 1696, recette WebKit/Chromium) puis resté 4 jours en PR pendant que D-158 à D-167 étaient déployés : cas d'origine de D-169."
+    },
+    {
+      "id": "D-164",
+      "title": "Sauvegardes chiffrées, restauration distante et rotation",
+      "description": "Scripts versionnés deploy/server/backup (dumps, uploads et volume surgicalhub_var chiffrés, copie Drive vérifiée, rotation dry-run, test de restauration réelle locale et depuis le Drive). PR #36 fusionnée, PR #38 (restauration distante + audit) ouverte. Rien n'est installé sur le serveur.",
+      "kind": "ops",
+      "priority": "P1",
+      "userImpact": "Clés JWT et registre des versions jamais sauvegardés ; dumps en clair sur le Drive ; aucune restauration testée depuis la copie distante.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-10-23",
+      "refs": { "decision": "D-164", "branches": ["feat/backup-remote-restore"], "prs": [36, 38], "worktrees": ["SurgicalHub-backups"], "serverPaths": ["/home/deploy/scripts/surgicalhub-backup/lib.sh", "/home/deploy/scripts/surgicalhub-backup/backup_mysql.sh", "/home/deploy/scripts/surgicalhub-backup/backup_volumes.sh", "/home/deploy/scripts/surgicalhub-backup/backup_offsite.sh", "/home/deploy/scripts/surgicalhub-backup/rotate_backups.sh", "/home/deploy/scripts/surgicalhub-backup/restore_test.sh"] },
+      "pendingOps": [
+        { "type": "validation", "status": "en-attente", "description": "Fusion de la PR #38", "validation": "accord utilisateur" },
+        { "type": "validation", "status": "en-attente", "description": "Passphrase ~/.surgicalhub-backup-passphrase créée par l'utilisateur dans son propre terminal et rangée hors serveur ; .env de l'application conservé hors serveur", "validation": "utilisateur seul" },
+        { "type": "validation", "status": "en-attente", "description": "Décider d'adapter archive_mysql_weekly.sh aux *.gpg ou de l'arrêter (sinon copie hebdomadaire de tous les fichiers chiffrés)", "validation": "décision utilisateur" },
+        { "type": "installation-serveur", "status": "en-attente", "description": "install.sh --apply-scripts puis premier cycle manuel (dumps chiffrés, restore_test.sh, backup_offsite.sh, restore_test.sh --from-remote)", "validation": "accord explicite par étape", "check": "inventory --server : scripts surgicalhub-backup « conforme »" },
+        { "type": "activation-configuration", "status": "en-attente", "description": "install.sh --apply-crontab (remplace les 4 anciennes lignes ; arrête les suppressions nocturnes de 30 jours)", "validation": "accord explicite", "check": "inventory --server : crontab de référence mise à jour dans la même PR" },
+        { "type": "validation", "status": "en-attente", "description": "Rotation réelle locale et distante (suppressions) — non prévue tant que l'utilisateur demande de ne supprimer aucune sauvegarde", "validation": "accord explicite après nouveau dry-run" }
+      ],
+      "validationNeeded": "Fusion PR #38, choix pour archive_mysql_weekly.sh, puis chaque étape d'installation.",
+      "nextAction": "Attendre l'accord sur la PR #38 et le choix archive_mysql_weekly.sh ; l'utilisateur crée la passphrase.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-168",
+      "title": "Tiroir de détail mission manager (seul détail côté manager)",
+      "description": "ManagerMissionDrawer remplace la fiche pleine page ; /app/m/missions/:id redirige vers ?mission=ID ; corrections en ligne (réaffectation, heures, encodage). Frontend seulement.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Manager : un seul modèle de détail de mission partout.",
+      "status": "teste",
+      "statusSince": "2026-10-24",
+      "refs": { "decision": "D-168", "branches": ["feat/mission-drawer"], "worktrees": ["SurgicalHub-mission-drawer"] },
+      "validationNeeded": "Ouverture de la PR et décision de périmètre (traité séparément de D-157 et D-164).",
+      "nextAction": "Ouvrir la PR (pas de gh : lien compare), relancer la suite complète, recette.",
+      "lastReviewed": "2026-10-24",
+      "notes": "Non possible sans décision métier : reprogrammer une mission publiée hors Mode Modification, changer de chirurgien."
+    },
+    {
+      "id": "D-156",
+      "title": "Prestations regroupées multi-salles et cohérence Missions/Planning V2",
+      "description": "Présence réelle unique (WorkedPresence), ventilation EARLIEST_END_FIRST, encodage commun, confirmation ciblée des affectations multi-salles à la génération. 8 commits, 2 migrations (Version20261018090000, Version20261019090000).",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Instrumentiste sur deux salles simultanées du même chirurgien : encodage et facturation en double aujourd'hui.",
+      "status": "bloque",
+      "statusSince": "2026-10-19",
+      "blockedReason": "Branche jamais poussée (ce poste seulement), 61 commits de retard et conflits avec main (D-150 à D-167 touchent les mêmes fichiers) ; suite frontend non relancée après les derniers changements ; arbitrage des postes Deltour #3–#5 non appliqué.",
+      "refs": { "decision": "D-156", "branches": ["feat/prestations-regroupees"], "worktrees": ["SurgicalHub-prestations"], "migrations": ["Version20261018090000", "Version20261019090000"] },
+      "pendingOps": [
+        { "type": "reprise-donnees", "status": "en-attente", "description": "PATCH des postes Deltour #4/#5 (instrumentiste à assigner) pour les générations futures", "validation": "accord explicite" }
+      ],
+      "validationNeeded": "Accord pour pousser la branche (sauvegarde distante), puis pour le rebase et la recette.",
+      "nextAction": "Pousser la branche sur origin pour ne pas dépendre de ce poste, puis rebase sur main et recette complète.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-139",
+      "title": "Traçabilité de la résolution des demandes catalogue",
+      "description": "Manager, date exacte et élément du catalogue enregistrés à la résolution d'une demande (PR #4, titre encore « D-138 »).",
+      "kind": "feature",
+      "priority": "P3",
+      "userImpact": "Manager : on ne sait pas qui a résolu une demande catalogue ni quand exactement.",
+      "status": "bloque",
+      "statusSince": "2026-10-08",
+      "blockedReason": "130 commits de retard, conflits (decisions.md, MaterialItemRequestService, MissionInterventionDraftService depuis D-146 bis) ; décision de rattrapage historique ouverte.",
+      "refs": { "decision": "D-139", "branches": ["feat/catalogue-request-resolution-traceability"], "prs": [4], "worktrees": ["SurgicalHub-catalogue-comment"] },
+      "validationNeeded": "Décider : reprendre (rebase) ou abandonner.",
+      "nextAction": "Demander à l'utilisateur si D-139 est toujours voulu.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-167",
+      "title": "Alertes de conflit synchronisées avec le planning réel",
+      "description": "Une alerte par paire, réconciliée quel que soit le côté modifié ; « Vérifier les conflits » réconcilie. Déployé v2026.10.24-prod.",
+      "kind": "fix",
+      "priority": "P2",
+      "userImpact": "Manager : alertes de conflit obsolètes qui restaient ouvertes.",
+      "status": "valide-production",
+      "statusSince": "2026-10-24",
+      "prodEvidence": "v2026.10.24-prod (fd91eaf), contrôles API 11/11 en lecture seule, Mon profil OFFICIAL (docs/production.md).",
+      "refs": { "decision": "D-167", "prs": [41], "commits": ["3992a19"] },
+      "pendingOps": [
+        { "type": "reprise-donnees", "status": "en-attente", "description": "26 alertes de conflit OPEN obsolètes (16 SURGEON_CONFLICT double salle chirurgien #8, 10 INSTRUMENTIST_CONFLICT instrumentiste #18) — recompté le 2026-10-24 : 16 + 10 OPEN", "validation": "décision du manager (réconciliation contrôlée version par version, ou au fil des modifications)" }
+      ],
+      "nextAction": "Décision utilisateur sur la réconciliation des 26 alertes.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-159-DELTOUR",
+      "title": "Salles libérées des absences Deltour #66/#67 (postes #3–#7)",
+      "description": "Le rattrapage D-160 a couvert 7 absences / 9 salles le 2026-10-21. Les absences #66/#67 de Dr Deltour restent sans salle libérée : ses postes #3–#7 ont été modifiés le 2026-10-10 et attendent une validation métier ; missions #429/#430 et alertes #59/#60 associées.",
+      "kind": "data",
+      "priority": "P2",
+      "userImpact": "Chirurgiens : salles libérées par les absences de Dr Deltour non proposées.",
+      "status": "bloque",
+      "statusSince": "2026-10-21",
+      "blockedReason": "Validation métier des postes Deltour #3–#7 attendue.",
+      "refs": { "decision": "D-159", "prs": [26, 28] },
+      "pendingOps": [
+        { "type": "validation", "status": "en-attente", "description": "Valider les postes Deltour #3–#7 (JOURNEE/MATIN/APRES_MIDI, instrumentistes)", "validation": "utilisateur" },
+        { "type": "reprise-donnees", "status": "en-attente", "description": "app:available-rooms:backfill --dry-run --absence=66,67 puis réel sur accord", "validation": "accord explicite" }
+      ],
+      "nextAction": "Présenter les postes Deltour pour validation.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-142-DATA",
+      "title": "Matériel à régulariser : éléments sans décision",
+      "description": "Au 2026-10-11 : 45 éléments (40 UNSPECIFIED, 5 BILLABLE), 31 missions bloquées par le matériel. Aucune décision de facturation prise depuis.",
+      "kind": "data",
+      "priority": "P2",
+      "userImpact": "Facturation : missions bloquées tant que le matériel n'est pas régularisé.",
+      "status": "bloque",
+      "statusSince": "2026-10-11",
+      "blockedReason": "Décisions de facturation attendues de l'utilisateur (aucune régularisation sans décision explicite).",
+      "refs": { "decision": "D-142", "prs": [8] },
+      "pendingOps": [
+        { "type": "validation", "status": "en-attente", "description": "Décider la facturation des ~40 éléments UNSPECIFIED (chiffre du 2026-10-11, non revérifié)", "validation": "utilisateur, via « Matériel à régulariser »" }
+      ],
+      "nextAction": "Recompter en lecture seule et présenter la liste.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-143-DATA",
+      "title": "Missions soumises ou validées sans horaires réels",
+      "description": "Missions 434 et 1225 (VALIDATED, réouverture possible), 435, 451 et 1224 (SUBMITTED, renvoi possible) sans heures ; 434/435/451 = instrumentiste #35. Rapport : docs/incidents/2026-10-11-missions-soumises-sans-horaires.md.",
+      "kind": "data",
+      "priority": "P2",
+      "userImpact": "Facturation et relevés impossibles pour ces missions.",
+      "status": "bloque",
+      "statusSince": "2026-10-11",
+      "blockedReason": "Régularisation par l'interface (renvoyer/rouvrir) non autorisée par l'utilisateur à ce jour.",
+      "refs": { "decision": "D-143" },
+      "pendingOps": [
+        { "type": "validation", "status": "en-attente", "description": "Renvoyer en correction 435/451/1224 et rouvrir 434/1225 depuis « Suivi des encodages »", "validation": "manager (aucune modification SQL)" }
+      ],
+      "nextAction": "Demander au manager de régulariser via l'interface.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-149-DATA",
+      "title": "Compte instrumentiste@surgicalhub.be (#62) et missions OPEN passées",
+      "description": "Le compte #62 (actif, dans le pool OPEN, reçoit de vrais e-mails et push) ressemble à un compte générique ou de test ; missions OPEN passées 396, 490, 491, 492, 1052.",
+      "kind": "data",
+      "priority": "P2",
+      "userImpact": "Notifications réelles envoyées à un compte peut-être sans titulaire ; missions passées encore ouvertes.",
+      "status": "a-analyser",
+      "refs": { "decision": "D-149" },
+      "pendingOps": [
+        { "type": "validation", "status": "en-attente", "description": "Confirmer le titulaire de #62 (désactiver ou conserver)", "validation": "utilisateur" },
+        { "type": "validation", "status": "en-attente", "description": "Statuer sur les missions OPEN passées 396/490/491/492/1052", "validation": "utilisateur" }
+      ],
+      "nextAction": "Poser la question à l'utilisateur.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "OPS-ROTATE-2026-10-23",
+      "title": "Modifications serveur hors dépôt du 2026-10-23 (rotation corrigée, archive hebdomadaire)",
+      "description": "rotate_backups.sh corrigé sur le serveur (supprime réellement > 30 jours, local + miroir Drive via sync_gdrive.sh) après archivage de 150 dumps dans gdrive:…/archive-mysql-20261023 ; archive_mysql_weekly.sh ajouté (dimanche 02:30). Fait par la session MedVue, documenté dans medvue/docs/backup.md, absent de ce dépôt.",
+      "kind": "ops",
+      "priority": "P2",
+      "userImpact": "Chaque nuit, les dumps quotidiens de plus de 30 jours sont supprimés (un par mois reste archivé).",
+      "status": "a-analyser",
+      "refs": { "serverPaths": ["/home/deploy/scripts/rotate_backups.sh", "/home/deploy/scripts/rotate_backups.sh.orig-20261023", "/home/deploy/scripts/archive_mysql_weekly.sh"] },
+      "pendingOps": [
+        { "type": "validation", "status": "en-attente", "description": "Versionner ces scripts (ou les remplacer par D-164) et décider de l'interaction avec D-164", "validation": "utilisateur" }
+      ],
+      "nextAction": "Traiter avec D-164 (étape « archive hebdomadaire »).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "OPS-SERVER-SCRIPTS",
+      "title": "Scripts cron de production non versionnés",
+      "description": "missions_start_due.sh (D-064), check_uncovered_escalations.sh (D-110), send_encoding_reminders.sh (D-143/D-144) et l'ancien système de sauvegarde (backup_mysql.sh, backup_uploads.sh, sync_gdrive.sh) n'existent que sur le serveur ; empreintes de référence dans deploy/production/server-reference/manifest.json.",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun direct ; un serveur reconstruit perdrait ces tâches.",
+      "status": "a-analyser",
+      "refs": { "serverPaths": ["/home/deploy/scripts/missions_start_due.sh", "/home/deploy/scripts/check_uncovered_escalations.sh", "/home/deploy/scripts/send_encoding_reminders.sh", "/home/deploy/scripts/backup_mysql.sh", "/home/deploy/scripts/backup_uploads.sh", "/home/deploy/scripts/sync_gdrive.sh"] },
+      "nextAction": "Proposer de les versionner dans deploy/server/ (copie à l'identique, sans installation).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "WT-MAIN-H1H8",
+      "title": "Dossier principal : ancienne copie non commitée du chantier H1–H8",
+      "description": "C:\\wamp64\\www\\SurgicalHub (main local à 815831e) contient des modifications non commitées du 2026-10-03 au 2026-10-06. Vérifié le 2026-10-24 : chaque fichier modifié ou supprimé est identique (fins de ligne près) à main ou à l'instantané snapshot/h1-h8-wip-2026-10-11 (05d5b39, contenu dans main). EXCEPTION : 17 fichiers non suivis absents de Git — consignes de design « docs/design/Instruction design/Mission-drawer/ » (2026-10-24, base de D-168) et « …/Affichage heure dans suivi des encodage/ » (2026-10-11).",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun ; risque de confusion pour une session qui travaillerait dans ce dossier.",
+      "status": "a-analyser",
+      "refs": { "worktrees": ["SurgicalHub"], "preservedIn": ["snapshot/h1-h8-wip-2026-10-11"] },
+      "validationNeeded": "Décision de nettoyage par l'utilisateur (ne rien modifier sans accord).",
+      "nextAction": "Décider de versionner les 17 fichiers de design (sinon ils n'existent que sur ce poste), puis proposer de remettre le dossier sur main une fois l'accord donné.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "BR-OBSOLETE",
+      "title": "Branches dont le contenu est intégré autrement",
+      "description": "fix/manager-notification-test-accounts (D-149, intégré par la PR #19 en c2a6bd6, même sujet) ; backup/firm-billing-pre-rebase-c9c25e1 (4 commits D-133→D-137, rebasés dans main sous les mêmes sujets) ; backup/pre-push-history-fix (2 commits de juillet, mêmes sujets dans main).",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun.",
+      "status": "a-analyser",
+      "refs": { "branches": ["fix/manager-notification-test-accounts", "backup/firm-billing-pre-rebase-c9c25e1", "backup/pre-push-history-fix"] },
+      "validationNeeded": "Archivage éventuel sur décision (comparer le contenu, pas seulement les sujets).",
+      "nextAction": "Proposer l'archivage après comparaison des diffs.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "WT-DETACHED",
+      "title": "Worktrees détachés de vérification",
+      "description": "SurgicalHub-commit-check (3b8c9c0) et SurgicalHub-surgeon-refusal-baseline (8b61500), propres et contenus dans main ; ainsi que 19 worktrees de branches déjà fusionnées.",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun.",
+      "status": "a-analyser",
+      "refs": { "worktrees": ["SurgicalHub-commit-check", "SurgicalHub-surgeon-refusal-baseline"] },
+      "nextAction": "Proposer le nettoyage des worktrees fusionnés (sur accord).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "UX-MANAGER-MOBILE",
+      "title": "Interface manager non adaptée au mobile",
+      "description": "Relevé pendant la recette D-165 (390 px) ; préexistant, accepté au déploiement v2026.10.23-prod-2.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Manager sur téléphone : écrans difficiles à utiliser.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Cadrer le besoin avec l'utilisateur.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "DEBT-MUI-TOOLTIP",
+      "title": "Avertissement MUI : Tooltip sur bouton désactivé",
+      "description": "Avertissement console relevé pendant la recette D-165.",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun visible.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Envelopper le bouton désactivé dans un span.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "TEST-DST",
+      "title": "Test dépendant du changement d'heure (SurgeonAssignmentRefusalFunctionalTest)",
+      "description": "Échoue autour du 25/10 (passage à l'heure d'hiver), identique sans D-167.",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; suite backend rouge certains jours.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Figer l'horloge du test (ClockSensitiveTrait).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "TEST-TIMEZONE",
+      "title": "MissionBusinessTimezoneIntegrationTest en échec préexistant",
+      "description": "Échec reproduit à l'identique sans D-167 (relevé le 2026-10-24).",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; suite backend rouge.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Diagnostiquer.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "TEST-MEMLIMIT",
+      "title": "PlanningV2DraftControllerTest plafonne la mémoire du processus (256M)",
+      "description": "ini_set('memory_limit','256M') dans le test casse l'exécution complète de PHPUnit (OOM) ; contourné par un lancement fichier par fichier.",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; suite complète impossible en un seul processus.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Retirer le ini_set ou restaurer la limite après le test.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "TEST-VITEST-TIMEOUTS",
+      "title": "Délais dépassés Vitest sous charge",
+      "description": "10 à 11 tests en timeout lors des suites complètes (GeneratePlanningTab, PlanningSchedulePage…), verts en isolé.",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; bruit dans les rapports de tests.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Augmenter le testTimeout des fichiers lents ou alléger leurs rendus.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "DOC-HEALTHZ",
+      "title": "Documentation : /api/health au lieu de /healthz",
+      "description": "docs/production.md ligne 21 cite /api/health (404) ; la route réelle est /healthz.",
+      "kind": "docs",
+      "priority": "P3",
+      "userImpact": "Aucun.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Corriger la ligne (hors historique, qui ne se réécrit pas).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "H-D114-SHIFTPERIOD",
+      "title": "Anomalie D-114 / ShiftPeriodConfig relevée pendant H1–H8",
+      "description": "Relevée le 2026-10-05 sans correction ; probablement couverte par D-158 (neutralisation des occurrences non générées). Non vérifié.",
+      "kind": "fix",
+      "priority": "P3",
+      "userImpact": "À confirmer.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Vérifier si D-158 l'a corrigée ; sinon décrire et prioriser.",
+      "lastReviewed": "2026-10-24"
+    }
+  ]
+}

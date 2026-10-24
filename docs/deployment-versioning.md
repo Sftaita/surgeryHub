@@ -158,6 +158,44 @@ Décision             : <déployer HEAD complet / s'arrêter et demander validat
 niveau de migration plus avancé que ce que les commits manquants laissent
 supposer — c'est le signal exact de l'incident du 2026-06-24.
 
+### 2.4 Rapport des développements non déployés (D-169) — obligatoire
+
+Une release ne doit pas faire oublier un correctif déjà développé (cas de D-157 : testé le
+2026-10-20, resté en PR pendant que cinq autres versions étaient déployées). Avant toute mise en
+production, produire et **afficher** :
+
+```bash
+deploy/deploy.sh pending <SHA>     # = node deploy/work-inventory/inventory.mjs --fetch --server --release <SHA>
+```
+
+Le rapport est calculé (Git, PR GitHub, serveur en lecture seule), puis croisé avec le registre des
+décisions humaines `docs/work-registry.json`. Il liste, dans cet ordre :
+
+1. les **correctifs P0/P1 absents de la production**, avec « ABSENT DE LA RELEASE PRÉVUE » s'ils ne
+   sont pas dans `<SHA>`, et « OUBLIÉ » s'ils sont prêts depuis plus de `staleDays` jours ;
+2. les **travaux non suivis** (branche, PR, worktree, stash, commit de main, script ou ligne de
+   crontab sans entrée de registre) ;
+3. le code fusionné non déployé, en séparant l'applicatif de ce qui est hors archive (docs, scripts
+   serveur), et les migrations fusionnées non déployées ;
+4. les PR ouvertes, les branches non intégrées (conflits, migrations, jamais poussées), les
+   modifications locales absentes de Git ;
+5. le serveur : release active, migrations non appliquées, scripts versionnés non installés ou
+   différents, scripts hors dépôt modifiés, crontab différente de la référence versionnée ;
+6. les opérations hors code en attente (installation, reprise de données, configuration, validation) ;
+7. les incohérences du registre et ce qui est nouveau depuis le dernier audit ;
+8. les branches qui modifient les mêmes fichiers que la release (risque de conflit).
+
+**Le rapport signale, il ne décide pas** : il ne bloque pas le déploiement et ne fusionne rien. Le
+périmètre de la release reste une décision explicite, consignée dans le rapport §2.3 (« Décision »).
+Tout correctif P0/P1 absent de la release y est mentionné avec la raison de son exclusion. Ce qui
+n'a pas pu être vérifié (serveur injoignable, API GitHub indisponible) est écrit « Non vérifié »,
+jamais supposé conforme. `deploy/deploy.sh prepare` affiche aussi un résumé non bloquant.
+
+Le registre est mis à jour dans la PR qui fait évoluer un chantier (statut, prochaine action,
+opérations), et `deploy/production/server-reference/` dans la PR de toute installation ou
+modification serveur. Le même rapport (sans le serveur) tourne chaque lundi et sur chaque PR
+(`.github/workflows/work-inventory.yml`).
+
 ---
 
 ## 3. Règle de sécurité — pas de déploiement partiel

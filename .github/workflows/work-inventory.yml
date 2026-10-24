@@ -1,0 +1,53 @@
+# D-169 — travaux en attente : registre validé et rapport calculé depuis Git et les PR GitHub.
+# Aucun accès au serveur depuis la CI (le contrôle serveur, en lecture seule, se lance depuis le
+# poste de déploiement : deploy/deploy.sh pending). Aucun secret créé : GITHUB_TOKEN est fourni par
+# GitHub, en lecture seule. Le rapport ne bloque jamais une PR ; seul un registre invalide échoue.
+name: Travaux en attente (D-169)
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # lundi 06:00 UTC
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Registre valide
+        run: node deploy/work-inventory/inventory.mjs --check-registry
+      - name: Tests de l'inventaire (dépôts jetables)
+        run: |
+          git config --global user.email ci@surgicalhub.test
+          git config --global user.name ci
+          node --test deploy/work-inventory/tests/inventory.test.mjs
+      - name: Instantané de l'audit précédent
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/work-inventory
+          key: work-inventory-${{ github.run_id }}
+          restore-keys: work-inventory-
+      - name: Rapport des travaux en attente
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INVENTORY_SNAPSHOT: ${{ runner.temp }}/work-inventory/last.json
+        # Hors de la copie de travail : un fichier non suivi y serait signalé comme travail non commité.
+        run: |
+          git fetch --quiet --tags origin '+refs/heads/*:refs/remotes/origin/*'
+          node deploy/work-inventory/inventory.mjs --fetch --fail-on registry > "$RUNNER_TEMP/work-inventory.md"
+          cat "$RUNNER_TEMP/work-inventory.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: travaux-en-attente
+          path: ${{ runner.temp }}/work-inventory.md

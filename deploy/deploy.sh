@@ -13,6 +13,8 @@
 #   deploy/deploy.sh mark     <sha> <tag>     version officielle (APRÈS tests de santé et tag Git poussé)
 #   deploy/deploy.sh rollback <sha|legacy>    release précédente, sa configuration et ses images
 #   deploy/deploy.sh status
+#   deploy/deploy.sh pending  [<sha>]         travaux non fusionnés / non déployés / non installés (D-169) ;
+#                                             avec <sha> : correctifs P0/P1 absents de cette release, conflits
 #
 # Toujours un SHA complet : jamais un nom de branche, jamais un nom d'archive générique.
 # Variables : DEPLOY_HOST (défaut surgicalhub-prod ; « local » = exécution locale, tests),
@@ -64,6 +66,7 @@ cmd_prepare() {
   need_sha "${1:-}"; local sha="$1"
   git_ merge-base --is-ancestor "$sha" "$DEPLOY_MAIN_REF" 2>/dev/null \
     || die "$sha n'est pas sur $DEPLOY_MAIN_REF : seul un commit fusionné et validé est déployable."
+  pending_summary "$sha"
   local paths; paths=$(cmd_paths "$sha") || exit 1
   mkdir -p "$DEPLOY_DIST"
   local out; out=$(archive_file "$sha")
@@ -98,6 +101,25 @@ remote() { # remote <commande> <args...> — exécute deploy/remote.sh sur le se
   else
     ssh -o ConnectTimeout=20 "$DEPLOY_HOST" "APP_ROOT='$APP_ROOT' bash -s -- $*" < "$ROOT/deploy/remote.sh"
   fi
+}
+
+# D-169 — rapport des développements non déployés. Signalement seulement : ne bloque jamais le
+# déploiement (le périmètre se décide explicitement), mais un correctif P0/P1 absent de la release
+# ressort en tête. WORK_INVENTORY=off le désactive (tests isolés).
+inventory() { node "$ROOT/deploy/work-inventory/inventory.mjs" --repo "$ROOT" "$@"; }
+pending_summary() {
+  [ "${WORK_INVENTORY:-on}" = off ] && return 0
+  if command -v node > /dev/null 2>&1 && [ -f "$ROOT/deploy/work-inventory/inventory.mjs" ]; then
+    echo "── Travaux en attente (D-169, non bloquant ; détail : deploy/deploy.sh pending $1)"
+    inventory --release "$1" --summary --no-snapshot 2>&1 | sed 's/^/   /' || true
+    echo "──"
+  else
+    echo "── Rapport des travaux en attente NON produit (node absent) : lancer deploy/deploy.sh pending $1"
+  fi
+}
+cmd_pending() {
+  command -v node > /dev/null 2>&1 || die "node est requis pour le rapport des travaux en attente (D-169)."
+  if [ -n "${1:-}" ]; then need_sha "$1"; inventory --fetch --server --release "$1"; else inventory --fetch --server; fi
 }
 
 cmd_upload() {
@@ -136,5 +158,6 @@ case "$cmd" in
   rollback) [ "${1:-}" = legacy ] || need_sha "${1:-}"; remote rollback "$1" ;;
   mark) cmd_mark "$@" ;;
   status) remote status ;;
-  *) sed -n '2,20p' "$0"; exit 2 ;;
+  pending) cmd_pending "$@" ;;
+  *) sed -n '2,22p' "$0"; exit 2 ;;
 esac

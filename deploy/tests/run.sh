@@ -23,6 +23,7 @@ git -C "$R" -c core.autocrlf=false checkout -q -B test-main
 export DEPLOY_MAIN_REF=test-main DEPLOY_DIST="$T/dist" DEPLOY_HOST=local APP_ROOT="$T/server"
 export DOCKER="$R/deploy/tests/docker-stub.sh" STUB_STATE="$T/stub" STUB_LOG="$T/docker.log"
 export BACKUP_MYSQL="$T/backup_mysql.sh"
+export WORK_INVENTORY=off   # D-169 : rapport des travaux en attente testé par deploy/work-inventory/tests
 printf '#!/usr/bin/env bash\necho "[mysql] OK — dump simulé"\n' > "$BACKUP_MYSQL"; chmod +x "$BACKUP_MYSQL"
 
 # Faux serveur dans l'état d'avant D-163 : .env (secrets), compose historique, src/ manuel.

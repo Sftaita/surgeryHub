@@ -16,6 +16,8 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] `doctrine:migrations:status --env=prod` exécuté sur le serveur → noter `Current`/`Executed Unavailable`/`New`
 - [ ] Écart calculé (`git log --oneline <commit-serveur>..HEAD`) et rapport produit (gabarit §2.3 de `deployment-versioning.md`)
 - [ ] **Anomalie DB-vs-code vérifiée explicitement** (la base est-elle plus avancée que ce que laisse supposer le commit déployé ?)
+- [ ] **D-169 : `deploy/deploy.sh pending $SHA` produit et affiché** — correctifs P0/P1 absents de la release (chacun inclus, ou exclu avec sa raison écrite), travaux non suivis, PR et branches en attente, modifications locales, migrations et opérations serveur en attente, risques de conflit ; tout « Non vérifié » mentionné
+- [ ] Registre `docs/work-registry.json` mis à jour pour les chantiers de la release (statut, preuve de production après validation)
 
 ## 1. Règle anti-cherry-pick
 
@@ -125,6 +127,7 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] D-162 : cohérence vérifiée — commit du tag = commit exécuté (`app:release:show`, statut `OFFICIAL`) = version affichée en bas de « Mon profil » / `GET /api/version`
 - [ ] Après un rollback (`deploy/deploy.sh rollback <SHA>`) : `deploy/deploy.sh status` et `app:release:show` affichent la version restaurée
 - [ ] Table "Historique des versions déployées" de `docs/production.md` mise à jour (nouvelle ligne ajoutée, aucune ligne existante modifiée)
+- [ ] D-169 : registre mis à jour (`deploye` puis `valide-production` avec `prodEvidence`) ; toute installation ou modification serveur reportée dans `deploy/production/server-reference/`
 
 ## En cas de problème — rollback
 
