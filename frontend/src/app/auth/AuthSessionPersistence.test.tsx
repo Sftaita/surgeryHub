@@ -61,10 +61,12 @@ describe("AuthContext — persistance de session (D-157)", () => {
     await waitFor(() => expect(status()).toBe("unavailable"));
     expect(readAuth()).toEqual({ accessToken: "a", refreshToken: "r" });
 
-    await act(async () => {
+    // L'écouteur « online » est branché par un effet passif, après le rendu « unavailable » :
+    // l'événement est réémis jusqu'à ce qu'il soit pris en compte (sinon course avec l'effet).
+    await waitFor(() => {
       window.dispatchEvent(new Event("online"));
+      expect(status()).toBe("authenticated");
     });
-    await waitFor(() => expect(status()).toBe("authenticated"));
   });
 
   it.each([500, 503])("erreur serveur %i au démarrage : aucune déconnexion, nouvelle tentative automatique", async (code) => {

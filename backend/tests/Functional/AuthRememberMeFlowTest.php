@@ -124,7 +124,8 @@ final class AuthRememberMeFlowTest extends WebTestCase
         self::assertSame($data['refresh_token'], $token->getRefreshToken());
         self::assertFalse($token->isRememberMe());
 
-        $expected = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_DEFAULT.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expected = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_DEFAULT);
         self::assertEqualsWithDelta($expected->getTimestamp(), $token->getValid()->getTimestamp(), 10);
     }
 
@@ -159,7 +160,8 @@ final class AuthRememberMeFlowTest extends WebTestCase
         self::assertSame($data['refresh_token'], $token->getRefreshToken());
         self::assertTrue($token->isRememberMe());
 
-        $expected = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_REMEMBER_ME.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expected = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_REMEMBER_ME);
         self::assertEqualsWithDelta($expected->getTimestamp(), $token->getValid()->getTimestamp(), 10);
     }
 

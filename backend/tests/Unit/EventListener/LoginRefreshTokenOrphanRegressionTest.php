@@ -114,7 +114,8 @@ final class LoginRefreshTokenOrphanRegressionTest extends TestCase
         $returnedToken = $event->getData()['refresh_token'];
         self::assertSame($createdTokens[0]->getRefreshToken(), $returnedToken);
 
-        $expectedValid = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_DEFAULT.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expectedValid = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_DEFAULT);
         self::assertEqualsWithDelta($expectedValid->getTimestamp(), $createdTokens[0]->getValid()->getTimestamp(), 5);
     }
 
@@ -153,7 +154,8 @@ final class LoginRefreshTokenOrphanRegressionTest extends TestCase
         $returnedToken = $event->getData()['refresh_token'];
         self::assertSame($createdTokens[0]->getRefreshToken(), $returnedToken);
 
-        $expectedValid = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_REMEMBER_ME.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expectedValid = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_REMEMBER_ME);
         self::assertEqualsWithDelta($expectedValid->getTimestamp(), $createdTokens[0]->getValid()->getTimestamp(), 5);
     }
 

@@ -74,7 +74,8 @@ final class AuthenticationSuccessListenerTest extends TestCase
         self::assertNotNull($saved, 'A refresh token should be created on login');
         self::assertFalse($saved->isRememberMe());
 
-        $expectedValid = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_DEFAULT.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expectedValid = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_DEFAULT);
         self::assertEqualsWithDelta($expectedValid->getTimestamp(), $saved->getValid()->getTimestamp(), 5);
 
         self::assertArrayHasKey('refresh_token', $event->getData());
@@ -101,7 +102,8 @@ final class AuthenticationSuccessListenerTest extends TestCase
         self::assertNotNull($saved);
         self::assertTrue($saved->isRememberMe());
 
-        $expectedValid = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_REMEMBER_ME.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expectedValid = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_REMEMBER_ME);
         self::assertEqualsWithDelta($expectedValid->getTimestamp(), $saved->getValid()->getTimestamp(), 5);
     }
 
