@@ -13,20 +13,35 @@
     {
       "id": "D-157",
       "title": "Sessions persistantes : fin des déconnexions répétées",
-      "description": "Le JWT expiré était envoyé à /api/auth/refresh (authentificateur JWT avant refresh_jwt) : 373/376 refresh en 401 en production depuis juin, déconnexion à chaque expiration. Correctif : firewall auth_session, sessions par appareil avec rotation, fenêtre glissante, révocation effective (claim sid), login Google durci.",
+      "description": "Le JWT expiré était envoyé à /api/auth/refresh (authentificateur JWT avant refresh_jwt) : 426/429 refresh en 401 en production depuis juin, déconnexion à chaque expiration. Correctif : firewall auth_session, sessions par appareil avec rotation, fenêtre glissante, révocation effective (claim sid), une session par navigateur partagée par ses onglets, login Google durci. Déployé v2026.10.24-prod-2.",
       "kind": "fix",
       "priority": "P1",
       "userImpact": "Tous les utilisateurs doivent se reconnecter régulièrement, même avec « Rester connecté ».",
-      "status": "pr-ouverte",
-      "statusSince": "2026-10-20",
-      "refs": { "decision": "D-157", "branches": ["feat/auth-session-persistence"], "prs": [23], "worktrees": ["SurgicalHub-auth-session"], "migrations": ["Version20261020090000"] },
+      "status": "deploye",
+      "statusSince": "2026-10-24",
+      "prodEvidence": "v2026.10.24-prod-2 (9c26bf1), migration Version20261020090000 appliquée (90/90), contrôles API publique 16/16 avec compte jetable supprimé, premier utilisateur réel à 16:49 UTC : /api/me 401 → refresh 200 sans reconnexion.",
+      "refs": { "decision": "D-157", "branches": ["feat/auth-session-persistence"], "prs": [23], "commits": ["0b9ebed"], "worktrees": ["SurgicalHub-auth-session"], "migrations": ["Version20261020090000"] },
       "pendingOps": [
-        { "type": "reprise-donnees", "status": "en-attente", "description": "Migration Version20261020090000 (sessions par appareil) à jouer au déploiement", "validation": "accord de déploiement" }
+        { "type": "reprise-donnees", "status": "fait", "description": "Migration Version20261020090000 (sessions par appareil) à jouer au déploiement", "validation": "accord de déploiement (2026-10-24)", "confirmedAt": "2026-10-24", "evidence": "deploy.sh migrate 9c26bf1 : « Successfully migrated to version Version20261020090000 », doctrine:migrations:status 90/90, New 0 ; sauvegarde préalable all_20261024_164628.sql.gz" },
+        { "type": "validation", "status": "en-attente", "description": "Suivi 24 h du journal Traefik (refresh majoritairement 200, contre 426/429 en 401 avant ; aucune vague de reconnexions), puis confirmation de l'utilisateur qu'il n'est plus déconnecté", "validation": "utilisateur", "check": "grep /api/auth/refresh dans /opt/stack/traefik/logs/access.log depuis le 2026-10-24 16:46 UTC, comptage par statut" }
       ],
-      "validationNeeded": "Rapport de reprise (rebase, tests, recette) puis accord explicite de déploiement.",
-      "nextAction": "Actualiser depuis main, résoudre les conflits, retester (rôles, PWA, mobile, réseau), plan de déploiement — repris en priorité le 2026-10-24 dans la session principale.",
+      "validationNeeded": "Confirmation en usage réel (plus de reconnexion forcée, y compris PWA et mobile) avant « Validé en production ».",
+      "nextAction": "Suivre les refresh pendant 24 h puis faire confirmer par l'utilisateur.",
       "lastReviewed": "2026-10-24",
-      "notes": "Testé le 2026-10-20 (backend 2959, vitest 1696, recette WebKit/Chromium) puis resté 4 jours en PR pendant que D-158 à D-167 étaient déployés : cas d'origine de D-169."
+      "notes": "Testé le 2026-10-20 puis resté 4 jours en PR pendant que D-158 à D-167 étaient déployés : cas d'origine de D-169. Le 2026-10-24 : onglet dupliqué sans « Rester connecté » reproduit (session révoquée) puis corrigé (0b9ebed), recette 144/144 et sécurité 17/17 par moteur, déployé le jour même."
+    },
+    {
+      "id": "DOC-DEPLOY-2026-10-24-PROD-2",
+      "title": "Documentation du déploiement v2026.10.24-prod-2 (D-157)",
+      "description": "Ligne d'historique et « Dernier tag déployé » dans docs/production.md.",
+      "kind": "docs",
+      "priority": "P3",
+      "userImpact": "Aucun.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-10-24",
+      "refs": { "branches": ["docs/deploy-v2026.10.24-prod-2"], "prs": [43], "worktrees": ["SurgicalHub-docs-d157"] },
+      "nextAction": "Fusionner la PR #43 sur accord.",
+      "lastReviewed": "2026-10-24"
     },
     {
       "id": "D-164",
