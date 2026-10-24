@@ -85,6 +85,10 @@ const OP_TYPES = {
 };
 const OP_STATUSES = ['en-attente', 'en-cours', 'fait', 'abandonne'];
 const PRIORITIES = ['P0', 'P1', 'P2', 'P3'];
+// Une opération n'est close que sur preuve de son exécution réelle : « fait » sans date de
+// confirmation ni preuve (commande, sortie, rapport) reste affichée comme ouverte.
+const opConfirmed = (op) => typeof op.confirmedAt === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(op.confirmedAt) && typeof op.evidence === 'string' && op.evidence.trim() !== '';
+const opOpen = (op) => op.status === 'en-attente' || op.status === 'en-cours' || (op.status === 'fait' && !opConfirmed(op));
 const KINDS = ['fix', 'feature', 'ops', 'data', 'debt', 'docs', 'test'];
 const NOT_IN_PROD_YET = ['developpe', 'teste', 'pr-ouverte', 'fusionne'];
 const registryPath = opt.registry ? path.resolve(opt.registry) : path.join(repo, 'docs', 'work-registry.json');
@@ -121,6 +125,7 @@ function validateRegistry(r) {
       if (!OP_TYPES[op.type]) w(`pendingOps[${j}] : type inconnu « ${op.type} » (${Object.keys(OP_TYPES).join(', ')})`);
       if (!OP_STATUSES.includes(op.status)) w(`pendingOps[${j}] : statut inconnu « ${op.status} »`);
       if (!op.description) w(`pendingOps[${j}] : description manquante`);
+      if (op.status === 'fait' && !opConfirmed(op)) w(`pendingOps[${j}] : « fait » sans « confirmedAt » (AAAA-MM-JJ) ni « evidence » : l'opération reste ouverte`);
     });
   });
   return errs;
@@ -481,7 +486,7 @@ function analyse(registry, g, prs, server) {
     d.urgent = ['P0', 'P1'].includes(it.priority) && NOT_IN_PROD_YET.includes(it.status) && d.code !== 'dans le tag de prod';
     d.forgotten = d.urgent && age !== null && age >= staleDays;
     d.age = age;
-    d.openOps = (it.pendingOps || []).filter((op) => op.status === 'en-attente' || op.status === 'en-cours');
+    d.openOps = (it.pendingOps || []).filter(opOpen);
     return d;
   });
 
@@ -632,7 +637,7 @@ function render(registry, g, prs, server, a, news, regErrors) {
   p(); p(`## 8. Opérations hors code en attente (${ops.length})`);
   for (const { d, op } of ops) {
     const it = byId.get(d.id);
-    p(`- **${OP_TYPES[op.type]}** — ${it.id} ${it.priority} : ${op.description}${op.validation ? ` · validation : ${op.validation}` : ''} · ${op.status === 'en-cours' ? 'en cours' : 'en attente'} · Non vérifiable automatiquement${op.check ? ` (contrôle : ${op.check})` : ''}`);
+    p(`- **${OP_TYPES[op.type]}** — ${it.id} ${it.priority} : ${op.description}${op.validation ? ` · validation : ${op.validation}` : ''} · ${op.status === 'en-cours' ? 'en cours' : op.status === 'fait' ? '« fait » déclaré SANS PREUVE d’exécution (confirmedAt + evidence) : reste ouvert' : 'en attente'} · Non vérifiable automatiquement${op.check ? ` (contrôle : ${op.check})` : ''}`);
   }
 
   p(); p('## 9. Registre');

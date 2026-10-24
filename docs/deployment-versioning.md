@@ -182,6 +182,8 @@ décisions humaines `docs/work-registry.json`. Il liste, dans cet ordre :
 5. le serveur : release active, migrations non appliquées, scripts versionnés non installés ou
    différents, scripts hors dépôt modifiés, crontab différente de la référence versionnée ;
 6. les opérations hors code en attente (installation, reprise de données, configuration, validation) ;
+   une opération n'est close que marquée `fait` avec `confirmedAt` et `evidence` (preuve de
+   l'exécution réelle), sinon elle reste affichée ;
 7. les incohérences du registre et ce qui est nouveau depuis le dernier audit ;
 8. les branches qui modifient les mêmes fichiers que la release (risque de conflit).
 

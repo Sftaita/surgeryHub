@@ -122,7 +122,8 @@ esac
         refs: { prs: [5], commits: ['feat/merged'] }, nextAction: 'vérifier', lastReviewed: '2026-10-24' },
       { id: 'DATA-1', title: 'Reprise', description: 'd', kind: 'data', priority: 'P2', userImpact: 'u', status: 'bloque', blockedReason: 'décision',
         refs: {}, pendingOps: [{ type: 'reprise-donnees', status: 'en-attente', description: 'Rattraper 9 salles', validation: 'utilisateur' },
-          { type: 'reprise-donnees', status: 'fait', description: 'Ancienne reprise' }], nextAction: 'décider', lastReviewed: '2026-10-24' },
+          { type: 'reprise-donnees', status: 'fait', description: 'Ancienne reprise', confirmedAt: '2026-10-01', evidence: 'rapport de reprise' },
+          { type: 'reprise-donnees', status: 'fait', description: 'Reprise déclarée sans preuve' }], nextAction: 'décider', lastReviewed: '2026-10-24' },
     ],
   }, null, 1));
 });
@@ -195,11 +196,14 @@ test('9. modification du serveur non reflétée dans les fichiers versionnés', 
   assert.ok(r.analysis.untracked.some((u) => u.kind === 'crontab' && u.detail.includes('ajout-manuel')));
 });
 
-test('10. opération de données de production en attente (la reprise faite n\'apparaît plus)', () => {
+test('10. opération de données de production en attente (seule la reprise confirmée avec preuve disparaît)', () => {
   const r = json(['--no-snapshot']);
   const d = r.analysis.derived.find((x) => x.id === 'DATA-1');
-  assert.deepEqual(d.openOps.map((o) => o.description), ['Rattraper 9 salles']);
-  assert.match(run(['--no-snapshot']).stdout, /Migration ou reprise de données en attente\*\* — DATA-1 P2 : Rattraper 9 salles/);
+  assert.deepEqual(d.openOps.map((o) => o.description), ['Rattraper 9 salles', 'Reprise déclarée sans preuve']);
+  const out = run(['--no-snapshot']).stdout;
+  assert.match(out, /Migration ou reprise de données en attente\*\* — DATA-1 P2 : Rattraper 9 salles/);
+  assert.match(out, /Reprise déclarée sans preuve.*SANS PREUVE d’exécution/);
+  assert.doesNotMatch(out, /Ancienne reprise/);
 });
 
 test('release prévue : correctif P1 absent → en tête, et --fail-on urgent échoue', () => {

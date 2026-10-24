@@ -14915,6 +14915,8 @@ déploiement.
 ### Limites
 
 Les opérations de données ne sont pas vérifiables automatiquement : elles restent affichées tant
-que le registre ne les marque pas faites. Seuls les dépôts et worktrees de ce poste sont vus ; la
+que le registre ne les marque pas faites **avec preuve** — `status: "fait"` exige `confirmedAt`
+(date) et `evidence` (commande, sortie ou rapport de l'exécution réelle) ; sans eux, l'opération
+reste ouverte et signalée « fait déclaré sans preuve ». Seuls les dépôts et worktrees de ce poste sont vus ; la
 CI ne voit que les branches poussées. Le serveur n'est comparé qu'aux chemins du manifeste et aux
 dossiers surveillés. D-168 (tiroir mission, branche non fusionnée) porte le numéro précédent.
