@@ -1144,9 +1144,18 @@ export function GeneratePlanningTab() {
         <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Vérification terminée</DialogTitle>
         <DialogContent>
           {verifyResult && verifyResult.issuesFound === 0 ? (
-            <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
-              Aucun conflit détecté — {verifyResult.checkedMissions} mission{verifyResult.checkedMissions > 1 ? "s" : ""} vérifiée{verifyResult.checkedMissions > 1 ? "s" : ""}.
-            </Typography>
+            <Stack spacing={1.5}>
+              <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textMuted }}>
+                Aucun conflit détecté — {verifyResult.checkedMissions} mission{verifyResult.checkedMissions > 1 ? "s" : ""} vérifiée{verifyResult.checkedMissions > 1 ? "s" : ""}.
+              </Typography>
+              {/* D-167 — a stale alert resolved by the scan is not an anomaly, but the manager
+                  must still learn that it left the Alertes tab. */}
+              {verifyResult.alertsResolved > 0 && (
+                <Typography sx={{ fontSize: 13, color: planningV2Colors.textMuted }}>
+                  · {verifyResult.alertsResolved} alerte{verifyResult.alertsResolved > 1 ? "s" : ""} obsolète{verifyResult.alertsResolved > 1 ? "s" : ""} résolue{verifyResult.alertsResolved > 1 ? "s" : ""} — le conflit n&apos;existe plus
+                </Typography>
+              )}
+            </Stack>
           ) : verifyResult && (
             <Stack spacing={1.5}>
               <Typography sx={{ fontSize: 13.5, color: planningV2Colors.textStrong, fontWeight: 600 }}>

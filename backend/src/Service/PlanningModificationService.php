@@ -141,8 +141,10 @@ class PlanningModificationService
                 // conflict; re-sync SURGEON_CONFLICT/INSTRUMENTIST_CONFLICT alerts for every
                 // touched mission so the Alertes tab reflects reality immediately. Deliberately
                 // non-blocking here (unlike deploy()): the alert makes the conflict visible for
-                // manager review, it does not reject the save itself.
-                if ($mission !== null && $mission->getStatus() !== MissionStatus::REJECTED && $mission->getStatus() !== MissionStatus::CANCELLED) {
+                // manager review, it does not reject the save itself. D-167: a mission cancelled
+                // by this batch is synced too — it raises nothing, but the conflict alerts it took
+                // part in are re-evaluated (and resolved) instead of outliving it.
+                if ($mission !== null && $mission->getStatus() !== MissionStatus::REJECTED) {
                     $this->conflictDetection->syncAlertsForMission($mission);
                 }
 
