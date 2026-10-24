@@ -51,6 +51,20 @@
       "lastReviewed": "2026-10-24"
     },
     {
+      "id": "D-169",
+      "title": "Registre des travaux et inventaire automatique avant chaque release",
+      "description": "Registre docs/work-registry.json, inventaire deploy/work-inventory/inventory.mjs (Git, PR, worktrees, serveur en lecture seule), deploy.sh pending, workflow hebdomadaire et sur PR.",
+      "kind": "ops",
+      "priority": "P2",
+      "userImpact": "Aucun direct ; empêche qu'un correctif terminé (comme D-157) reste oublié.",
+      "status": "teste",
+      "statusSince": "2026-10-24",
+      "refs": { "decision": "D-169", "branches": ["chore/work-registry"], "worktrees": ["SurgicalHub-work-registry"] },
+      "validationNeeded": "Revue du registre initial et accord pour la PR et la fusion.",
+      "nextAction": "Présenter le rapport initial ; ouvrir la PR sur accord.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
       "id": "D-168",
       "title": "Tiroir de détail mission manager (seul détail côté manager)",
       "description": "ManagerMissionDrawer remplace la fiche pleine page ; /app/m/missions/:id redirige vers ?mission=ID ; corrections en ligne (réaffectation, heures, encodage). Frontend seulement.",
