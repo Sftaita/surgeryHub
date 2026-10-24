@@ -8,9 +8,6 @@ import {
   Box,
   Button,
   CircularProgress,
-  Dialog,
-  DialogContent,
-  DialogTitle,
   Paper,
   Stack,
   ToggleButton,
@@ -20,7 +17,7 @@ import {
 
 import { getSurgeonPlanning } from "../api/surgeons.api";
 import type { SurgeonPlanningEvent } from "../api/surgeons.types";
-import { MissionDetailContent } from "../../../pages/manager/MissionDetailPage";
+import { ManagerMissionDrawer } from "../../missions/drawer/ManagerMissionDrawer";
 
 type ViewMode = "week" | "month";
 
@@ -155,6 +152,7 @@ export function SurgeonPlanningSection({ surgeonId }: Props) {
   const [selectedMissionId, setSelectedMissionId] = React.useState<
     number | null
   >(null);
+  const closeMission = React.useCallback(() => setSelectedMissionId(null), []);
 
   const range = React.useMemo(() => getRange(view, dateYmd), [view, dateYmd]);
 
@@ -285,23 +283,8 @@ export function SurgeonPlanningSection({ surgeonId }: Props) {
         </Paper>
       </Stack>
 
-      <Dialog
-        open={selectedMissionId !== null}
-        onClose={() => setSelectedMissionId(null)}
-        fullWidth
-        maxWidth="md"
-      >
-        <DialogTitle>Détail mission</DialogTitle>
-        <DialogContent dividers>
-          {selectedMissionId ? (
-            <MissionDetailContent
-              missionId={selectedMissionId}
-              embedded
-              onCloseEmbedded={() => setSelectedMissionId(null)}
-            />
-          ) : null}
-        </DialogContent>
-      </Dialog>
+      {/* Rendu dans le Drawer MUI de la fiche : focus et Échap restent gérés par le tiroir mission. */}
+      <ManagerMissionDrawer missionId={selectedMissionId} onClose={closeMission} />
     </>
   );
 }

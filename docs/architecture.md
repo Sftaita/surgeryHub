@@ -3380,7 +3380,7 @@ features/encoding-anomaly-reports/      — partagé chirurgien (création) + ma
     │                                       <select>), commentaire toujours requis
     ├── AnomalyReportSection.tsx         — bandeau statut + CTA "Signaler un problème"
     │                                       (masqué si un signalement OPEN existe déjà)
-    └── AnomalyReportsManagerPanel.tsx   — intégré à manager/MissionDetailPage.tsx,
+    └── AnomalyReportsManagerPanel.tsx   — intégré au tiroir mission manager (D-168),
                                             jamais rendu si aucun signalement n'existe
 ```
 
@@ -3392,8 +3392,9 @@ temps que le CTA instrumentiste "Encoder la mission").
 
 ### 19.4 Frontend manager — intégré au détail Mission existant
 
-`AnomalyReportsManagerPanel` monté directement dans `manager/MissionDetailPage.tsx`,
-juste après `EncodingStatusPanel` — jamais une nouvelle route de listing top-level
+`AnomalyReportsManagerPanel` monté dans le tiroir mission manager
+(`features/missions/drawer/ManagerMissionDrawer.tsx`, D-168), sous l'historique — jamais une
+nouvelle route de listing top-level
 (fondé sur l'UX actuelle : les signalements sont rares et intrinsèquement liés à une
 Mission). N'affiche rien tant qu'aucun signalement n'existe pour la mission (cas
 largement majoritaire).
