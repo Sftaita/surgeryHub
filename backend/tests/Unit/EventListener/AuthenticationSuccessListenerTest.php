@@ -5,9 +5,13 @@ namespace App\Tests\Unit\EventListener;
 use App\Entity\RefreshToken;
 use App\Entity\User;
 use App\EventListener\AuthenticationSuccessListener;
+use App\Repository\UserRepository;
+use App\Security\Session\DeviceSessionService;
+use Doctrine\ORM\EntityManagerInterface;
 use Gesdinet\JWTRefreshTokenBundle\Generator\RefreshTokenGenerator;
 use Gesdinet\JWTRefreshTokenBundle\Model\RefreshTokenManagerInterface;
 use Lexik\Bundle\JWTAuthenticationBundle\Event\AuthenticationSuccessEvent;
+use Lexik\Bundle\JWTAuthenticationBundle\Services\JWTTokenManagerInterface;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Symfony\Component\HttpFoundation\Request;
@@ -35,7 +39,17 @@ final class AuthenticationSuccessListenerTest extends TestCase
         });
 
         $generator = new RefreshTokenGenerator($manager);
-        $listener = new AuthenticationSuccessListener($manager, $generator, $requestStack, new NullLogger());
+        // D-157 — the token is opened by DeviceSessionService (persist + flush through the EM).
+        $em = $this->createMock(EntityManagerInterface::class);
+        $em->method('persist')->willReturnCallback(function (object $entity) use (&$saved) {
+            if ($entity instanceof RefreshToken) {
+                $saved = $entity;
+            }
+        });
+        $jwt = $this->createMock(JWTTokenManagerInterface::class);
+        $jwt->method('createFromPayload')->willReturnCallback(static fn ($user, array $payload) => 'jwt-sid-'.$payload['sid']);
+        $sessions = new DeviceSessionService($em, $generator, $this->createMock(UserRepository::class), new NullLogger(), $jwt);
+        $listener = new AuthenticationSuccessListener($sessions, $requestStack, new NullLogger());
 
         return [$listener, $manager, function () use (&$saved) {
             return $saved;
@@ -60,10 +74,13 @@ final class AuthenticationSuccessListenerTest extends TestCase
         self::assertNotNull($saved, 'A refresh token should be created on login');
         self::assertFalse($saved->isRememberMe());
 
-        $expectedValid = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_DEFAULT.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expectedValid = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_DEFAULT);
         self::assertEqualsWithDelta($expectedValid->getTimestamp(), $saved->getValid()->getTimestamp(), 5);
 
         self::assertArrayHasKey('refresh_token', $event->getData());
+        // D-157 — the access token returned is bound to the device session just opened.
+        self::assertSame('jwt-sid-'.$saved->getFamilyId(), $event->getData()['token']);
     }
 
     public function testLoginWithRememberMeIssuesLongLivedRefreshToken(): void
@@ -85,7 +102,8 @@ final class AuthenticationSuccessListenerTest extends TestCase
         self::assertNotNull($saved);
         self::assertTrue($saved->isRememberMe());
 
-        $expectedValid = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_REMEMBER_ME.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expectedValid = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_REMEMBER_ME);
         self::assertEqualsWithDelta($expectedValid->getTimestamp(), $saved->getValid()->getTimestamp(), 5);
     }
 
@@ -113,11 +131,10 @@ final class AuthenticationSuccessListenerTest extends TestCase
         $requestStack = new RequestStack();
         $requestStack->push($request);
 
-        $manager = $this->createMock(RefreshTokenManagerInterface::class);
-        $manager->expects(self::never())->method('save');
-        $generator = new RefreshTokenGenerator($manager);
+        $sessions = $this->createMock(DeviceSessionService::class);
+        $sessions->expects(self::never())->method('open');
 
-        $listener = new AuthenticationSuccessListener($manager, $generator, $requestStack, new NullLogger());
+        $listener = new AuthenticationSuccessListener($sessions, $requestStack, new NullLogger());
 
         $originalData = ['token' => 'jwt'];
         $event = new AuthenticationSuccessEvent($originalData, (new User())->setEmail('user@example.com'), new Response());

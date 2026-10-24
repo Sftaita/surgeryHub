@@ -43,9 +43,12 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 
 ```
 Api/
-├── AuthGoogleController                 — login Google OAuth (+ rememberMe)
-│   (login email/password géré par le firewall `login`, refresh par `refresh_jwt`,
-│    logout par `logout` — voir D-047 « Remember me » dans decisions.md)
+├── AuthGoogleController                 — login Google (+ rememberMe) ; désactivé sans
+│    GOOGLE_OAUTH_CLIENT_ID, comptes existants seulement (D-157, Security/Google/GoogleIdTokenVerifier)
+│   (login email/password géré par le firewall `login` — voir D-047 et D-157)
+├── AuthSessionController                — refresh / logout des sessions d'appareil (D-157,
+│    firewall `auth_session` sans JWT ; logique dans Security/Session/DeviceSessionService ;
+│    SessionAccessTokenListener refuse un JWT dont la session `sid` a été révoquée)
 ├── MissionController                    — CRUD missions + transitions de statut
 ├── InstrumentistController              — gestion manager des instrumentistes
 ├── SurgeonController                    — CRUD /api/surgeons + planning + site-memberships
@@ -204,7 +207,8 @@ même à un compte suspendu — leur objet est la sécurité du compte, jamais g
 l'utilisateur à chaque requête via le claim `username` du JWT (figé à l'ancienne adresse
 au moment de l'émission) — après un changement d'email, la session en cours et son
 refresh token (`RefreshToken.username`, même provider) cessent de fonctionner au prochain
-appel, forçant une reconnexion. Conséquence structurelle du provider (même mécanisme que
+appel, forçant une reconnexion (D-157 : les sessions de l'ancienne adresse sont en outre
+supprimées explicitement, `DeviceSessionService::revokeAllForIdentifier()`). Conséquence structurelle du provider (même mécanisme que
 la suspension via `UserChecker`), jamais une invalidation codée en dur — volontairement
 non contournée. **Risque Google OAuth documenté (non corrigé)** :
 `AuthGoogleController` retrouve l'utilisateur par email Google réel ; `User::$googleId`

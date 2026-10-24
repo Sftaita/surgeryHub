@@ -7,6 +7,7 @@ use App\Entity\Hospital;
 use App\Entity\SiteMembership;
 use App\Entity\User;
 use App\Repository\UserRepository;
+use App\Security\Session\DeviceSessionService;
 use App\Service\NotificationService;
 use App\Service\UserAdministrationService;
 use App\Service\UserAuditService;
@@ -25,6 +26,7 @@ final class UserAdministrationServiceTest extends TestCase
     private NotificationService&MockObject     $notifications;
     private UserAuditService&MockObject        $audit;
     private LoggerInterface&MockObject         $logger;
+    private DeviceSessionService&MockObject    $sessions;
     private UserAdministrationService          $service;
 
     protected function setUp(): void
@@ -53,6 +55,7 @@ final class UserAdministrationServiceTest extends TestCase
             $this->notifications,
             $this->audit,
             $this->logger,
+            $this->sessions = $this->createMock(DeviceSessionService::class),
         );
     }
 
@@ -191,6 +194,8 @@ final class UserAdministrationServiceTest extends TestCase
 
         $this->em->expects(self::once())->method('flush');
         $this->audit->expects(self::once())->method('userSuspended');
+        // D-157 — suspension = événement de sécurité : toutes ses sessions sont révoquées.
+        $this->sessions->expects(self::once())->method('revokeAllForUser')->with($target);
 
         $result = $this->service->suspendUser($target, $admin);
 

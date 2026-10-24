@@ -7,6 +7,7 @@ use App\Entity\Hospital;
 use App\Entity\SiteMembership;
 use App\Entity\User;
 use App\Repository\UserRepository;
+use App\Security\Session\DeviceSessionService;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -45,6 +46,7 @@ class UserAdministrationService
         private readonly NotificationService $notifications,
         private readonly UserAuditService $audit,
         private readonly LoggerInterface $logger,
+        private readonly DeviceSessionService $sessions,
     ) {}
 
     /**
@@ -123,6 +125,9 @@ class UserAdministrationService
         $target->setActive(false);
         $this->audit->userSuspended($admin, $target);
         $this->em->flush();
+
+        // D-157 — événement de sécurité : toutes ses sessions, sur tous ses appareils.
+        $this->sessions->revokeAllForUser($target);
 
         return $target;
     }
