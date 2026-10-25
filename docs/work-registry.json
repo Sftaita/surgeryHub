@@ -198,7 +198,7 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Manager : un seul modèle de détail de mission partout.",
-      "status": "pr-ouverte",
+      "status": "fusionne",
       "statusSince": "2026-10-25",
       "refs": {
         "decision": "D-168",
@@ -212,10 +212,10 @@
           45
         ]
       },
-      "validationNeeded": "Tests GitHub Actions (build et Vitest) puis fusion, déploiement selon procédure officielle.",
-      "nextAction": "PR #45 en cours : branche alignée sur main, validation CI frontend complète puis fusion / déploiement séparé.",
+      "validationNeeded": "Déploiement sur Hostinger, contrôles de santé et recette réelle du nouveau tiroir mission manager.",
+      "nextAction": "D-168 fusionné (PR #45, commit 03bca03). Déployer via docs/deployment-versioning.md, puis vérifier les parcours missions manager en production.",
       "lastReviewed": "2026-10-25",
-      "notes": "Non possible sans décision métier : reprogrammer une mission publiée hors Mode Modification, changer de chirurgien."
+      "notes": "Non possible sans décision métier : reprogrammer une mission publiée hors Mode Modification, changer de chirurgien. Fusion PR #45 le 2026-10-25 ; GitHub Actions frontend build OK, 1791/1791 tests, D-169 vert. Aucun déploiement serveur."
     },
     {
       "id": "D-156",
