@@ -13,6 +13,8 @@ permissions:
 jobs:
   frontend:
     runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Brussels
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
