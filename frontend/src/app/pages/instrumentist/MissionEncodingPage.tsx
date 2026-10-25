@@ -92,7 +92,7 @@ export default function MissionEncodingPage() {
   const canSubmit = mission?.allowedActions?.includes("submit") ?? false;
   const canEditHours = mission?.allowedActions?.includes("edit_hours") ?? false;
 
-  // Même query key que EditServiceHoursDialog.tsx (mutation) et manager/MissionDetailPage.tsx
+  // Même query key que EditServiceHoursDialog.tsx (mutation) et le tiroir mission manager
   // (lecture) — une seule source de vérité pour les heures prestées, jamais un champ
   // dérivé de ["mission", missionId] (voir formatExecutionHours()).
   const { data: execution } = useQuery({
@@ -205,9 +205,8 @@ export default function MissionEncodingPage() {
         {/* Anomalie écran d'encodage (commit dédié) — EncodingStatusPanel (statut +
             signaux de cohérence informationnels + historique commentaires manager)
             formait un résumé intermédiaire redondant avec le véritable récapitulatif
-            affiché par SubmitDialog après "Terminer l'encodage". Retiré uniquement de
-            cette page : le composant reste utilisé tel quel par
-            pages/manager/MissionDetailPage.tsx (composant partagé, jamais modifié). */}
+            affiché par SubmitDialog après "Terminer l'encodage". Côté manager, ces
+            signaux et commentaires sont lus dans le tiroir mission (ManagerMissionDrawer). */}
 
         {/* Zone 1 — "TEMPS DE TRAVAIL" (docs/design/Instruction design/Page encodage
             instrumentiste, DOCUMENTATION.md §1/§2) : bac neutre gris, une seule carte,

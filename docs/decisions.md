@@ -15180,3 +15180,57 @@ que le registre ne les marque pas faites **avec preuve** — `status: "fait"` ex
 reste ouverte et signalée « fait déclaré sans preuve ». Seuls les dépôts et worktrees de ce poste sont vus ; la
 CI ne voit que les branches poussées. Le serveur n'est comparé qu'aux chemins du manifeste et aux
 dossiers surveillés. D-168 (tiroir mission, branche non fusionnée) porte le numéro précédent.
+
+## D-168 — Détail mission manager : un seul modèle, le tiroir de la liste Missions (2026-10-24)
+
+### Décision
+
+Le détail d'une mission côté manager est le tiroir `ManagerMissionDrawer`
+(`features/missions/drawer/`, maquette validée `docs/design/Instruction design/Mission-drawer`).
+Il remplace la fiche pleine page `pages/manager/MissionDetailPage.tsx`, supprimée, partout où le
+manager ouvre une mission :
+
+- liste Missions (`/app/m/missions?mission=:id`, la liste reste montée sous le tiroir) ;
+- plannings instrumentiste et chirurgien des fiches Instrumentistes / Chirurgiens (le tiroir
+  remplace la fenêtre qui embarquait la fiche) ;
+- tout lien `/app/m/missions/:id` (notifications in-app, e-mails, facturation, journal, anomalies,
+  incompatibilités, demandes chirurgien…) : la route redirige vers
+  `/app/m/missions?mission=:id` (`ManagerMissionRedirect`). Aucun lien backend n'est modifié.
+
+Deux affichages de la même mission divergeaient forcément ; un seul est maintenu.
+
+### Contenu repris de l'ancienne fiche
+
+Rien n'est perdu : actions servies par `allowedActions` (`useMissionManagerActions`, mêmes
+endpoints, mêmes fenêtres de confirmation), calcul financier (`useMissionFinancialCalculation` :
+calculer / recalculer / approuver / verrouiller, calcul obsolète D-153 qui ne propose que le
+recalcul), détail des lignes ajustées ou signalées (brut, ajustement, final, délégué, règle
+appliquée, avertissements — D-092), versions précédentes du calcul, signaux de cohérence
+(Lot 6) et commentaires manager (Lot 7, D-070), détail des contestations d'heures, activité sans
+instrumentiste (D-155), demande nominative (D-125), justification « aucun matériel »,
+signalements d'anomalie (D-100). `FinancialCalculationCard` et `EncodingStatusPanel`, qui
+n'étaient plus rendus nulle part, sont supprimés.
+
+### Corrections depuis le tiroir
+
+Servies par le backend, posées à côté de ce qu'elles modifient (jamais dans le pied) :
+« Changer » l'instrumentiste (`reassign`, `POST /api/missions/{id}/reassign`, fenêtre
+`ReassignMissionDialog` du planning vivant), « Corriger les heures » (`edit_hours`, D-153,
+`EditServiceHoursDialog` en saisie manager) et « Corriger l'encodage » (`edit_encoding`, D-153,
+mêmes interventions que le Suivi des encodages). Aucun nouvel endpoint.
+
+Non couverts, faute d'endpoint par mission : changer les horaires, le site ou le type d'une mission
+déjà publiée (`reschedule` n'est appliqué que par le mode Modification du planning, D-165) et
+changer le chirurgien d'une mission existante.
+
+### Hors périmètre
+
+Les détails mission instrumentiste et chirurgien (`/app/i/missions/:id`, `/app/s/missions/:id`,
+`pages/instrumentist/MissionDetailPage.tsx`) sont inchangés : autres actions (encoder, prendre une
+mission…), non couvertes par la maquette. Aucun changement backend.
+
+### Tests
+
+`ManagerMissionDrawer.test.tsx` (reprend les cas de l'ancienne fiche et de
+`FinancialCalculationCard.test.tsx`), `MissionDrawer.test.tsx` (recette maquette, mission #1084),
+`ManagerMissionRedirect.test.tsx`, `MissionsListPage.test.tsx` (ouverture / fermeture du tiroir).

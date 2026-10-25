@@ -36,7 +36,7 @@ export function MissionStatusChip({ status }: { status?: string | null }) {
   );
 }
 
-function MissionRow({ mission, onOpen }: { mission: Mission; onOpen: (m: Mission) => void }) {
+function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (m: Mission) => void; selected: boolean }) {
   const instrumentist = mission.instrumentist ? formatPersonLabel(mission.instrumentist) : null;
 
   return (
@@ -44,6 +44,8 @@ function MissionRow({ mission, onOpen }: { mission: Mission; onOpen: (m: Mission
       role="button"
       tabIndex={0}
       data-testid="mission-row"
+      data-mission-id={mission.id}
+      aria-current={selected || undefined}
       onClick={() => onOpen(mission)}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(mission); } }}
       sx={{
@@ -57,6 +59,8 @@ function MissionRow({ mission, onOpen }: { mission: Mission; onOpen: (m: Mission
         cursor: "pointer",
         "&:hover": { bgcolor: "action.hover" },
         "&:focus-visible": { outline: 2, outlineColor: "primary.main", outlineOffset: -2 },
+        // Mission ouverte dans le tiroir (maquette Mission-drawer : .is-selected).
+        ...(selected && { bgcolor: "#EFFAF5", boxShadow: "inset 3px 0 0 #338F6E", "&:hover": { bgcolor: "#EFFAF5" } }),
       }}
     >
       <Typography variant="body2" fontWeight={700} sx={{ fontVariantNumeric: "tabular-nums" }}>
@@ -95,7 +99,7 @@ function MissionRow({ mission, onOpen }: { mission: Mission; onOpen: (m: Mission
  * D-147 — missions groupées par jour (Europe/Brussels), dans l'ordre renvoyé par le
  * serveur (`order`). Statuts et libellés viennent du serveur, rien n'est recalculé.
  */
-export function MissionsDayList({ missions, onOpen }: { missions: Mission[]; onOpen: (m: Mission) => void }) {
+export function MissionsDayList({ missions, onOpen, selectedId = null }: { missions: Mission[]; onOpen: (m: Mission) => void; selectedId?: number | null }) {
   const groups = groupByDay(missions, (m) => m.startAt);
 
   return (
@@ -117,7 +121,7 @@ export function MissionsDayList({ missions, onOpen }: { missions: Mission[]; onO
               </Typography>
             </Stack>
             <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden", "& > *:not(:last-child)": { borderBottom: 1, borderColor: "divider" } }}>
-              {group.items.map((m) => <MissionRow key={m.id} mission={m} onOpen={onOpen} />)}
+              {group.items.map((m) => <MissionRow key={m.id} mission={m} onOpen={onOpen} selected={m.id === selectedId} />)}
             </Paper>
           </Box>
         );

@@ -9,6 +9,38 @@ import type { Mission } from "../../features/missions/api/missions.types";
 vi.mock("../../features/missions/api/missions.api", () => ({
   fetchMissions: vi.fn(),
   fetchSites: vi.fn().mockResolvedValue([{ id: 1, name: "CHIREC Delta" }, { id: 2, name: "Clinique Nord" }]),
+  fetchMissionById: vi.fn(),
+  getMissionExecution: vi.fn().mockResolvedValue({
+    missionId: 42, hasExecutionRecord: false, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null,
+    hoursSource: null, effectiveDurationMinutes: 240, effectiveDurationSource: "PLANNED_FALLBACK", disputes: [],
+  }),
+  approveDeclaredMission: vi.fn(),
+  cancelMission: vi.fn(),
+  cancelExecutedWithoutInstrumentist: vi.fn(),
+  declareExecutedWithoutInstrumentist: vi.fn(),
+  rejectDeclaredMission: vi.fn(),
+}));
+
+vi.mock("../../features/encoding/api/encoding.api", () => ({
+  fetchMissionEncoding: vi.fn().mockResolvedValue({ entries: [] }),
+  rejectMissionEncoding: vi.fn(),
+  reopenMissionEncoding: vi.fn(),
+  validateMissionEncoding: vi.fn(),
+}));
+
+vi.mock("../../features/planning-v2/api/planningV2.api", () => ({
+  fetchMissionAudit: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("../../features/encoding-anomaly-reports/components/AnomalyReportsManagerPanel", () => ({
+  AnomalyReportsManagerPanel: () => null,
+}));
+
+vi.mock("../../features/missions/components/EditMissionDialog", () => ({ default: () => null }));
+vi.mock("../../features/missions/components/PublishMissionDialog", () => ({ default: () => null }));
+
+vi.mock("../../ui/toast/useToast", () => ({
+  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
 
 vi.mock("../../features/manager-mission-requests/api/managerSurgeonMissionRequests.api", () => ({
@@ -18,7 +50,7 @@ vi.mock("../../features/manager-mission-requests/api/managerSurgeonMissionReques
   rejectSurgeonMissionRequest: vi.fn(),
 }));
 
-import { fetchMissions } from "../../features/missions/api/missions.api";
+import { fetchMissionById, fetchMissions } from "../../features/missions/api/missions.api";
 
 function mission(id: number, startAt: string, overrides: Partial<Mission> = {}): Mission {
   return {
@@ -150,13 +182,37 @@ describe("MissionsListPage — vue manager (D-147)", () => {
     expect(screen.queryByLabelText("Statut")).not.toBeInTheDocument();
   });
 
-  it("cliquer une mission ouvre son détail", async () => {
-    vi.mocked(fetchMissions).mockResolvedValue({ items: [mission(42, "2026-10-14T08:00:00+02:00")], total: 1 } as never);
+  it("cliquer une mission ouvre son détail en tiroir, la liste reste montée et la ligne est surlignée", async () => {
+    const m = mission(42, "2026-10-14T08:00:00+02:00", { allowedActions: ["cancel"] });
+    vi.mocked(fetchMissions).mockResolvedValue({ items: [m], total: 1 } as never);
+    vi.mocked(fetchMissionById).mockResolvedValue(m);
     const user = userEvent.setup();
     renderPage();
 
     await user.click(await screen.findByTestId("mission-row"));
-    expect(await screen.findByText("detail")).toBeInTheDocument();
+
+    const drawer = await screen.findByRole("dialog", { name: "Mission #42" });
+    expect(drawer).toHaveClass("is-open");
+    await waitFor(() => expect(lastSearch).toContain("mission=42"));
+    expect(screen.queryByText("detail")).not.toBeInTheDocument();
+    expect(screen.getByTestId("mission-row")).toHaveAttribute("aria-current", "true");
+    // Actions servies par allowedActions uniquement.
+    expect(await within(drawer).findByRole("button", { name: "Annuler la mission" })).toBeInTheDocument();
+    expect(within(drawer).queryByRole("button", { name: /Approuver/ })).not.toBeInTheDocument();
+  });
+
+  it("Échap ferme le tiroir et retire la mission de l'URL", async () => {
+    const m = mission(42, "2026-10-14T08:00:00+02:00");
+    vi.mocked(fetchMissions).mockResolvedValue({ items: [m], total: 1 } as never);
+    vi.mocked(fetchMissionById).mockResolvedValue(m);
+    const user = userEvent.setup();
+    renderPage("/app/m/missions?mission=42");
+
+    const drawer = await screen.findByRole("dialog", { name: "Mission #42", hidden: true });
+    expect(drawer).toHaveClass("is-open");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(lastSearch).not.toContain("mission="));
+    expect(drawer).not.toHaveClass("is-open");
   });
 
   it("le badge « Demandes chirurgien » lit les compteurs partagés", async () => {
