@@ -1573,6 +1573,10 @@ supprimée.
 
 Date : 2026-06-19
 
+> **Remplacé en partie par D-157 (2026-10-20)** : durée de vie glissante, rotation du refresh token,
+> refresh et logout hors firewall JWT. Les tableaux de TTL fixes et « pas de rotation » ci-dessous
+> décrivent l'état antérieur.
+
 ### Objectif
 
 Permettre une session persistante optionnelle ("Se souvenir de moi") sur `/login`, sans toucher
@@ -14143,6 +14147,246 @@ Finitions (2026-10-16) :
   `ENCODING_ANOMALY_RESOLVED`, `ABSENCE_INSTRUMENTIST_REASSIGNED`, `ABSENCE_OCCURRENCE_RESTORED`,
   `ABSENCE_SELF_DECLARED` et `ABSENCE_IMPACT_SUMMARY`.
 
+---
+
+## D-157 — Sessions persistantes glissantes par appareil : refresh fiable, rotation, révocation (2026-10-20)
+
+Remplace, pour la durée de vie et le refresh, le régime de D-047 (TTL fixe, pas de rotation).
+D-047 reste valable pour le reste (stockage navigateur, CORS sans cookie, `rememberMe`).
+
+### Causes réelles des déconnexions (audit du 2026-10-19, démontrées)
+
+1. **Le refresh échouait presque toujours en production.** Le firewall `api` portait à la fois
+   l'authentificateur JWT (priorité −10) et `refresh_jwt` (−50) : le JWT passe en premier. Or
+   l'intercepteur Axios ajoutait le jeton d'accès stocké — expiré, puisque c'est la raison du
+   refresh — à `POST /api/auth/refresh`. Réponse : `401 Expired JWT Token` avant même la lecture
+   du refresh token, puis purge de la session côté client. Preuve : logs Traefik de juin à octobre
+   2026, **373 refresh sur 376 en 401** (réponse de 42 octets compressée en 58 = « Expired JWT
+   Token ») ; 16 utilisateurs « Se souvenir de moi » reconnectés en moyenne 10 fois en 30 jours
+   (jusqu'à 43). Reproduit en test : même refresh token, 200 sans en-tête, 401 avec le JWT expiré.
+   Conséquence : toute session mourait à la première expiration du JWT (1 h), quel que soit
+   `rememberMe`.
+2. **Logout sans effet** dans le même cas : `POST /api/auth/logout` avec le JWT expiré répondait
+   401 et le refresh token restait valable (vérifié : refresh suivant en 200).
+3. **Démarrage de l'application** (`AuthContext`) : tout échec de `/api/me` (réseau coupé au
+   lancement de la PWA, timeout, 500/503) effaçait la session, ce qui annulait le correctif D-047
+   (Task 11) qui ne protégeait que l'intercepteur.
+4. **Durée fixe** : `ttl_update: false` — même un utilisateur actif chaque jour était déconnecté
+   30 jours (ou 1 jour) après sa connexion.
+5. Secondaires : un 401 sur `/api/auth/login` (mauvais mot de passe) déclenchait la logique de
+   refresh ; deux onglets ne se synchronisaient pas sur un logout ; `AuthGoogleController`
+   ouvrait une session pour un compte suspendu (le `UserChecker` ne s'y applique pas) ;
+   `refresh_tokens` n'était pas protégé dans les rapports Sentry.
+
+Écartés : purge `localStorage` par Safari/ITP (symptôme aussi sur Chrome), cache du service
+worker (`sw.js` ne cache que `/icons/` et `manifest.json`), mutex de refresh (correct).
+
+### Décision
+
+**Backend**
+
+- `POST /api/auth/refresh` et `POST /api/auth/logout` sur un firewall dédié sans
+  authentificateur (`auth_session`, `security: false`), traités par `AuthSessionController` :
+  l'en-tête `Authorization` éventuellement envoyé est ignoré. Le routage Gesdinet
+  (`config/routes/gesdinet_jwt_refresh_token.yaml`, `refresh_jwt`, `logout:` du firewall `api`)
+  est retiré ; l'entité, le générateur et le listener de login Gesdinet restent utilisés.
+- `DeviceSessionService` : une connexion ouvre une **session d'appareil** (`family_id`). Chaque
+  refresh **rotate** le refresh token (`rotated_at`, `replaced_by`) et donne au successeur une
+  **fenêtre d'inactivité glissante** : 30 jours avec « Rester connecté », 1 jour sinon. Un
+  utilisateur qui ouvre l'application au moins une fois par fenêtre n'est jamais déconnecté ;
+  après 30 jours sans aucune utilisation, une reconnexion est exigée.
+- Concurrence et réseau : la ligne est verrouillée (`SELECT … FOR UPDATE`). Un jeton déjà tourné,
+  présenté de nouveau dans les 120 s (deux onglets, deux requêtes) **ou** dont le successeur n'a
+  jamais servi (réponse perdue sur coupure réseau), reçoit le jeton courant de la session.
+  Sinon c'est un rejeu : **toute la session est révoquée** (protection contre un jeton volé).
+  Les générations tournées depuis plus de 7 jours sont purgées.
+- Révocation : logout = toutes les générations de la session de cet appareil (les autres
+  appareils restent connectés) ; suspension (`UserAdministrationService::suspendUser`) = toutes
+  les sessions de l'utilisateur ; changement d'e-mail = sessions ouvertes sous l'ancienne adresse
+  (D-063 : reconnexion voulue, désormais explicite) ; commande
+  `app:auth:revoke-sessions <email>` pour tout autre événement de sécurité. Un compte inactif ne
+  peut plus rafraîchir (session supprimée).
+- **Révocation effective du JWT d'accès** : chaque JWT émis (login, Google, refresh) porte le
+  claim `sid` = identifiant de la session d'appareil (`family_id`, pas un secret).
+  `SessionAccessTokenListener` (événement Lexik `on_jwt_decoded`) le refuse (401 `Invalid JWT
+  Token`) dès que la session n'a plus aucune ligne : logout de l'appareil, révocation de toutes
+  les sessions, changement d'e-mail, rejeu détecté. Une requête indexée par appel authentifié.
+  La rotation conserve `family_id` et la purge ne touche que les générations tournées : le
+  renouvellement n'est pas affecté. Suspension : refusée en plus dès la requête suivante par le
+  `UserChecker` du firewall `api`. Un JWT sans `sid` (émis avant le déploiement) reste accepté
+  jusqu'à son expiration (≤ 1 h).
+- **Login Google durci** (endpoint joignable en production, jamais appelé — logs Traefik — et
+  sans interface) : désactivé (404) tant que `GOOGLE_OAUTH_CLIENT_ID` n'est pas configuré ;
+  `GoogleIdTokenVerifier` exige audience = ce client, émetteur Google, jeton non expiré et
+  `email_verified` ; seuls les comptes existants et actifs sont connectés, **aucune création de
+  compte** ; même 401 pour un jeton refusé, un compte inconnu ou suspendu ; 503 si Google est
+  injoignable. Avant D-157, n'importe quel ID token Google (émis pour une autre application,
+  ou à e-mail non vérifié) dont l'adresse correspondait à un compte ouvrait sa session, et une
+  adresse inconnue créait un compte `ROLE_USER`.
+- Horodatage des sessions en temps écoulé (`setTimestamp`), dans le fuseau PHP : `modify('+N
+  seconds')` gagnait une heure au passage à l'heure d'hiver (production en UTC : sans effet,
+  mais l'expiration ne dépend plus du fuseau du serveur).
+- Aucun refresh token dans les logs (journalisation par empreinte de session) ; corps et en-têtes
+  des requêtes `/api/auth/*` retirés des rapports Sentry (`SentryIntegrationSecretScrubber`).
+- Migration `Version20261020090000` (additive) : `refresh_tokens.family_id`, `created_at`,
+  `rotated_at`, `replaced_by` + index. Les refresh tokens antérieurs restent valables et entrent
+  dans le nouveau régime à leur premier refresh. Vérifié sur une base à l'état de la
+  production (89 migrations) contenant un jeton antérieur : migration, `down`/`up`, schéma
+  conforme au mapping. Au déploiement, aucun utilisateur n'a à se reconnecter : son JWT sans
+  `sid` reste valable, puis le premier refresh (qui fonctionne enfin) le fait entrer dans le
+  nouveau régime.
+
+**Frontend**
+
+- Aucun jeton d'accès envoyé sur `/api/auth/*` ; un 401 sur login/logout/Google n'est jamais
+  traité comme une session à rafraîchir.
+- Seul un **refus du refresh (401)** déconnecte. 403, 5xx, timeout, réseau coupé : la session est
+  conservée. Si un autre onglet a déjà renouvelé le jeton, la requête est rejouée sans refresh ;
+  un refus concernant un jeton déjà remplacé par un autre onglet n'efface rien.
+- Démarrage : session stockée mais serveur injoignable → état `unavailable`, écran « Connexion au
+  serveur impossible », nouvelles tentatives (3 s, 10 s, 30 s, puis toutes les 60 s), au retour du
+  réseau et au retour au premier plan. Aucune redirection vers `/login`.
+- « Rester connecté sur cet appareil » (coché par défaut) : `localStorage`, survit à la fermeture
+  du navigateur, au redémarrage et à la fermeture de la PWA. Décoché (appareil partagé) : la
+  session se termine avec le navigateur (et après 1 jour sans utilisation). Dans les deux cas,
+  une seule session par navigateur, partagée par tous ses onglets (voir l'avenant « onglets
+  dupliqués » ci-dessous).
+- Onglets : un logout dans un onglet déconnecte les autres ; une connexion dans un onglet
+  restaure celui resté sur `/login`.
+- Expiration réelle : « Votre session a expiré. Veuillez vous reconnecter. »
+
+### Mobile, PWA et Safari / iOS (évaluation)
+
+- PWA installée (écran d'accueil iOS, Android) : `start_url` `/login` redirige une session
+  restaurée vers l'espace du rôle ; `sw.js` ne met en cache que les icônes et le manifeste (aucune
+  réponse d'API ni page mise en cache, donc pas d'état d'authentification périmé).
+- iOS sépare le stockage de Safari et celui de la PWA installée : une connexion dans Safari ne se
+  retrouve pas dans l'application installée (une connexion par contexte, ensuite persistante).
+- Safari (onglet, ITP) efface le stockage écrit par script d'un site non visité pendant 7 jours
+  d'utilisation de Safari ; la PWA installée a son propre compteur, remis à zéro à chaque
+  utilisation. Conséquence : dans Safari non installé, la fenêtre effective peut être de 7 jours
+  d'utilisation du navigateur sans ouvrir SurgicalHub (au lieu de 30) ; l'installation sur
+  l'écran d'accueil est recommandée sur iPhone. Seul un cookie posé par le serveur (évolution
+  HttpOnly ci-dessous) échappe à ce plafond.
+- iOS suspend et tue souvent la PWA : au retour au premier plan, aucune page n'est rechargée ;
+  la première requête reçoit 401 si le JWT a expiré et déclenche le refresh. Les minuteries
+  étant gelées en arrière-plan, la restauration est aussi relancée sur `visibilitychange` et
+  `online`. Appareil partagé : une PWA tuée par iOS perd sa session — attendu.
+- Vérifié avec le moteur WebKit (Playwright, profil iPhone) : persistance après fermeture et
+  relance, JWT expiré, serveur coupé puis rétabli, logout. Ce n'est pas un iPhone réel (pas d'ITP
+  ni de mode standalone) : à confirmer sur appareil lors de la recette.
+
+### Sécurité du stockage (évaluation)
+
+Le refresh token reste en `localStorage` (choix D-047) : lisible par un script injecté (XSS). La
+rotation avec détection de rejeu limite l'usage d'un jeton volé (révocation de la session dès
+que le jeton légitime et le jeton volé se croisent) mais ne supprime pas le risque. La migration
+vers un cookie `HttpOnly; Secure; SameSite` pour le seul refresh token reste l'évolution
+recommandée (CORS `allow_credentials`, origines explicites, protection CSRF de
+`/api/auth/refresh`), **non engagée** : elle ne corrige aucune des causes ci-dessus. Décision du
+2026-10-20 : architecture actuelle conservée temporairement ; évolution ultérieure à planifier
+(refresh token en cookie `HttpOnly; Secure; SameSite=Strict` limité à `/api/auth`, JWT d'accès
+en mémoire seulement), qui supprimerait aussi le plafond de 7 jours de Safari.
+
+### Limites connues
+
+- Aucun parcours « mot de passe oublié » / changement de mot de passe n'existe (le lien de
+  `LoginPage` affiche « bientôt disponible ») : quand il sera créé, il devra appeler
+  `DeviceSessionService::revokeAllForUser()`.
+- Changement d'e-mail : sessions révoquées (validé le 2026-10-20).
+- Safari non installé sur iOS : plafond ITP de 7 jours (voir ci-dessus).
+
+### Tests
+
+`AuthDeviceSessionFlowTest` (13 scénarios réels HTTP + base : JWT expiré envoyé, glissement sur
+4 mois, 30 jours d'inactivité, appareil partagé, concurrence, réponse perdue, rejeu, logout par
+appareil, suspension, compte inactif, changement d'e-mail, jetons antérieurs, Google),
+`AuthRememberMeFlowTest` adapté à la rotation ; JWT lié à la session (logout, révocation,
+suspension, rejeu, JWT antérieurs sans `sid`), login Google (audience, émetteur, expiration,
+e-mail non vérifié, compte inconnu non créé, Google injoignable) et
+`GoogleIdTokenVerifierTest` ; frontend `apiClientSession.test.ts`,
+`AuthSessionPersistence.test.tsx`, `LoginPageSession.test.tsx`.
+
+### Avenant (2026-10-24) — reprise après D-158…D-167, avant déploiement
+
+- **Le défaut est toujours actif en production** (journal Traefik, lecture seule) : 426 des 429
+  `POST /api/auth/refresh` depuis juin répondent 401, dont 42 sur 42 du 20 au 24 octobre ;
+  114 connexions réussies en 8 jours pour 31 utilisateurs.
+- Branche mise à jour avec `main` (`cbbec05`) : seul `decisions.md` était en conflit ; aucun
+  fichier de code n'est modifié des deux côtés et `main` n'a ajouté aucune migration depuis le
+  départ de la branche. La migration `Version20261020090000` reste la seule en attente (90/90 sur
+  base jetable, conforme au mapping de `RefreshToken`).
+- Compatibilité vérifiée sur la table de production (lecture seule) : 553 lignes, dont 194 valides
+  (31 utilisateurs, toutes « Rester connecté »), colonnes d'origine identiques à celles qu'attend
+  la migration ; PHP en UTC. Une session d'avant D-157 (ligne sans famille, JWT sans `sid`) est
+  reprise sans reconnexion et rattachée à une famille au premier refresh. Un ancien frontend
+  resté en cache (qui envoie encore le JWT expiré avec le refresh) obtient 200 : le firewall
+  `auth_session` ignore l'en-tête.
+- Tests : trois tests calculaient l'échéance attendue avec `modify('+N seconds')`, qui ajoute
+  une heure quand la fenêtre traverse le passage à l'heure d'hiver (échec le 2026-10-24). Ils
+  comptent désormais en secondes écoulées, comme le code. Le test frontend de reprise réseau
+  émettait l'événement `online` avant l'abonnement : rendu déterministe.
+- Recette Playwright sur base jetable : 35 contrôles × 4 profils (Chromium et WebKit, desktop et
+  mobile), dont les trois rôles, fermeture et réouverture sur `start_url`, JWT expiré, coupure
+  réseau au lancement et pendant le refresh, réponse de refresh perdue, deux onglets, logout,
+  révocation immédiate, session antérieure, ancien frontend et appareil partagé. Sécurité, au-delà
+  de la fenêtre de 120 s : le rejeu d'un jeton volé révoque toute la session et renvoie
+  l'utilisateur légitime vers `/login`.
+
+**Risques résiduels connus**
+
+- ~~Onglet dupliqué sans « Rester connecté »~~ : corrigé avant le déploiement, voir l'avenant
+  suivant.
+- Safari non installé sur iOS : plafond ITP de 7 jours sur le stockage (inchangé, voir plus haut).
+- Firefox n'a pas été testé (navigateur absent du poste de recette). La PWA installée n'est pas
+  automatisable : son lancement est simulé par l'ouverture de `start_url` dans un profil
+  persistant.
+
+### Avenant (2026-10-24) — onglets dupliqués : une seule session par navigateur
+
+**Problème reproduit** (Chromium, avant correction) : sans « Rester connecté », la session était
+dans le `sessionStorage`, propre à chaque onglet. « Dupliquer l'onglet » en copie le contenu :
+deux onglets tenaient alors deux copies indépendantes de la même chaîne de refresh tokens. Quand
+l'onglet actif renouvelait deux fois pendant que la copie restait inactive plus de 120 s, le
+réveil de la copie présentait un jeton déjà tourné dont le successeur avait servi : le serveur y
+voyait, à juste titre, un rejeu de jeton volé et révoquait la session. Résultat mesuré : refresh
+401, famille supprimée, **les deux onglets renvoyés sur `/login`**. Avec « Rester connecté »
+(`localStorage` partagé), le problème n'existait pas.
+
+**Décision** : corriger côté client, sans toucher à la règle serveur. Le serveur ne peut pas
+distinguer une copie périmée d'un vol ; assouplir la détection de rejeu (fenêtre plus longue,
+tolérance par appareil…) rouvrirait la réutilisation d'anciens jetons. La cause est d'avoir deux
+copies de la chaîne dans un même navigateur : il n'y en a plus qu'une.
+
+- Les deux types de session sont stockés dans le `localStorage`, partagé par tous les onglets du
+  navigateur : chaque onglet lit le jeton courant au moment de l'utiliser, et l'événement `storage`
+  propage rotations et déconnexions. Un onglet dupliqué, gelé ou rouvert ne détient jamais de
+  copie périmée.
+- « Rester connecté » : entrée `{accessToken, refreshToken}`, format inchangé (les sessions
+  existantes en production sont reprises telles quelles).
+- Appareil partagé : l'entrée porte en plus `browserSession`, l'identifiant aléatoire d'un cookie
+  de session du navigateur (`surgicalhub.auth.bs`, sans date d'expiration, `SameSite=Strict`,
+  `Secure` en HTTPS, posé par le frontend, ignoré par le serveur et **ne contenant aucun jeton**).
+  À la fermeture du navigateur, le cookie disparaît : la lecture suivante trouve un identifiant
+  différent et efface l'entrée. La session se termine donc toujours avec le navigateur.
+- Cookies bloqués : la session non persistante reste dans le `sessionStorage` de l'onglet
+  (ancien comportement, dernier recours).
+- Changement de comportement : sans « Rester connecté », un nouvel onglet du même navigateur
+  partage désormais la session (il demandait la connexion), comme pour une session par cookie.
+- Sécurité : la rotation, la fenêtre de grâce de 120 s et la révocation de toute la famille sur
+  rejeu sont inchangées. Le `sessionStorage` comme les cookies de session sont aussi écrits sur
+  disque par les navigateurs (restauration de session) : stocker la session « appareil partagé »
+  dans le `localStorage` jusqu'à la prochaine ouverture ne l'expose pas davantage, et le serveur
+  la plafonne toujours à 1 jour sans utilisation.
+
+**Vérifications** : Vitest (`authStorage.test.ts` et tests de session mis à jour) ; recette
+sécurité et concurrence sur Chromium et WebKit, 17/17 chacun : onglet dupliqué inactif plus de
+120 s, avec et sans « Rester connecté », toujours connecté et session intacte ; deux onglets
+dupliqués qui renouvellent au même instant, aucun 401 ; rejeu d'un jeton volé toujours révoqué.
+Recette complète 36 contrôles × 4 profils (Chromium et WebKit, desktop et mobile), 144/144.
+
+---
+
 ## D-158 — Absences : salles libérées quel que soit le mois, missions commencées protégées, une alerte par problème (2026-10-20)
 
 > Numéros D-156 et D-157 réservés par les branches `feat/prestations-regroupees` et `feat/auth-session-persistence` (non fusionnées).
@@ -14879,6 +15123,63 @@ Les alertes de conflit déjà ouvertes en production sont réévaluées à la pr
 d'une des deux missions ou au prochain « Vérifier les conflits » ; aucune reprise de données n'est
 lancée.
 
+---
+
+## D-169 — Registre des travaux et inventaire automatique avant chaque release (2026-10-24)
+
+### Constat
+
+D-157 (déconnexions répétées, P1) a été testé le 2026-10-20 puis est resté en PR pendant que
+D-158 à D-167 étaient déployés. D'autres travaux n'existaient qu'à un seul endroit : D-156 sur une
+branche jamais poussée, des consignes de design non commitées dans le dossier principal, des
+scripts serveur modifiés hors dépôt le 2026-10-23. Rien ne les faisait ressortir au moment d'un
+déploiement.
+
+### Décision
+
+1. **Registre** `docs/work-registry.json` : les seules décisions humaines (statut parmi 10, priorité
+   P0–P3, impact, prochaine action, validation, blocage, opérations hors code, preuve de
+   production). Rien de ce qui se vérifie n'y est recopié.
+2. **Inventaire** `deploy/work-inventory/inventory.mjs` (Node, sans dépendance) : calcule depuis
+   Git les branches non intégrées (patch-id, et « probablement intégrée » si le même sujet existe
+   dans main), les PR (API GitHub, sinon `refs/pull/*`, et l'état est alors « non vérifié »), les
+   worktrees et fichiers modifiés absents de Git (fins de ligne normalisées), les stashes, l'écart
+   entre main et le dernier tag `-prod`, les migrations ; avec `--server`, en lecture seule, la
+   release active, les migrations, les scripts (comparés au dépôt ou à l'empreinte de référence
+   `deploy/production/server-reference/manifest.json`), la crontab (comparée à `crontab.txt`) et les
+   conteneurs. Tout travail sans entrée de registre ressort « non suivi », et un instantané hors
+   suivi signale les nouveautés depuis le dernier audit.
+3. **Avant chaque release** : `deploy/deploy.sh pending <SHA>` est obligatoire
+   (`deployment-versioning.md` §2.4) ; `prepare` en affiche un résumé. Les correctifs P0/P1 absents
+   de la release sortent en tête. Le rapport ne bloque pas et ne fusionne rien : le périmètre reste
+   une décision explicite.
+4. **Contrôle régulier** : workflow GitHub Actions quotidien et sur PR (partie Git seulement,
+   jeton GitHub en lecture, aucun secret, aucun accès serveur). Seul un registre invalide échoue.
+5. **Corrections après examen (2026-10-25)** :
+   - **contrôle avant release** : son échec n'est plus silencieux. `prepare` s'arrête si
+     l'inventaire ne peut pas s'exécuter ; avant, `… | sed || true` masquait un plantage.
+     Contournement : `WORK_INVENTORY=off`, explicite et affiché. Un fetch ou une liste des PR en
+     échec est signalé « Non vérifié » ;
+   - **instantané CI** : il est comparé uniquement dans le même contexte ; avant, une PR pouvait
+     relire et écraser l'instantané d'une autre PR, et le cache hebdomadaire expirait (éviction
+     après 7 jours). Désormais seul l'audit quotidien de main l'écrit, un audit partiel ne
+     l'écrase pas, et l'écriture est atomique ;
+   - **serveur** : chaque section a son propre statut ; avant, une commande en échec, comme une
+     crontab illisible ou Docker indisponible, donnait une section vide comptée comme vérifiée,
+     voire de faux écarts de crontab. Les sections en échec sont « Non vérifié » et la
+     vérification est « incomplète ». Ce défaut existait dans les tests sous Windows : le faux
+     serveur n'avait pas de lien `current` et passait pour vérifié ;
+   - **données sensibles** : masquage des secrets et des e-mails dans le rapport, le JSON et
+     l'instantané ; registre sans nom de personne.
+
+### Limites
+
+Les opérations de données ne sont pas vérifiables automatiquement : elles restent affichées tant
+que le registre ne les marque pas faites **avec preuve** — `status: "fait"` exige `confirmedAt`
+(date) et `evidence` (commande, sortie ou rapport de l'exécution réelle) ; sans eux, l'opération
+reste ouverte et signalée « fait déclaré sans preuve ». Seuls les dépôts et worktrees de ce poste sont vus ; la
+CI ne voit que les branches poussées. Le serveur n'est comparé qu'aux chemins du manifeste et aux
+dossiers surveillés. D-168 (tiroir mission, branche non fusionnée) porte le numéro précédent.
 
 ## D-168 — Détail mission manager : un seul modèle, le tiroir de la liste Missions (2026-10-24)
 

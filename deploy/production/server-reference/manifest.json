@@ -1,0 +1,29 @@
+{
+  "description": "Référence versionnée de ce qui est installé sur le serveur de production hors archive applicative (D-169). Comparée en lecture seule par deploy/work-inventory/inventory.mjs --server. « source » : fichier du dépôt dont le contenu doit être installé (comparé à main, fins de ligne normalisées). Sans « source » : script hors dépôt, comparé à l'empreinte relevée (sha256 du contenu sans \\r). Mettre à jour ce fichier dans la même PR que toute installation ou modification serveur.",
+  "host": "surgicalhub-prod",
+  "observedAt": "2026-10-24",
+  "app": {
+    "root": "/opt/stack/apps/surgicalhub",
+    "phpContainer": "surgicalhub-php",
+    "containers": ["surgicalhub-php", "surgicalhub-worker", "surgicalhub-nginx"]
+  },
+  "crontabReference": "deploy/production/server-reference/crontab.txt",
+  "watchDirs": ["/home/deploy/scripts"],
+  "scripts": [
+    { "path": "/home/deploy/scripts/backup_mysql.sh", "sha256": "43ff09955f4a15794a501d31d29a4d6e2a5ff76091cbc221451abe1801a9fc7e", "note": "ancien système de sauvegarde (2026-06-16), hors dépôt ; appelé aussi par deploy/remote.sh", "item": "OPS-SERVER-SCRIPTS" },
+    { "path": "/home/deploy/scripts/backup_uploads.sh", "sha256": "cc99d19f4bfb8b51dc61015e96a29589c421b29c852130b964ed9958e38831fe", "note": "ancien système de sauvegarde, hors dépôt", "item": "OPS-SERVER-SCRIPTS" },
+    { "path": "/home/deploy/scripts/sync_gdrive.sh", "sha256": "e3ee43adb3f33ebfbf631878c3fcea42bef29c7c5ed40fd8136c477fba24fafe", "note": "ancien système (rclone sync), hors dépôt", "item": "OPS-SERVER-SCRIPTS" },
+    { "path": "/home/deploy/scripts/rotate_backups.sh", "sha256": "85b45c64f150bdf0ba9839e5d200abc0cb6a90dbd9f3e005e149bedad7600d1a", "note": "corrigé HORS DÉPÔT le 2026-10-23 19:13 (parenthèses find) : supprime réellement > 30 jours", "item": "OPS-ROTATE-2026-10-23" },
+    { "path": "/home/deploy/scripts/rotate_backups.sh.orig-20261023", "sha256": "20b136a36b2a1db9efded96aaeeceab4a505451551ebd9241a991f6cb7e08393", "note": "copie de l'original avant correction", "item": "OPS-ROTATE-2026-10-23" },
+    { "path": "/home/deploy/scripts/archive_mysql_weekly.sh", "sha256": "d3cccbcbe81b19b51f7efb588cfe92982f3d40d3e8a2e282316b4a785d5618ad", "note": "ajouté HORS DÉPÔT le 2026-10-23 (documenté dans medvue/docs/backup.md)", "item": "OPS-ROTATE-2026-10-23" },
+    { "path": "/home/deploy/scripts/missions_start_due.sh", "sha256": "025171c9e0f0080773a104939581cfc15b541a0f6995762d9a4e277674b40f21", "note": "cron D-064, hors dépôt (décrit dans docs/production.md)", "item": "OPS-SERVER-SCRIPTS" },
+    { "path": "/home/deploy/scripts/check_uncovered_escalations.sh", "sha256": "1ee52e46a13c6f7e7996b7db67787dfd82a05b4344814a4232052199e2ef4861", "note": "cron D-110, hors dépôt (décrit dans docs/production.md)", "item": "OPS-SERVER-SCRIPTS" },
+    { "path": "/home/deploy/scripts/send_encoding_reminders.sh", "sha256": "bfdb1f72d090302502bae9aad28d6344d73377f5b3967b213ce69eee1e65ef4c", "note": "cron D-143/D-144, hors dépôt (décrit dans docs/production.md)", "item": "OPS-SERVER-SCRIPTS" },
+    { "path": "/home/deploy/scripts/surgicalhub-backup/lib.sh", "source": "deploy/server/backup/lib.sh", "item": "D-164" },
+    { "path": "/home/deploy/scripts/surgicalhub-backup/backup_mysql.sh", "source": "deploy/server/backup/backup_mysql.sh", "item": "D-164" },
+    { "path": "/home/deploy/scripts/surgicalhub-backup/backup_volumes.sh", "source": "deploy/server/backup/backup_volumes.sh", "item": "D-164" },
+    { "path": "/home/deploy/scripts/surgicalhub-backup/backup_offsite.sh", "source": "deploy/server/backup/backup_offsite.sh", "item": "D-164" },
+    { "path": "/home/deploy/scripts/surgicalhub-backup/rotate_backups.sh", "source": "deploy/server/backup/rotate_backups.sh", "item": "D-164" },
+    { "path": "/home/deploy/scripts/surgicalhub-backup/restore_test.sh", "source": "deploy/server/backup/restore_test.sh", "item": "D-164" }
+  ]
+}

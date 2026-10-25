@@ -13,6 +13,8 @@
 #   deploy/deploy.sh mark     <sha> <tag>     version officielle (APRÈS tests de santé et tag Git poussé)
 #   deploy/deploy.sh rollback <sha|legacy>    release précédente, sa configuration et ses images
 #   deploy/deploy.sh status
+#   deploy/deploy.sh pending  [<sha>]         travaux non fusionnés / non déployés / non installés (D-169) ;
+#                                             avec <sha> : correctifs P0/P1 absents de cette release, conflits
 #
 # Toujours un SHA complet : jamais un nom de branche, jamais un nom d'archive générique.
 # Variables : DEPLOY_HOST (défaut surgicalhub-prod ; « local » = exécution locale, tests),
@@ -64,6 +66,7 @@ cmd_prepare() {
   need_sha "${1:-}"; local sha="$1"
   git_ merge-base --is-ancestor "$sha" "$DEPLOY_MAIN_REF" 2>/dev/null \
     || die "$sha n'est pas sur $DEPLOY_MAIN_REF : seul un commit fusionné et validé est déployable."
+  pending_summary "$sha"
   local paths; paths=$(cmd_paths "$sha") || exit 1
   mkdir -p "$DEPLOY_DIST"
   local out; out=$(archive_file "$sha")
@@ -98,6 +101,31 @@ remote() { # remote <commande> <args...> — exécute deploy/remote.sh sur le se
   else
     ssh -o ConnectTimeout=20 "$DEPLOY_HOST" "APP_ROOT='$APP_ROOT' bash -s -- $*" < "$ROOT/deploy/remote.sh"
   fi
+}
+
+# D-169 — rapport des développements non déployés. Les CONSTATS ne bloquent pas le déploiement (le
+# périmètre se décide explicitement ; un correctif P0/P1 absent de la release ressort en tête), mais
+# un contrôle qui n'a pas pu s'exécuter arrête prepare : jamais d'échec silencieux. WORK_INVENTORY=off
+# le désactive explicitement (tests isolés, ou passer outre en connaissance de cause) et le signale.
+inventory() { node "$ROOT/deploy/work-inventory/inventory.mjs" --repo "$ROOT" "$@"; }
+pending_summary() {
+  if [ "${WORK_INVENTORY:-on}" = off ]; then
+    echo "── ATTENTION : contrôle des travaux en attente DÉSACTIVÉ (WORK_INVENTORY=off) : rien n'a été vérifié (D-169)." >&2
+    return 0
+  fi
+  command -v node > /dev/null 2>&1 \
+    || die "contrôle des travaux en attente (D-169) impossible : node absent. Installer node, ou WORK_INVENTORY=off pour passer outre en connaissance de cause."
+  echo "── Travaux en attente (D-169 ; constats non bloquants ; détail : deploy/deploy.sh pending $1)"
+  local out rc=0
+  out=$(inventory --fetch --release "$1" --summary --no-snapshot 2>&1) || rc=$?
+  printf '%s\n' "$out" | sed 's/^/   /'
+  [ "$rc" -eq 0 ] \
+    || die "contrôle des travaux en attente NON EFFECTUÉ (code $rc) : release non préparée. Corriger l'erreur ci-dessus, ou WORK_INVENTORY=off pour passer outre en connaissance de cause."
+  echo "──"
+}
+cmd_pending() {
+  command -v node > /dev/null 2>&1 || die "node est requis pour le rapport des travaux en attente (D-169)."
+  if [ -n "${1:-}" ]; then need_sha "$1"; inventory --fetch --server --release "$1"; else inventory --fetch --server; fi
 }
 
 cmd_upload() {
@@ -136,5 +164,6 @@ case "$cmd" in
   rollback) [ "${1:-}" = legacy ] || need_sha "${1:-}"; remote rollback "$1" ;;
   mark) cmd_mark "$@" ;;
   status) remote status ;;
-  *) sed -n '2,20p' "$0"; exit 2 ;;
+  pending) cmd_pending "$@" ;;
+  *) sed -n '2,22p' "$0"; exit 2 ;;
 esac

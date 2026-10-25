@@ -1,0 +1,77 @@
+# D-169 — travaux en attente : registre validé et rapport calculé depuis Git et les PR GitHub.
+# Aucun accès au serveur depuis la CI (le contrôle serveur, en lecture seule, se lance depuis le
+# poste de déploiement : deploy/deploy.sh pending). Aucun secret créé : GITHUB_TOKEN est fourni par
+# GitHub, en lecture seule. Le rapport ne bloque jamais une PR ; seul un registre invalide échoue.
+# Le dépôt est public : le rapport (résumé et artefact) est masqué par inventory.mjs (secrets, e-mails).
+#
+# Instantané (« nouveau depuis le dernier audit ») : seul l'audit planifié ou manuel de main l'écrit
+# (clé work-inventory-main-*) ; les PR le lisent sans jamais l'écrire, pour ne pas comparer des
+# contextes différents. Audit quotidien : un cache non lu pendant 7 jours est supprimé par GitHub.
+# Instantané absent, illisible ou d'un autre contexte : le rapport l'indique « Non vérifié ».
+name: Travaux en attente (D-169)
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # tous les jours 06:00 UTC
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: work-inventory-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Registre valide
+        run: node deploy/work-inventory/inventory.mjs --check-registry
+      - name: Tests de l'inventaire (dépôts jetables)
+        run: |
+          git config --global user.email ci@surgicalhub.test
+          git config --global user.name ci
+          node --test deploy/work-inventory/tests/inventory.test.mjs
+      - name: Instantané du dernier audit de main
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/work-inventory
+          key: work-inventory-main-${{ github.run_id }}
+          restore-keys: work-inventory-main-
+      - name: Rapport des travaux en attente
+        id: report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INVENTORY_SNAPSHOT: ${{ runner.temp }}/work-inventory/last.json
+          # Seul l'audit de main enregistre l'instantané ; une PR le lit seulement.
+          SNAPSHOT_MODE: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') && 'save' || 'read' }}
+        # Hors de la copie de travail : un fichier non suivi y serait signalé comme travail non commité.
+        run: |
+          git fetch --quiet --tags origin '+refs/heads/*:refs/remotes/origin/*'
+          flag=--no-snapshot; [ "$SNAPSHOT_MODE" = save ] && flag=
+          before=$(stat -c %Y "$INVENTORY_SNAPSHOT" 2>/dev/null || echo none)
+          node deploy/work-inventory/inventory.mjs --fetch --fail-on registry $flag > "$RUNNER_TEMP/work-inventory.md"
+          cat "$RUNNER_TEMP/work-inventory.md" >> "$GITHUB_STEP_SUMMARY"
+          after=$(stat -c %Y "$INVENTORY_SNAPSHOT" 2>/dev/null || echo none)
+          if [ "$SNAPSHOT_MODE" = save ] && [ "$after" != none ] && [ "$after" != "$before" ]; then echo "save=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Enregistrer l'instantané (audit de main uniquement)
+        if: steps.report.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/work-inventory
+          key: work-inventory-main-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: travaux-en-attente
+          path: ${{ runner.temp }}/work-inventory.md
+          retention-days: 30

@@ -1,0 +1,50 @@
+# SurgicalHub — Sauvegardes automatiques
+PATH=/home/deploy/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 03h00 — Dump MySQL toutes les bases
+0 3 * * * /home/deploy/scripts/backup_mysql.sh >> /home/deploy/backups/backup.log 2>&1
+
+# 03h15 — Archives uploads Docker volumes
+15 3 * * * /home/deploy/scripts/backup_uploads.sh >> /home/deploy/backups/backup.log 2>&1
+
+# 03h30 — Synchronisation Google Drive (actif dès que rclone est configuré)
+30 3 * * * /home/deploy/scripts/sync_gdrive.sh >> /home/deploy/backups/backup.log 2>&1
+
+# 04h00 — Rotation : suppression des fichiers > 30 jours
+0 4 * * * /home/deploy/scripts/rotate_backups.sh >> /home/deploy/backups/backup.log 2>&1
+
+# D-064 — Démarrage automatique des missions ASSIGNED échues (toutes les 5 min)
+*/5 * * * * /home/deploy/scripts/missions_start_due.sh >> /home/deploy/logs/missions-start-due.log 2>&1
+
+# D-110 — Escalade J-14 des Missions OPEN (quotidien, 07:00 Europe/Brussels reel via CRON_TZ)
+CRON_TZ=Europe/Brussels
+0 7 * * * /home/deploy/scripts/check_uncovered_escalations.sh >> /home/deploy/logs/check-uncovered-escalations.log 2>&1
+
+# MedVue — sauvegarde quotidienne PostgreSQL + cles JWT (docs/backup.md)
+CRON_TZ=UTC
+45 3 * * * /opt/stack/apps/medvue/scripts/backup/medvue-backup.sh >> /home/deploy/backups/medvue/cron.log 2>&1
+
+# MedVue — rappel hebdomadaire des gardes, samedi 08:00 Brussels (docs/deployment.md 5 bis, D146)
+CRON_TZ=Europe/Brussels
+0 8 * * 6 cd /opt/stack/apps/medvue && docker compose -f docker-compose.prod.yml exec -T backend php bin/console app:duty-reminders:weekly >> /home/deploy/backups/medvue/weekly-reminders.log 2>&1
+*/10 * * * * cd /opt/stack/apps/medvue && flock -n /tmp/medvue-publication-notifications.lock docker compose -f docker-compose.prod.yml exec -T backend php -d memory_limit=256M bin/console app:publication-notifications:retry >> /home/deploy/backups/medvue/publication-notifications.log 2>&1
+
+# MedClick production (VPS) : sauvegarde chiffrée quotidienne, rétention 7/4/6 (docs/DEPLOIEMENT-VPS.md)
+CRON_TZ=UTC
+50 3 * * * /opt/stack/apps/medclick-prod/backup.sh /opt/stack/apps/medclick-prod prod
+
+# MedVue — purge de la télémétrie de l administration (docs/deployment.md §5 quinquies)
+CRON_TZ=UTC
+20 4 * * * cd /opt/stack/apps/medvue && docker compose -f docker-compose.prod.yml exec -T backend php bin/console app:platform:purge-telemetry >> /home/deploy/backups/medvue/purge-telemetry.log 2>&1
+*/10 * * * * cd /opt/stack/apps/medvue && flock -n /tmp/medvue-duty-swaps.lock docker compose -f docker-compose.prod.yml exec -T backend php bin/console app:duty-swaps:maintain >> /home/deploy/backups/medvue/duty-swaps.log 2>&1
+# MedVue — SurgicalHub leave synchronisation (docs/deployment.md §5 septies)
+*/30 * * * * cd /opt/stack/apps/medvue && flock -n /tmp/medvue-surgicalhub-sync.lock docker compose -f docker-compose.prod.yml exec -T backend php bin/console app:surgicalhub:sync >> /home/deploy/backups/medvue/surgicalhub-sync.log 2>&1
+# D-143/D-144 — Relance d'encodage J+1/J+2/J+4 (garde 09h00 Europe/Brussels interne à la commande ; NOT_BEFORE dans le script)
+*/15 * * * * /home/deploy/scripts/send_encoding_reminders.sh >> /home/deploy/logs/encoding-reminders.log 2>&1
+
+# Archive hebdomadaire indépendante des sauvegardes MySQL (manuelles + 1er dump du mois), rclone copy --immutable, jamais de suppression
+CRON_TZ=UTC
+30 2 * * 0 /home/deploy/scripts/archive_mysql_weekly.sh >/dev/null 2>>/home/deploy/backups/backup.log
+
+# MedVue — préparation des périodes : annonces et rappels programmés (docs/deployment.md §5 octies, D210)
+*/10 * * * * cd /opt/stack/apps/medvue && flock -n /tmp/medvue-period-preparation.lock docker compose -f docker-compose.prod.yml exec -T backend php bin/console app:period-preparation:run >> /home/deploy/backups/medvue/period-preparation.log 2>&1
