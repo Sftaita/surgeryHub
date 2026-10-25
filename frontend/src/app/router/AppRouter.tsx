@@ -4,6 +4,7 @@ import { CircularProgress, Box } from "@mui/material";
 
 import { RequireAuth } from "./RequireAuth";
 import { RequireAppAccess } from "./RequireAppAccess";
+import { ManagerMissionRedirect } from "./ManagerMissionRedirect";
 
 import { MobileLayout } from "../layouts/MobileLayout";
 import { DesktopLayout } from "../layouts/DesktopLayout";
@@ -68,7 +69,6 @@ const DashboardPage          = React.lazy(() => import("../pages/manager/Dashboa
 const ProfilePageM           = React.lazy(() => import("../pages/manager/ProfilePage"));
 const NotificationsPageM     = React.lazy(() => import("../pages/manager/NotificationsPage"));
 const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
-const MissionDetailPageM     = React.lazy(() => import("../pages/manager/MissionDetailPage"));
 const MissionCreatePage      = React.lazy(() => import("../pages/manager/MissionCreatePage"));
 const ActivityJournalPage    = React.lazy(() => import("../pages/manager/ActivityJournalPage"));
 const InstrumentistsPage     = React.lazy(() => import("../pages/manager/InstrumentistsPage"));
@@ -198,7 +198,7 @@ export function AppRouter() {
                 <Route path="m/missions/to-validate" element={<MissionsListPage />} />
                 <Route path="m/missions/requests" element={<MissionsListPage />} />
                 <Route path="m/missions/new" element={<MissionCreatePage />} />
-                <Route path="m/missions/:id" element={<MissionDetailPageM />} />
+                <Route path="m/missions/:id" element={<ManagerMissionRedirect />} />
                 <Route path="m/journal" element={<ActivityJournalPage />} />
                 <Route path="m/instrumentists" element={<InstrumentistsPage />} />
                 <Route path="m/surgeons" element={<SurgeonsPage />} />

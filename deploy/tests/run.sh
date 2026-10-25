@@ -23,6 +23,7 @@ git -C "$R" -c core.autocrlf=false checkout -q -B test-main
 export DEPLOY_MAIN_REF=test-main DEPLOY_DIST="$T/dist" DEPLOY_HOST=local APP_ROOT="$T/server"
 export DOCKER="$R/deploy/tests/docker-stub.sh" STUB_STATE="$T/stub" STUB_LOG="$T/docker.log"
 export BACKUP_MYSQL="$T/backup_mysql.sh"
+export WORK_INVENTORY=off   # D-169 : rapport des travaux en attente testé par deploy/work-inventory/tests
 printf '#!/usr/bin/env bash\necho "[mysql] OK — dump simulé"\n' > "$BACKUP_MYSQL"; chmod +x "$BACKUP_MYSQL"
 
 # Faux serveur dans l'état d'avant D-163 : .env (secrets), compose historique, src/ manuel.
@@ -50,6 +51,19 @@ check "REVISION de l'archive = A" bash -c "[ \"\$(tar xzOf '$ARCH_A' backend/REV
 check "la configuration Docker est livrée" bash -c "tar tzf '$ARCH_A' | grep -qx docker/nginx/prod.conf"
 check "aucun .env de production ni clé" bash -c "! tar tzf '$ARCH_A' | grep -E '\.pem$|\.env\.local$|\.env\.prod$'"
 refused "SHA abrégé refusé" bash "$D" prepare "${A:0:7}"
+
+echo "== Contrôle des travaux en attente avant prepare (D-169) : jamais d'échec silencieux"
+FAKEBIN="$T/fakebin"; mkdir -p "$FAKEBIN"
+printf '#!/usr/bin/env bash\necho "Résumé simulé de l inventaire"\n' > "$FAKEBIN/node"; chmod +x "$FAKEBIN/node"
+check "inventaire réussi : résumé affiché, prepare poursuit" bash -c "WORK_INVENTORY=on PATH='$FAKEBIN':\"\$PATH\" bash '$D' prepare '$A' > '$T/prep.out' 2>&1 && grep -q 'Résumé simulé' '$T/prep.out'"
+printf '#!/usr/bin/env bash\necho "TypeError: panne simulée" >&2\nexit 3\n' > "$FAKEBIN/node"
+refused "inventaire en échec : prepare refusé" env WORK_INVENTORY=on PATH="$FAKEBIN:$PATH" bash "$D" prepare "$A"
+check "… avec le code et l'erreur affichés" bash -c "grep -q 'NON EFFECTUÉ (code 3)' '$T/out' && grep -q 'panne simulée' '$T/out'"
+if ! command -v node > /dev/null 2>&1; then
+  refused "node absent : prepare refusé" env WORK_INVENTORY=on bash "$D" prepare "$A"
+  check "… avec le motif affiché" grep -q 'node absent' "$T/out"
+fi
+check "WORK_INVENTORY=off : contournement explicite et signalé" bash -c "bash '$D' prepare '$A' > '$T/prep.out' 2>&1 && grep -q 'DÉSACTIVÉ (WORK_INVENTORY=off)' '$T/prep.out'"
 
 echo "== commit B : configuration Docker modifiée + fichier suivi supprimé"
 echo "# modification B" >> "$R/docker/nginx/prod.conf"

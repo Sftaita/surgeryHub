@@ -90,7 +90,11 @@ describe("AuthContext", () => {
 
   it("retourne anonyme si /api/me échoue (refresh invalide)", async () => {
     writeAuth({ accessToken: "a", refreshToken: "r" });
-    (apiClient.get as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("401"));
+    // D-157 — c'est l'intercepteur apiClient qui efface la session quand le refresh est refusé (401).
+    (apiClient.get as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      localStorage.clear();
+      throw new Error("401");
+    });
 
     renderProbe();
 

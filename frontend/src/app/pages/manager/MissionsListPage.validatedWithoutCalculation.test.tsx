@@ -12,6 +12,10 @@ vi.mock("../../features/missions/components/MissionsFiltersBar", () => ({
   MissionsFiltersBar: () => null,
 }));
 
+vi.mock("../../features/missions/drawer/ManagerMissionDrawer", () => ({
+  ManagerMissionDrawer: () => null,
+}));
+
 import { fetchMissions } from "../../features/missions/api/missions.api";
 
 beforeEach(() => {

@@ -12,7 +12,8 @@ use Sentry\Event;
  */
 final class SentryIntegrationSecretScrubber
 {
-    private const SENSITIVE_PATH = '#/api/(medvue-integration|integrations/medvue)/#';
+    // D-157 — idem pour /api/auth/* : mot de passe, credential Google, refresh token.
+    private const SENSITIVE_PATH = '#/api/(medvue-integration|integrations/medvue|auth)/#';
 
     public function __invoke(Event $event): ?Event
     {

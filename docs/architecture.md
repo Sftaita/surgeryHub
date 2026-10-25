@@ -43,9 +43,12 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 
 ```
 Api/
-├── AuthGoogleController                 — login Google OAuth (+ rememberMe)
-│   (login email/password géré par le firewall `login`, refresh par `refresh_jwt`,
-│    logout par `logout` — voir D-047 « Remember me » dans decisions.md)
+├── AuthGoogleController                 — login Google (+ rememberMe) ; désactivé sans
+│    GOOGLE_OAUTH_CLIENT_ID, comptes existants seulement (D-157, Security/Google/GoogleIdTokenVerifier)
+│   (login email/password géré par le firewall `login` — voir D-047 et D-157)
+├── AuthSessionController                — refresh / logout des sessions d'appareil (D-157,
+│    firewall `auth_session` sans JWT ; logique dans Security/Session/DeviceSessionService ;
+│    SessionAccessTokenListener refuse un JWT dont la session `sid` a été révoquée)
 ├── MissionController                    — CRUD missions + transitions de statut
 ├── InstrumentistController              — gestion manager des instrumentistes
 ├── SurgeonController                    — CRUD /api/surgeons + planning + site-memberships
@@ -204,7 +207,8 @@ même à un compte suspendu — leur objet est la sécurité du compte, jamais g
 l'utilisateur à chaque requête via le claim `username` du JWT (figé à l'ancienne adresse
 au moment de l'émission) — après un changement d'email, la session en cours et son
 refresh token (`RefreshToken.username`, même provider) cessent de fonctionner au prochain
-appel, forçant une reconnexion. Conséquence structurelle du provider (même mécanisme que
+appel, forçant une reconnexion (D-157 : les sessions de l'ancienne adresse sont en outre
+supprimées explicitement, `DeviceSessionService::revokeAllForIdentifier()`). Conséquence structurelle du provider (même mécanisme que
 la suspension via `UserChecker`), jamais une invalidation codée en dur — volontairement
 non contournée. **Risque Google OAuth documenté (non corrigé)** :
 `AuthGoogleController` retrouve l'utilisateur par email Google réel ; `User::$googleId`
@@ -3380,7 +3384,7 @@ features/encoding-anomaly-reports/      — partagé chirurgien (création) + ma
     │                                       <select>), commentaire toujours requis
     ├── AnomalyReportSection.tsx         — bandeau statut + CTA "Signaler un problème"
     │                                       (masqué si un signalement OPEN existe déjà)
-    └── AnomalyReportsManagerPanel.tsx   — intégré à manager/MissionDetailPage.tsx,
+    └── AnomalyReportsManagerPanel.tsx   — intégré au tiroir mission manager (D-168),
                                             jamais rendu si aucun signalement n'existe
 ```
 
@@ -3392,8 +3396,8 @@ temps que le CTA instrumentiste "Encoder la mission").
 
 ### 19.4 Frontend manager — intégré au détail Mission existant
 
-`AnomalyReportsManagerPanel` monté directement dans `manager/MissionDetailPage.tsx`,
-juste après `EncodingStatusPanel` — jamais une nouvelle route de listing top-level
+`AnomalyReportsManagerPanel` monté dans le tiroir mission manager
+(`features/missions/drawer/ManagerMissionDrawer.tsx`, D-168), sous l'historique — jamais une nouvelle route de listing top-level
 (fondé sur l'UX actuelle : les signalements sont rares et intrinsèquement liés à une
 Mission). N'affiche rien tant qu'aucun signalement n'existe pour la mission (cas
 largement majoritaire).

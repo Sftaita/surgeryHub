@@ -12,6 +12,7 @@ use App\Enum\OutboundNotificationStatus;
 use App\Notification\NotificationDispatcher;
 use App\Notification\NotificationIntent;
 use App\Repository\UserRepository;
+use App\Security\Session\DeviceSessionService;
 use App\Service\UserAuditService;
 use App\Tests\Support\NotificationServiceFactory;
 use App\Service\UserEmailChangeService;
@@ -35,6 +36,7 @@ final class UserEmailChangeServiceTest extends TestCase
     private UserRepository&MockObject $users;
     private UserAuditService&MockObject $audit;
     private NotificationDispatcher&MockObject $dispatcher;
+    private DeviceSessionService&MockObject $sessions;
     private UserEmailChangeService $service;
     /** @var list<NotificationIntent> */
     private array $intents = [];
@@ -64,6 +66,7 @@ final class UserEmailChangeServiceTest extends TestCase
             $this->audit,
             NotificationServiceFactory::create($this, $this->dispatcher),
             Validation::createValidator(),
+            $this->sessions = $this->createMock(DeviceSessionService::class),
         );
     }
 
@@ -99,6 +102,8 @@ final class UserEmailChangeServiceTest extends TestCase
         $this->audit->expects(self::once())->method('userEmailChanged')
             ->with($actor, $target, 'old@example.com', 'new@example.com');
         $this->em->expects(self::once())->method('flush');
+        // D-063 / D-157 — the sessions opened under the former email are closed explicitly.
+        $this->sessions->expects(self::once())->method('revokeAllForIdentifier')->with('old@example.com');
         $result = $this->service->changeEmail($actor, $target, 'new@example.com');
 
         self::assertSame('new@example.com', $target->getEmail());

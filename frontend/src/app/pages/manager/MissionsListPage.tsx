@@ -21,6 +21,7 @@ import { REQUESTS_COUNTS_KEY } from "../../features/manager-mission-requests/req
 import { useNavBadgeCount } from "../../ui/hooks/useNavBadgeCount";
 import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 import { EmptyState } from "../../ui/EmptyState";
+import { ManagerMissionDrawer } from "../../features/missions/drawer/ManagerMissionDrawer";
 
 const DAY_PAGE_SIZE = 50;
 const TABLE_PAGE_SIZE = 100;
@@ -150,7 +151,11 @@ export default function MissionsListPage() {
     return () => observer.disconnect();
   }, [hasNextPage, isFetchingNextPage, fetchNextPage, dayMissions.length]);
 
-  const openMission = (m: Mission) => navigate(`/app/m/missions/${m.id}`);
+  // Maquette Mission-drawer — le détail s'ouvre en tiroir au-dessus de la liste, qui reste
+  // montée ; la mission ouverte est dans l'URL (?mission=) pour être partageable.
+  const openedMissionId = Number(searchParams.get("mission")) || null;
+  const openMission = (m: Mission) => patchParams({ mission: String(m.id) });
+  const closeMission = useCallback(() => patchParams({ mission: undefined }), [patchParams]);
 
   const columns = useMemo<GridColDef<Mission>[]>(
     () => [
@@ -283,7 +288,7 @@ export default function MissionsListPage() {
               />
             ) : (
               <Box sx={{ opacity: dayQuery.isPlaceholderData ? 0.6 : 1, transition: "opacity 150ms" }}>
-                <MissionsDayList missions={dayMissions} onOpen={openMission} />
+                <MissionsDayList missions={dayMissions} onOpen={openMission} selectedId={openedMissionId} />
                 <Box ref={sentinelRef} sx={{ display: "flex", justifyContent: "center", py: 2 }}>
                   {hasNextPage && (
                     <Button size="small" variant="outlined" onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
@@ -307,10 +312,12 @@ export default function MissionsListPage() {
               autoHeight
               disableRowSelectionOnClick
               onRowClick={({ row }) => openMission(row)}
+              getRowClassName={({ row }) => (row.id === openedMissionId ? "is-selected" : "")}
               sx={{
                 border: "none",
                 "& .MuiDataGrid-row": { cursor: "pointer" },
                 "& .MuiDataGrid-row:hover": { bgcolor: "action.hover" },
+                "& .MuiDataGrid-row.is-selected, & .MuiDataGrid-row.is-selected:hover": { bgcolor: "#EFFAF5", boxShadow: "inset 3px 0 0 #338F6E" },
                 "& .MuiDataGrid-columnHeaders": { bgcolor: "grey.50" },
                 "& .MuiDataGrid-cell": { alignContent: "center" },
               }}
@@ -318,6 +325,8 @@ export default function MissionsListPage() {
           )}
         </>
       )}
+
+      {!isRequestsView && <ManagerMissionDrawer missionId={openedMissionId} onClose={closeMission} />}
     </Box>
   );
 }
