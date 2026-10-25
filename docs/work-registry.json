@@ -99,8 +99,8 @@
       "kind": "ops",
       "priority": "P1",
       "userImpact": "Clés JWT et registre des versions jamais sauvegardés ; dumps en clair sur le Drive ; aucune restauration testée depuis la copie distante.",
-      "status": "pr-ouverte",
-      "statusSince": "2026-10-23",
+      "status": "fusionne",
+      "statusSince": "2026-10-25",
       "refs": {
         "decision": "D-164",
         "branches": [
@@ -125,9 +125,11 @@
       "pendingOps": [
         {
           "type": "validation",
-          "status": "en-attente",
+          "status": "fait",
           "description": "Fusion de la PR #38",
-          "validation": "accord utilisateur"
+          "validation": "accord utilisateur",
+          "confirmedAt": "2026-10-25",
+          "evidence": "GitHub PR #38 fusionnée, commit 7cc1e828e08ef2cd66d364c73f6682ec3bd58446 ; CI backups D-164: rotation 31/31, offsite 20/20, e2e 21/21."
         },
         {
           "type": "validation",
@@ -162,8 +164,8 @@
           "validation": "accord explicite après nouveau dry-run"
         }
       ],
-      "validationNeeded": "Valider la CI sur PR #38, fusionner les scripts dans main ; installer séparément après création de la passphrase hors serveur et choix de l'archive hebdomadaire.",
-      "nextAction": "PR #38 actualisée sur main ; tests automatisés Docker de rotation, copie Drive et restauration avant fusion. Installation serveur distincte nécessitant passphrase et validations.",
+      "validationNeeded": "Passphrase créée par l'utilisateur, .env conservé hors serveur, décision sur archive hebdomadaire et validations explicites successives pour installation, test de restauration puis crontab.",
+      "nextAction": "Scripts D-164 fusionnés dans main (PR #38, 7cc1e82, CI Docker 72/72). AUCUN script D-164 installé sur le serveur. Installer seulement après création sécurisée de la passphrase et décision sur archive_mysql_weekly.sh ; premier cycle + restauration locale et Drive vérifiés avant activation crontab. Rotation réelle interdite sans accord.",
       "lastReviewed": "2026-10-25"
     },
     {
