@@ -23,8 +23,9 @@ MYSQL_PWD_VALUE=$(grep -E '^MYSQL_ROOT_PASSWORD=' "$MYSQL_ENV_FILE" | cut -d= -f
 mkdir -p "$MYSQL_DIR"
 out="$MYSQL_DIR/${prefix}_$(date +%Y%m%d_%H%M%S).sql.gz.gpg"
 log "démarrage → $(basename "$out")"
-# Le mot de passe passe par l'environnement du processus (MYSQL_PWD), jamais en argument.
-"$DOCKER" exec -i -e MYSQL_PWD="$MYSQL_PWD_VALUE" "$MYSQL_CONTAINER" \
+# Le mot de passe passe par l'environnement (MYSQL_PWD), jamais en argument : « -e MYSQL_PWD » sans
+# valeur reprend celle de l'environnement du client docker, invisible dans la liste des processus.
+MYSQL_PWD="$MYSQL_PWD_VALUE" "$DOCKER" exec -i -e MYSQL_PWD "$MYSQL_CONTAINER" \
     mysqldump -uroot --all-databases --single-transaction --routines --triggers --events \
   | gzip | encrypt_to "$out" || die "dump ou chiffrement échoué."
 

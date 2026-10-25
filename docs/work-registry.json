@@ -162,9 +162,9 @@
           "validation": "accord explicite après nouveau dry-run"
         }
       ],
-      "validationNeeded": "Fusion PR #38, choix pour archive_mysql_weekly.sh, puis chaque étape d'installation.",
-      "nextAction": "Attendre l'accord sur la PR #38 et le choix archive_mysql_weekly.sh ; l'utilisateur crée la passphrase.",
-      "lastReviewed": "2026-10-24"
+      "validationNeeded": "Valider la CI sur PR #38, fusionner les scripts dans main ; installer séparément après création de la passphrase hors serveur et choix de l'archive hebdomadaire.",
+      "nextAction": "PR #38 actualisée sur main ; tests automatisés Docker de rotation, copie Drive et restauration avant fusion. Installation serveur distincte nécessitant passphrase et validations.",
+      "lastReviewed": "2026-10-25"
     },
     {
       "id": "D-169",

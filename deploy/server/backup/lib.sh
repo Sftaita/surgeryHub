@@ -42,7 +42,7 @@ KEEP_RELEASES="${KEEP_RELEASES:-5}"          # images (et releases/) des N derni
 BUILD_CACHE_MAX_GB="${BUILD_CACHE_MAX_GB:-8}"      # seuil au-delà duquel le cache de build est élagué
 BUILD_CACHE_UNTIL="${BUILD_CACHE_UNTIL:-168h}"     # … seulement les entrées plus anciennes que cela
 
-# Rétention hors serveur, indépendante (Google Drive).
+# Rétention hors serveur, indépendante (Google Drive), validée le 2026-10-23.
 REMOTE_KEEP_DAILY_DAYS="${REMOTE_KEEP_DAILY_DAYS:-30}"
 REMOTE_KEEP_WEEKLY="${REMOTE_KEEP_WEEKLY:-12}"
 REMOTE_KEEP_MONTHLY="${REMOTE_KEEP_MONTHLY:-24}"
@@ -101,6 +101,7 @@ gfs_keep() {
     if [ -z "${seen_m[$m]:-}" ]; then seen_m[$m]=1; nm=$((nm + 1)); [ "$nm" -le "$months" ] && keep=1; fi
     [ "$keep" = 1 ] && echo "$n"
   done
+  return 0   # idem : jamais d'échec dû au dernier élément examiné
 }
 
 # newest_keep <n> : lit « epoch nom », écrit les <n> noms les plus récents.
@@ -114,6 +115,7 @@ age_keep() {
     i=$((i + 1))
     if [ "$i" -le "$min" ] || [ $(( (NOW - e) / 86400 )) -lt "$days" ]; then echo "$n"; fi
   done
+  return 0   # le statut du dernier test de la boucle ne doit jamais faire échouer l'appelant (set -e)
 }
 
 human() { numfmt --to=iec --suffix=o "${1:-0}" 2>/dev/null || echo "${1:-0} o"; }
