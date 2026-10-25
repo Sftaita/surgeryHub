@@ -158,6 +158,67 @@ Décision             : <déployer HEAD complet / s'arrêter et demander validat
 niveau de migration plus avancé que ce que les commits manquants laissent
 supposer — c'est le signal exact de l'incident du 2026-06-24.
 
+### 2.4 Rapport des développements non déployés (D-169) — obligatoire
+
+Une release ne doit pas faire oublier un correctif déjà développé (cas de D-157 : testé le
+2026-10-20, resté en PR pendant que cinq autres versions étaient déployées). Avant toute mise en
+production, produire et **afficher** :
+
+```bash
+deploy/deploy.sh pending <SHA>     # = node deploy/work-inventory/inventory.mjs --fetch --server --release <SHA>
+```
+
+Le rapport est calculé (Git, PR GitHub, serveur en lecture seule), puis croisé avec le registre des
+décisions humaines `docs/work-registry.json`. Il liste, dans cet ordre :
+
+1. les **correctifs P0/P1 absents de la production**, avec « ABSENT DE LA RELEASE PRÉVUE » s'ils ne
+   sont pas dans `<SHA>`, et « OUBLIÉ » s'ils sont prêts depuis plus de `staleDays` jours ;
+2. les **travaux non suivis** (branche, PR, worktree, stash, commit de main, script ou ligne de
+   crontab sans entrée de registre) ;
+3. le code fusionné non déployé, en séparant l'applicatif de ce qui est hors archive (docs, scripts
+   serveur), et les migrations fusionnées non déployées ;
+4. les PR ouvertes, les branches non intégrées (conflits, migrations, jamais poussées), les
+   modifications locales absentes de Git ;
+5. le serveur : release active, migrations non appliquées, scripts versionnés non installés ou
+   différents, scripts hors dépôt modifiés, crontab différente de la référence versionnée ;
+6. les opérations hors code en attente (installation, reprise de données, configuration, validation) ;
+   une opération n'est close que marquée `fait` avec `confirmedAt` et `evidence` (preuve de
+   l'exécution réelle), sinon elle reste affichée ;
+7. les incohérences du registre et ce qui est nouveau depuis le dernier audit ;
+8. les branches qui modifient les mêmes fichiers que la release (risque de conflit).
+
+**Le rapport signale, il ne décide pas** : ses constats ne bloquent pas le déploiement et il ne
+fusionne rien. Le périmètre de la release reste une décision explicite, consignée dans le rapport
+§2.3 (« Décision »). Tout correctif P0/P1 absent de la release y est mentionné avec la raison de son
+exclusion.
+
+**Jamais d'échec silencieux** :
+
+- `deploy/deploy.sh prepare` affiche le résumé et **s'arrête si le contrôle n'a pas pu s'exécuter**
+  (node absent, inventaire interrompu : code 3). `WORK_INVENTORY=off` passe outre explicitement et
+  l'affiche ; à consigner dans le rapport de déploiement.
+- Toute vérification impossible ou partielle est listée en tête, sous « ⚠ Non vérifié », jamais
+  supposée conforme : fetch en échec (refs peut-être périmées), liste des PR, serveur injoignable,
+  et **chaque section du serveur séparément** (release, REVISION, Docker, registre des versions,
+  migrations, conteneurs, empreintes, dossiers surveillés, crontab). Une section en échec ou à la
+  sortie non reconnue rend la vérification « incomplète » et n'est pas comparée (pas de faux écart).
+  `--fail-on unverified` fait échouer le rapport dans ce cas.
+- **Données sensibles** : le rapport, le JSON et l'instantané masquent les secrets reconnus
+  (`*PASS*=`, `*TOKEN*=`, `--password`, `mysql -p…`, identifiants dans une URL, jetons `Bearer`/GitHub,
+  clés privées) et les adresses e-mail. Le dépôt est public : le registre ne nomme aucune personne
+  (identifiants techniques seulement) et ne contient aucun secret.
+
+Le registre est mis à jour dans la PR qui fait évoluer un chantier (statut, prochaine action,
+opérations), et `deploy/production/server-reference/` dans la PR de toute installation ou
+modification serveur. Le même rapport (sans le serveur) tourne chaque jour et sur chaque PR
+(`.github/workflows/work-inventory.yml`).
+
+**Instantané (« nouveau depuis le dernier audit »)** : il n'est comparé qu'à un audit du même
+contexte (dépôt, ref principale, avec ou sans serveur, source des PR) ; absent, illisible ou d'un
+autre contexte, la section l'écrit « Non vérifié ». Un audit incomplet n'écrase pas l'instantané.
+En CI, seul l'audit quotidien de `main` l'enregistre (cache `work-inventory-main-*`, quotidien pour
+rester sous l'éviction de 7 jours) ; une PR le lit sans l'écrire.
+
 ---
 
 ## 3. Règle de sécurité — pas de déploiement partiel

@@ -15122,3 +15122,61 @@ non recréée, autres types d'alertes intacts.
 Les alertes de conflit déjà ouvertes en production sont réévaluées à la prochaine synchronisation
 d'une des deux missions ou au prochain « Vérifier les conflits » ; aucune reprise de données n'est
 lancée.
+
+---
+
+## D-169 — Registre des travaux et inventaire automatique avant chaque release (2026-10-24)
+
+### Constat
+
+D-157 (déconnexions répétées, P1) a été testé le 2026-10-20 puis est resté en PR pendant que
+D-158 à D-167 étaient déployés. D'autres travaux n'existaient qu'à un seul endroit : D-156 sur une
+branche jamais poussée, des consignes de design non commitées dans le dossier principal, des
+scripts serveur modifiés hors dépôt le 2026-10-23. Rien ne les faisait ressortir au moment d'un
+déploiement.
+
+### Décision
+
+1. **Registre** `docs/work-registry.json` : les seules décisions humaines (statut parmi 10, priorité
+   P0–P3, impact, prochaine action, validation, blocage, opérations hors code, preuve de
+   production). Rien de ce qui se vérifie n'y est recopié.
+2. **Inventaire** `deploy/work-inventory/inventory.mjs` (Node, sans dépendance) : calcule depuis
+   Git les branches non intégrées (patch-id, et « probablement intégrée » si le même sujet existe
+   dans main), les PR (API GitHub, sinon `refs/pull/*`, et l'état est alors « non vérifié »), les
+   worktrees et fichiers modifiés absents de Git (fins de ligne normalisées), les stashes, l'écart
+   entre main et le dernier tag `-prod`, les migrations ; avec `--server`, en lecture seule, la
+   release active, les migrations, les scripts (comparés au dépôt ou à l'empreinte de référence
+   `deploy/production/server-reference/manifest.json`), la crontab (comparée à `crontab.txt`) et les
+   conteneurs. Tout travail sans entrée de registre ressort « non suivi », et un instantané hors
+   suivi signale les nouveautés depuis le dernier audit.
+3. **Avant chaque release** : `deploy/deploy.sh pending <SHA>` est obligatoire
+   (`deployment-versioning.md` §2.4) ; `prepare` en affiche un résumé. Les correctifs P0/P1 absents
+   de la release sortent en tête. Le rapport ne bloque pas et ne fusionne rien : le périmètre reste
+   une décision explicite.
+4. **Contrôle régulier** : workflow GitHub Actions quotidien et sur PR (partie Git seulement,
+   jeton GitHub en lecture, aucun secret, aucun accès serveur). Seul un registre invalide échoue.
+5. **Corrections après examen (2026-10-25)** :
+   - **contrôle avant release** : son échec n'est plus silencieux. `prepare` s'arrête si
+     l'inventaire ne peut pas s'exécuter ; avant, `… | sed || true` masquait un plantage.
+     Contournement : `WORK_INVENTORY=off`, explicite et affiché. Un fetch ou une liste des PR en
+     échec est signalé « Non vérifié » ;
+   - **instantané CI** : il est comparé uniquement dans le même contexte ; avant, une PR pouvait
+     relire et écraser l'instantané d'une autre PR, et le cache hebdomadaire expirait (éviction
+     après 7 jours). Désormais seul l'audit quotidien de main l'écrit, un audit partiel ne
+     l'écrase pas, et l'écriture est atomique ;
+   - **serveur** : chaque section a son propre statut ; avant, une commande en échec, comme une
+     crontab illisible ou Docker indisponible, donnait une section vide comptée comme vérifiée,
+     voire de faux écarts de crontab. Les sections en échec sont « Non vérifié » et la
+     vérification est « incomplète ». Ce défaut existait dans les tests sous Windows : le faux
+     serveur n'avait pas de lien `current` et passait pour vérifié ;
+   - **données sensibles** : masquage des secrets et des e-mails dans le rapport, le JSON et
+     l'instantané ; registre sans nom de personne.
+
+### Limites
+
+Les opérations de données ne sont pas vérifiables automatiquement : elles restent affichées tant
+que le registre ne les marque pas faites **avec preuve** — `status: "fait"` exige `confirmedAt`
+(date) et `evidence` (commande, sortie ou rapport de l'exécution réelle) ; sans eux, l'opération
+reste ouverte et signalée « fait déclaré sans preuve ». Seuls les dépôts et worktrees de ce poste sont vus ; la
+CI ne voit que les branches poussées. Le serveur n'est comparé qu'aux chemins du manifeste et aux
+dossiers surveillés. D-168 (tiroir mission, branche non fusionnée) porte le numéro précédent.
