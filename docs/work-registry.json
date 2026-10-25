@@ -173,8 +173,8 @@
       "kind": "ops",
       "priority": "P2",
       "userImpact": "Aucun direct ; empêche qu'un correctif terminé (comme D-157) reste oublié.",
-      "status": "pr-ouverte",
-      "statusSince": "2026-10-24",
+      "status": "fusionne",
+      "statusSince": "2026-10-25",
       "refs": {
         "decision": "D-169",
         "branches": [
@@ -187,8 +187,8 @@
           "SurgicalHub-work-registry"
         ]
       },
-      "validationNeeded": "Examen du fonctionnement et du rapport d'inventaire par l'utilisateur, puis accord explicite de fusion.",
-      "nextAction": "PR #44 corrigée le 2026-10-25 (3 points d'examen + données sensibles) : attendre la validation du rapport final ; ne pas fusionner sans accord.",
+      "validationNeeded": "Contrôles D-169 du registre et rapport pending en exploitation ; vérification récurrente des audits CI. PR #44 fusionnée.",
+      "nextAction": "PR #44 fusionnée (adf4439) ; deploy.sh pending utilisé pour v2026.10.25-prod. Outillage hors archive applicative : rien à déployer sur le serveur.",
       "lastReviewed": "2026-10-25"
     },
     {
@@ -198,8 +198,9 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Manager : un seul modèle de détail de mission partout.",
-      "status": "fusionne",
+      "status": "deploye",
       "statusSince": "2026-10-25",
+      "prodEvidence": "v2026.10.25-prod (9345655) activé le 2026-10-25 06:36 UTC par deploy.sh ; mark OFFICIAL ; « Mon profil » = v2026.10.25-prod · 9345655 ; recette en lecture seule : tiroir depuis la liste, les plannings et le journal, redirection /app/m/missions/:id, 18 appels API 200, aucune erreur console.",
       "refs": {
         "decision": "D-168",
         "branches": [
@@ -212,10 +213,10 @@
           45
         ]
       },
-      "validationNeeded": "Déploiement sur Hostinger, contrôles de santé et recette réelle du nouveau tiroir mission manager.",
-      "nextAction": "D-168 fusionné (PR #45, commit 03bca03). Déployer via docs/deployment-versioning.md, puis vérifier les parcours missions manager en production.",
+      "validationNeeded": "Confirmation fonctionnelle de l'utilisateur en production (ouverture d'une mission → nouveau tiroir).",
+      "nextAction": "Déployé (v2026.10.25-prod). Attendre la confirmation fonctionnelle de l'utilisateur avant « Validé en production ».",
       "lastReviewed": "2026-10-25",
-      "notes": "Non possible sans décision métier : reprogrammer une mission publiée hors Mode Modification, changer de chirurgien. Fusion PR #45 le 2026-10-25 ; GitHub Actions frontend build OK, 1791/1791 tests, D-169 vert. Aucun déploiement serveur."
+      "notes": "Non possible sans décision métier : reprogrammer une mission publiée hors Mode Modification, changer de chirurgien. Fusion PR #45 le 2026-10-25 ; GitHub Actions frontend build OK, 1791/1791 tests, D-169 vert. Déploiement effectué le 25/10/2026 à 06:36 UTC ; validation fonctionnelle manager en attente."
     },
     {
       "id": "D-156",
