@@ -101,6 +101,11 @@ final class MissionActionsService
             if ($mission->isExecutedWithoutInstrumentist() && $mission->getStatus() === MissionStatus::ENCODING_IN_PROGRESS) {
                 $actions[] = 'submit';
             }
+            // D-171 — finish and validate an open encoding himself: same rule exactly as
+            // MissionVoter::ENCODING_COMPLETE_AND_VALIDATE.
+            if (MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now()) === null) {
+                $actions[] = 'complete_and_validate';
+            }
 
             return $actions;
         }

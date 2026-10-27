@@ -86,6 +86,76 @@ final class MissionEncodingCorrectionPolicy
         return null;
     }
 
+    /**
+     * D-171 — statuses from which a manager finishes an encoding himself and validates it in
+     * one step (« Terminer et valider »): the encoding is still open. SUBMITTED is validated
+     * directly; DECLARED goes through approve first.
+     */
+    public const MANAGER_COMPLETABLE_STATUSES = [
+        MissionStatus::ASSIGNED,
+        MissionStatus::IN_PROGRESS,
+        MissionStatus::ENCODING_IN_PROGRESS,
+    ];
+
+    /**
+     * D-171 — why the manager can NOT finish and validate the encoding himself right now
+     * (null = possible). Single rule for MissionVoter::ENCODING_COMPLETE_AND_VALIDATE, the
+     * 'complete_and_validate' action and MissionEncodingWorkflowService::completeAndValidate().
+     * Content rules (hours, interventions, BLOCK justification) stay checked by the
+     * transition itself, exactly as for complete() + validate().
+     */
+    public static function completeAndValidateBlockedReason(Mission $mission, \DateTimeImmutable $now): ?string
+    {
+        if (!in_array($mission->getStatus(), self::MANAGER_COMPLETABLE_STATUSES, true)) {
+            return "L'encodage n'est pas en cours : il ne peut pas être terminé et validé depuis ce statut.";
+        }
+        if (!self::managerCanEditEncoding($mission)) {
+            return "Encodage verrouillé : il ne peut plus être modifié.";
+        }
+        if (!$mission->hasEncodableActivity()) {
+            return "Aucune instrumentiste n'est affectée : déclarez d'abord l'activité réalisée sans instrumentiste.";
+        }
+        $startAt = $mission->getStartAt();
+        if ($startAt === null || $now < $startAt) {
+            return "La mission n'a pas encore commencé.";
+        }
+
+        return null;
+    }
+
+    /**
+     * D-171 — pourquoi « Valider l'encodage » n'est pas proposé au manager, servi tel quel par
+     * le détail de mission (`encodingValidationBlockedReason`) : jamais un bouton désactivé
+     * sans explication. null quand la validation est proposée ou sans objet (validée, clôturée).
+     */
+    public static function validationBlockedReason(Mission $mission, \DateTimeImmutable $now): ?string
+    {
+        $status = $mission->getStatus();
+        if (in_array($status, [MissionStatus::SUBMITTED, MissionStatus::VALIDATED, MissionStatus::CLOSED], true)) {
+            return null;
+        }
+        if (in_array($status, [MissionStatus::DRAFT, MissionStatus::CANCELLED, MissionStatus::REJECTED], true)) {
+            return "Aucun encodage à valider pour cette mission.";
+        }
+        if ($status === MissionStatus::DECLARED) {
+            return "Mission déclarée par l'instrumentiste : approuvez-la d'abord.";
+        }
+        if ($status === MissionStatus::OPEN) {
+            return ExecutedWithoutInstrumentistPolicy::declarationBlockedReason($mission, $now) === null
+                ? "Aucune instrumentiste n'a couvert cette mission. Si l'activité a eu lieu, déclarez-la réalisée sans instrumentiste pour l'encoder et la valider."
+                : "La mission n'a pas encore été couverte ni réalisée.";
+        }
+
+        $blocked = self::completeAndValidateBlockedReason($mission, $now);
+        if ($blocked !== null) {
+            return $blocked;
+        }
+
+        return $mission->getInstrumentist() !== null
+            ? "L'instrumentiste n'a pas encore soumis son encodage. Vous pouvez le terminer et le valider vous-même."
+            : "L'encodage n'a pas encore été soumis. Vous pouvez le terminer et le valider vous-même.";
+    }
+
     public static function reopenBlockedReason(Mission $mission): ?string
     {
         if ($mission->getStatus() === MissionStatus::CLOSED) {

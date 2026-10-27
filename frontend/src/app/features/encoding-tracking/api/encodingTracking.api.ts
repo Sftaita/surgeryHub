@@ -122,6 +122,8 @@ export interface EncodingTrackingItem {
   instrumentist: EncodingTrackingPerson | null;
   /** D-155 — « Sans instrumentiste — activité déclarée par … » (null pour une mission classique). */
   executedWithoutInstrumentist?: { declaredByName: string | null } | null;
+  /** D-171 — auteur de la dernière soumission et son rôle sur la mission (null tant que rien n'est soumis). */
+  submittedBy?: { name: string; role: "INSTRUMENTIST" | "SURGEON" | "MANAGER" | null } | null;
   surgeon: EncodingTrackingPerson | null;
   site: EncodingTrackingPerson | null;
   hours: EncodingTrackingHours;

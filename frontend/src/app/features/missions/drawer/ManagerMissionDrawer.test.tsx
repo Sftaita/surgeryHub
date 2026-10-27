@@ -496,3 +496,22 @@ describe("ManagerMissionDrawer — clavier", () => {
     expect(parentKeyDown).not.toHaveBeenCalled();
   });
 });
+
+describe("ManagerMissionDrawer — terminer et valider (D-171)", () => {
+  it("propose « Terminer et valider » quand le backend le sert, et appelle l'endpoint dédié", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "submit", "complete_and_validate"],
+      executedWithoutInstrumentist: { declaredAt: "2026-08-10T12:00:00+02:00", declaredByName: "Jean Dupont" },
+    }));
+    await user.click(await screen.findByTestId("manager-complete-and-validate"));
+    await user.click(screen.getByTestId("confirm-complete-and-validate"));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/complete-and-validate", {}));
+  });
+
+  it("jamais sans l'action servie par le backend", async () => {
+    renderDrawer(baseMission({ status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding"] }));
+    expect(await screen.findByTestId("manager-edit-encoding")).toBeInTheDocument();
+    expect(screen.queryByTestId("manager-complete-and-validate")).toBeNull();
+  });
+});

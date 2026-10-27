@@ -15249,3 +15249,104 @@ mission…), non couvertes par la maquette. Aucun changement backend.
 `ManagerMissionDrawer.test.tsx` (reprend les cas de l'ancienne fiche et de
 `FinancialCalculationCard.test.tsx`), `MissionDrawer.test.tsx` (recette maquette, mission #1084),
 `ManagerMissionRedirect.test.tsx`, `MissionsListPage.test.tsx` (ouverture / fermeture du tiroir).
+
+---
+
+## D-171 — Encodage indépendant de la présence d'une instrumentiste : « Terminer et valider » manager, blocages expliqués (2026-10-27)
+
+**Statut : branche `feat/encodage-sans-instrumentiste` ; non fusionné, non déployé.**
+Amende D-070 (seule une mission `SUBMITTED` se valide) et D-153 (le manager corrige sans
+soumettre) ; complète D-154 et D-155. Aucune migration.
+
+### Contexte — cas réel de la mission #1079 (lecture seule en production)
+
+Mission #1079 (22/10/2026, CHIREC Delta) : aucune instrumentiste, activité **déclarée réalisée
+sans instrumentiste par un manager** le 23/10 (D-155), 8 interventions et 10 lignes de matériel
+encodées par lui, statut `ENCODING_IN_PROGRESS`, « Valider l'encodage » désactivé.
+
+**Cause racine.** `validate` n'est proposé (et `ENCODING_VALIDATE` n'est accordé) qu'en
+`SUBMITTED`. Pour franchir `ENCODING_IN_PROGRESS → SUBMITTED`, le backend proposait bien
+`submit` au manager sur une activité déclarée (D-155), mais **aucun écran manager ne l'affichait**
+(ni le tiroir du suivi, ni le détail de mission) : le tiroir montrait un « Valider l'encodage »
+grisé, sans explication. Sur une mission **avec** instrumentiste, le manager n'avait aucun moyen
+de terminer lui-même un encodage resté ouvert. Ni les heures (non exigées dans ce mode, D-155) ni
+les droits d'écriture (D-153) n'étaient en cause.
+
+Le parcours chirurgien demandé (encoder, enregistrer, soumettre sa mission sans instrumentiste,
+sans validation ni finances) existe depuis D-155 ; il n'est pas réimplémenté.
+
+### Décision 1 — « Terminer et valider » (manager), une seule règle
+
+`MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason()` : statut `ASSIGNED`,
+`IN_PROGRESS` ou `ENCODING_IN_PROGRESS` ; encodage modifiable par le manager (D-153 : ni
+verrouillé, ni facturé, aucun calcul `LOCKED`) ; instrumentiste affectée **ou** activité
+déclarée sans instrumentiste (`hasEncodableActivity()`) ; mission commencée. Seule source de
+`MissionVoter::ENCODING_COMPLETE_AND_VALIDATE`, de l'action `complete_and_validate` et du
+contrôle de la transition (cohérence testée sur tous statuts × rôles × instrumentiste × début ×
+déclaration). Une mission `OPEN` non couverte se déclare d'abord (D-155) : on ne valide jamais
+une activité dont la réalité n'a pas été affirmée.
+
+### Décision 2 — une transition dédiée, composée des deux existantes
+
+`POST /api/missions/{id}/encoding/complete-and-validate` →
+`MissionEncodingWorkflowService::completeAndValidate()` = `complete()` puis `validate()` (deux
+audits au nom du manager, deux messages de cycle de vie, notification `ENCODING_SUBMITTED` au
+chirurgien inchangée). Les contrôles de `validate()` (contenu complet, demandes de catalogue
+traitées, heures déclarées si une instrumentiste est affectée) sont faits **avant** toute
+écriture : un refus laisse la mission intacte, jamais `SUBMITTED` à mi-chemin. La justification
+« bloc sans matériel » (D-080) s'applique comme à toute soumission. Le chirurgien et
+l'instrumentiste n'y ont jamais accès.
+
+### Décision 3 — jamais un bouton désactivé sans raison
+
+`MissionEncodingCorrectionPolicy::validationBlockedReason()` → `encodingValidationBlockedReason`
+(détail de mission, managers seulement) : non couverte (« déclarez-la réalisée sans
+instrumentiste »), pas commencée, déclarée à approuver, verrouillée, ou encodage non soumis
+(« Vous pouvez le terminer et le valider vous-même »). Le tiroir « Suivi des encodages » affiche
+cette raison sous le bouton et remplace « Valider l'encodage » par « Terminer et valider » quand
+l'action est servie ; la fiche mission propose la même action. Aucune règle recalculée côté écran.
+
+### Décision 4 — auteur de la soumission identifié
+
+Les lignes du suivi servent `submittedBy: { name, role }` : auteur du dernier
+`MISSION_ENCODING_COMPLETED`, rôle **sur cette mission** (instrumentiste, chirurgien, manager).
+Une requête par page. Le tiroir affiche « Soumis par … (chirurgien) ». La personne qui valide
+reste tracée par l'audit `MISSION_ENCODING_VALIDATED` (distincte de l'auteur de la soumission).
+
+### Décision 5 — instrumentiste affectée après le début de l'encodage chirurgien
+
+Comportement existant, désormais explicite et testé : une activité déclarée n'est plus `OPEN`
+(ni claim, ni pool, ni attribution directe). Si une instrumentiste était en réalité présente, le
+manager **annule la déclaration** (motif obligatoire, D-155 décision 6 ; interventions et matériel
+conservés), puis l'affecte. À partir de là : l'instrumentiste reprend l'encodage existant, déclare
+ses heures et soumet ; le chirurgien conserve la correction des interventions / du matériel de
+D-154 (contrôle de version `If-Match`, aucune écriture silencieusement écrasée, instrumentiste
+prévenue), jamais les heures ni la soumission. Aucune ligne n'est dupliquée ni supprimée.
+
+### Décision 6 — écrans chirurgien (libellés seulement)
+
+Détail de mission : l'action D-155 s'intitule « Encoder les interventions et le matériel »
+(confirmation inchangée : la mission quitte le pool). Écran d'encodage : mention du brouillon
+(chaque ligne est enregistrée immédiatement, rien n'est transmis avant la soumission) et bouton
+« Soumettre l'encodage ». Aucune donnée financière ajoutée.
+
+### Impacts
+
+- **Workflow** : aucun nouveau statut ; `SUBMITTED` reste traversé (audité) même en une étape.
+- **Facturation** : inchangée. Une mission validée de cette façon suit D-073 / D-155 (calcul
+  firme seul sans instrumentiste ; heures de l'instrumentiste obligatoires sinon). Aucun calcul
+  déclenché par la validation.
+- **#1079** : aucune donnée modifiée ; après déploiement, le manager peut « Terminer et valider »
+  depuis le suivi (BLOCK avec matériel : aucun commentaire exigé).
+
+### Tests
+
+`EncodingWithoutInstrumentistD171Test` (reproduction de #1079 : raison servie puis terminer et
+valider sans heures, audits au nom du manager, aucune `MissionExecution`, consultation chirurgien
+et historique après validation ; mission avec instrumentiste : refus sans heures sans aucune
+écriture, puis heures manager et validation, `submittedBy` MANAGER ; règles d'accès ; soumission
+chirurgien listée avec `submittedBy` SURGEON, finances / validation / suivi refusés au chirurgien,
+mission d'un confrère refusée ; affectation tardive sans perte ni doublon et droits qui en
+découlent), `MissionActionsServiceTest` (cohérence `complete_and_validate` ↔ voter),
+`MissionTrackingDrawer.test.tsx` (bouton, raison, refus affiché, auteur), `ManagerMissionDrawer.test.tsx`,
+`SurgeonEncodingPage.test.tsx` (brouillon, « Soumettre l'encodage »).

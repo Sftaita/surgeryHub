@@ -162,6 +162,12 @@ export default function SurgeonEncodingPage() {
               enregistrée : seules les prestations réellement applicables à la firme seront facturées.
             </Alert>
           )}
+          {withoutInstrumentist && canEdit && (
+            <Typography data-testid="surgeon-encoding-draft" sx={{ fontSize: 13, color: GRAY_500 }}>
+              Brouillon : chaque intervention et chaque ligne de matériel est enregistrée dès que vous la validez.
+              Vous pouvez quitter et reprendre plus tard ; rien n'est transmis au manager avant « Soumettre l'encodage ».
+            </Typography>
+          )}
 
           {/* L'essentiel en un coup d'œil, le détail ensuite (D-143). */}
           <Typography data-testid="surgeon-encoding-glance" sx={{ fontSize: 13, color: GRAY_500 }}>
@@ -185,6 +191,7 @@ export default function SurgeonEncodingPage() {
               catalog={encoding.catalog}
               canSubmit={canSubmit}
               onValidate={() => setSubmitOpen(true)}
+              submitLabel="Soumettre l'encodage"
               progress={encoding.progress}
             />
           ) : encoding.entries.length === 0 ? (

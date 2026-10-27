@@ -505,6 +505,8 @@ final class MissionActionsServiceTest extends TestCase
         $pairs     = [
             'declare_executed_without_instrumentist' => MissionVoter::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST,
             'cancel_executed_without_instrumentist'  => MissionVoter::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST,
+            // D-171 — « Terminer et valider » (manager seulement, encodage ouvert, mission commencée et couverte).
+            'complete_and_validate'                  => MissionVoter::ENCODING_COMPLETE_AND_VALIDATE,
         ];
 
         foreach ([$surgeon, $colleague, $manager] as $viewer) {

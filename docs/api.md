@@ -6065,6 +6065,29 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 
 ---
 
+### `POST .../complete-and-validate` (D-171)
+
+**AuthZ :** `MissionVoter::ENCODING_COMPLETE_AND_VALIDATE` — Manager/Admin uniquement, même règle
+que l'action `complete_and_validate` (`MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason()`) :
+statut `ASSIGNED`, `IN_PROGRESS` ou `ENCODING_IN_PROGRESS`, encodage ni verrouillé ni facturé, aucun
+calcul `LOCKED`, mission commencée, instrumentiste affectée **ou** activité déclarée sans
+instrumentiste (D-155). `403` sinon (une mission `SUBMITTED` se valide par `.../validate`).
+
+**Transition :** `ASSIGNED\|IN_PROGRESS\|ENCODING_IN_PROGRESS → SUBMITTED → VALIDATED`, en un appel.
+
+**Body (optionnel) :** identique à `.../complete` (`comment`, exigé pour un `BLOCK` sans matériel).
+
+**Effets :** exactement `complete()` puis `validate()` (deux audits `MISSION_ENCODING_COMPLETED` et
+`MISSION_ENCODING_VALIDATED` au nom du manager, deux messages de cycle de vie). Tous les contrôles
+de `validate()` (contenu complet, heures déclarées quand une instrumentiste est affectée) sont faits
+**avant** la première écriture : en cas de refus (`422 ENCODING_INCOMPLETE`), rien n'est modifié,
+jamais une mission laissée `SUBMITTED`. Aucune heure exigée ni créée pour une activité sans
+instrumentiste.
+
+**Réponse :** `200` détail de la mission (`status: VALIDATED`).
+
+---
+
 ### `POST .../reject`
 
 **AuthZ :** `MissionVoter::ENCODING_REJECT` — Manager/Admin uniquement.
@@ -8550,6 +8573,11 @@ interventions / matériel conservés, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENT
   manager), `cancel_executed_without_instrumentist` (manager) ; dans ce mode le chirurgien
   reçoit `edit_encoding` et `submit`, jamais `edit_hours`.
 - `GET /api/encoding-tracking` (items) : `executedWithoutInstrumentist: { declaredByName } | null`.
+- **D-171** — items : `submittedBy: { name, role: INSTRUMENTIST | SURGEON | MANAGER | null } | null`
+  (auteur du dernier `MISSION_ENCODING_COMPLETED`, rôle sur la mission). Détail de mission
+  (managers seulement) : `encodingValidationBlockedReason: string | null` — pourquoi « Valider
+  l'encodage » n'est pas proposé, affiché tel quel. `allowedActions` manager :
+  `complete_and_validate` (voir `POST .../complete-and-validate`).
 - Soumission (`POST .../encoding/complete`, `.../submit`) et validation : heures non exigées
   dans ce mode (aucune n'existe) ; contenu et justification « sans matériel » inchangés.
 - Calcul financier : accepté sans instrumentiste uniquement dans ce mode ; seules des lignes

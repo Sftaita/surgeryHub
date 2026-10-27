@@ -622,6 +622,22 @@
       "refs": {},
       "nextAction": "Vérifier si D-158 l'a corrigée ; sinon décrire et prioriser.",
       "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-171",
+      "title": "Encodage sans instrumentiste : « Terminer et valider » manager, blocages expliqués",
+      "description": "Cause du bouton « Valider l'encodage » grisé sur #1079 : validate exige SUBMITTED et l'action submit servie au manager n'était affichée nulle part. Ajout de POST .../encoding/complete-and-validate, raison du blocage servie, auteur de la soumission dans le suivi. Parcours chirurgien D-155 conservé (libellés).",
+      "kind": "fix",
+      "priority": "P1",
+      "userImpact": "Les managers ne peuvent pas valider les missions encodées sans instrumentiste (#1079).",
+      "status": "teste",
+      "refs": {
+        "branches": [
+          "feat/encodage-sans-instrumentiste"
+        ]
+      },
+      "nextAction": "Revue utilisateur, puis PR et déploiement sur accord ; #1079 à valider via l'interface après déploiement.",
+      "lastReviewed": "2026-10-27"
     }
   ]
 }

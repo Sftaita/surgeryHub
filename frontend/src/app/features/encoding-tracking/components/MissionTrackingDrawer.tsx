@@ -17,6 +17,7 @@ import { getMissionEncodingHistory, getMissionFinancialAnomalies } from "../api/
 import type { EncodingHistoryChange, EncodingHistoryItem, EncodingTrackingItem } from "../api/encodingTracking.api";
 import EditServiceHoursDialog from "../../missions/components/EditServiceHoursDialog";
 import InterventionsSection from "../../encoding/components/InterventionsSection";
+import CompleteAndValidateEncodingDialog from "../../encoding/components/CompleteAndValidateEncodingDialog";
 import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, NO_HOURS_WITHOUT_INSTRUMENTIST, formatMinutes } from "../encodingStateMeta";
 
 const GRAY_950 = "#0B1320";
@@ -60,6 +61,12 @@ function initials(name: string): string {
 function extractErrorMessage(err: any): string {
   return err?.response?.data?.error?.message ?? err?.response?.data?.message ?? err?.response?.data?.detail ?? err?.message ?? String(err);
 }
+
+const SUBMITTER_ROLE_LABEL: Record<"INSTRUMENTIST" | "SURGEON" | "MANAGER", string> = {
+  INSTRUMENTIST: "instrumentiste",
+  SURGEON: "chirurgien",
+  MANAGER: "manager",
+};
 
 const STAGE_LABEL: Record<string, string> = { D1: "J+1", D2: "J+2", D4: "J+4" };
 const CHANNEL_LABEL: Record<string, string> = { PUSH: "push", EMAIL: "e-mail" };
@@ -290,11 +297,13 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   // D-153 — corrections directes du manager (heures / interventions & matériel).
   const [hoursOpen, setHoursOpen] = React.useState(false);
   const [encodingEditOpen, setEncodingEditOpen] = React.useState(false);
-  React.useEffect(() => { setHoursOpen(false); setEncodingEditOpen(false); }, [missionId]);
+  // D-171 — « Terminer et valider » (manager).
+  const [completeValidateOpen, setCompleteValidateOpen] = React.useState(false);
+  React.useEffect(() => { setHoursOpen(false); setEncodingEditOpen(false); setCompleteValidateOpen(false); }, [missionId]);
 
   // Le tiroir se superpose à la liste (aucun reflow) : Échap le ferme, comme un tiroir MUI.
   // D-148 / D-153 — pendant une fenêtre (motif, heures, encodage), Échap ne concerne qu'elle.
-  const modalOpen = correctionKind !== null || hoursOpen || encodingEditOpen;
+  const modalOpen = correctionKind !== null || hoursOpen || encodingEditOpen || completeValidateOpen;
   React.useEffect(() => {
     if (!open || modalOpen) return;
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -316,6 +325,10 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   };
   const allowedActions = missionQuery.data?.allowedActions ?? [];
   const canValidate = allowedActions.includes("validate");
+  // D-171 — le manager termine et valide lui-même un encodage encore ouvert ; sinon, la raison
+  // pour laquelle la validation n'est pas possible est servie par le backend, affichée telle quelle.
+  const canCompleteAndValidate = allowedActions.includes("complete_and_validate");
+  const validationBlockedReason = missionQuery.data?.encodingValidationBlockedReason ?? null;
   const canRemind = allowedActions.includes("remind");
   // D-136 — décidé uniquement par le backend (MissionHoursReminderPolicy) : jamais déduit
   // ici de hasRealHours ou de la date.
@@ -610,6 +623,11 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           <Box sx={{ fontSize: 12.5, fontWeight: 800, color: GRAY_950 }}>
             {canValidate ? "Prêt à valider" : isValidated ? "Validé" : "Encodage en cours"}
           </Box>
+          {item.submittedBy && (
+            <Box data-testid="drawer-submitted-by" sx={{ mt: "2px", fontSize: 11.5, color: GRAY_500 }}>
+              Soumis par {item.submittedBy.name}{item.submittedBy.role ? ` (${SUBMITTER_ROLE_LABEL[item.submittedBy.role]})` : ""}
+            </Box>
+          )}
           <Box sx={{ mt: "2px", fontSize: 11.5, color: GRAY_500 }}>
             <Box
               component="button"
@@ -630,6 +648,11 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         {correctionBlockedReason && (
           <Box data-testid="drawer-correction-blocked" sx={{ flexBasis: "100%", order: -1, padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
             {correctionBlockedReason}
+          </Box>
+        )}
+        {!canValidate && !isValidated && validationBlockedReason && (
+          <Box data-testid="drawer-validation-blocked" sx={{ flexBasis: "100%", order: -1, padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
+            {validationBlockedReason}
           </Box>
         )}
         {(canReturnEncoding || canReopenEncoding) && (
@@ -669,6 +692,22 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           </Tooltip>
         )}
 
+        {canCompleteAndValidate && !canValidate ? (
+          <Box
+            component="button"
+            type="button"
+            data-testid="drawer-complete-and-validate"
+            onClick={() => setCompleteValidateOpen(true)}
+            sx={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", height: 40, padding: "0 18px",
+              border: 0, borderRadius: "11px", font: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer",
+              background: GREEN_600, color: "#fff", "&:hover": { background: GREEN_700 },
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+            Terminer et valider
+          </Box>
+        ) : (
         <Box
           component="button"
           type="button"
@@ -685,7 +724,20 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m5 13 4 4L19 7" /></svg>
           {item.encodingState === "VALIDATED" || item.encodingState === "LOCKED" ? "Encodage validé" : "Valider l'encodage"}
         </Box>
+        )}
       </Box>
+
+      <CompleteAndValidateEncodingDialog
+        open={completeValidateOpen}
+        missionId={item.missionId}
+        withoutInstrumentist={withoutInstrumentist}
+        onClose={() => setCompleteValidateOpen(false)}
+        onDone={async () => {
+          setCompleteValidateOpen(false);
+          toast.success("Encodage terminé et validé.");
+          await refreshAfterAction();
+        }}
+      />
 
       <EncodingCorrectionDialog
         kind={correctionKind}

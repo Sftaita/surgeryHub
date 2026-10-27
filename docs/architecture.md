@@ -4369,3 +4369,20 @@ publication.
 - **Verrous levés dans ce mode seulement** : heures (`EncodingCompletenessService`), calcul
   (`assertEligible`), recalcul groupé, action « Calculer » du suivi.
 - **Notifications** : renvoi / réouverture → chirurgien ; jamais d'auto-notification de soumission.
+
+### 31.6 Encodage indépendant de la présence d'une instrumentiste (D-171)
+
+- **Trois auteurs possibles d'un encodage** : l'instrumentiste affectée (parcours classique),
+  le manager (D-153, toujours), le chirurgien de **sa** mission (D-154 avec instrumentiste,
+  D-155 après déclaration de l'activité sans instrumentiste). Le chirurgien ne valide jamais,
+  ne voit aucune donnée financière et n'a aucun droit général d'édition des missions.
+- **Terminer et valider (manager)** : `MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason()`
+  lue par `MissionVoter::ENCODING_COMPLETE_AND_VALIDATE`, `MissionActionsService`
+  (`complete_and_validate`) et `MissionEncodingWorkflowService::completeAndValidate()`
+  (`complete()` puis `validate()`, contrôles faits avant toute écriture).
+- **Explication d'un blocage** : `validationBlockedReason()` → `encodingValidationBlockedReason`
+  (détail de mission, managers) ; le suivi affiche l'auteur de la soumission (`submittedBy`).
+- **Instrumentiste affectée après coup** : une activité déclarée n'est plus OPEN, donc ni claim
+  ni affectation ; le manager annule d'abord la déclaration (motif, contenu conservé), puis
+  affecte. Le contenu est repris tel quel par l'instrumentiste ; le chirurgien garde la
+  correction D-154 (version optimiste), jamais les heures ni la soumission.

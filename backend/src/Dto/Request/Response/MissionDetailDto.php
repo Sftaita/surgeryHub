@@ -80,5 +80,11 @@ final class MissionDetailDto
          * {declaredAt, declaredByName}. Hours never exist in this mode; billing is firm-only.
          */
         public readonly ?array $executedWithoutInstrumentist = null,
+        /**
+         * D-171 — managers only: why « Valider l'encodage » is not offered right now (encoding
+         * still open, mission not covered, locked…), shown as-is under the disabled button.
+         * Null when validation is offered or moot (MissionEncodingCorrectionPolicy).
+         */
+        public readonly ?string $encodingValidationBlockedReason = null,
     ) {}
 }

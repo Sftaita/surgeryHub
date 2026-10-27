@@ -204,6 +204,11 @@ export async function validateMissionEncoding(missionId: number): Promise<void> 
   await apiClient.post(`/api/missions/${missionId}/encoding/validate`);
 }
 
+/** D-171 — « Terminer et valider » (manager) : clôt puis valide un encodage encore ouvert. */
+export async function completeAndValidateMissionEncoding(missionId: number, comment: string | null): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/complete-and-validate`, comment !== null ? { comment } : {});
+}
+
 export async function rejectMissionEncoding(
   missionId: number,
   comment: string,

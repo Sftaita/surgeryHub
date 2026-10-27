@@ -374,11 +374,11 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
         <SectionCard icon={<EditNoteIcon fontSize="small" />} title="Activité réalisée sans instrumentiste">
           <Stack spacing={1.5}>
             <Typography variant="body2" color="text.secondary">
-              Aucune instrumentiste n'a couvert cette mission. Si l'intervention a bien eu lieu, déclarez-la pour
-              encoder les interventions et le matériel utilisés.
+              Aucune instrumentiste n'a couvert cette mission. Si l'intervention a bien eu lieu, encodez vous-même
+              les interventions et le matériel utilisés, puis soumettez l'encodage au manager.
             </Typography>
             <Button variant="contained" disableElevation onClick={() => setDeclareOpen(true)} data-testid="declare-without-instrumentist">
-              Déclarer l'activité réalisée
+              Encoder les interventions et le matériel
             </Button>
           </Stack>
         </SectionCard>

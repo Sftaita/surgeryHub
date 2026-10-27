@@ -7,9 +7,11 @@ use App\Dto\EncodingTrackingItem;
 use App\Dto\EncodingTrackingSummary;
 use App\Dto\FinancialStatisticsFilter;
 use App\Dto\MissionFinancialFacts;
+use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\MissionEncodingReminder;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\EncodingFinancialState;
 use App\Enum\EncodingReminderStage;
 use App\Enum\EncodingState;
@@ -115,6 +117,7 @@ final class EncodingTrackingService
         )));
 
         $escalations = $this->escalationDates($ids);
+        $submitters = $this->lastSubmitters($ids);
 
         $items = [];
         foreach ($ids as $id) {
@@ -139,6 +142,7 @@ final class EncodingTrackingService
                 $financialFacts[$id] ?? MissionFinancialFacts::none(),
                 $failures[$id]['anomalies'] ?? [],
                 EncodingReminderService::isEncodingPending($mission) ? ($escalations[$id] ?? null) : null,
+                $submitters[$id] ?? null,
             );
         }
 
@@ -153,6 +157,7 @@ final class EncodingTrackingService
         MissionFinancialFacts $financialFacts,
         array $rawFailureAnomalies = [],
         ?\DateTimeImmutable $escalatedAt = null,
+        ?User $submittedBy = null,
     ): EncodingTrackingItem {
         // Source canonique unique des heures — jamais recalculée ici (D-071).
         $effective = $this->executionService->resolveEffectiveDuration($mission);
@@ -200,7 +205,61 @@ final class EncodingTrackingService
             escalatedAt: $escalatedAt,
             executedWithoutInstrumentist: $mission->isExecutedWithoutInstrumentist(),
             executedWithoutInstrumentistByName: $this->displayName($mission->getExecutedWithoutInstrumentistBy()),
+            submittedByName: $submittedBy !== null && $submittedBy->getId() === $surgeon?->getId()
+                ? $surgeon->getDrName()
+                : $this->displayName($submittedBy),
+            submittedByRole: $this->submitterRole($mission, $submittedBy),
         );
+    }
+
+    /**
+     * D-171 — dernier auteur de MISSION_ENCODING_COMPLETED par mission (une requête pour la
+     * page, auteurs chargés avec elle).
+     *
+     * @param list<int> $ids
+     * @return array<int, User>
+     */
+    private function lastSubmitters(array $ids): array
+    {
+        $events = $this->em->createQueryBuilder()
+            ->select('a', 'u')
+            ->from(AuditEvent::class, 'a')
+            ->join('a.actor', 'u')
+            ->where('a.mission IN (:ids)')
+            ->andWhere('a.eventType = :type')
+            ->setParameter('ids', $ids)
+            ->setParameter('type', AuditEventType::MISSION_ENCODING_COMPLETED)
+            ->orderBy('a.id', 'ASC')
+            ->getQuery()
+            ->getResult();
+
+        $submitters = [];
+        foreach ($events as $event) {
+            /** @var AuditEvent $event */
+            $submitters[(int) $event->getMission()?->getId()] = $event->getActor();
+        }
+
+        return $submitters;
+    }
+
+    /** Rôle de l'auteur sur CETTE mission ; le chirurgien ou l'instrumentiste de la mission avant tout rôle global. */
+    private function submitterRole(Mission $mission, ?User $user): ?string
+    {
+        if ($user === null) {
+            return null;
+        }
+        if ($user->getId() === $mission->getInstrumentist()?->getId()) {
+            return 'INSTRUMENTIST';
+        }
+        if ($user->getId() === $mission->getSurgeon()?->getId()) {
+            return 'SURGEON';
+        }
+        $roles = $user->getRoles();
+        if (in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true)) {
+            return 'MANAGER';
+        }
+
+        return in_array('ROLE_INSTRUMENTIST', $roles, true) ? 'INSTRUMENTIST' : null;
     }
 
     /**

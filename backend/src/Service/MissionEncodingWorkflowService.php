@@ -13,6 +13,7 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -180,6 +181,35 @@ final class MissionEncodingWorkflowService
         }
 
         return $count;
+    }
+
+    /**
+     * D-171 — « Terminer et valider » : le manager clôt lui-même un encodage encore ouvert
+     * (instrumentiste affectée ou activité déclarée sans instrumentiste) puis le valide.
+     * Les deux transitions existantes s'enchaînent (complete() puis validate(), deux audits,
+     * deux messages) ; tout contrôle de validate() est fait AVANT la première écriture :
+     * jamais une mission laissée SUBMITTED à mi-chemin par un refus de validation.
+     */
+    public function completeAndValidate(Mission $mission, User $actor, ?string $comment = null): Mission
+    {
+        $blocked = MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now());
+        if ($blocked !== null) {
+            throw new ConflictHttpException($blocked);
+        }
+
+        $this->contentCompleteness->assertComplete(
+            $mission,
+            true,
+            "Encodage incomplet : complétez les interventions et traitez les demandes en attente avant de valider.",
+        );
+        $this->completeness->assertHasDeclaredHours(
+            $mission,
+            "Heures prestées manquantes : renseignez-les avant de terminer et valider l'encodage.",
+        );
+
+        $this->complete($mission, $actor, $comment);
+
+        return $this->validate($mission, $actor);
     }
 
     /** SUBMITTED → VALIDATED (verrouille l'encodage — encodingLockedAt, lu par MissionEncodingGuard). */

@@ -18,6 +18,8 @@ export type AllowedAction =
   | "start_encoding"
   | "validate"
   | "reopen"
+  // D-171 — manager : terminer et valider lui-même un encodage encore ouvert
+  | "complete_and_validate"
   // Lot 6 (D-100) — lecture seule chirurgien, jamais un droit d'édition
   | "view_encoding"
   // D-120 — cockpit Suivi des encodages, relance manuelle
@@ -231,6 +233,8 @@ export interface Mission {
   encodingCorrectionFinancialNotice?: string | null;
   /** D-155 — activité exécutée sans instrumentiste (null sinon) : aucune heure, facturation firme seule. */
   executedWithoutInstrumentist?: { declaredAt: string | null; declaredByName: string | null } | null;
+  /** D-171 — pourquoi « Valider l'encodage » n'est pas proposé (managers seulement), affiché tel quel. */
+  encodingValidationBlockedReason?: string | null;
 
   /** D-151 — affectation en cours, servie au chirurgien de la mission et aux managers seulement. */
   currentAssignment?: CurrentAssignment | null;

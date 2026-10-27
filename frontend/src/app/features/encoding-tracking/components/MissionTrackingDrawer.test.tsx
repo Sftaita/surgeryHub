@@ -33,7 +33,9 @@ const validateMissionEncodingMock = vi.fn();
 const remindMissionEncodingMock = vi.fn();
 const rejectMissionEncodingMock = vi.fn();
 const reopenMissionEncodingMock = vi.fn();
+const completeAndValidateMissionEncodingMock = vi.fn();
 vi.mock("../../encoding/api/encoding.api", () => ({
+  completeAndValidateMissionEncoding: (...args: unknown[]) => completeAndValidateMissionEncodingMock(...args),
   rejectMissionEncoding: (...args: unknown[]) => rejectMissionEncodingMock(...args),
   reopenMissionEncoding: (...args: unknown[]) => reopenMissionEncodingMock(...args),
   fetchMissionEncoding: (...args: unknown[]) => fetchMissionEncodingMock(...args),
@@ -102,6 +104,7 @@ beforeEach(() => {
   remindMissionHoursMock.mockReset();
   rejectMissionEncodingMock.mockReset();
   reopenMissionEncodingMock.mockReset();
+  completeAndValidateMissionEncodingMock.mockReset();
   getMissionFinancialAnomaliesMock.mockReset();
   calculateMissionMock.mockReset();
   recalculateFinancialCalculationMock.mockReset();
@@ -907,5 +910,75 @@ describe("MissionTrackingDrawer — heures et renvoi d'une activité sans instru
     const dialog = await screen.findByRole("dialog", { name: "Renvoyer en correction" });
     expect(within(dialog).getByText("Instrumentiste")).toBeInTheDocument();
     expect(within(dialog).getByText(/renvoyé à l'instrumentiste/)).toBeInTheDocument();
+  });
+});
+
+describe("MissionTrackingDrawer — terminer et valider, blocage expliqué (D-171)", () => {
+  // Cas réel #1079 : activité déclarée et encodée par le manager, encodage « En cours ».
+  const inProgressItem = () => ({
+    ...makeItem({ missionStatus: "ENCODING_IN_PROGRESS", encodingState: "IN_PROGRESS", encodingStateLabel: "En cours" }),
+    instrumentist: null, executedWithoutInstrumentist: { declaredByName: "Sophie Manager" },
+  }) as any;
+
+  it("remplace le bouton grisé par « Terminer et valider » quand le backend le propose, avec la raison affichée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({
+      id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "submit", "edit_encoding", "complete_and_validate"],
+      executedWithoutInstrumentist: { declaredAt: null, declaredByName: "Sophie Manager" },
+      encodingValidationBlockedReason: "L'encodage n'a pas encore été soumis. Vous pouvez le terminer et le valider vous-même.",
+    });
+    renderDrawer(inProgressItem());
+
+    expect(await screen.findByTestId("drawer-complete-and-validate")).toHaveTextContent("Terminer et valider");
+    expect(screen.queryByRole("button", { name: "Valider l'encodage" })).toBeNull();
+    expect(screen.getByTestId("drawer-validation-blocked")).toHaveTextContent("Vous pouvez le terminer et le valider vous-même.");
+  });
+
+  it("appelle l'endpoint dédié, puis relit mission et suivi", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"], executedWithoutInstrumentist: { declaredAt: null, declaredByName: "Sophie Manager" } });
+    completeAndValidateMissionEncodingMock.mockResolvedValue(undefined);
+    renderDrawer(inProgressItem());
+
+    await user.click(await screen.findByTestId("drawer-complete-and-validate"));
+    const dialog = await screen.findByRole("dialog", { name: "Terminer et valider l'encodage" });
+    expect(within(dialog).queryByText(/heures prestées/)).toBeNull();
+    await user.click(within(dialog).getByTestId("confirm-complete-and-validate"));
+
+    await waitFor(() => expect(completeAndValidateMissionEncodingMock).toHaveBeenCalledWith(42, null));
+    await waitFor(() => expect(fetchMissionByIdMock.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("refus du backend : son message reste affiché dans la fenêtre, rien n'est supposé", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"] });
+    completeAndValidateMissionEncodingMock.mockRejectedValue({ response: { status: 422, data: { error: { code: "ENCODING_INCOMPLETE", message: "Heures prestées manquantes.", missing: [{ label: "Heure réelle de fin" }] } } } });
+    renderDrawer(makeItem({ missionStatus: "ENCODING_IN_PROGRESS", encodingState: "IN_PROGRESS", encodingStateLabel: "En cours" }));
+
+    await user.click(await screen.findByTestId("drawer-complete-and-validate"));
+    const dialog = await screen.findByRole("dialog", { name: "Terminer et valider l'encodage" });
+    expect(within(dialog).getByText(/heures prestées de l'instrumentiste/)).toBeInTheDocument();
+    await user.click(within(dialog).getByTestId("confirm-complete-and-validate"));
+
+    expect(await within(dialog).findByTestId("complete-and-validate-error")).toHaveTextContent("Heures prestées manquantes. Heure réelle de fin");
+  });
+
+  it("validation impossible sans action proposée : bouton grisé, raison du backend affichée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({
+      id: 42, status: "OPEN", allowedActions: ["view", "declare_executed_without_instrumentist"],
+      encodingValidationBlockedReason: "Aucune instrumentiste n'a couvert cette mission. Si l'activité a eu lieu, déclarez-la réalisée sans instrumentiste pour l'encoder et la valider.",
+    });
+    renderDrawer(makeItem({ missionStatus: "OPEN", encodingState: "TO_ENCODE", encodingStateLabel: "À encoder", instrumentist: null }));
+
+    expect(await screen.findByTestId("drawer-validation-blocked")).toHaveTextContent("déclarez-la réalisée sans instrumentiste");
+    expect(screen.getByRole("button", { name: "Valider l'encodage" })).toBeDisabled();
+    expect(screen.queryByTestId("drawer-complete-and-validate")).toBeNull();
+  });
+
+  it("identifie l'auteur de la soumission", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] });
+    renderDrawer({ ...makeItem(), instrumentist: null, executedWithoutInstrumentist: { declaredByName: "Dr Arnaud Deltour" }, submittedBy: { name: "Dr Arnaud Deltour", role: "SURGEON" } } as any);
+
+    expect(await screen.findByTestId("drawer-submitted-by")).toHaveTextContent("Soumis par Dr Arnaud Deltour (chirurgien)");
+    expect(screen.queryByTestId("drawer-validation-blocked")).toBeNull();
   });
 });

@@ -170,6 +170,10 @@ final class EncodingTrackingController extends AbstractController
             'executedWithoutInstrumentist' => $item->executedWithoutInstrumentist
                 ? ['declaredByName' => $item->executedWithoutInstrumentistByName]
                 : null,
+            // D-171 — auteur de la dernière soumission (null tant que rien n'est soumis).
+            'submittedBy' => $item->submittedByName !== null
+                ? ['name' => $item->submittedByName, 'role' => $item->submittedByRole]
+                : null,
             'surgeon' => $item->surgeonId !== null
                 ? ['id' => $item->surgeonId, 'name' => $item->surgeonName, 'photoPath' => $item->surgeonPhotoPath]
                 : null,

@@ -85,6 +85,7 @@ final class MissionMapper
                     ? trim(($m->getExecutedWithoutInstrumentistBy()->getFirstname() ?? '') . ' ' . ($m->getExecutedWithoutInstrumentistBy()->getLastname() ?? ''))
                     : null,
             ] : null,
+            encodingValidationBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::validationBlockedReason($m, Clock::get()->now()) : null,
         );
     }
 
