@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
-import { Alert, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, TextField, Typography } from "@mui/material";
+import { Alert, Button, Checkbox, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, TextField, Typography } from "@mui/material";
 
 import { completeAndValidateMissionEncoding } from "../api/encoding.api";
 import { encodingIncompleteText } from "../api/encodingIncomplete";
@@ -8,11 +8,17 @@ import { encodingIncompleteText } from "../api/encodingIncomplete";
 type Props = {
   open: boolean;
   missionId: number;
-  /** Aucune instrumentiste : rien n'est dit des heures (D-155). */
-  withoutInstrumentist: boolean;
+  /** `encodingRevision` du détail de mission : l'encodage que le manager a sous les yeux. */
+  revision: string | null;
+  /** `encodingTakeover` du détail de mission : non nul = reprise, confirmation explicite exigée. */
+  takeover: { instrumentistName: string; hoursMissing: boolean } | null;
   onClose: () => void;
   onDone: () => void | Promise<void>;
+  /** L'encodage a changé entre-temps (409) : relire la mission pour une nouvelle révision. */
+  onConflict?: () => void | Promise<void>;
 };
+
+const isConflict = (err: any) => err?.response?.data?.error?.code === "ENCODING_CONCURRENT_MODIFICATION";
 
 function errorText(err: any): string {
   if (err?.response?.status === 403) return "Action impossible pour cette mission (statut ou droits modifiés entre-temps).";
@@ -25,38 +31,70 @@ function errorText(err: any): string {
 
 /**
  * D-171 — « Terminer et valider » (manager) : POST .../encoding/complete-and-validate.
- * Proposé seulement si allowedActions contient `complete_and_validate` ; tout contrôle
- * (heures, contenu, justification d'un bloc sans matériel) est fait par le backend et son
- * refus est affiché tel quel dans la fenêtre, rien n'est recalculé ici.
+ * Proposé seulement si allowedActions contient `complete_and_validate`. Le backend dit s'il
+ * s'agit d'une reprise (`encodingTakeover`) et ce qui manque ; tout contrôle (contenu,
+ * justification d'un bloc sans matériel, modification concurrente) est fait par le backend et
+ * son refus est affiché tel quel dans la fenêtre, rien n'est recalculé ici.
  */
-export default function CompleteAndValidateEncodingDialog({ open, missionId, withoutInstrumentist, onClose, onDone }: Props) {
+export default function CompleteAndValidateEncodingDialog({ open, missionId, revision, takeover, onClose, onDone, onConflict }: Props) {
   const [comment, setComment] = React.useState("");
+  const [confirmed, setConfirmed] = React.useState(false);
   const mutation = useMutation({
-    mutationFn: () => completeAndValidateMissionEncoding(missionId, comment.trim() === "" ? null : comment.trim()),
+    mutationFn: () => completeAndValidateMissionEncoding(missionId, {
+      comment: comment.trim() === "" ? null : comment.trim(),
+      expectedRevision: revision,
+      takeoverConfirmed: takeover !== null && confirmed,
+    }),
     onSuccess: async () => {
       setComment("");
+      setConfirmed(false);
       await onDone();
+    },
+    onError: async (err) => {
+      if (isConflict(err)) await onConflict?.();
     },
   });
 
   const close = () => {
     if (mutation.isPending) return;
     mutation.reset();
+    setConfirmed(false);
     onClose();
   };
 
   return (
     <Dialog open={open} onClose={close} maxWidth="sm" fullWidth>
-      <DialogTitle>Terminer et valider l'encodage</DialogTitle>
+      <DialogTitle>{takeover ? "Reprendre, terminer et valider l'encodage" : "Terminer et valider l'encodage"}</DialogTitle>
       <DialogContent dividers>
         <Typography variant="body2" sx={{ mb: 1.5 }}>
-          L'encodage sera terminé à votre nom puis validé : il sera verrouillé, plus aucune modification
-          possible sauf réouverture explicite ensuite.
+          L'encodage sera terminé à votre nom puis validé : interventions et matériel seront verrouillés,
+          plus aucune modification possible sauf réouverture explicite ensuite.
         </Typography>
-        {!withoutInstrumentist && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            Les heures prestées de l'instrumentiste doivent être renseignées (« Corriger les heures » si nécessaire).
-          </Typography>
+        {takeover && (
+          <Alert severity="warning" sx={{ mb: 1.5 }} data-testid="complete-and-validate-takeover">
+            <Typography variant="body2" sx={{ mb: 0.5 }}>
+              {takeover.instrumentistName} n'a pas soumis son encodage. Vous le reprenez : tout ce qui a déjà été
+              encodé est conservé tel quel, et une notification de la reprise lui sera envoyée.
+            </Typography>
+            <Typography variant="body2">
+              {takeover.hoursMissing
+                ? "Ses heures prestées ne sont pas déclarées : elles ne seront ni inventées ni validées, et resteront déclarables après la validation."
+                : "Ses heures prestées déclarées seront validées avec l'encodage."}
+            </Typography>
+          </Alert>
+        )}
+        {takeover && (
+          <FormControlLabel
+            sx={{ mb: 1 }}
+            control={
+              <Checkbox
+                checked={confirmed}
+                onChange={(e) => setConfirmed(e.target.checked)}
+                inputProps={{ "data-testid": "complete-and-validate-takeover-confirm" } as React.InputHTMLAttributes<HTMLInputElement>}
+              />
+            }
+            label={`Je confirme reprendre l'encodage de ${takeover.instrumentistName}`}
+          />
         )}
         <TextField
           label="Commentaire (demandé si aucun matériel n'a été encodé)"
@@ -80,7 +118,7 @@ export default function CompleteAndValidateEncodingDialog({ open, missionId, wit
           color="success"
           variant="contained"
           disableElevation
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || (takeover !== null && !confirmed)}
           onClick={() => mutation.mutate()}
           data-testid="confirm-complete-and-validate"
         >

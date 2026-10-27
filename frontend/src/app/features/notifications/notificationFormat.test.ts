@@ -121,6 +121,13 @@ describe("D-143 — notifications d'encodage", () => {
     expect(formatNotificationBody(n as any)).toBe("Paul Martin a complété ou corrigé les interventions / le matériel de votre mission du 15/10/2026. Consultez votre encodage.");
   });
 
+  it("D-171 — encodage repris par un manager : données conservées, heures manquantes signalées", () => {
+    const n = { eventType: "ENCODING_TAKEN_OVER", payload: { missionId: 1079, missionDate: "22/10/2026", managerName: "Sophie Recette", hoursMissing: true } };
+    expect(formatNotificationTitle(n)).toBe("Encodage repris et validé");
+    expect(formatNotificationBody(n as any)).toBe("Sophie Recette a repris, terminé et validé l'encodage de votre mission du 22/10/2026 ; ce que vous aviez encodé est conservé. Vos heures prestées restent à déclarer.");
+    expect(formatNotificationBody({ ...n, payload: { ...n.payload, hoursMissing: false } } as any)).not.toContain("heures");
+  });
+
   it("signalement côté instrumentiste : catégorie seulement, jamais le commentaire", () => {
     const body = formatNotificationBody({ eventType: "ENCODING_ANOMALY_INSTRUMENTIST", payload: { missionDate: "14/07/2026", type: "HOURS_INCORRECT", comment: "secret" } } as any);
     expect(body).toContain("(horaires)");

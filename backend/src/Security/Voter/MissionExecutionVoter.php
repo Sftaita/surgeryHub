@@ -80,6 +80,12 @@ class MissionExecutionVoter extends Voter
 
     private function canUpdate(Mission $mission, User $user, bool $isManager): bool
     {
+        // D-171 — interventions et matériel validés par une reprise manager alors que les heures
+        // manquaient : tant qu'elles manquent, elles restent déclarables (manager, instrumentiste
+        // affectée), malgré le verrou de l'encodage. Même règle que 'edit_hours'.
+        if (MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission)) {
+            return $isManager || $mission->getInstrumentist()?->getId() === $user->getId();
+        }
         if ($mission->getEncodingLockedAt() !== null || $mission->getInvoiceGeneratedAt() !== null) {
             return false;
         }

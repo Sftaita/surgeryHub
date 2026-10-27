@@ -235,6 +235,14 @@ export interface Mission {
   executedWithoutInstrumentist?: { declaredAt: string | null; declaredByName: string | null } | null;
   /** D-171 — pourquoi « Valider l'encodage » n'est pas proposé (managers seulement), affiché tel quel. */
   encodingValidationBlockedReason?: string | null;
+  /** D-171 — empreinte de l'encodage lu (managers, quand « Terminer et valider » est proposé), renvoyée telle quelle. */
+  encodingRevision?: string | null;
+  /** D-171 — « Terminer et valider » est une reprise : confirmation explicite exigée (managers). */
+  encodingTakeover?: { instrumentistName: string; hoursMissing: boolean } | null;
+  /** D-171 — dernière reprise de l'encodage par un manager (managers et instrumentiste affectée). */
+  lastEncodingTakeover?: { byName: string | null; at: string; hoursMissing: boolean } | null;
+  /** D-171 — encodage validé sans les heures prestées, toujours manquantes : seules elles restent déclarables. */
+  hoursPendingAfterValidation?: boolean;
 
   /** D-151 — affectation en cours, servie au chirurgien de la mission et aux managers seulement. */
   currentAssignment?: CurrentAssignment | null;

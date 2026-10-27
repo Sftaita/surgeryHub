@@ -6075,16 +6075,36 @@ instrumentiste (D-155). `403` sinon (une mission `SUBMITTED` se valide par `.../
 
 **Transition :** `ASSIGNED\|IN_PROGRESS\|ENCODING_IN_PROGRESS → SUBMITTED → VALIDATED`, en un appel.
 
-**Body (optionnel) :** identique à `.../complete` (`comment`, exigé pour un `BLOCK` sans matériel).
+**Body JSON :**
 
-**Effets :** exactement `complete()` puis `validate()` (deux audits `MISSION_ENCODING_COMPLETED` et
-`MISSION_ENCODING_VALIDATED` au nom du manager, deux messages de cycle de vie). Tous les contrôles
-de `validate()` (contenu complet, heures déclarées quand une instrumentiste est affectée) sont faits
-**avant** la première écriture : en cas de refus (`422 ENCODING_INCOMPLETE`), rien n'est modifié,
-jamais une mission laissée `SUBMITTED`. Aucune heure exigée ni créée pour une activité sans
-instrumentiste.
+```json
+{ "expectedRevision": "3f9a0c7d21b4e8aa", "takeoverConfirmed": true, "comment": null }
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `expectedRevision` | ✓ | `encodingRevision` du détail de mission lu par le manager (empreinte des interventions, lignes de matériel avec leur version, brouillons et heures réelles). Absent → `428 ENCODING_VERSION_REQUIRED` ; différent de l'encodage actuel → `409 ENCODING_CONCURRENT_MODIFICATION`, rien n'est écrit. |
+| `takeoverConfirmed` | si reprise | `true` exigé quand une instrumentiste est affectée et n'a pas soumis (`encodingTakeover` non nul) : `422` sinon, rien n'est écrit. |
+| `comment` | si `BLOCK` sans matériel | Comme `.../complete` (justification D-080). |
+
+**Effets :** sous le verrou de la mission, `complete()` puis `validate()` (deux audits
+`MISSION_ENCODING_COMPLETED` et `MISSION_ENCODING_VALIDATED` au nom du manager, deux messages de
+cycle de vie). Les contrôles de contenu de `validate()` sont faits **avant** la première écriture :
+en cas de refus (`422 ENCODING_INCOMPLETE`), rien n'est modifié, jamais une mission laissée
+`SUBMITTED`. **Les heures ne sont jamais exigées** (D-171 décision 7) : aucune n'est créée ni
+validée quand elles manquent.
+
+**Reprise** (instrumentiste affectée, encodage non soumis) : audit `MISSION_ENCODING_TAKEN_OVER`
+(`actorId`, `actorName`, `instrumentistId`, `instrumentistName`, `fromStatus`, `revision`,
+`hoursMissing`, `interventionsCount`, `materialLinesCount`) avant les deux transitions ; après la
+validation, message `ENCODING_TAKEN_OVER` → notification `ENCODING_TAKEN_OVER` à l'instrumentiste.
+Heures manquantes : `mission.encodingValidatedWithoutHoursAt` est posé, elles restent déclarables
+(`PATCH .../execution`, instrumentiste affectée et manager) tant qu'elles manquent.
 
 **Réponse :** `200` détail de la mission (`status: VALIDATED`).
+
+**Erreurs :** `403` (voter) · `409` statut changé entre-temps ou `ENCODING_CONCURRENT_MODIFICATION` ·
+`422` reprise non confirmée ou `ENCODING_INCOMPLETE` · `428 ENCODING_VERSION_REQUIRED`.
 
 ---
 
@@ -8578,6 +8598,17 @@ interventions / matériel conservés, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENT
   (managers seulement) : `encodingValidationBlockedReason: string | null` — pourquoi « Valider
   l'encodage » n'est pas proposé, affiché tel quel. `allowedActions` manager :
   `complete_and_validate` (voir `POST .../complete-and-validate`).
+- **D-171 (reprise)** — détail de mission : `encodingRevision: string | null` (managers, quand
+  `complete_and_validate` est proposé) ; `encodingTakeover: { instrumentistName, hoursMissing } | null`
+  (managers, quand c'est une reprise) ; `lastEncodingTakeover: { byName, at, hoursMissing } | null`
+  et `hoursPendingAfterValidation: bool` (managers et instrumentiste affectée). Quand
+  `hoursPendingAfterValidation` est vrai (mission `VALIDATED` sans heures réelles après une
+  reprise), `allowedActions` contient `edit_hours` pour l'instrumentiste affectée et le manager
+  (`remind_hours` pour le manager), et `PATCH .../execution` est accepté pour eux seuls ;
+  interventions et matériel restent verrouillés. Une fois début et fin déclarés : verrouillées.
+- **D-171** — notification `ENCODING_TAKEN_OVER` (instrumentiste ; configurable, défauts in-app
+  oui / e-mail non / push non) : payload `missionId`, `missionDate`, `siteName`, `managerName`,
+  `hoursMissing` ; lien `/app/i/missions/{id}/encoding`.
 - Soumission (`POST .../encoding/complete`, `.../submit`) et validation : heures non exigées
   dans ce mode (aucune n'existe) ; contenu et justification « sans matériel » inchangés.
 - Calcul financier : accepté sans instrumentiste uniquement dans ce mode ; seules des lignes

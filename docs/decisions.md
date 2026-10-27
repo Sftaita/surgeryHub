@@ -13758,7 +13758,8 @@ corrigé.
 
 ## D-153 — Correction de l'encodage par le manager depuis « Suivi des encodages » (2026-10-15)
 
-**Statut : commité sur `feat/surgeon-refusal-compat` (lot L4) ; non fusionné dans `main`, non déployé.**
+**Statut : déployé en production le 2026-10-19 avec `v2026.10.19-prod` (PR #21, merge `dd5adac`).** Vérifié le 2026-10-27 en lecture seule : commit `2954cfa` contenu dans `v2026.10.19-prod` et dans la release active `v2026.10.25-prod` (`9345655`), fichiers présents dans le conteneur php, migration `Version20261016090000` appliquée le 2026-10-19.
+_Statut antérieur, conservé pour l'historique : commité sur `feat/surgeon-refusal-compat` (lot L4) ; non fusionné dans `main`, non déployé (en-tête jamais mis à jour au déploiement)._
 Amende D-070 (droit d'encodage du manager « toujours »), D-143 (voter des heures) et complète
 D-148 (renvoi / réouverture) et D-136.
 
@@ -13887,7 +13888,8 @@ explicite, de nouveau facturable), `FirmBillingWorklistControllerTest` (motif
 
 ## D-154 — Encodage des interventions et du matériel par le chirurgien sur sa mission avec instrumentiste (2026-10-16)
 
-**Statut : commité sur `feat/surgeon-refusal-compat` (lot L5) ; non fusionné dans `main`, non déployé.**
+**Statut : déployé en production le 2026-10-19 avec `v2026.10.19-prod` (PR #21, merge `dd5adac`).** Vérifié le 2026-10-27 en lecture seule : commit `71147a9` contenu dans `v2026.10.19-prod` et dans la release active `v2026.10.25-prod` (`9345655`), fichiers présents dans le conteneur php, migration `Version20261016100000` appliquée le 2026-10-19.
+_Statut antérieur, conservé pour l'historique : commité sur `feat/surgeon-refusal-compat` (lot L5) ; non fusionné dans `main`, non déployé (en-tête jamais mis à jour au déploiement)._
 Amende D-100 (consultation chirurgien strictement en lecture) et D-143 ; complète D-153.
 
 ### Contexte
@@ -14008,7 +14010,8 @@ nouvelle série après la fenêtre), `notificationFormat.test.ts`.
 
 ## D-155 — Activité opératoire réalisée sans instrumentiste (2026-10-16)
 
-**Statut : commité sur `feat/surgeon-refusal-compat` (lot L6) ; non fusionné dans `main`, non déployé.**
+**Statut : déployé en production le 2026-10-19 avec `v2026.10.19-prod` (PR #21, merge `dd5adac`).** Vérifié le 2026-10-27 en lecture seule : commit `451cb59` contenu dans `v2026.10.19-prod` et dans la release active `v2026.10.25-prod` (`9345655`), fichiers présents dans le conteneur php, migration `Version20261016110000` appliquée le 2026-10-19.
+_Statut antérieur, conservé pour l'historique : commité sur `feat/surgeon-refusal-compat` (lot L6) ; non fusionné dans `main`, non déployé (en-tête jamais mis à jour au déploiement)._
 Amende D-070 (seule l'instrumentiste démarre l'encodage), D-143 (heures obligatoires à la
 soumission et à la validation), D-148 (le renvoi en correction notifie l'instrumentiste) et
 D-073 (`assertEligible` exige une instrumentiste). Complète D-154.
@@ -15255,8 +15258,9 @@ mission…), non couvertes par la maquette. Aucun changement backend.
 ## D-171 — Encodage indépendant de la présence d'une instrumentiste : « Terminer et valider » manager, blocages expliqués (2026-10-27)
 
 **Statut : branche `feat/encodage-sans-instrumentiste` ; non fusionné, non déployé.**
-Amende D-070 (seule une mission `SUBMITTED` se valide) et D-153 (le manager corrige sans
-soumettre) ; complète D-154 et D-155. Aucune migration.
+Amende D-070 (seule une mission `SUBMITTED` se valide), D-143 (heures exigées à la validation,
+sauf reprise manager) et D-153 (le manager corrige sans soumettre) ; complète D-154 et D-155.
+Une migration additive (`Version20261027090000`, décision 7).
 
 ### Contexte — cas réel de la mission #1079 (lecture seule en production)
 
@@ -15292,8 +15296,9 @@ une activité dont la réalité n'a pas été affirmée.
 `MissionEncodingWorkflowService::completeAndValidate()` = `complete()` puis `validate()` (deux
 audits au nom du manager, deux messages de cycle de vie, notification `ENCODING_SUBMITTED` au
 chirurgien inchangée). Les contrôles de `validate()` (contenu complet, demandes de catalogue
-traitées, heures déclarées si une instrumentiste est affectée) sont faits **avant** toute
-écriture : un refus laisse la mission intacte, jamais `SUBMITTED` à mi-chemin. La justification
+traitées) sont faits **avant** toute écriture, sous le verrou de la mission : un refus laisse la
+mission intacte, jamais `SUBMITTED` à mi-chemin. Les heures ne sont jamais exigées ici
+(décision 7). La justification
 « bloc sans matériel » (D-080) s'applique comme à toute soumission. Le chirurgien et
 l'instrumentiste n'y ont jamais accès.
 
@@ -15330,23 +15335,72 @@ Détail de mission : l'action D-155 s'intitule « Encoder les interventions et l
 (chaque ligne est enregistrée immédiatement, rien n'est transmis avant la soumission) et bouton
 « Soumettre l'encodage ». Aucune donnée financière ajoutée.
 
+### Décision 7 — reprise d'un encodage non soumis par le manager (confirmée le 2026-10-27)
+
+Quand une instrumentiste est affectée et n'a pas soumis (`MissionEncodingCorrectionPolicy::isTakeover()`),
+« Terminer et valider » est une **reprise** :
+
+- **Confirmation explicite** : le détail de mission sert `encodingTakeover`
+  `{instrumentistName, hoursMissing}` ; la fenêtre affiche ce qui sera conservé et ce qu'il advient
+  des heures, et exige une case « Je confirme reprendre l'encodage de … ». Le backend refuse sans
+  `takeoverConfirmed: true` (422, rien d'écrit).
+- **Données conservées** : aucune ligne supprimée, déplacée ni recréée ; seul le statut avance.
+- **Auteur tracé** : audit `MISSION_ENCODING_TAKEN_OVER` (manager, instrumentiste, statut de
+  départ, révision validée, `hoursMissing`, nombre d'interventions et de lignes), puis
+  `COMPLETED` et `VALIDATED` au nom du manager ; chaque ligne garde son journal (H5b) ;
+  `lastEncodingTakeover` `{byName, at, hoursMissing}` est servi au manager et à l'instrumentiste.
+- **Instrumentiste informée** : notification `ENCODING_TAKEN_OVER` (in-app + push selon ses
+  préférences, un épisode par reprise, lien vers son encodage) et bandeau permanent sur son écran
+  d'encodage, indépendant des notifications.
+- **Modifications concurrentes** : le détail sert `encodingRevision`, empreinte de ce qui sera
+  validé (interventions et lignes de matériel avec leur version D-154, brouillons, heures réelles,
+  `EncodingTakeoverService::revision()`, toujours relue en base). La fenêtre la renvoie
+  (`expectedRevision`, obligatoire : 428 sinon) ; sous le verrou de la mission, une empreinte
+  différente donne `409 ENCODING_CONCURRENT_MODIFICATION`, rien n'est validé, la mission est relue.
+  Après validation, l'encodage est verrouillé (`MissionEncodingGuard`) : toute écriture ultérieure
+  de l'instrumentiste ou du chirurgien est refusée. Limite : une écriture déjà contrôlée par son
+  propre garde quelques millisecondes avant le verrou peut encore aboutir ; elle reste journalisée.
+
+**Heures indépendantes de la validation.** Interventions et matériel se valident sans heures, avec
+ou sans reprise. Des heures manquantes ne sont **ni inventées ni validées** : aucune
+`MissionExecution` n'est créée, le calcul financier continue de refuser une prestation sans heures
+réelles (`MISSING_ACTUAL_HOURS`, D-143). Le fait `Mission.encodingValidatedWithoutHoursAt`
+(migration additive `Version20261027090000`, aucune mission existante marquée) les laisse
+**déclarables** tant qu'elles manquent (`hoursPendingAfterValidation()`) : `edit_hours` et
+`MissionExecutionVoter::UPDATE` pour l'instrumentiste affectée et le manager, `remind_hours` pour
+le manager — et rien d'autre ne se rouvre. Dès qu'un début et une fin sont déclarés, elles sont
+verrouillées comme le reste (une correction passe par la réouverture, D-148). Elles ne sont validées
+par aucun automatisme : le manager les contrôle au calcul financier, qu'il déclenche et approuve
+lui-même. Une reprise où les heures sont déjà déclarées les valide avec l'encodage, comme
+`validate()`. Le parcours instrumentiste classique (soumission avec heures, D-143) est inchangé.
+
 ### Impacts
 
 - **Workflow** : aucun nouveau statut ; `SUBMITTED` reste traversé (audité) même en une étape.
-- **Facturation** : inchangée. Une mission validée de cette façon suit D-073 / D-155 (calcul
-  firme seul sans instrumentiste ; heures de l'instrumentiste obligatoires sinon). Aucun calcul
-  déclenché par la validation.
+- **Facturation** : moteur inchangé. Une mission validée de cette façon suit D-073 / D-155 (calcul
+  firme seul sans instrumentiste). Avec une instrumentiste dont les heures manquent, le calcul de
+  la mission reste refusé (`MISSING_ACTUAL_HOURS`, comme aujourd'hui), y compris la part firme,
+  jusqu'à leur déclaration. Aucun calcul déclenché par la validation.
 - **#1079** : aucune donnée modifiée ; après déploiement, le manager peut « Terminer et valider »
   depuis le suivi (BLOCK avec matériel : aucun commentaire exigé).
 
 ### Tests
 
-`EncodingWithoutInstrumentistD171Test` (reproduction de #1079 : raison servie puis terminer et
-valider sans heures, audits au nom du manager, aucune `MissionExecution`, consultation chirurgien
-et historique après validation ; mission avec instrumentiste : refus sans heures sans aucune
-écriture, puis heures manager et validation, `submittedBy` MANAGER ; règles d'accès ; soumission
+`EncodingWithoutInstrumentistD171Test` (reproduction de #1079 : raison servie, révision
+obligatoire (428), puis terminer et valider sans heures, audits au nom du manager, aucune
+`MissionExecution`, aucune reprise, consultation chirurgien et historique après validation ;
+reprise d'une instrumentiste : `encodingTakeover`, refus sans confirmation sans aucune écriture,
+409 après une écriture concurrente de l'instrumentiste sans aucune écriture, puis reprise
+confirmée, données conservées, aucune heure créée, audit de reprise, notification unique de
+l'instrumentiste (rejeu sans doublon), interventions verrouillées, heures déclarables puis
+verrouillées une fois déclarées, `submittedBy` MANAGER ; reprise avec heures déjà déclarées :
+validées, rien ne reste ouvert ; règles d'accès ; soumission
 chirurgien listée avec `submittedBy` SURGEON, finances / validation / suivi refusés au chirurgien,
 mission d'un confrère refusée ; affectation tardive sans perte ni doublon et droits qui en
-découlent), `MissionActionsServiceTest` (cohérence `complete_and_validate` ↔ voter),
-`MissionTrackingDrawer.test.tsx` (bouton, raison, refus affiché, auteur), `ManagerMissionDrawer.test.tsx`,
+découlent), `MissionActionsServiceTest` (cohérence `complete_and_validate` ↔ voter ; `edit_hours` ↔
+`MissionExecutionVoter::UPDATE` pour manager, instrumentiste affectée, autre instrumentiste et
+chirurgien sur tous statuts × fait × heures × calcul `LOCKED`),
+`MissionTrackingDrawer.test.tsx` (bouton, raison, refus affiché, auteur, confirmation de reprise,
+409 relu, bandeau de reprise), `ManagerMissionDrawer.test.tsx` (révision et confirmation envoyées),
+`notificationFormat.test.ts` (`ENCODING_TAKEN_OVER`),
 `SurgeonEncodingPage.test.tsx` (brouillon, « Soumettre l'encodage »).

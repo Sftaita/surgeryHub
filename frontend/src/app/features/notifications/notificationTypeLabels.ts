@@ -57,6 +57,7 @@ export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
   ENCODING_ANOMALY_INSTRUMENTIST: "Point signalé sur votre encodage",
   ENCODING_CORRECTION_REQUESTED: "Correction de votre encodage demandée",
   ENCODING_UPDATED_BY_SURGEON: "Encodage complété par le chirurgien",
+  ENCODING_TAKEN_OVER: "Encodage repris et validé par la coordination",
   // D-155 (recette) — types visibles dans les préférences qui s'affichaient avec leur code.
   ABSENCE_INSTRUMENTIST_REASSIGNED: "Mission réaffectée suite à l'absence d'un chirurgien",
   ABSENCE_OCCURRENCE_RESTORED: "Créneau habituel de nouveau prévu après une absence",

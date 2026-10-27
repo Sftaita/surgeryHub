@@ -935,31 +935,78 @@ describe("MissionTrackingDrawer — terminer et valider, blocage expliqué (D-17
 
   it("appelle l'endpoint dédié, puis relit mission et suivi", async () => {
     const user = userEvent.setup();
-    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"], executedWithoutInstrumentist: { declaredAt: null, declaredByName: "Sophie Manager" } });
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"], executedWithoutInstrumentist: { declaredAt: null, declaredByName: "Sophie Manager" }, encodingRevision: "rev-1", encodingTakeover: null });
     completeAndValidateMissionEncodingMock.mockResolvedValue(undefined);
     renderDrawer(inProgressItem());
 
     await user.click(await screen.findByTestId("drawer-complete-and-validate"));
     const dialog = await screen.findByRole("dialog", { name: "Terminer et valider l'encodage" });
     expect(within(dialog).queryByText(/heures prestées/)).toBeNull();
+    expect(within(dialog).queryByTestId("complete-and-validate-takeover")).toBeNull();
     await user.click(within(dialog).getByTestId("confirm-complete-and-validate"));
 
-    await waitFor(() => expect(completeAndValidateMissionEncodingMock).toHaveBeenCalledWith(42, null));
+    await waitFor(() => expect(completeAndValidateMissionEncodingMock).toHaveBeenCalledWith(42, { comment: null, expectedRevision: "rev-1", takeoverConfirmed: false }));
     await waitFor(() => expect(fetchMissionByIdMock.mock.calls.length).toBeGreaterThan(1));
   });
 
   it("refus du backend : son message reste affiché dans la fenêtre, rien n'est supposé", async () => {
     const user = userEvent.setup();
-    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"] });
-    completeAndValidateMissionEncodingMock.mockRejectedValue({ response: { status: 422, data: { error: { code: "ENCODING_INCOMPLETE", message: "Heures prestées manquantes.", missing: [{ label: "Heure réelle de fin" }] } } } });
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"], encodingRevision: "rev-1" });
+    completeAndValidateMissionEncodingMock.mockRejectedValue({ response: { status: 422, data: { error: { code: "ENCODING_INCOMPLETE", message: "Encodage incomplet.", missing: [{ label: "Firme manquante" }] } } } });
     renderDrawer(makeItem({ missionStatus: "ENCODING_IN_PROGRESS", encodingState: "IN_PROGRESS", encodingStateLabel: "En cours" }));
 
     await user.click(await screen.findByTestId("drawer-complete-and-validate"));
     const dialog = await screen.findByRole("dialog", { name: "Terminer et valider l'encodage" });
-    expect(within(dialog).getByText(/heures prestées de l'instrumentiste/)).toBeInTheDocument();
     await user.click(within(dialog).getByTestId("confirm-complete-and-validate"));
 
-    expect(await within(dialog).findByTestId("complete-and-validate-error")).toHaveTextContent("Heures prestées manquantes. Heure réelle de fin");
+    expect(await within(dialog).findByTestId("complete-and-validate-error")).toHaveTextContent("Encodage incomplet. Firme manquante");
+  });
+
+  it("reprise de l'encodage d'une instrumentiste : confirmation explicite exigée, heures manquantes jamais validées", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({
+      id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"],
+      encodingRevision: "rev-7", encodingTakeover: { instrumentistName: "Marie Dupont", hoursMissing: true },
+    });
+    completeAndValidateMissionEncodingMock.mockResolvedValue(undefined);
+    renderDrawer(makeItem({ missionStatus: "ENCODING_IN_PROGRESS", encodingState: "IN_PROGRESS", encodingStateLabel: "En cours" }));
+
+    await user.click(await screen.findByTestId("drawer-complete-and-validate"));
+    const dialog = await screen.findByRole("dialog", { name: "Reprendre, terminer et valider l'encodage" });
+    expect(within(dialog).getByTestId("complete-and-validate-takeover")).toHaveTextContent("Marie Dupont n'a pas soumis son encodage");
+    expect(within(dialog).getByTestId("complete-and-validate-takeover")).toHaveTextContent("ni inventées ni validées");
+    expect(within(dialog).getByTestId("confirm-complete-and-validate")).toBeDisabled();
+
+    await user.click(within(dialog).getByTestId("complete-and-validate-takeover-confirm"));
+    await user.click(within(dialog).getByTestId("confirm-complete-and-validate"));
+    await waitFor(() => expect(completeAndValidateMissionEncodingMock).toHaveBeenCalledWith(42, { comment: null, expectedRevision: "rev-7", takeoverConfirmed: true }));
+  });
+
+  it("encodage modifié entre-temps (409) : message affiché et mission relue, rien n'est validé", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"], encodingRevision: "rev-1" });
+    completeAndValidateMissionEncodingMock.mockRejectedValue({ response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "L'encodage a été modifié entre-temps (interventions, matériel ou heures). Rien n'a été validé : relisez-le puis recommencez." } } } });
+    renderDrawer(makeItem({ missionStatus: "ENCODING_IN_PROGRESS", encodingState: "IN_PROGRESS", encodingStateLabel: "En cours" }));
+
+    await user.click(await screen.findByTestId("drawer-complete-and-validate"));
+    const dialog = await screen.findByRole("dialog", { name: "Terminer et valider l'encodage" });
+    const readsBefore = fetchMissionByIdMock.mock.calls.length;
+    await user.click(within(dialog).getByTestId("confirm-complete-and-validate"));
+
+    expect(await within(dialog).findByTestId("complete-and-validate-error")).toHaveTextContent("modifié entre-temps");
+    await waitFor(() => expect(fetchMissionByIdMock.mock.calls.length).toBeGreaterThan(readsBefore));
+  });
+
+  it("encodage repris et heures restées à déclarer : affiché tel que servi par le backend", async () => {
+    fetchMissionByIdMock.mockResolvedValue({
+      id: 42, status: "VALIDATED", allowedActions: ["view", "reopen", "edit_hours"],
+      lastEncodingTakeover: { byName: "Sophie Manager", at: "2026-10-27T10:00:00+01:00", hoursMissing: true }, hoursPendingAfterValidation: true,
+    });
+    renderDrawer(makeItem({ missionStatus: "VALIDATED", encodingState: "VALIDATED", encodingStateLabel: "Validé" }));
+
+    const notice = await screen.findByTestId("drawer-encoding-taken-over");
+    expect(notice).toHaveTextContent("Encodage repris par Sophie Manager");
+    expect(notice).toHaveTextContent("Heures prestées encore à déclarer");
   });
 
   it("validation impossible sans action proposée : bouton grisé, raison du backend affichée", async () => {

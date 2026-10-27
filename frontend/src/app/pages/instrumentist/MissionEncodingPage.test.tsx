@@ -538,3 +538,29 @@ describe("MissionEncodingPage — mission validée, consultation en lecture seul
     expect(screen.queryByText(/pause/i)).not.toBeInTheDocument();
   });
 });
+
+describe("MissionEncodingPage — encodage repris par la coordination (D-171)", () => {
+  it("annonce la reprise et laisse saisir les heures restées à déclarer, servies par le backend", async () => {
+    const mission = baseMission({
+      status: "VALIDATED", allowedActions: ["view", "view_encoding", "edit_hours"],
+      lastEncodingTakeover: { byName: "Sophie Manager", at: "2026-10-27T10:00:00+01:00", hoursMissing: true },
+      hoursPendingAfterValidation: true,
+    });
+    mockRoutes(mission, baseEncoding({ mission: { id: 529, type: "BLOCK", status: "VALIDATED", allowedActions: ["view", "view_encoding", "edit_hours"] } }));
+    renderPage();
+
+    const notice = await screen.findByTestId("encoding-taken-over");
+    expect(notice).toHaveTextContent("repris et validé par Sophie Manager");
+    expect(notice).toHaveTextContent("Ce que vous aviez encodé a été conservé");
+    expect(notice).toHaveTextContent("Vos heures prestées restent à déclarer");
+    expect(screen.queryByRole("button", { name: "Valider" })).not.toBeInTheDocument();
+  });
+
+  it("aucun bandeau sans reprise", async () => {
+    mockRoutes(baseMission(), baseEncoding());
+    renderPage();
+
+    await screen.findByText("0 intervention · 0 matériel");
+    expect(screen.queryByTestId("encoding-taken-over")).toBeNull();
+  });
+});

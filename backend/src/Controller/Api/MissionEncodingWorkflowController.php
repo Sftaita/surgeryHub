@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Dto\Request\MissionEncodingCompleteAndValidateRequest;
 use App\Dto\Request\MissionEncodingCompleteRequest;
 use App\Dto\Request\MissionEncodingReopenRequest;
 use App\Dto\Request\MissionEncodingRejectRequest;
@@ -83,7 +84,8 @@ final class MissionEncodingWorkflowController extends AbstractController
     /**
      * D-171 — « Terminer et valider » : le manager clôt et valide en une fois un encodage
      * encore ouvert (instrumentiste affectée ou activité déclarée sans instrumentiste).
-     * Même corps que /complete (justification BLOCK sans matériel).
+     * Corps : comment (justification BLOCK sans matériel), expectedRevision (obligatoire),
+     * takeoverConfirmed (reprise de l'encodage d'une instrumentiste affectée).
      */
     #[Route('/complete-and-validate', name: 'api_missions_encoding_complete_and_validate', methods: ['POST'])]
     public function completeAndValidate(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
@@ -91,10 +93,10 @@ final class MissionEncodingWorkflowController extends AbstractController
         $mission = $this->getMissionOr404($missionId);
         $this->denyAccessUnlessGranted(MissionVoter::ENCODING_COMPLETE_AND_VALIDATE, $mission);
 
-        /** @var MissionEncodingCompleteRequest $dto */
-        $dto = $this->deserializeAndValidate($request->getContent(), MissionEncodingCompleteRequest::class);
+        /** @var MissionEncodingCompleteAndValidateRequest $dto */
+        $dto = $this->deserializeAndValidate($request->getContent(), MissionEncodingCompleteAndValidateRequest::class);
 
-        $mission = $this->workflow->completeAndValidate($mission, $user, $dto->comment);
+        $mission = $this->workflow->completeAndValidate($mission, $user, $dto->comment, $dto->expectedRevision, $dto->takeoverConfirmed);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
     }

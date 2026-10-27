@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
@@ -207,6 +207,15 @@ export default function MissionEncodingPage() {
             formait un résumé intermédiaire redondant avec le véritable récapitulatif
             affiché par SubmitDialog après "Terminer l'encodage". Côté manager, ces
             signaux et commentaires sont lus dans le tiroir mission (ManagerMissionDrawer). */}
+
+        {/* D-171 — encodage repris et validé par la coordination ; heures restées à déclarer. */}
+        {mission?.lastEncodingTakeover && (
+          <Alert severity={mission.hoursPendingAfterValidation ? "warning" : "info"} data-testid="encoding-taken-over">
+            Votre encodage a été repris et validé par {mission.lastEncodingTakeover.byName ?? "la coordination"} le{" "}
+            {dayjs(mission.lastEncodingTakeover.at).locale("fr").format("D MMMM YYYY [à] HH:mm")}. Ce que vous aviez encodé a été conservé.
+            {mission.hoursPendingAfterValidation ? " Vos heures prestées restent à déclarer ci-dessous." : ""}
+          </Alert>
+        )}
 
         {/* Zone 1 — "TEMPS DE TRAVAIL" (docs/design/Instruction design/Page encodage
             instrumentiste, DOCUMENTATION.md §1/§2) : bac neutre gris, une seule carte,

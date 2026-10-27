@@ -8,10 +8,15 @@ use App\Entity\Hospital;
 use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\Mission;
+use App\Entity\NotificationDispatch;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\NotificationType;
+use App\Message\MissionLifecycleChangedMessage;
+use App\MessageHandler\MissionLifecycleChangedMessageHandler;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -24,7 +29,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  *    avec ou sans instrumentiste (cas réel de la mission #1079, reproduit sur données de test) ;
  *  - la raison d'une validation impossible est servie au manager ;
  *  - l'auteur d'une soumission (chirurgien, instrumentiste, manager) est identifié dans le suivi ;
- *  - affecter une instrumentiste après le début d'un encodage chirurgien : rien n'est perdu ni dupliqué.
+ *  - affecter une instrumentiste après le début d'un encodage chirurgien : rien n'est perdu ni dupliqué ;
+ *  - reprise par le manager de l'encodage non soumis d'une instrumentiste : confirmation explicite,
+ *    données conservées, auteur tracé, instrumentiste prévenue, modification concurrente refusée,
+ *    heures manquantes jamais inventées ni validées (encore déclarables ensuite).
  * Vrais endpoints, voters, services et journal.
  */
 final class EncodingWithoutInstrumentistD171Test extends WebTestCase
@@ -227,8 +235,13 @@ final class EncodingWithoutInstrumentistD171Test extends WebTestCase
         self::assertContains('complete_and_validate', $inProgress['allowedActions']);
         self::assertSame("L'encodage n'a pas encore été soumis. Vous pouvez le terminer et le valider vous-même.", $inProgress['encodingValidationBlockedReason']);
 
+        // Pas une reprise (personne à qui reprendre) ; la révision lue est obligatoire.
+        self::assertNull($inProgress['encodingTakeover']);
+        self::assertNotEmpty($inProgress['encodingRevision']);
+        self::assertSame(428, $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", [])->getStatusCode());
+
         // Terminer et valider : aucune heure exigée, aucune prestation d'instrumentiste créée.
-        $done = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", []);
+        $done = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", ['expectedRevision' => $inProgress['encodingRevision']]);
         self::assertSame(Response::HTTP_OK, $done->getStatusCode(), (string) $done->getContent());
         $body = json_decode((string) $done->getContent(), true);
         self::assertSame('VALIDATED', $body['status']);
@@ -246,6 +259,8 @@ final class EncodingWithoutInstrumentistD171Test extends WebTestCase
             self::assertCount(1, $events, $type->value);
             self::assertSame($manager->getId(), $events[0]->getActor()?->getId(), 'auteur tracé : ' . $type->value);
         }
+        self::assertSame([], $this->audits($id, AuditEventType::MISSION_ENCODING_TAKEN_OVER), 'aucune reprise sans instrumentiste');
+        self::assertNull($this->em->find(Mission::class, $id)->getEncodingValidatedWithoutHoursAt());
 
         // Après validation : consultable par le chirurgien, journal conservé, verrouillé.
         $surgeonToken = $this->login($client, $surgeon);
@@ -259,9 +274,22 @@ final class EncodingWithoutInstrumentistD171Test extends WebTestCase
         self::assertGreaterThanOrEqual(4, count(json_decode((string) $history->getContent(), true)['items']), 'déclaration, ajouts, fin, validation');
     }
 
-    // ── Le manager termine et valide l'encodage d'une mission AVEC instrumentiste ──
+    // ── Reprise par le manager de l'encodage non soumis d'une instrumentiste ──
 
-    public function test_manager_finishes_and_validates_an_instrumentist_encoding_once_hours_are_known_never_half_way(): void
+    /** Messages MissionLifecycleChanged envoyés par la DERNIÈRE requête (transport vidé à la suivante). */
+    private function sentLifecycle(MissionChangeType $type): array
+    {
+        $messages = [];
+        foreach (static::getContainer()->get('messenger.transport.async')->getSent() as $envelope) {
+            $message = $envelope->getMessage();
+            if ($message instanceof MissionLifecycleChangedMessage && $message->changeType === $type) {
+                $messages[] = $message;
+            }
+        }
+        return $messages;
+    }
+
+    public function test_manager_takes_over_an_unsubmitted_instrumentist_encoding_with_confirmation_and_never_invents_hours(): void
     {
         $client = $this->boot();
         $surgeon = $this->user('ROLE_SURGEON', 'Paul');
@@ -270,33 +298,129 @@ final class EncodingWithoutInstrumentistD171Test extends WebTestCase
         $catalogue = $this->catalogue();
         $mission = $this->mission($surgeon, MissionStatus::ASSIGNED, '-1 day', $instr);
         $id = (int) $mission->getId();
+        $instrToken = $this->login($client, $instr);
+        $this->encode($client, $instrToken, $id, $catalogue);
 
-        $this->encode($client, $this->login($client, $instr), $id, $catalogue);
-
+        // Le backend dit au manager qu'il s'agit d'une reprise, et que les heures manquent.
         $managerToken = $this->login($client, $manager);
         $detail = $this->detail($client, $managerToken, $id);
         self::assertContains('complete_and_validate', $detail['allowedActions']);
-        self::assertStringContainsString("L'instrumentiste n'a pas encore soumis", $detail['encodingValidationBlockedReason']);
+        self::assertStringContainsString('Vous pouvez le reprendre', $detail['encodingValidationBlockedReason']);
+        self::assertSame(['instrumentistName' => 'Diane D171', 'hoursMissing' => true], $detail['encodingTakeover']);
+        $read = $detail['encodingRevision'];
 
-        // Heures manquantes : refus, et RIEN n'est écrit (pas de mission laissée SUBMITTED).
-        $refused = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", []);
-        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $refused->getStatusCode(), (string) $refused->getContent());
+        // Sans confirmation explicite : refus, et RIEN n'est écrit.
+        $unconfirmed = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", ['expectedRevision' => $read]);
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $unconfirmed->getStatusCode(), (string) $unconfirmed->getContent());
+        self::assertStringContainsString('Confirmez la reprise', (string) $unconfirmed->getContent());
+
+        // L'instrumentiste encode encore pendant que le manager relit : la confirmation basée sur
+        // l'ancienne lecture est refusée (409), rien n'est validé sur un contenu non vu.
+        $this->encode($client, $this->login($client, $instr), $id, $catalogue);
+        $stale = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", ['expectedRevision' => $read, 'takeoverConfirmed' => true]);
+        self::assertSame(Response::HTTP_CONFLICT, $stale->getStatusCode(), (string) $stale->getContent());
+        self::assertSame('ENCODING_CONCURRENT_MODIFICATION', json_decode((string) $stale->getContent(), true)['error']['code']);
         $this->em->clear();
         self::assertSame(MissionStatus::ASSIGNED, $this->em->find(Mission::class, $id)->getStatus());
-        self::assertSame([], $this->audits($id, AuditEventType::MISSION_ENCODING_COMPLETED));
+        foreach ([AuditEventType::MISSION_ENCODING_TAKEN_OVER, AuditEventType::MISSION_ENCODING_COMPLETED, AuditEventType::MISSION_ENCODING_VALIDATED] as $type) {
+            self::assertSame([], $this->audits($id, $type), 'rien d\'écrit : ' . $type->value);
+        }
 
-        // Le manager corrige les heures (D-153), puis termine et valide.
+        // Relue puis confirmée : reprise, fin et validation, sans aucune heure exigée ni créée.
+        $fresh = $this->detail($client, $managerToken, $id);
+        self::assertNotSame($read, $fresh['encodingRevision']);
+        $done = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", ['expectedRevision' => $fresh['encodingRevision'], 'takeoverConfirmed' => true]);
+        self::assertSame(Response::HTTP_OK, $done->getStatusCode(), (string) $done->getContent());
+        $taken = $this->sentLifecycle(MissionChangeType::ENCODING_TAKEN_OVER);
+        self::assertCount(1, $taken, 'instrumentiste à prévenir');
+        $body = json_decode((string) $done->getContent(), true);
+        self::assertSame('VALIDATED', $body['status']);
+        self::assertTrue($body['hoursPendingAfterValidation']);
+        self::assertContains('edit_hours', $body['allowedActions'], 'le manager peut encore saisir les heures');
+        self::assertContains('remind_hours', $body['allowedActions']);
+
+        $this->em->clear();
+        $validated = $this->em->find(Mission::class, $id);
+        self::assertNotNull($validated->getEncodingLockedAt());
+        self::assertNotNull($validated->getEncodingValidatedWithoutHoursAt());
+        self::assertSame(0, $this->rows('mission_execution', $id), 'aucune heure inventée');
+        self::assertSame(2, $this->rows('mission_intervention', $id), 'données conservées');
+        self::assertSame(2, $this->rows('material_line', $id));
+        $takeover = $this->audits($id, AuditEventType::MISSION_ENCODING_TAKEN_OVER);
+        self::assertCount(1, $takeover);
+        self::assertSame($manager->getId(), $takeover[0]->getActor()?->getId());
+        self::assertSame($instr->getId(), $takeover[0]->getPayload()['instrumentistId']);
+        self::assertTrue($takeover[0]->getPayload()['hoursMissing']);
+        self::assertSame($fresh['encodingRevision'], $takeover[0]->getPayload()['revision']);
+        foreach ([AuditEventType::MISSION_ENCODING_COMPLETED, AuditEventType::MISSION_ENCODING_VALIDATED] as $type) {
+            self::assertSame($manager->getId(), $this->audits($id, $type)[0]->getActor()?->getId(), 'auteur tracé : ' . $type->value);
+        }
+
+        // L'instrumentiste est prévenue (une fois, même si le message est rejoué).
+        $handler = static::getContainer()->get(MissionLifecycleChangedMessageHandler::class);
+        $handler($taken[0]);
+        $handler($taken[0]);
+        $dispatches = $this->em->getRepository(NotificationDispatch::class)->findBy(['mission' => $id, 'notificationType' => NotificationType::ENCODING_TAKEN_OVER->value]);
+        self::assertCount(1, $dispatches);
+        self::assertSame($instr->getId(), $dispatches[0]->getRecipient()?->getId());
+
+        // Elle voit la reprise et ne peut plus que déclarer ses heures ; une fois déclarées, elles se verrouillent.
+        $instrToken = $this->login($client, $instr);
+        $instrDetail = $this->detail($client, $instrToken, $id);
+        self::assertSame('Sophie D171', $instrDetail['lastEncodingTakeover']['byName']);
+        self::assertTrue($instrDetail['hoursPendingAfterValidation']);
+        self::assertContains('edit_hours', $instrDetail['allowedActions']);
+        self::assertContains('view_encoding', $instrDetail['allowedActions']);
+        foreach (['edit_encoding', 'submit'] as $never) {
+            self::assertNotContains($never, $instrDetail['allowedActions'], $never);
+        }
+        [$type, $firm] = $catalogue;
+        $write = $this->send($client, $instrToken, 'POST', "/api/missions/$id/interventions", ['interventionTypeId' => $type->getId(), 'primaryFirmId' => $firm->getId(), 'orderIndex' => 5]);
+        self::assertContains($write->getStatusCode(), [Response::HTTP_FORBIDDEN, Response::HTTP_CONFLICT], 'interventions verrouillées');
         $start = $mission->getStartAt();
-        $hours = $this->send($client, $managerToken, 'PATCH', "/api/missions/$id/execution", [
-            'actualStartAt' => $start->format(DATE_ATOM), 'actualEndAt' => $start->modify('+3 hours')->format(DATE_ATOM), 'hoursSource' => 'MANAGER',
+        $hours = $this->send($client, $instrToken, 'PATCH', "/api/missions/$id/execution", [
+            'actualStartAt' => $start->format(DATE_ATOM), 'actualEndAt' => $start->modify('+3 hours')->format(DATE_ATOM),
         ]);
         self::assertSame(Response::HTTP_OK, $hours->getStatusCode(), (string) $hours->getContent());
-        $done = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", []);
-        self::assertSame(Response::HTTP_OK, $done->getStatusCode(), (string) $done->getContent());
-        self::assertSame('VALIDATED', json_decode((string) $done->getContent(), true)['status']);
+        $after = $this->detail($client, $instrToken, $id);
+        self::assertFalse($after['hoursPendingAfterValidation']);
+        self::assertNotContains('edit_hours', $after['allowedActions']);
+        self::assertSame(Response::HTTP_FORBIDDEN, $this->send($client, $instrToken, 'PATCH', "/api/missions/$id/execution", [
+            'actualEndAt' => $start->modify('+5 hours')->format(DATE_ATOM),
+        ])->getStatusCode(), 'heures déclarées : verrouillées comme le reste');
+        self::assertSame('VALIDATED', $after['status']);
 
         // Suivi : l'auteur de la soumission est le manager.
-        self::assertSame(['name' => 'Sophie D171', 'role' => 'MANAGER'], $this->trackingItem($client, $managerToken, $mission)['submittedBy']);
+        self::assertSame(['name' => 'Sophie D171', 'role' => 'MANAGER'], $this->trackingItem($client, $this->login($client, $manager), $mission)['submittedBy']);
+    }
+
+    public function test_takeover_with_declared_hours_validates_them_with_the_encoding_and_reopens_nothing(): void
+    {
+        $client = $this->boot();
+        $surgeon = $this->user('ROLE_SURGEON', 'Paul');
+        $instr = $this->user('ROLE_INSTRUMENTIST', 'Diane');
+        $manager = $this->user('ROLE_MANAGER', 'Sophie');
+        $mission = $this->mission($surgeon, MissionStatus::ASSIGNED, '-1 day', $instr);
+        $id = (int) $mission->getId();
+        $instrToken = $this->login($client, $instr);
+        $this->encode($client, $instrToken, $id, $this->catalogue());
+        $start = $mission->getStartAt();
+        self::assertSame(Response::HTTP_OK, $this->send($client, $instrToken, 'PATCH', "/api/missions/$id/execution", [
+            'actualStartAt' => $start->format(DATE_ATOM), 'actualEndAt' => $start->modify('+3 hours')->format(DATE_ATOM),
+        ])->getStatusCode());
+
+        $managerToken = $this->login($client, $manager);
+        $detail = $this->detail($client, $managerToken, $id);
+        self::assertSame(['instrumentistName' => 'Diane D171', 'hoursMissing' => false], $detail['encodingTakeover']);
+        $done = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/complete-and-validate", ['expectedRevision' => $detail['encodingRevision'], 'takeoverConfirmed' => true]);
+        self::assertSame(Response::HTTP_OK, $done->getStatusCode(), (string) $done->getContent());
+        self::assertFalse(json_decode((string) $done->getContent(), true)['hoursPendingAfterValidation']);
+
+        $this->em->clear();
+        self::assertNull($this->em->find(Mission::class, $id)->getEncodingValidatedWithoutHoursAt());
+        self::assertFalse($this->audits($id, AuditEventType::MISSION_ENCODING_TAKEN_OVER)[0]->getPayload()['hoursMissing']);
+        $instrDetail = $this->detail($client, $this->login($client, $instr), $id);
+        self::assertNotContains('edit_hours', $instrDetail['allowedActions'], 'heures validées avec l\'encodage');
     }
 
     // ── Règles d'accès de « Terminer et valider » ─────────────────────────────

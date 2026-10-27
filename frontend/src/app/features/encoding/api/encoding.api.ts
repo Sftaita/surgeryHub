@@ -204,9 +204,20 @@ export async function validateMissionEncoding(missionId: number): Promise<void> 
   await apiClient.post(`/api/missions/${missionId}/encoding/validate`);
 }
 
-/** D-171 — « Terminer et valider » (manager) : clôt puis valide un encodage encore ouvert. */
-export async function completeAndValidateMissionEncoding(missionId: number, comment: string | null): Promise<void> {
-  await apiClient.post(`/api/missions/${missionId}/encoding/complete-and-validate`, comment !== null ? { comment } : {});
+/**
+ * D-171 — « Terminer et valider » (manager) : clôt puis valide un encodage encore ouvert.
+ * `expectedRevision` = `encodingRevision` du détail de mission (409 si l'encodage a changé
+ * entre-temps) ; `takeoverConfirmed` = reprise confirmée (exigée quand une instrumentiste est affectée).
+ */
+export async function completeAndValidateMissionEncoding(
+  missionId: number,
+  body: { comment: string | null; expectedRevision: string | null; takeoverConfirmed: boolean },
+): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/complete-and-validate`, {
+    ...(body.comment !== null ? { comment: body.comment } : {}),
+    expectedRevision: body.expectedRevision,
+    takeoverConfirmed: body.takeoverConfirmed,
+  });
 }
 
 export async function rejectMissionEncoding(

@@ -251,6 +251,10 @@ enum NotificationType: string
     //                       série de modifications (regroupées, jamais une par clic) ; in-app
     //                       par défaut, push et e-mail selon ses préférences.
     case ENCODING_UPDATED_BY_SURGEON = 'ENCODING_UPDATED_BY_SURGEON'; // 27 chars
+    // D-171 — instrumentiste : un manager a repris son encodage non soumis, l'a terminé et validé
+    //                       (données conservées ; heures prestées manquantes jamais inventées,
+    //                       encore à déclarer). Mêmes canaux que ENCODING_CORRECTION_REQUESTED.
+    case ENCODING_TAKEN_OVER = 'ENCODING_TAKEN_OVER';
     // D-136 — « Rappeler les heures » (manager → instrumentiste), auparavant une chaîne libre
     // sur les lignes outbound ; même valeur pour que l'historique existant garde son type.
     case MISSION_HOURS_REMINDER = 'MISSION_HOURS_REMINDER';
@@ -324,7 +328,7 @@ enum NotificationType: string
             self::ABSENCE_OCCURRENCE_CANCELLED, self::ABSENCE_POOL_MISSION_AVAILABLE, self::ABSENCE_OCCURRENCE_RESTORED,
             self::ROOM_TAKEOVER_MISSION_OFFER, self::ENCODING_REMINDER_D1, self::MISSION_DECLARED_APPROVED,
             self::MISSION_DECLARED_REJECTED, self::ENCODING_REMINDER, self::ENCODING_ANOMALY_INSTRUMENTIST,
-            self::ENCODING_UPDATED_BY_SURGEON, self::MISSION_HOURS_REMINDER => [$i],
+            self::ENCODING_UPDATED_BY_SURGEON, self::MISSION_HOURS_REMINDER, self::ENCODING_TAKEN_OVER => [$i],
 
             self::PLANNING_MISSION_CANCELLED, self::PLANNING_CHANGE_SUMMARY, self::PLANNING_MISSION_ADDED,
             self::PLANNING_MISSION_UPDATED, self::MISSION_RESTORED, self::PLANNING_RESENT_MANUAL,

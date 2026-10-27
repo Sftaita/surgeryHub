@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Entity\Mission;
+use App\Enum\EffectiveDurationSource;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionStatus;
 
@@ -101,8 +102,9 @@ final class MissionEncodingCorrectionPolicy
      * D-171 — why the manager can NOT finish and validate the encoding himself right now
      * (null = possible). Single rule for MissionVoter::ENCODING_COMPLETE_AND_VALIDATE, the
      * 'complete_and_validate' action and MissionEncodingWorkflowService::completeAndValidate().
-     * Content rules (hours, interventions, BLOCK justification) stay checked by the
-     * transition itself, exactly as for complete() + validate().
+     * Content rules (interventions, BLOCK justification) stay checked by the transition
+     * itself, exactly as for complete() + validate(); the hours never block it (D-171: missing
+     * hours stay missing, never invented nor validated).
      */
     public static function completeAndValidateBlockedReason(Mission $mission, \DateTimeImmutable $now): ?string
     {
@@ -151,9 +153,60 @@ final class MissionEncodingCorrectionPolicy
             return $blocked;
         }
 
-        return $mission->getInstrumentist() !== null
-            ? "L'instrumentiste n'a pas encore soumis son encodage. Vous pouvez le terminer et le valider vous-même."
+        return self::isTakeover($mission)
+            ? "L'instrumentiste n'a pas encore soumis son encodage. Vous pouvez le reprendre, le terminer et le valider vous-même."
             : "L'encodage n'a pas encore été soumis. Vous pouvez le terminer et le valider vous-même.";
+    }
+
+    /**
+     * D-171 — « Terminer et valider » est ici une REPRISE : une instrumentiste est affectée et n'a
+     * pas soumis son encodage. Exige une confirmation explicite, l'audit
+     * MISSION_ENCODING_TAKEN_OVER et la notification ENCODING_TAKEN_OVER de l'instrumentiste.
+     * Jamais pour une activité déclarée sans instrumentiste (personne à qui reprendre).
+     */
+    public static function isTakeover(Mission $mission): bool
+    {
+        return $mission->getInstrumentist() !== null
+            && !$mission->isExecutedWithoutInstrumentist()
+            && in_array($mission->getStatus(), self::MANAGER_COMPLETABLE_STATUSES, true);
+    }
+
+    /**
+     * D-171 — les heures prestées manquent encore : aucune heure réelle n'est déclarée (ni début
+     * + fin, ni durée), même définition que MissionExecutionService::resolveDuration() (PLANNED =
+     * simple repli sur le planifié, jamais une saisie). Jamais vrai sans instrumentiste.
+     */
+    public static function hoursMissing(Mission $mission): bool
+    {
+        return $mission->getInstrumentist() !== null
+            && !$mission->isExecutedWithoutInstrumentist()
+            && MissionExecutionService::resolveDuration($mission)->source === EffectiveDurationSource::PLANNED;
+    }
+
+    /**
+     * D-171 — interventions et matériel validés par une reprise manager alors que les heures
+     * manquaient, et elles manquent toujours : l'instrumentiste affectée et le manager peuvent
+     * encore les déclarer malgré le verrou de l'encodage (MissionExecutionVoter::UPDATE,
+     * 'edit_hours', 'remind_hours'). Rien d'autre ne se rouvre. Jamais après facturation ni avec
+     * un calcul LOCKED ; une fois les heures déclarées, elles sont verrouillées comme le reste
+     * (une correction passe par la réouverture, D-148).
+     */
+    public static function hoursPendingAfterValidation(Mission $mission): bool
+    {
+        if ($mission->getStatus() !== MissionStatus::VALIDATED
+            || $mission->getEncodingValidatedWithoutHoursAt() === null
+            || $mission->getInvoiceGeneratedAt() !== null
+            || !self::hoursMissing($mission)) {
+            return false;
+        }
+
+        foreach ($mission->getFinancialCalculations() as $calculation) {
+            if ($calculation->getStatus() === FinancialCalculationStatus::LOCKED) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public static function reopenBlockedReason(Mission $mission): ?string

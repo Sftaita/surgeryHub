@@ -44,6 +44,12 @@ final class MissionHoursReminderPolicy
             return false;
         }
 
+        // D-171 — heures encore manquantes après une validation par reprise : elles restent
+        // déclarables par l'instrumentiste ('edit_hours'), le rappel garde donc son sens.
+        if (MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission)) {
+            return true;
+        }
+
         if (!in_array($mission->getStatus(), self::HOURS_EDITABLE_STATUSES, true)) {
             return false;
         }

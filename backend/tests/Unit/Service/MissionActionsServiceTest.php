@@ -4,6 +4,7 @@ namespace App\Tests\Unit\Service;
 
 use App\Entity\FinancialCalculation;
 use App\Entity\Mission;
+use App\Entity\MissionExecution;
 use App\Entity\User;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionStatus;
@@ -217,6 +218,62 @@ final class MissionActionsServiceTest extends TestCase
                         in_array('edit_hours', $actions, true),
                         "edit_hours — $label",
                     );
+                }
+            }
+        }
+    }
+
+    /**
+     * D-171 — heures encore manquantes après une validation par reprise manager : 'edit_hours'
+     * (et lui seul) et MissionExecutionVoter::UPDATE disent la même chose pour le manager,
+     * l'instrumentiste affectée, une autre instrumentiste et le chirurgien, quels que soient le
+     * statut, le fait « validé sans heures », les heures déjà déclarées et un calcul LOCKED.
+     */
+    public function test_hours_pending_after_a_takeover_agree_with_the_execution_voter_for_everyone(): void
+    {
+        $manager = $this->makeUser(['ROLE_MANAGER']);
+        $instr   = $this->makeUser(['ROLE_INSTRUMENTIST']);
+        $other   = $this->makeUser(['ROLE_INSTRUMENTIST']);
+        $surgeon = $this->makeUser(['ROLE_SURGEON']);
+        $executionVoter = new MissionExecutionVoter(new MissionEncodingGuard());
+
+        foreach (MissionStatus::cases() as $status) {
+            foreach ([false, true] as $validatedWithoutHours) {
+                foreach ([false, true] as $hoursDeclared) {
+                    foreach ([null, FinancialCalculationStatus::LOCKED] as $calculation) {
+                        $mission = $this->makeMission($status, $instr);
+                        $mission->setSurgeon($surgeon);
+                        if ($status === MissionStatus::VALIDATED) {
+                            $mission->setEncodingLockedAt(new \DateTimeImmutable('-1 minute'));
+                        }
+                        if ($validatedWithoutHours) {
+                            $mission->setEncodingValidatedWithoutHoursAt(new \DateTimeImmutable('-1 minute'));
+                        }
+                        if ($hoursDeclared) {
+                            $mission->setExecution((new MissionExecution())->setMission($mission)
+                                ->setActualStartAt(new \DateTimeImmutable('-3 hours'))->setActualEndAt(new \DateTimeImmutable('-1 hour')));
+                        }
+                        if ($calculation !== null) {
+                            $mission->getFinancialCalculations()->add((new FinancialCalculation())->setMission($mission)->setStatus($calculation));
+                        }
+                        $label = sprintf('%s / %s / %s / %s', $status->value, $validatedWithoutHours ? 'validé sans heures' : '-',
+                            $hoursDeclared ? 'heures déclarées' : 'sans heures', $calculation?->value ?? 'sans calcul');
+                        $pending = $status === MissionStatus::VALIDATED && $validatedWithoutHours && !$hoursDeclared && $calculation === null;
+                        self::assertSame($pending, MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission), "politique — $label");
+
+                        foreach (['manager' => $manager, 'instrumentiste' => $instr, 'autre instrumentiste' => $other, 'chirurgien' => $surgeon] as $who => $viewer) {
+                            $token = new UsernamePasswordToken($viewer, 'api', $viewer->getRoles());
+                            self::assertSame(
+                                $executionVoter->vote($token, $mission, [MissionExecutionVoter::UPDATE]) === VoterInterface::ACCESS_GRANTED,
+                                in_array('edit_hours', $this->service->allowedActions($mission, $viewer), true),
+                                "edit_hours — $who — $label",
+                            );
+                        }
+                        if ($pending) {
+                            self::assertNotContains('edit_encoding', $this->service->allowedActions($mission, $instr), "seules les heures — $label");
+                            self::assertNotContains('edit_encoding', $this->service->allowedActions($mission, $manager), "seules les heures — $label");
+                        }
+                    }
                 }
             }
         }

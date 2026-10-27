@@ -21,10 +21,13 @@ class EncodingConcurrencyException extends HttpException
 
     public const SUBJECT_INTERVENTION = 'intervention';
     public const SUBJECT_MATERIAL_LINE = 'material_line';
+    /** D-171 — the whole encoding (« Terminer et valider »: revision of what the manager saw). */
+    public const SUBJECT_ENCODING = 'encoding';
 
     private const MODIFIED = [
         self::SUBJECT_INTERVENTION => "Cette intervention a été modifiée entre-temps par une autre personne. L'encodage a été rechargé : vérifiez-le puis recommencez si nécessaire.",
         self::SUBJECT_MATERIAL_LINE => "Cette ligne de matériel a été modifiée entre-temps par une autre personne. L'encodage a été rechargé : vérifiez-la puis recommencez si nécessaire.",
+        self::SUBJECT_ENCODING => "L'encodage a été modifié entre-temps (interventions, matériel ou heures). Rien n'a été validé : relisez-le puis recommencez.",
     ];
 
     private function __construct(int $status, private readonly string $errorCode, string $message)

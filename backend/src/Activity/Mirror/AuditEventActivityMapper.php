@@ -69,6 +69,7 @@ final class AuditEventActivityMapper
         'MISSION_ENCODING_COMPLETED' => 'Encodage terminé',
         'MISSION_ENCODING_REOPENED' => 'Encodage rouvert',
         'MISSION_ENCODING_VALIDATED' => 'Encodage validé',
+        'MISSION_ENCODING_TAKEN_OVER' => 'Encodage repris par un manager',
         'MISSION_ENCODING_REJECTED' => 'Encodage refusé',
         'MISSION_ENCODING_MANUAL_REMINDER_SENT' => "Rappel d'encodage envoyé",
         'MISSION_EXECUTION_CREATED' => 'Exécution de mission créée',
@@ -254,6 +255,10 @@ final class AuditEventActivityMapper
                 $who, $m ?? 'mission', self::hm($p['fromStartAt'] ?? null), self::hm($p['toStartAt'] ?? null)) . $site,
             AuditEventType::ROOM_SLOT_MADE_AVAILABLE => sprintf('Salle de %s libérée le %s%s',
                 $p['originalSurgeonName'] ?? 'un chirurgien', self::dmy($p['occurrenceDate'] ?? null), $cause) . $site,
+            // D-171 — reprise manager d'un encodage non soumis (confirmée), avant terminer + valider.
+            AuditEventType::MISSION_ENCODING_TAKEN_OVER => sprintf("%s a repris l'encodage de %s sur la %s pour le terminer et le valider%s",
+                $who, $p['instrumentistName'] ?? "l'instrumentiste", $m ?? 'mission',
+                ($p['hoursMissing'] ?? false) === true ? ' — heures prestées encore à déclarer' : '') . $site,
             AuditEventType::ROOM_SLOT_TAKEN_OVER => sprintf('%s a repris la salle du %s', $who, self::dmy($p['occurrenceDate'] ?? null)) . $site,
             AuditEventType::PLANNING_OCCURRENCE_CANCELLED_DUE_TO_SURGEON_ABSENCE => sprintf('Occurrence du %s de %s neutralisée%s',
                 self::dmy($p['occurrenceDate'] ?? null), $p['surgeonName'] ?? 'un chirurgien', $cause),

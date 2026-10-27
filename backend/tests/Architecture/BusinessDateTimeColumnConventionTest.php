@@ -88,6 +88,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\Mission::declaredAt' => 'set from new \DateTimeImmutable() at declare time, never client input',
         'App\Entity\Mission::encodingStartedAt' => 'set from new \DateTimeImmutable() at encoding/start time (Lot 7, D-070), never client input',
         'App\Entity\Mission::executedWithoutInstrumentistAt' => 'D-155 — set from Clock::get()->now() by MissionPostDeployService::declareExecutedWithoutInstrumentist(), never client input',
+        'App\Entity\Mission::encodingValidatedWithoutHoursAt' => 'D-171 — set from Clock::get()->now() by MissionEncodingWorkflowService::completeAndValidate(), never client input',
         'App\Entity\ReleasedOperatingRoomSlot::createdAt' => 'set from new \DateTimeImmutable() in the constructor (Lot D), never client input — not TimestampableTrait since no updatedAt is needed on an immutable, never-updated row',
         'App\Entity\FirmInvoice::generatedAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\FirmInvoice::sentAt' => 'set from new \DateTimeImmutable()',

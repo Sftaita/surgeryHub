@@ -86,5 +86,28 @@ final class MissionDetailDto
          * Null when validation is offered or moot (MissionEncodingCorrectionPolicy).
          */
         public readonly ?string $encodingValidationBlockedReason = null,
+        /**
+         * D-171 — managers only, when « Terminer et valider » is offered: fingerprint of the
+         * encoding as read now (EncodingTakeoverService::revision()), sent back as
+         * `expectedRevision`; a different one at confirmation time means someone changed it.
+         */
+        public readonly ?string $encodingRevision = null,
+        /**
+         * D-171 — managers only, when « Terminer et valider » is a takeover (instrumentist
+         * assigned, encoding not submitted): {instrumentistName, hoursMissing}. The dialog then
+         * requires an explicit confirmation (`takeoverConfirmed`).
+         */
+        public readonly ?array $encodingTakeover = null,
+        /**
+         * D-171 — managers and the assigned instrumentist: the last takeover of this encoding
+         * {byName, at, hoursMissing} (audit MISSION_ENCODING_TAKEN_OVER), null if none.
+         */
+        public readonly ?array $lastEncodingTakeover = null,
+        /**
+         * D-171 — managers and the assigned instrumentist: interventions and material were
+         * validated while the worked hours were missing, and they still are — only the hours
+         * remain declarable ('edit_hours'). Never invented, never validated automatically.
+         */
+        public readonly bool $hoursPendingAfterValidation = false,
     ) {}
 }

@@ -300,13 +300,15 @@ export function useMissionManagerActions(
         <CompleteAndValidateEncodingDialog
           open={completeValidateOpen}
           missionId={missionId}
-          withoutInstrumentist={!!data.executedWithoutInstrumentist}
+          revision={data.encodingRevision ?? null}
+          takeover={data.encodingTakeover ?? null}
           onClose={() => setCompleteValidateOpen(false)}
           onDone={async () => {
             setCompleteValidateOpen(false);
             toast.success("Encodage terminé et validé.");
             await refreshAfterAction();
           }}
+          onConflict={refreshAfterAction}
         />
       )}
       {canEdit && openEdit && (

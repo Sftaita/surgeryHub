@@ -503,10 +503,24 @@ describe("ManagerMissionDrawer — terminer et valider (D-171)", () => {
     renderDrawer(baseMission({
       status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "submit", "complete_and_validate"],
       executedWithoutInstrumentist: { declaredAt: "2026-08-10T12:00:00+02:00", declaredByName: "Jean Dupont" },
+      encodingRevision: "rev-3", encodingTakeover: null,
     }));
     await user.click(await screen.findByTestId("manager-complete-and-validate"));
     await user.click(screen.getByTestId("confirm-complete-and-validate"));
-    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/complete-and-validate", {}));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/complete-and-validate", { expectedRevision: "rev-3", takeoverConfirmed: false }));
+  });
+
+  it("reprise : la confirmation explicite est envoyée au backend", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "complete_and_validate"],
+      encodingRevision: "rev-4", encodingTakeover: { instrumentistName: "Marie Dupont", hoursMissing: false },
+    }));
+    await user.click(await screen.findByTestId("manager-complete-and-validate"));
+    expect(screen.getByTestId("confirm-complete-and-validate")).toBeDisabled();
+    await user.click(screen.getByTestId("complete-and-validate-takeover-confirm"));
+    await user.click(screen.getByTestId("confirm-complete-and-validate"));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/complete-and-validate", { expectedRevision: "rev-4", takeoverConfirmed: true }));
   });
 
   it("jamais sans l'action servie par le backend", async () => {

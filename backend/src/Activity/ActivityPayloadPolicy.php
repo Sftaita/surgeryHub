@@ -68,6 +68,8 @@ final class ActivityPayloadPolicy
         // D-153 — before / after of the real hours (correction history).
         'previousActualStartAt', 'actualStartAt', 'previousActualEndAt', 'actualEndAt',
         'previousActualDurationMinutes', 'previousHoursSource', 'hoursSource',
+        // D-171 — reprise manager d'un encodage non soumis.
+        'hoursMissing',
     ];
 
     /** Additionally allowed for PRICING / BILLING / PAYMENTS mirrors only. */

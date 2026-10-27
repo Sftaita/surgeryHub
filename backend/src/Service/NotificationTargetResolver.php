@@ -102,7 +102,7 @@ final class NotificationTargetResolver
             if (in_array($type, [NotificationType::ENCODING_SUBMITTED, NotificationType::ENCODING_ANOMALY_RESOLVED, NotificationType::ENCODING_CORRECTION_REQUESTED], true) && $isSurgeon) {
                 return sprintf('/app/s/missions/%d/encoding', $mission->getId());
             }
-            if (in_array($type, [NotificationType::ENCODING_ANOMALY_INSTRUMENTIST, NotificationType::ENCODING_CORRECTION_REQUESTED, NotificationType::ENCODING_UPDATED_BY_SURGEON], true) && $isInstrumentist) {
+            if (in_array($type, [NotificationType::ENCODING_ANOMALY_INSTRUMENTIST, NotificationType::ENCODING_CORRECTION_REQUESTED, NotificationType::ENCODING_UPDATED_BY_SURGEON, NotificationType::ENCODING_TAKEN_OVER], true) && $isInstrumentist) {
                 return sprintf('/app/i/missions/%d/encoding', $mission->getId());
             }
         }

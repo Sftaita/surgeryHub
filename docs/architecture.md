@@ -4386,3 +4386,14 @@ publication.
   ni affectation ; le manager annule d'abord la déclaration (motif, contenu conservé), puis
   affecte. Le contenu est repris tel quel par l'instrumentiste ; le chirurgien garde la
   correction D-154 (version optimiste), jamais les heures ni la soumission.
+- **Reprise manager** (instrumentiste affectée, encodage non soumis) :
+  `MissionEncodingCorrectionPolicy::isTakeover()` ; confirmation explicite (`takeoverConfirmed`),
+  empreinte `EncodingTakeoverService::revision()` comparée sous le verrou de la mission
+  (`MissionAssignmentService::inLockedChange()`, 409 si l'encodage a changé), audit
+  `MISSION_ENCODING_TAKEN_OVER`, notification `ENCODING_TAKEN_OVER` par
+  `MissionLifecycleChangedMessageHandler` après la validation.
+- **Heures indépendantes de la validation** : la validation manager (avec ou sans reprise) n'exige
+  jamais les heures et n'en crée aucune. Le fait `Mission.encodingValidatedWithoutHoursAt` +
+  `hoursPendingAfterValidation()` laissent les seules heures déclarables tant qu'elles manquent
+  (`MissionExecutionVoter::UPDATE`, `edit_hours`, `remind_hours`, une seule règle) ; le calcul
+  financier continue de refuser une prestation sans heures réelles.

@@ -655,6 +655,13 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             {validationBlockedReason}
           </Box>
         )}
+        {/* D-171 — reprise manager et heures restées à déclarer : servies par le backend, jamais déduites. */}
+        {missionQuery.data?.lastEncodingTakeover && (
+          <Box data-testid="drawer-encoding-taken-over" sx={{ flexBasis: "100%", order: -1, padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
+            Encodage repris par {missionQuery.data.lastEncodingTakeover.byName ?? "un manager"} le {formatDateTime(missionQuery.data.lastEncodingTakeover.at)}.
+            {missionQuery.data.hoursPendingAfterValidation ? " Heures prestées encore à déclarer (jamais inventées)." : ""}
+          </Box>
+        )}
         {(canReturnEncoding || canReopenEncoding) && (
           <Box
             component="button"
@@ -730,13 +737,15 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       <CompleteAndValidateEncodingDialog
         open={completeValidateOpen}
         missionId={item.missionId}
-        withoutInstrumentist={withoutInstrumentist}
+        revision={missionQuery.data?.encodingRevision ?? null}
+        takeover={missionQuery.data?.encodingTakeover ?? null}
         onClose={() => setCompleteValidateOpen(false)}
         onDone={async () => {
           setCompleteValidateOpen(false);
           toast.success("Encodage terminé et validé.");
           await refreshAfterAction();
         }}
+        onConflict={async () => { await refreshAfterAction(); }}
       />
 
       <EncodingCorrectionDialog
