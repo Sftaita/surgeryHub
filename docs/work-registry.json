@@ -641,6 +641,9 @@
         ],
         "worktrees": [
           "SurgicalHub-encodage-chirurgien"
+        ],
+        "prs": [
+          47
         ]
       },
       "nextAction": "PR ouverte ; déploiement uniquement après accord final sur le rapport d'écart ; #1079 validée ensuite via l'interface.",
