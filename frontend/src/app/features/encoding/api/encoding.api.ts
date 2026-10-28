@@ -67,6 +67,13 @@ function ifMatch(expectedVersion?: number | null): [] | [{ headers: Record<strin
 
 export const ENCODING_CONCURRENT_MODIFICATION = "ENCODING_CONCURRENT_MODIFICATION";
 
+/**
+ * D-171 — validation refusée (409) parce que l'encodage a changé depuis sa lecture : la
+ * confirmation donnée ne vaut que pour la révision relue, jamais pour la nouvelle.
+ */
+export const ENCODING_CHANGED_BEFORE_VALIDATION =
+  "L'encodage a été modifié depuis votre dernière consultation. Consultez les modifications avant de recommencer la validation.";
+
 export function isEncodingConcurrentModification(err: unknown): boolean {
   return (err as { response?: { data?: { error?: { code?: string } } } })?.response?.data?.error?.code === ENCODING_CONCURRENT_MODIFICATION;
 }

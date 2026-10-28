@@ -2,7 +2,7 @@ import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Alert, Button, Checkbox, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, TextField, Typography } from "@mui/material";
 
-import { completeAndValidateMissionEncoding } from "../api/encoding.api";
+import { completeAndValidateMissionEncoding, isEncodingConcurrentModification } from "../api/encoding.api";
 import { encodingIncompleteText } from "../api/encodingIncomplete";
 
 type Props = {
@@ -14,11 +14,12 @@ type Props = {
   takeover: { instrumentistName: string; hoursMissing: boolean } | null;
   onClose: () => void;
   onDone: () => void | Promise<void>;
-  /** L'encodage a changé entre-temps (409) : relire la mission pour une nouvelle révision. */
+  /**
+   * L'encodage a changé entre-temps (409) : la fenêtre s'est déjà refermée, sa confirmation est
+   * annulée ; l'écran relit la mission et explique pourquoi (ENCODING_CHANGED_BEFORE_VALIDATION).
+   */
   onConflict?: () => void | Promise<void>;
 };
-
-const isConflict = (err: any) => err?.response?.data?.error?.code === "ENCODING_CONCURRENT_MODIFICATION";
 
 function errorText(err: any): string {
   if (err?.response?.status === 403) return "Action impossible pour cette mission (statut ou droits modifiés entre-temps).";
@@ -39,10 +40,14 @@ function errorText(err: any): string {
 export default function CompleteAndValidateEncodingDialog({ open, missionId, revision, takeover, onClose, onDone, onConflict }: Props) {
   const [comment, setComment] = React.useState("");
   const [confirmed, setConfirmed] = React.useState(false);
+  // La révision confirmée est celle que le manager avait sous les yeux À L'OUVERTURE : une relecture
+  // de la mission pendant que la fenêtre est ouverte ne la remplace jamais (sinon une confirmation
+  // donnée pour un contenu vaudrait pour un autre, jamais relu).
+  const [openedRevision, setOpenedRevision] = React.useState<string | null>(revision);
   const mutation = useMutation({
     mutationFn: () => completeAndValidateMissionEncoding(missionId, {
       comment: comment.trim() === "" ? null : comment.trim(),
-      expectedRevision: revision,
+      expectedRevision: openedRevision,
       takeoverConfirmed: takeover !== null && confirmed,
     }),
     onSuccess: async () => {
@@ -51,9 +56,24 @@ export default function CompleteAndValidateEncodingDialog({ open, missionId, rev
       await onDone();
     },
     onError: async (err) => {
-      if (isConflict(err)) await onConflict?.();
+      if (!isEncodingConcurrentModification(err)) return;
+      // Conflit : le contexte de confirmation est annulé, pas seulement le bouton désactivé.
+      setComment("");
+      setConfirmed(false);
+      mutation.reset();
+      onClose();
+      await onConflict?.();
     },
   });
+
+  // Chaque ouverture repart de zéro, sur la révision relue à cet instant.
+  React.useEffect(() => {
+    if (!open) return;
+    setOpenedRevision(revision);
+    setComment("");
+    setConfirmed(false);
+    mutation.reset();
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const close = () => {
     if (mutation.isPending) return;

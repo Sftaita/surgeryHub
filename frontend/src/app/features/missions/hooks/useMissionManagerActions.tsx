@@ -23,6 +23,8 @@ import {
   rejectMissionEncoding,
   reopenMissionEncoding,
   validateMissionEncoding,
+  isEncodingConcurrentModification,
+  ENCODING_CHANGED_BEFORE_VALIDATION,
 } from "../../encoding/api/encoding.api";
 import InterventionsSection from "../../encoding/components/InterventionsSection";
 import CompleteAndValidateEncodingDialog from "../../encoding/components/CompleteAndValidateEncodingDialog";
@@ -147,7 +149,14 @@ export function useMissionManagerActions(
       await refreshAfterAction();
       toast.success("Encodage validé.");
     },
-    onError: (err: any) => {
+    onError: async (err: any) => {
+      // D-171 — révision obsolète : jamais validée ; la mission est relue avant toute nouvelle tentative.
+      if (isEncodingConcurrentModification(err)) {
+        setValidateConfirmOpen(false);
+        toast.warning(ENCODING_CHANGED_BEFORE_VALIDATION);
+        await refreshAfterAction();
+        return;
+      }
       toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? "Erreur lors de la validation.");
     },
   });
@@ -308,7 +317,10 @@ export function useMissionManagerActions(
             toast.success("Encodage terminé et validé.");
             await refreshAfterAction();
           }}
-          onConflict={refreshAfterAction}
+          onConflict={async () => {
+            toast.warning(ENCODING_CHANGED_BEFORE_VALIDATION);
+            await refreshAfterAction();
+          }}
         />
       )}
       {canEdit && openEdit && (

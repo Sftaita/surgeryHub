@@ -322,9 +322,11 @@ final class EncodingWithoutInstrumentistD171Test extends WebTestCase
         self::assertSame('ENCODING_CONCURRENT_MODIFICATION', json_decode((string) $stale->getContent(), true)['error']['code']);
         $this->em->clear();
         self::assertSame(MissionStatus::ASSIGNED, $this->em->find(Mission::class, $id)->getStatus());
+        self::assertNull($this->em->find(Mission::class, $id)->getEncodingLockedAt(), 'aucun verrouillage');
         foreach ([AuditEventType::MISSION_ENCODING_TAKEN_OVER, AuditEventType::MISSION_ENCODING_COMPLETED, AuditEventType::MISSION_ENCODING_VALIDATED] as $type) {
             self::assertSame([], $this->audits($id, $type), 'rien d\'écrit : ' . $type->value);
         }
+        self::assertSame([], $this->sentLifecycle(MissionChangeType::ENCODING_TAKEN_OVER), 'aucune notification de reprise');
 
         // Relue puis confirmée : reprise, fin et validation, sans aucune heure exigée ni créée.
         $fresh = $this->detail($client, $managerToken, $id);
@@ -484,6 +486,50 @@ final class EncodingWithoutInstrumentistD171Test extends WebTestCase
         self::assertSame($mission->getSurgeon()->getDrName(), $item['submittedBy']['name']);
         self::assertSame(Response::HTTP_OK, $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/validate")->getStatusCode());
         self::assertSame(0, $this->rows('mission_execution', $id));
+    }
+
+    /**
+     * D-171 — « Valider l'encodage » sur une mission soumise : une révision lue avant une
+     * correction du chirurgien n'est jamais validée (409), rien n'est écrit ; la révision relue l'est.
+     */
+    public function test_validating_a_submitted_encoding_with_a_stale_revision_is_refused_without_any_write(): void
+    {
+        $client = $this->boot();
+        $surgeon = $this->user('ROLE_SURGEON', 'Arnaud');
+        $manager = $this->user('ROLE_MANAGER', 'Sophie');
+        $catalogue = $this->catalogue();
+        $mission = $this->mission($surgeon);
+        $id = (int) $mission->getId();
+
+        $surgeonToken = $this->login($client, $surgeon);
+        self::assertSame(Response::HTTP_OK, $this->send($client, $surgeonToken, 'POST', "/api/missions/$id/declare-executed-without-instrumentist")->getStatusCode());
+        $interventionId = $this->encode($client, $surgeonToken, $id, $catalogue);
+        self::assertSame(Response::HTTP_OK, $this->send($client, $surgeonToken, 'POST', "/api/missions/$id/encoding/complete", [])->getStatusCode());
+
+        $managerToken = $this->login($client, $manager);
+        $read = $this->detail($client, $managerToken, $id)['encodingRevision'];
+        self::assertNotNull($read);
+
+        // Le chirurgien corrige encore son encodage soumis (une ligne de plus) avant la validation.
+        $line = $this->send($client, $surgeonToken, 'POST', "/api/missions/$id/material-lines", ['itemId' => $catalogue[2]->getId(), 'missionInterventionId' => $interventionId, 'quantity' => '1']);
+        self::assertSame(Response::HTTP_CREATED, $line->getStatusCode(), (string) $line->getContent());
+
+        $stale = $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/validate", ['expectedRevision' => $read]);
+        self::assertSame(Response::HTTP_CONFLICT, $stale->getStatusCode(), (string) $stale->getContent());
+        self::assertSame('ENCODING_CONCURRENT_MODIFICATION', json_decode((string) $stale->getContent(), true)['error']['code']);
+        $this->em->clear();
+        $unchanged = $this->em->find(Mission::class, $id);
+        self::assertSame(MissionStatus::SUBMITTED, $unchanged->getStatus());
+        self::assertNull($unchanged->getEncodingLockedAt());
+        self::assertSame([], $this->audits($id, AuditEventType::MISSION_ENCODING_VALIDATED));
+
+        $fresh = $this->detail($client, $managerToken, $id)['encodingRevision'];
+        self::assertNotSame($read, $fresh);
+        self::assertSame(Response::HTTP_OK, $this->send($client, $managerToken, 'POST', "/api/missions/$id/encoding/validate", ['expectedRevision' => $fresh])->getStatusCode());
+        $this->em->clear();
+        self::assertSame(MissionStatus::VALIDATED, $this->em->find(Mission::class, $id)->getStatus());
+        self::assertSame(2, $this->rows('material_line', $id), 'données conservées');
+        self::assertCount(1, $this->audits($id, AuditEventType::MISSION_ENCODING_VALIDATED));
     }
 
     // ── Affectation d'une instrumentiste après le début de l'encodage chirurgien ──

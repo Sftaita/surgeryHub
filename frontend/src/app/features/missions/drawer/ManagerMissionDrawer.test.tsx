@@ -24,8 +24,9 @@ vi.mock("../../../api/apiClient", () => ({
 }));
 
 const toastSuccess = vi.fn();
+const toastWarning = vi.fn();
 vi.mock("../../../ui/toast/useToast", () => ({
-  useToast: () => ({ success: toastSuccess, error: vi.fn(), warning: vi.fn() }),
+  useToast: () => ({ success: toastSuccess, error: vi.fn(), warning: toastWarning }),
 }));
 
 function baseMission(overrides: Partial<Record<string, unknown>> = {}) {
@@ -87,6 +88,7 @@ beforeEach(() => {
   apiGetMock.mockReset();
   apiPostMock.mockReset();
   toastSuccess.mockReset();
+  toastWarning.mockReset();
 });
 
 describe("ManagerMissionDrawer — annulation de mission (Point 5)", () => {
@@ -588,6 +590,39 @@ describe("ManagerMissionDrawer — terminer et valider (D-171)", () => {
     await user.click(screen.getByTestId("complete-and-validate-takeover-confirm"));
     await user.click(screen.getByTestId("confirm-complete-and-validate"));
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/complete-and-validate", { expectedRevision: "rev-4", takeoverConfirmed: true }));
+  });
+
+  it("reprise + 409 (encodage modifié) : fenêtre fermée, confirmation annulée, mission relue ; nouvelle confirmation exigée", async () => {
+    const user = userEvent.setup();
+    const conflict = { response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "modifié" } } } };
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "complete_and_validate"],
+      encodingRevision: "rev-4", encodingTakeover: { instrumentistName: "Marie Dupont", hoursMissing: false },
+    }));
+    apiPostMock.mockRejectedValueOnce(conflict);
+    await user.click(await screen.findByTestId("manager-complete-and-validate"));
+    await user.click(screen.getByTestId("complete-and-validate-takeover-confirm"));
+    const reads = apiGetMock.mock.calls.filter(([u]) => u === "/api/missions/42").length;
+    await user.click(screen.getByTestId("confirm-complete-and-validate"));
+
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledWith("L'encodage a été modifié depuis votre dernière consultation. Consultez les modifications avant de recommencer la validation."));
+    await waitFor(() => expect(screen.queryByTestId("confirm-complete-and-validate")).toBeNull());
+    await waitFor(() => expect(apiGetMock.mock.calls.filter(([u]) => u === "/api/missions/42").length).toBeGreaterThan(reads));
+
+    await user.click(await screen.findByTestId("manager-complete-and-validate"));
+    expect(screen.getByTestId("complete-and-validate-takeover-confirm")).not.toBeChecked();
+    expect(screen.getByTestId("confirm-complete-and-validate")).toBeDisabled();
+  });
+
+  it("« Valider l'encodage » avec une révision obsolète (409) : jamais validé, message explicite, confirmation refermée", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], encodingRevision: "rev-9" }));
+    apiPostMock.mockRejectedValueOnce({ response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "modifié" } } } });
+    await user.click(await screen.findByRole("button", { name: "Valider l'encodage" }));
+    await user.click(screen.getByRole("button", { name: "Valider" }));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/validate", { expectedRevision: "rev-9" }));
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledWith(expect.stringContaining("modifié depuis votre dernière consultation")));
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 
   it("jamais sans l'action servie par le backend", async () => {
