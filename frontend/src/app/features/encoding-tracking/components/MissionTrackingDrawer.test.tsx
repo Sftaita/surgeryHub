@@ -167,14 +167,15 @@ describe("MissionTrackingDrawer", () => {
 
   it("Valider est actif quand allowedActions l'autorise, et appelle validateMissionEncoding", async () => {
     const user = userEvent.setup();
-    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] });
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], encodingRevision: "rev-9" });
     renderDrawer(makeItem());
 
     const btn = await screen.findByRole("button", { name: "Valider l'encodage" });
     await waitFor(() => expect(btn).toBeEnabled());
     await user.click(btn);
 
-    await waitFor(() => expect(validateMissionEncodingMock).toHaveBeenCalledWith(42));
+    // D-171 — la validation porte sur l'encodage relu (409 s'il a changé entre-temps).
+    await waitFor(() => expect(validateMissionEncodingMock).toHaveBeenCalledWith(42, "rev-9"));
   });
 
   it("Relancer n'apparaît que si allowedActions l'autorise", async () => {
