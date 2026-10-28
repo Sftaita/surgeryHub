@@ -145,6 +145,7 @@ final class MissionLifecycleChangedMessageHandler
             MissionChangeType::ENCODING_COMPLETED => $this->handleEncodingCompleted($message),
             MissionChangeType::ENCODING_REJECTED,
             MissionChangeType::ENCODING_REOPENED => $this->handleEncodingCorrectionRequested($message),
+            MissionChangeType::ENCODING_TAKEN_OVER => $this->handleEncodingTakenOver($message),
             MissionChangeType::ASSIGNMENT_REVIEW_REQUESTED => $this->handleAssignmentReviewRequested($message),
             default => $this->logger->info('MissionLifecycleChanged: unhandled changeType — forward-compatible skip', [
                 'changeType' => $message->changeType->value,
@@ -278,6 +279,59 @@ final class MissionLifecycleChangedMessageHandler
             ));
         } catch (\Throwable $e) {
             $this->logger->error('MissionLifecycleChanged::' . $message->changeType->value . ': dispatch failed', [
+                'missionId' => $mission->getId(), 'instrumentistId' => $instrumentist->getId(), 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    // ── ENCODING_TAKEN_OVER → ENCODING_TAKEN_OVER (D-171) ─────────────────────
+
+    /**
+     * D-171 — l'instrumentiste affectée apprend qu'un manager a repris son encodage non soumis,
+     * l'a terminé et validé : ses données sont conservées ; si ses heures prestées manquaient,
+     * elles restent à déclarer (jamais inventées). Dispatché après la validation seulement. Via
+     * NotificationDispatcher (in-app + push selon ses préférences) ; un épisode par reprise.
+     * Le destinataire est l'instrumentiste nommée dans l'audit de reprise, jamais déduite après coup.
+     */
+    private function handleEncodingTakenOver(MissionLifecycleChangedMessage $message): void
+    {
+        $mission = $this->em->find(Mission::class, $message->missionId);
+        $instrumentistId = $message->payload['instrumentistId'] ?? null;
+        $instrumentist = $instrumentistId !== null ? $this->em->find(User::class, (int) $instrumentistId) : null;
+        if (!$mission instanceof Mission || !$instrumentist instanceof User) {
+            return;
+        }
+
+        $hoursMissing = ($message->payload['hoursMissing'] ?? false) === true;
+        $payload = [
+            'missionId'    => $mission->getId(),
+            'missionDate'  => $mission->getStartAt()?->format('d/m/Y'),
+            'siteName'     => $mission->getSite()?->getName(),
+            'managerName'  => $message->payload['actorName'] ?? null,
+            'hoursMissing' => $hoursMissing,
+        ];
+
+        $type = NotificationType::ENCODING_TAKEN_OVER;
+        try {
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $instrumentist,
+                type: $type,
+                inAppPayload: $payload,
+                mission: $mission,
+                push: new PushContent(
+                    'Encodage repris et validé',
+                    sprintf(
+                        'Mission #%d du %s : encodage terminé et validé par la coordination.%s',
+                        (int) $mission->getId(),
+                        $payload['missionDate'] ?? '—',
+                        $hoursMissing ? ' Vos heures prestées restent à déclarer.' : '',
+                    ),
+                    ['missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve($type, $mission, $instrumentist)],
+                ),
+                episodeRef: sprintf('encoding_taken_over:%d:%s', (int) $mission->getId(), $message->occurredAt->format('Y-m-d\TH:i:s.u')),
+            ));
+        } catch (\Throwable $e) {
+            $this->logger->error('MissionLifecycleChanged::ENCODING_TAKEN_OVER: dispatch failed', [
                 'missionId' => $mission->getId(), 'instrumentistId' => $instrumentist->getId(), 'error' => $e->getMessage(),
             ]);
         }

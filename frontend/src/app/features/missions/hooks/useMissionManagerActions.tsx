@@ -23,8 +23,11 @@ import {
   rejectMissionEncoding,
   reopenMissionEncoding,
   validateMissionEncoding,
+  isEncodingConcurrentModification,
+  ENCODING_CHANGED_BEFORE_VALIDATION,
 } from "../../encoding/api/encoding.api";
 import InterventionsSection from "../../encoding/components/InterventionsSection";
+import CompleteAndValidateEncodingDialog from "../../encoding/components/CompleteAndValidateEncodingDialog";
 import { reassignMission } from "../../planning-v2/api/planningV2.api";
 import { ReassignMissionDialog } from "../../planning-v2/components/ReassignMissionDialog";
 import EditServiceHoursDialog from "../components/EditServiceHoursDialog";
@@ -48,6 +51,7 @@ export interface MissionActionDescriptor {
     | "approve"
     | "rejectEncoding"
     | "validateEncoding"
+    | "completeAndValidate"
     | "reopenEncoding"
     | "edit"
     | "publish"
@@ -91,6 +95,7 @@ export function useMissionManagerActions(
   const [cancelReason, setCancelReason] = React.useState("");
   // D-155 — activité exécutée sans instrumentiste : déclarer / annuler une déclaration erronée.
   const [declareOpen, setDeclareOpen] = React.useState(false);
+  const [completeValidateOpen, setCompleteValidateOpen] = React.useState(false);
   const [cancelDeclarationOpen, setCancelDeclarationOpen] = React.useState(false);
   const [cancelDeclarationReason, setCancelDeclarationReason] = React.useState("");
   // Corrections ponctuelles servies par le backend (reassign, D-153 edit_hours / edit_encoding).
@@ -139,12 +144,19 @@ export function useMissionManagerActions(
   /** Lot 7 (D-070) — validate/reject/reopen de l'encodage, distincts d'approve/reject
    *  ci-dessus qui ne concernent que le statut DECLARED. */
   const validateEncodingMutation = useMutation({
-    mutationFn: async () => validateMissionEncoding(missionId),
+    mutationFn: async () => validateMissionEncoding(missionId, data?.encodingRevision ?? null),
     onSuccess: async () => {
       await refreshAfterAction();
       toast.success("Encodage validé.");
     },
-    onError: (err: any) => {
+    onError: async (err: any) => {
+      // D-171 — révision obsolète : jamais validée ; la mission est relue avant toute nouvelle tentative.
+      if (isEncodingConcurrentModification(err)) {
+        setValidateConfirmOpen(false);
+        toast.warning(ENCODING_CHANGED_BEFORE_VALIDATION);
+        await refreshAfterAction();
+        return;
+      }
       toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? "Erreur lors de la validation.");
     },
   });
@@ -239,6 +251,8 @@ export function useMissionManagerActions(
   const canReject = allowed.includes("reject") && data?.status === "DECLARED";
   const canRejectEncoding = allowed.includes("reject") && data?.status === "SUBMITTED";
   const canValidateEncoding = allowed.includes("validate");
+  // D-171 — terminer et valider soi-même un encodage encore ouvert (MissionVoter::ENCODING_COMPLETE_AND_VALIDATE).
+  const canCompleteAndValidate = allowed.includes("complete_and_validate");
   const canReopenEncoding = allowed.includes("reopen");
   const canCancel = allowed.includes("cancel");
   const canDeclareWithoutInstrumentist = allowed.includes("declare_executed_without_instrumentist");
@@ -261,7 +275,7 @@ export function useMissionManagerActions(
   const dialogOpen =
     openEdit || openPublish || rejectConfirmOpen || approveConfirmOpen || validateConfirmOpen ||
     rejectEncodingOpen || reopenOpen || cancelConfirmOpen || declareOpen || cancelDeclarationOpen ||
-    reassignOpen || hoursOpen || encodingEditOpen;
+    reassignOpen || hoursOpen || encodingEditOpen || completeValidateOpen;
 
   const actions: MissionActionDescriptor[] = [];
   if (canDeclareWithoutInstrumentist) actions.push({ key: "declareWithoutInstrumentist", label: "Déclarer l'activité réalisée sans instrumentiste", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-declare-without-instrumentist", onClick: () => setDeclareOpen(true) });
@@ -271,6 +285,7 @@ export function useMissionManagerActions(
   if (canApprove) actions.push({ key: "approve", label: "Approuver", tone: "success", contained: true, disabled: anyLoading, onClick: () => setApproveConfirmOpen(true) });
   if (canRejectEncoding) actions.push({ key: "rejectEncoding", label: "Rejeter l'encodage", tone: "danger", contained: false, disabled: anyLoading, onClick: () => setRejectEncodingOpen(true) });
   if (canValidateEncoding) actions.push({ key: "validateEncoding", label: "Valider l'encodage", tone: "success", contained: true, disabled: anyLoading, onClick: () => setValidateConfirmOpen(true) });
+  if (canCompleteAndValidate) actions.push({ key: "completeAndValidate", label: "Terminer et valider", tone: "success", contained: true, disabled: anyLoading, testId: "manager-complete-and-validate", onClick: () => setCompleteValidateOpen(true) });
   if (canReopenEncoding) actions.push({ key: "reopenEncoding", label: "Rouvrir l'encodage", tone: "warning", contained: false, disabled: anyLoading, onClick: () => setReopenOpen(true) });
   if (canEdit) actions.push({ key: "edit", label: "Modifier", tone: "neutral", contained: false, disabled: false, onClick: () => setOpenEdit(true) });
   if (canPublish) actions.push({ key: "publish", label: "Diffuser / attribuer", tone: "primary", contained: true, disabled: false, onClick: () => setOpenPublish(true) });
@@ -290,6 +305,24 @@ export function useMissionManagerActions(
 
   const dialogs = data ? (
     <>
+      {canCompleteAndValidate && (
+        <CompleteAndValidateEncodingDialog
+          open={completeValidateOpen}
+          missionId={missionId}
+          revision={data.encodingRevision ?? null}
+          takeover={data.encodingTakeover ?? null}
+          onClose={() => setCompleteValidateOpen(false)}
+          onDone={async () => {
+            setCompleteValidateOpen(false);
+            toast.success("Encodage terminé et validé.");
+            await refreshAfterAction();
+          }}
+          onConflict={async () => {
+            toast.warning(ENCODING_CHANGED_BEFORE_VALIDATION);
+            await refreshAfterAction();
+          }}
+        />
+      )}
       {canEdit && openEdit && (
         <EditMissionDialog open={openEdit} onClose={() => setOpenEdit(false)} mission={data} />
       )}

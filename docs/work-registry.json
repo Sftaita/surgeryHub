@@ -622,6 +622,46 @@
       "refs": {},
       "nextAction": "Vérifier si D-158 l'a corrigée ; sinon décrire et prioriser.",
       "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-171",
+      "title": "Encodage sans instrumentiste et reprise manager : « Terminer et valider », blocages expliqués",
+      "description": "Cause du bouton « Valider l'encodage » grisé sur #1079 : validate exige SUBMITTED et l'action submit servie au manager n'était affichée nulle part. Ajout de POST .../encoding/complete-and-validate, raison du blocage servie, auteur de la soumission dans le suivi. Reprise manager d'un encodage non soumis (confirmation explicite, empreinte anti-concurrence, audit MISSION_ENCODING_TAKEN_OVER, notification ENCODING_TAKEN_OVER), validation indépendante des heures (jamais inventées ; encore déclarables après validation). En-têtes D-153/154/155 corrigés après vérification en production.",
+      "kind": "fix",
+      "priority": "P1",
+      "userImpact": "Les managers ne peuvent pas valider les missions encodées sans instrumentiste (#1079).",
+      "status": "teste",
+      "refs": {
+        "branches": [
+          "feat/encodage-sans-instrumentiste"
+        ],
+        "decision": "D-171",
+        "migrations": [
+          "Version20261027090000"
+        ],
+        "worktrees": [
+          "SurgicalHub-encodage-chirurgien"
+        ],
+        "prs": [
+          47
+        ]
+      },
+      "nextAction": "PR ouverte ; déploiement uniquement après accord final sur le rapport d'écart ; #1079 validée ensuite via l'interface.",
+      "lastReviewed": "2026-10-27",
+      "pendingOps": [
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "description": "Migration additive Version20261027090000 (mission.encoding_validated_without_hours_at) à jouer au déploiement",
+          "validation": "accord final de déploiement"
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Après déploiement : « Terminer et valider » de la mission #1079 par un manager depuis l'interface, sans script ni modification des données existantes",
+          "validation": "utilisateur"
+        }
+      ]
     }
   ]
 }

@@ -98,6 +98,14 @@ final readonly class EncodingTrackingItem
          */
         public bool $executedWithoutInstrumentist = false,
         public ?string $executedWithoutInstrumentistByName = null,
+
+        /**
+         * D-171 — qui a terminé (soumis) l'encodage en dernier : nom et rôle sur CETTE mission
+         * (INSTRUMENTIST, SURGEON ou MANAGER), lus sur le dernier audit
+         * MISSION_ENCODING_COMPLETED. null tant que rien n'a été soumis.
+         */
+        public ?string $submittedByName = null,
+        public ?string $submittedByRole = null,
     ) {}
 
     /** L'écart entre planifié et réel n'a de sens que si le réel existe. */

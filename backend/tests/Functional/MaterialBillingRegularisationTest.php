@@ -677,7 +677,12 @@ final class MaterialBillingRegularisationTest extends WebTestCase
 
     // ── D-142 × D-143 : heures réelles obligatoires ──────────────────────
 
-    public function test_mission_without_actual_hours_is_never_shown_as_unblocked_by_fixing_the_material(): void
+    /**
+     * D-171 — des heures réelles manquantes ne bloquent plus la facturation firme : seule la
+     * prestation horaire de l'instrumentiste reste en attente. Le matériel non tarifé est donc la
+     * seule cause de blocage, et le corriger rend la mission calculable (jamais calculée seule).
+     */
+    public function test_missing_actual_hours_never_block_the_firm_billing_of_a_mission(): void
     {
         [$client, $token] = $this->boot();
         $sn = $this->firm('Smith & Nephew');
@@ -691,28 +696,20 @@ final class MaterialBillingRegularisationTest extends WebTestCase
         $r = $this->calculate($client, $token, $m);
         self::assertSame(422, $r->getStatusCode());
         $codes = array_column(json_decode($r->getContent(), true)['error']['violations'], 'code');
-        sort($codes);
-        self::assertSame(['MISSING_ACTUAL_HOURS', 'MISSING_FIRM_MATERIAL_RATE'], $codes, 'deux causes distinctes, jamais fusionnées');
+        self::assertSame(['MISSING_FIRM_MATERIAL_RATE'], $codes, 'les heures manquantes ne sont plus une anomalie bloquante');
 
-        // Matériel non décidé : bloquée par lui ET par les heures — jamais « seule cause ».
         $row = $this->regRow($this->regularisation($client, $token), $qfix);
         $mission = $this->regMission($row, $m);
         self::assertTrue($mission['blockedByThisItem']);
-        self::assertSame(1, $mission['otherBlockingAnomalyCount'], 'heures réelles manquantes = autre anomalie, pas une anomalie tarifaire');
-        self::assertSame(0, $row['usage']['onlyBlockerMissionCount']);
+        self::assertSame(0, $mission['otherBlockingAnomalyCount'], 'heures réelles manquantes : jamais une anomalie de facturation firme');
+        self::assertSame(1, $row['usage']['onlyBlockerMissionCount']);
 
-        // Matériel corrigé : plus bloquée PAR LUI, mais toujours pas calculable.
+        // Matériel corrigé : la mission devient calculable sans heures — et rien n'a été calculé seul.
         $this->postMaterialRate($client, $token, $sn, $qfix, '45.00');
         $mission = $this->regMission($this->regRow($this->regularisation($client, $token), $qfix), $m);
         self::assertFalse($mission['blockedByThisItem']);
-        self::assertSame(1, $mission['otherBlockingAnomalyCount'], 'jamais présentée « Plus bloquée — à calculer »');
-        $detail = $this->detail($client, $token, $m);
-        self::assertFalse($detail['recalculation']['wouldSucceed'], 'le pronostic tient compte des heures réelles manquantes');
-
-        // Heures réelles déclarées : la mission devient calculable — et rien n'a été calculé seul.
-        $this->declareActualHours($this->managed($m));
-        $mission = $this->regMission($this->regRow($this->regularisation($client, $token), $qfix), $m);
         self::assertSame(0, $mission['otherBlockingAnomalyCount']);
+        self::assertTrue($this->detail($client, $token, $m)['recalculation']['wouldSucceed']);
         $this->em->clear();
         self::assertSame(0, $this->em->getRepository(FinancialCalculation::class)->count(['mission' => $m->getId()]), 'aucun calcul automatique');
     }

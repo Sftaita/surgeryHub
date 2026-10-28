@@ -14,6 +14,7 @@ use App\Service\CatalogueFactory;
 use App\Security\Voter\MissionVoter;
 use App\Service\ActiveFirmResolver;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingLock;
 use App\Service\MissionInterventionDraftService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -51,6 +52,8 @@ class InterventionTypeRequestController extends AbstractController
         private readonly SerializerInterface $serializer,
         private readonly MessageBusInterface $bus,
         private readonly ValidatorInterface $validator,
+        // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
+        private readonly MissionEncodingLock $encodingLock,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -106,7 +109,7 @@ class InterventionTypeRequestController extends AbstractController
             ->setComment($dto->comment)
             ->setCreatedBy($user);
 
-        $draft = $this->draftService->createForRequest($req, $requestedFirm, $user, $requestedFirm === null ? $proposedFirmName : null);
+        $draft = $this->encodingLock->run($mission, fn () => $this->draftService->createForRequest($req, $requestedFirm, $user, $requestedFirm === null ? $proposedFirmName : null));
 
         // Follow-up D-093 — prévient les managers/admins (jamais bloquant, voir handler
         // async). Toujours après le flush transactionnel ci-dessus : la demande doit

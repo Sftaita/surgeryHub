@@ -16,6 +16,7 @@ use App\Security\Voter\MissionVoter;
 use App\Service\EncodingVersionGuard;
 use App\Service\InterventionService;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingLock;
 use App\Service\SurgeonEncodingChangeNotifier;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -42,6 +43,8 @@ class MaterialLineController extends AbstractController
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
         private readonly SurgeonEncodingChangeNotifier $surgeonChanges,
+        // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
+        private readonly MissionEncodingLock $encodingLock,
     ) {}
 
     #[Route('', name: 'api_material_lines_create', methods: ['POST'])]
@@ -62,7 +65,7 @@ class MaterialLineController extends AbstractController
             'json',
         );
 
-        $line = $this->service->createMaterialLine($mission, $dto, $user);
+        $line = $this->encodingLock->run($mission, fn () => $this->service->createMaterialLine($mission, $dto, $user));
         $this->surgeonChanges->afterWrite($mission, $user);
 
         return $this->json($this->toDto($line), Response::HTTP_CREATED);
@@ -93,23 +96,26 @@ class MaterialLineController extends AbstractController
             'json',
         );
 
-        if ($dto->quantity !== null) {
-            $line->setQuantity($dto->quantity);
-        }
-
-        if ($dto->comment !== null) {
-            $line->setComment($dto->comment);
-        }
-
+        $intervention = null;
         if ($dto->missionInterventionId !== null) {
             $intervention = $this->em->find(MissionIntervention::class, $dto->missionInterventionId);
             if (!$intervention || $intervention->getMission()?->getId() !== $mission->getId()) {
                 return $this->json(['message' => 'Intervention not found on this mission'], Response::HTTP_NOT_FOUND);
             }
-            $line->setMissionIntervention($intervention);
         }
 
-        $this->em->flush();
+        $this->encodingLock->run($mission, function () use ($line, $dto, $intervention): void {
+            if ($dto->quantity !== null) {
+                $line->setQuantity($dto->quantity);
+            }
+            if ($dto->comment !== null) {
+                $line->setComment($dto->comment);
+            }
+            if ($intervention !== null) {
+                $line->setMissionIntervention($intervention);
+            }
+            $this->em->flush();
+        });
         $this->surgeonChanges->afterWrite($mission, $user);
 
         return $this->json($this->toDto($line));
@@ -132,8 +138,10 @@ class MaterialLineController extends AbstractController
         }
         EncodingVersionGuard::assertCurrent($request, $mission, $user, $line->getVersion(), EncodingConcurrencyException::SUBJECT_MATERIAL_LINE);
 
-        $this->em->remove($line);
-        $this->em->flush();
+        $this->encodingLock->run($mission, function () use ($line): void {
+            $this->em->remove($line);
+            $this->em->flush();
+        });
         $this->surgeonChanges->afterWrite($mission, $user);
 
         return $this->json(null, Response::HTTP_NO_CONTENT);

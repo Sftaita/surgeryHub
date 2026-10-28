@@ -104,6 +104,25 @@ class FinancialCalculation
     #[ORM\JoinColumn(name: 'superseded_by_calculation_id', nullable: true)]
     private ?self $supersededByCalculation = null;
 
+    /**
+     * D-171 — l'instrumentiste affectée n'avait déclaré aucune heure réelle au moment du calcul :
+     * sa prestation horaire n'est PAS valorisée (jamais sur le planifié), les lignes firme le
+     * sont. Une fois les heures déclarées : recalcul tant que ce calcul n'est pas verrouillé,
+     * sinon un calcul complémentaire (`supplementOf`) porte la seule prestation instrumentiste.
+     */
+    #[ORM\Column(name: 'instrumentist_hours_pending', type: 'boolean', options: ['default' => false])]
+    private bool $instrumentistHoursPending = false;
+
+    /**
+     * D-171 — calcul complémentaire : uniquement la prestation instrumentiste d'une mission dont le
+     * calcul principal (celui-ci) a été verrouillé par une facture firme avant la déclaration des
+     * heures. Jamais le « calcul actif » de la mission (findActiveCalculation() l'exclut) ; son
+     * propre cycle approuver / verrouiller (relevé instrumentiste).
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'supplement_of_id', nullable: true)]
+    private ?self $supplementOf = null;
+
     /** @var Collection<int, FinancialCalculationLine> */
     #[ORM\OneToMany(mappedBy: 'financialCalculation', targetEntity: FinancialCalculationLine::class, cascade: ['persist'], orphanRemoval: false)]
     #[ORM\OrderBy(['id' => 'ASC'])]
@@ -118,6 +137,13 @@ class FinancialCalculation
 
     public function getMission(): ?Mission { return $this->mission; }
     public function setMission(Mission $mission): static { $this->mission = $mission; return $this; }
+
+    public function isInstrumentistHoursPending(): bool { return $this->instrumentistHoursPending; }
+    public function setInstrumentistHoursPending(bool $pending): static { $this->instrumentistHoursPending = $pending; return $this; }
+
+    public function getSupplementOf(): ?self { return $this->supplementOf; }
+    public function setSupplementOf(?self $main): static { $this->supplementOf = $main; return $this; }
+    public function isSupplement(): bool { return $this->supplementOf !== null; }
 
     public function getVersion(): int { return $this->version; }
     public function setVersion(int $version): static { $this->version = $version; return $this; }

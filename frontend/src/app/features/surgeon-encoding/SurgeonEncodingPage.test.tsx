@@ -349,7 +349,8 @@ describe("SurgeonEncodingPage — activité réalisée sans instrumentiste (D-15
     renderPage();
 
     expect(await screen.findByTestId("interventions-section-stub")).toHaveTextContent("editable");
-    expect(interventionsSectionProps).toHaveBeenLastCalledWith(expect.objectContaining({ canEdit: true, canSubmit: true }));
+    expect(interventionsSectionProps).toHaveBeenLastCalledWith(expect.objectContaining({ canEdit: true, canSubmit: true, submitLabel: "Soumettre l'encodage" }));
+    expect(screen.getByTestId("surgeon-encoding-draft")).toHaveTextContent("rien n'est transmis au manager avant « Soumettre l'encodage »");
     expect(screen.getByTestId("surgeon-encoding-state")).toHaveTextContent("Activité réalisée sans instrumentiste");
     expect(screen.getByTestId("surgeon-encoding-without-instrumentist")).toBeInTheDocument();
     expect(screen.queryByTestId("surgeon-encoding-editable")).toBeNull();

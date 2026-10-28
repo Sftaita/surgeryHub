@@ -61,6 +61,8 @@ type Props = {
   canSubmit: boolean;
   /** Ouvre le récapitulatif final (SubmitDialog) — jamais de validation directe ici. */
   onValidate: () => void;
+  /** D-171 — libellé du bouton du pied (le chirurgien « soumet » au manager). */
+  submitLabel?: string;
   /** Compteurs calculés par le backend (même requête que le suivi manager, D-118) :
    *  interventions RÉELLES uniquement — jamais recomptés ici depuis `entries`, qui
    *  contient aussi les drafts (en attente / historique), affichés "hors décompte". */
@@ -202,7 +204,7 @@ function WarnIcon() {
   );
 }
 
-export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, progress }: Props) {
+export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -789,7 +791,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
               }}
             >
               {allDone && <CheckIcon size={17} stroke={2.8} />}
-              Valider
+              {submitLabel}
             </Box>
           </Box>
         )}

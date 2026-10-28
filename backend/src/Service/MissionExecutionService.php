@@ -34,6 +34,8 @@ final class MissionExecutionService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly AuditService $audit,
+        // D-171 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionEncodingLock $encodingLock = null,
     ) {}
 
     /**
@@ -129,6 +131,29 @@ final class MissionExecutionService
      * AuditEvent (aucun changement détecté au deuxième appel → aucun événement).
      */
     public function updateActuals(
+        Mission $mission,
+        User $actor,
+        ?\DateTimeImmutable $actualStartAt,
+        ?\DateTimeImmutable $actualEndAt,
+        ?int $actualDurationMinutes,
+        ?HoursSource $hoursSource,
+    ): MissionExecution {
+        $write = fn (): MissionExecution => $this->writeActuals($mission, $actor, $actualStartAt, $actualEndAt, $actualDurationMinutes, $hoursSource);
+        if ($this->encodingLock === null) {
+            return $write();
+        }
+
+        // D-171 — sous le verrou de la mission (jamais d'heures écrites sur un encodage validé
+        // entre-temps) ; heures déclarées après une validation sans heures : elles doivent
+        // encore manquer en base (jamais deux déclarations concurrentes).
+        $verify = MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission)
+            ? fn () => $this->encodingLock->assertHoursStillMissing($mission)
+            : null;
+
+        return $this->encodingLock->run($mission, $write, $verify);
+    }
+
+    private function writeActuals(
         Mission $mission,
         User $actor,
         ?\DateTimeImmutable $actualStartAt,

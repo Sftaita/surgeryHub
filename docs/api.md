@@ -6065,6 +6065,49 @@ vers l'instrumentiste, ou saisie des heures par le manager (`PATCH .../execution
 
 ---
 
+### `POST .../complete-and-validate` (D-171)
+
+**AuthZ :** `MissionVoter::ENCODING_COMPLETE_AND_VALIDATE` — Manager/Admin uniquement, même règle
+que l'action `complete_and_validate` (`MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason()`) :
+statut `ASSIGNED`, `IN_PROGRESS` ou `ENCODING_IN_PROGRESS`, encodage ni verrouillé ni facturé, aucun
+calcul `LOCKED`, mission commencée, instrumentiste affectée **ou** activité déclarée sans
+instrumentiste (D-155). `403` sinon (une mission `SUBMITTED` se valide par `.../validate`).
+
+**Transition :** `ASSIGNED\|IN_PROGRESS\|ENCODING_IN_PROGRESS → SUBMITTED → VALIDATED`, en un appel.
+
+**Body JSON :**
+
+```json
+{ "expectedRevision": "3f9a0c7d21b4e8aa", "takeoverConfirmed": true, "comment": null }
+```
+
+| Champ | Requis | Description |
+|---|---|---|
+| `expectedRevision` | ✓ | `encodingRevision` du détail de mission lu par le manager (empreinte des interventions, lignes de matériel avec leur version, brouillons et heures réelles). Absent → `428 ENCODING_VERSION_REQUIRED` ; différent de l'encodage actuel → `409 ENCODING_CONCURRENT_MODIFICATION`, rien n'est écrit. |
+| `takeoverConfirmed` | si reprise | `true` exigé quand une instrumentiste est affectée et n'a pas soumis (`encodingTakeover` non nul) : `422` sinon, rien n'est écrit. |
+| `comment` | si `BLOCK` sans matériel | Comme `.../complete` (justification D-080). |
+
+**Effets :** sous le verrou de la mission, `complete()` puis `validate()` (deux audits
+`MISSION_ENCODING_COMPLETED` et `MISSION_ENCODING_VALIDATED` au nom du manager, deux messages de
+cycle de vie). Les contrôles de contenu de `validate()` sont faits **avant** la première écriture :
+en cas de refus (`422 ENCODING_INCOMPLETE`), rien n'est modifié, jamais une mission laissée
+`SUBMITTED`. **Les heures ne sont jamais exigées** (D-171 décision 7) : aucune n'est créée ni
+validée quand elles manquent.
+
+**Reprise** (instrumentiste affectée, encodage non soumis) : audit `MISSION_ENCODING_TAKEN_OVER`
+(`actorId`, `actorName`, `instrumentistId`, `instrumentistName`, `fromStatus`, `revision`,
+`hoursMissing`, `interventionsCount`, `materialLinesCount`) avant les deux transitions ; après la
+validation, message `ENCODING_TAKEN_OVER` → notification `ENCODING_TAKEN_OVER` à l'instrumentiste.
+Heures manquantes : `mission.encodingValidatedWithoutHoursAt` est posé, elles restent déclarables
+(`PATCH .../execution`, instrumentiste affectée et manager) tant qu'elles manquent.
+
+**Réponse :** `200` détail de la mission (`status: VALIDATED`).
+
+**Erreurs :** `403` (voter) · `409` statut changé entre-temps ou `ENCODING_CONCURRENT_MODIFICATION` ·
+`422` reprise non confirmée ou `ENCODING_INCOMPLETE` · `428 ENCODING_VERSION_REQUIRED`.
+
+---
+
 ### `POST .../reject`
 
 **AuthZ :** `MissionVoter::ENCODING_REJECT` — Manager/Admin uniquement.
@@ -8550,6 +8593,39 @@ interventions / matériel conservés, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENT
   manager), `cancel_executed_without_instrumentist` (manager) ; dans ce mode le chirurgien
   reçoit `edit_encoding` et `submit`, jamais `edit_hours`.
 - `GET /api/encoding-tracking` (items) : `executedWithoutInstrumentist: { declaredByName } | null`.
+- **D-171** — items : `submittedBy: { name, role: INSTRUMENTIST | SURGEON | MANAGER | null } | null`
+  (auteur du dernier `MISSION_ENCODING_COMPLETED`, rôle sur la mission). Détail de mission
+  (managers seulement) : `encodingValidationBlockedReason: string | null` — pourquoi « Valider
+  l'encodage » n'est pas proposé, affiché tel quel. `allowedActions` manager :
+  `complete_and_validate` (voir `POST .../complete-and-validate`).
+- **D-171 (reprise)** — détail de mission : `encodingRevision: string | null` (managers, quand
+  `complete_and_validate` est proposé) ; `encodingTakeover: { instrumentistName, hoursMissing } | null`
+  (managers, quand c'est une reprise) ; `lastEncodingTakeover: { byName, at, hoursMissing } | null`
+  et `hoursPendingAfterValidation: bool` (managers et instrumentiste affectée). Quand
+  `hoursPendingAfterValidation` est vrai (mission `VALIDATED` sans heures réelles après une
+  reprise), `allowedActions` contient `edit_hours` pour l'instrumentiste affectée et le manager
+  (`remind_hours` pour le manager), et `PATCH .../execution` est accepté pour eux seuls ;
+  interventions et matériel restent verrouillés. Une fois début et fin déclarés : verrouillées.
+- **D-171 (facturation)** — calculs financiers (`GET /api/missions/{id}/financial-calculations`,
+  `GET /api/financial-calculations/{id}`) : `instrumentistHoursPending` (calculé sans heures réelles :
+  aucune ligne `INSTRUMENTIST_HOURLY`, firme facturable), `supplementOfCalculationId` (calcul
+  complémentaire instrumentiste), `instrumentistSupplementAvailable` (complément possible maintenant).
+  `MISSING_ACTUAL_HOURS` n'est plus une anomalie bloquante du calcul (code conservé pour l'historique).
+  **`POST /api/missions/{id}/financial-calculations/instrumentist-supplement`** (`BillingVoter::MANAGE`) :
+  calcul principal **verrouillé** et calculé sans heures, heures désormais déclarées, aucun complément
+  actif → `201` calcul `CALCULATED` avec la seule ligne `INSTRUMENTIST_HOURLY` ; `409
+  FINANCIAL_CALCULATION_INELIGIBLE` sinon (message : recalculez si non verrouillé, heures encore
+  manquantes, complément déjà calculé) ; `422 FINANCIAL_CALCULATION_ANOMALIES` (tarif instrumentiste…).
+  `POST /api/financial-calculations/{id}/recalculate` sur un complément non verrouillé : nouvelle
+  version du complément (jamais du calcul principal).
+- **D-171 (concurrence)** — `POST .../encoding/validate` accepte `{ "expectedRevision": "…" }`
+  (`encodingRevision`, désormais servi aussi en `SUBMITTED`) : `409 ENCODING_CONCURRENT_MODIFICATION`
+  si l'encodage a changé. Toute écriture d'encodage (interventions, matériel, demandes de catalogue,
+  heures) et toute transition répond `409` (« La mission a été modifiée entre-temps… », rien
+  d'enregistré) quand une transition a été validée depuis sa lecture.
+- **D-171** — notification `ENCODING_TAKEN_OVER` (instrumentiste ; configurable, défauts in-app
+  oui / e-mail non / push non) : payload `missionId`, `missionDate`, `siteName`, `managerName`,
+  `hoursMissing` ; lien `/app/i/missions/{id}/encoding`.
 - Soumission (`POST .../encoding/complete`, `.../submit`) et validation : heures non exigées
   dans ce mode (aucune n'existe) ; contenu et justification « sans matériel » inchangés.
 - Calcul financier : accepté sans instrumentiste uniquement dans ce mode ; seules des lignes

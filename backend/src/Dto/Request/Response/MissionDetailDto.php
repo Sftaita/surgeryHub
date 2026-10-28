@@ -80,5 +80,34 @@ final class MissionDetailDto
          * {declaredAt, declaredByName}. Hours never exist in this mode; billing is firm-only.
          */
         public readonly ?array $executedWithoutInstrumentist = null,
+        /**
+         * D-171 — managers only: why « Valider l'encodage » is not offered right now (encoding
+         * still open, mission not covered, locked…), shown as-is under the disabled button.
+         * Null when validation is offered or moot (MissionEncodingCorrectionPolicy).
+         */
+        public readonly ?string $encodingValidationBlockedReason = null,
+        /**
+         * D-171 — managers only, when « Terminer et valider » or « Valider » (SUBMITTED) is offered: fingerprint of the
+         * encoding as read now (EncodingTakeoverService::revision()), sent back as
+         * `expectedRevision`; a different one at confirmation time means someone changed it.
+         */
+        public readonly ?string $encodingRevision = null,
+        /**
+         * D-171 — managers only, when « Terminer et valider » is a takeover (instrumentist
+         * assigned, encoding not submitted): {instrumentistName, hoursMissing}. The dialog then
+         * requires an explicit confirmation (`takeoverConfirmed`).
+         */
+        public readonly ?array $encodingTakeover = null,
+        /**
+         * D-171 — managers and the assigned instrumentist: the last takeover of this encoding
+         * {byName, at, hoursMissing} (audit MISSION_ENCODING_TAKEN_OVER), null if none.
+         */
+        public readonly ?array $lastEncodingTakeover = null,
+        /**
+         * D-171 — managers and the assigned instrumentist: interventions and material were
+         * validated while the worked hours were missing, and they still are — only the hours
+         * remain declarable ('edit_hours'). Never invented, never validated automatically.
+         */
+        public readonly bool $hoursPendingAfterValidation = false,
     ) {}
 }

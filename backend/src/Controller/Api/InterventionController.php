@@ -12,6 +12,7 @@ use App\Security\Voter\MissionVoter;
 use App\Service\EncodingVersionGuard;
 use App\Service\InterventionService;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingLock;
 use App\Service\SurgeonEncodingChangeNotifier;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -34,6 +35,8 @@ class InterventionController extends AbstractController
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
         private readonly SurgeonEncodingChangeNotifier $surgeonChanges,
+        // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
+        private readonly MissionEncodingLock $encodingLock,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -50,7 +53,7 @@ class InterventionController extends AbstractController
         /** @var MissionInterventionCreateRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionInterventionCreateRequest::class);
 
-        $intervention = $this->service->create($mission, $dto);
+        $intervention = $this->encodingLock->run($mission, fn () => $this->service->create($mission, $dto));
         $this->surgeonChanges->afterWrite($mission, $user);
 
         // orderIndex : l'index réellement alloué par le serveur (MissionEntryOrderAllocator),
@@ -114,7 +117,7 @@ class InterventionController extends AbstractController
 
         $dto->confirmRemoveIncompatibleMaterial = (bool) ($body['confirmRemoveIncompatibleMaterial'] ?? false);
 
-        $this->service->update($intervention, $dto);
+        $this->encodingLock->run($mission, fn () => $this->service->update($intervention, $dto));
         $this->surgeonChanges->afterWrite($mission, $user);
 
         return new JsonResponse(null, Response::HTTP_NO_CONTENT);
@@ -137,7 +140,7 @@ class InterventionController extends AbstractController
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
         EncodingVersionGuard::assertCurrent($request, $mission, $user, $intervention->getVersion(), EncodingConcurrencyException::SUBJECT_INTERVENTION);
 
-        $this->service->delete($intervention);
+        $this->encodingLock->run($mission, fn () => $this->service->delete($intervention));
         $this->surgeonChanges->afterWrite($mission, $user);
 
         return new JsonResponse(null, Response::HTTP_NO_CONTENT);

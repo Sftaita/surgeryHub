@@ -111,6 +111,9 @@ enum AuditEventType: string
     case MISSION_ENCODING_REOPENED  = 'MISSION_ENCODING_REOPENED';
     case MISSION_ENCODING_VALIDATED = 'MISSION_ENCODING_VALIDATED';
     case MISSION_ENCODING_REJECTED  = 'MISSION_ENCODING_REJECTED';
+    // D-171 — un manager reprend l'encodage non soumis de l'instrumentiste affectée (confirmation
+    // explicite) pour le terminer et le valider : instrumentiste, révision lue, heures manquantes.
+    case MISSION_ENCODING_TAKEN_OVER = 'MISSION_ENCODING_TAKEN_OVER';
 
     /**
      * D-120 — Suivi des encodages (cockpit manager). Relance manuelle déclenchée depuis le

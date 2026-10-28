@@ -11,8 +11,10 @@ use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Exception\EncodingConcurrencyException;
 use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -51,10 +53,29 @@ final class MissionEncodingWorkflowService
         private readonly MessageBusInterface $bus,
         private readonly EncodingCompletenessService $completeness,
         private readonly EncodingContentCompletenessService $contentCompleteness,
+        // D-171 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?EncodingTakeoverService $takeovers = null,
+        // D-171 — every transition runs under the mission lock (serialized with encoding writes).
+        private readonly ?MissionEncodingLock $encodingLock = null,
     ) {}
+
+    /**
+     * @template T
+     * @param callable(): T $transition
+     * @return T
+     */
+    private function locked(Mission $mission, callable $transition): mixed
+    {
+        return $this->encodingLock !== null ? $this->encodingLock->run($mission, $transition) : $transition();
+    }
 
     /** ASSIGNED|IN_PROGRESS → ENCODING_IN_PROGRESS. */
     public function start(Mission $mission, User $actor): Mission
+    {
+        return $this->locked($mission, fn (): Mission => $this->startTransition($mission, $actor));
+    }
+
+    private function startTransition(Mission $mission, User $actor): Mission
     {
         $this->encodingGuard->assertEncodingAllowed($mission, $actor);
 
@@ -100,6 +121,12 @@ final class MissionEncodingWorkflowService
      */
     public function complete(Mission $mission, User $actor, ?string $comment = null): Mission
     {
+        return $this->locked($mission, fn (): Mission => $this->completeTransition($mission, $actor, $comment, true));
+    }
+
+    /** $requireHours = false only for a manager takeover (D-171): missing hours stay missing. */
+    private function completeTransition(Mission $mission, User $actor, ?string $comment, bool $requireHours): Mission
+    {
         $this->encodingGuard->assertEncodingAllowed($mission, $actor);
 
         if (!in_array($mission->getStatus(), [
@@ -114,10 +141,12 @@ final class MissionEncodingWorkflowService
 
         // D-143 — heures réelles (début ET fin cohérents) obligatoires : jamais les horaires
         // planifiés, jamais une durée seule. Seule la transition est refusée, rien n'est perdu.
-        $this->completeness->assertSubmittable(
-            $mission,
-            'Il reste une petite étape avant de terminer : pensez à renseigner vos heures prestées (début et fin).',
-        );
+        if ($requireHours) {
+            $this->completeness->assertSubmittable(
+                $mission,
+                'Il reste une petite étape avant de terminer : pensez à renseigner vos heures prestées (début et fin).',
+            );
+        }
 
         // D-146 bis — chaque intervention doit être complète (firme, réponse délégué,
         // système choisi, matériel compatible) : jamais une mission soumise puis bloquée
@@ -182,8 +211,125 @@ final class MissionEncodingWorkflowService
         return $count;
     }
 
+    /**
+     * D-171 — « Terminer et valider » : le manager clôt lui-même un encodage encore ouvert
+     * (instrumentiste affectée ou activité déclarée sans instrumentiste) puis le valide.
+     * Les deux transitions existantes s'enchaînent (complete() puis validate(), deux audits,
+     * deux messages) ; tout contrôle de validate() est fait AVANT la première écriture :
+     * jamais une mission laissée SUBMITTED à mi-chemin par un refus de validation.
+     *
+     * Concurrence : $expectedRevision est l'empreinte de l'encodage que le manager a sous les
+     * yeux (EncodingTakeoverService::revision(), servie par le détail de mission). Sous le verrou
+     * de la mission, une empreinte différente → 409 ENCODING_CONCURRENT_MODIFICATION, rien n'est
+     * écrit ; absente → 428.
+     *
+     * Reprise (instrumentiste affectée, encodage non soumis) : confirmation explicite exigée
+     * ($takeoverConfirmed), audit MISSION_ENCODING_TAKEN_OVER, puis l'instrumentiste est prévenue
+     * (ENCODING_TAKEN_OVER). Ses données sont conservées telles quelles.
+     *
+     * Heures : jamais exigées ici. Interventions et matériel se valident indépendamment ; des
+     * heures manquantes ne sont ni inventées ni validées — le fait
+     * encodingValidatedWithoutHoursAt les laisse déclarables ensuite
+     * (MissionEncodingCorrectionPolicy::hoursPendingAfterValidation()).
+     */
+    public function completeAndValidate(Mission $mission, User $actor, ?string $comment, ?string $expectedRevision, bool $takeoverConfirmed): Mission
+    {
+        if ($this->takeovers === null || $this->encodingLock === null) {
+            throw new \LogicException('completeAndValidate() requires EncodingTakeoverService and MissionEncodingLock.');
+        }
+
+        return $this->encodingLock->run($mission, function () use ($mission, $actor, $comment, $expectedRevision, $takeoverConfirmed): Mission {
+            $blocked = MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now());
+            if ($blocked !== null) {
+                throw new ConflictHttpException($blocked);
+            }
+
+            $expectedRevision = $expectedRevision !== null ? trim($expectedRevision) : '';
+            if ($expectedRevision === '') {
+                throw EncodingConcurrencyException::versionRequired();
+            }
+            $revision = $this->takeovers->revision($mission);
+            if (!hash_equals($revision, $expectedRevision)) {
+                throw EncodingConcurrencyException::modified(EncodingConcurrencyException::SUBJECT_ENCODING);
+            }
+
+            $takeover = MissionEncodingCorrectionPolicy::isTakeover($mission);
+            $instrumentist = $mission->getInstrumentist();
+            if ($takeover && !$takeoverConfirmed) {
+                throw new UnprocessableEntityHttpException(sprintf(
+                    "Confirmez la reprise de l'encodage de %s : il n'a pas été soumis par l'instrumentiste.",
+                    $this->displayName($instrumentist),
+                ));
+            }
+
+            $this->contentCompleteness->assertComplete(
+                $mission,
+                true,
+                "Encodage incomplet : complétez les interventions et traitez les demandes en attente avant de valider.",
+            );
+
+            $hoursMissing = MissionEncodingCorrectionPolicy::hoursMissing($mission);
+            $takeoverPayload = null;
+            if ($takeover) {
+                $takeoverPayload = array_merge($this->actorPayload($actor), [
+                    'instrumentistId'    => $instrumentist?->getId(),
+                    'instrumentistName'  => $this->displayName($instrumentist),
+                    'fromStatus'         => $mission->getStatus()->value,
+                    'revision'           => $revision,
+                    'hoursMissing'       => $hoursMissing,
+                    'interventionsCount' => $mission->getInterventions()->count(),
+                    'materialLinesCount' => $mission->getMaterialLines()->count(),
+                ]);
+                $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_TAKEN_OVER, $takeoverPayload);
+            }
+
+            $this->completeTransition($mission, $actor, $comment, false);
+            $this->validateTransition($mission, $actor, false);
+
+            if ($hoursMissing) {
+                $mission->setEncodingValidatedWithoutHoursAt(Clock::get()->now());
+                $this->em->flush();
+            }
+
+            // Après la validation (flush fait) : jamais de notification pour une reprise avortée.
+            if ($takeoverPayload !== null) {
+                $this->dispatch($mission, MissionChangeType::ENCODING_TAKEN_OVER, $actor, $takeoverPayload);
+            }
+
+            return $mission;
+        });
+    }
+
+    private function displayName(?User $user): string
+    {
+        if ($user === null) {
+            return "l'instrumentiste";
+        }
+        $name = trim(($user->getFirstname() ?? '') . ' ' . ($user->getLastname() ?? ''));
+
+        return $name !== '' ? $name : (string) $user->getEmail();
+    }
+
     /** SUBMITTED → VALIDATED (verrouille l'encodage — encodingLockedAt, lu par MissionEncodingGuard). */
-    public function validate(Mission $mission, User $actor): Mission
+    /**
+     * $expectedRevision (D-171, optionnel) : empreinte de l'encodage relu par le manager ; une
+     * écriture concurrente entre sa lecture et sa validation → 409, rien n'est validé.
+     */
+    public function validate(Mission $mission, User $actor, ?string $expectedRevision = null): Mission
+    {
+        return $this->locked($mission, function () use ($mission, $actor, $expectedRevision): Mission {
+            $expectedRevision = $expectedRevision !== null ? trim($expectedRevision) : '';
+            if ($expectedRevision !== '' && $this->takeovers !== null
+                && !hash_equals($this->takeovers->revision($mission), $expectedRevision)) {
+                throw EncodingConcurrencyException::modified(EncodingConcurrencyException::SUBJECT_ENCODING);
+            }
+
+            return $this->validateTransition($mission, $actor, true);
+        });
+    }
+
+    /** $requireHours = false only for a manager takeover (D-171): missing hours stay missing. */
+    private function validateTransition(Mission $mission, User $actor, bool $requireHours): Mission
     {
         if ($mission->getStatus() !== MissionStatus::SUBMITTED) {
             throw new ConflictHttpException('Mission must be SUBMITTED to validate its encoding');
@@ -193,10 +339,12 @@ final class MissionEncodingWorkflowService
         // ne peut pas être validée — donc valorisée — sur le planifié par défaut : renvoyer
         // l'encodage à l'instrumentiste (reject) ou saisir les heures (source MANAGER) d'abord.
         // Une durée seule déclarée avant D-143 reste validable.
-        $this->completeness->assertHasDeclaredHours(
-            $mission,
-            "Heures prestées manquantes : renseignez-les ou renvoyez l'encodage à l'instrumentiste avant de valider.",
-        );
+        if ($requireHours) {
+            $this->completeness->assertHasDeclaredHours(
+                $mission,
+                "Heures prestées manquantes : renseignez-les ou renvoyez l'encodage à l'instrumentiste avant de valider.",
+            );
+        }
 
         // D-146 bis — jamais une validation définitive d'un contenu incomplet (intervention
         // sans firme, réponse obligatoire absente, matériel incompatible) ni avec une
@@ -231,6 +379,11 @@ final class MissionEncodingWorkflowService
      */
     public function reject(Mission $mission, User $actor, string $comment): Mission
     {
+        return $this->locked($mission, fn (): Mission => $this->rejectTransition($mission, $actor, $comment));
+    }
+
+    private function rejectTransition(Mission $mission, User $actor, string $comment): Mission
+    {
         if ($mission->getStatus() !== MissionStatus::SUBMITTED) {
             throw new ConflictHttpException('Mission must be SUBMITTED to reject its encoding');
         }
@@ -262,6 +415,11 @@ final class MissionEncodingWorkflowService
      * avant ce lot — rien ne change tant qu'aucun engagement financier n'existe.
      */
     public function reopen(Mission $mission, User $actor, string $comment): Mission
+    {
+        return $this->locked($mission, fn (): Mission => $this->reopenTransition($mission, $actor, $comment));
+    }
+
+    private function reopenTransition(Mission $mission, User $actor, string $comment): Mission
     {
         if ($mission->getStatus() === MissionStatus::CLOSED) {
             throw new ConflictHttpException(MissionEncodingCorrectionPolicy::CLOSED_MESSAGE);

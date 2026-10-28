@@ -67,6 +67,12 @@ export interface FinancialCalculation {
   /** D-153 — encodage rouvert depuis ce calcul : à recalculer, jamais approuvé, verrouillé ni facturé. */
   obsolete?: boolean;
   encodingReopenedAt?: string | null;
+  /** D-171 — calculé sans heures réelles : prestation horaire non valorisée (jamais sur le planifié). */
+  instrumentistHoursPending?: boolean;
+  /** D-171 — calcul complémentaire : la seule prestation instrumentiste d'un calcul principal verrouillé. */
+  supplementOfCalculationId?: number | null;
+  /** D-171 — servi par le backend : « Valoriser la prestation instrumentiste » possible maintenant. */
+  instrumentistSupplementAvailable?: boolean;
   totalsByCurrency: Record<string, Record<string, string>>;
   lines: FinancialCalculationLineDetail[];
 }
@@ -83,6 +89,12 @@ export async function calculateMission(missionId: number): Promise<FinancialCalc
 
 export async function getFinancialCalculation(id: number): Promise<FinancialCalculation> {
   const res = await apiClient.get(`/api/financial-calculations/${id}`);
+  return res.data;
+}
+
+/** D-171 — calcul complémentaire instrumentiste (POST .../financial-calculations/instrumentist-supplement). */
+export async function calculateInstrumentistSupplement(missionId: number): Promise<FinancialCalculation> {
+  const res = await apiClient.post(`/api/missions/${missionId}/financial-calculations/instrumentist-supplement`);
   return res.data;
 }
 

@@ -3,6 +3,7 @@
 namespace App\Service;
 
 use App\Entity\Mission;
+use App\Enum\EffectiveDurationSource;
 use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionStatus;
 
@@ -84,6 +85,136 @@ final class MissionEncodingCorrectionPolicy
         }
 
         return null;
+    }
+
+    /**
+     * D-171 — statuses from which a manager finishes an encoding himself and validates it in
+     * one step (« Terminer et valider »): the encoding is still open. SUBMITTED is validated
+     * directly; DECLARED goes through approve first.
+     */
+    public const MANAGER_COMPLETABLE_STATUSES = [
+        MissionStatus::ASSIGNED,
+        MissionStatus::IN_PROGRESS,
+        MissionStatus::ENCODING_IN_PROGRESS,
+    ];
+
+    /**
+     * D-171 — why the manager can NOT finish and validate the encoding himself right now
+     * (null = possible). Single rule for MissionVoter::ENCODING_COMPLETE_AND_VALIDATE, the
+     * 'complete_and_validate' action and MissionEncodingWorkflowService::completeAndValidate().
+     * Content rules (interventions, BLOCK justification) stay checked by the transition
+     * itself, exactly as for complete() + validate(); the hours never block it (D-171: missing
+     * hours stay missing, never invented nor validated).
+     */
+    public static function completeAndValidateBlockedReason(Mission $mission, \DateTimeImmutable $now): ?string
+    {
+        if (!in_array($mission->getStatus(), self::MANAGER_COMPLETABLE_STATUSES, true)) {
+            return "L'encodage n'est pas en cours : il ne peut pas être terminé et validé depuis ce statut.";
+        }
+        if (!self::managerCanEditEncoding($mission)) {
+            return "Encodage verrouillé : il ne peut plus être modifié.";
+        }
+        if (!$mission->hasEncodableActivity()) {
+            return "Aucune instrumentiste n'est affectée : déclarez d'abord l'activité réalisée sans instrumentiste.";
+        }
+        $startAt = $mission->getStartAt();
+        if ($startAt === null || $now < $startAt) {
+            return "La mission n'a pas encore commencé.";
+        }
+
+        return null;
+    }
+
+    /**
+     * D-171 — pourquoi « Valider l'encodage » n'est pas proposé au manager, servi tel quel par
+     * le détail de mission (`encodingValidationBlockedReason`) : jamais un bouton désactivé
+     * sans explication. null quand la validation est proposée ou sans objet (validée, clôturée).
+     */
+    public static function validationBlockedReason(Mission $mission, \DateTimeImmutable $now): ?string
+    {
+        $status = $mission->getStatus();
+        if (in_array($status, [MissionStatus::SUBMITTED, MissionStatus::VALIDATED, MissionStatus::CLOSED], true)) {
+            return null;
+        }
+        if (in_array($status, [MissionStatus::DRAFT, MissionStatus::CANCELLED, MissionStatus::REJECTED], true)) {
+            return "Aucun encodage à valider pour cette mission.";
+        }
+        if ($status === MissionStatus::DECLARED) {
+            return "Mission déclarée par l'instrumentiste : approuvez-la d'abord.";
+        }
+        if ($status === MissionStatus::OPEN) {
+            return ExecutedWithoutInstrumentistPolicy::declarationBlockedReason($mission, $now) === null
+                ? "Aucune instrumentiste n'a couvert cette mission. Si l'activité a eu lieu, déclarez-la réalisée sans instrumentiste pour l'encoder et la valider."
+                : "La mission n'a pas encore été couverte ni réalisée.";
+        }
+
+        $blocked = self::completeAndValidateBlockedReason($mission, $now);
+        if ($blocked !== null) {
+            return $blocked;
+        }
+
+        return self::isTakeover($mission)
+            ? "L'instrumentiste n'a pas encore soumis son encodage. Vous pouvez le reprendre, le terminer et le valider vous-même."
+            : "L'encodage n'a pas encore été soumis. Vous pouvez le terminer et le valider vous-même.";
+    }
+
+    /**
+     * D-171 — « Terminer et valider » est ici une REPRISE : une instrumentiste est affectée et n'a
+     * pas soumis son encodage. Exige une confirmation explicite, l'audit
+     * MISSION_ENCODING_TAKEN_OVER et la notification ENCODING_TAKEN_OVER de l'instrumentiste.
+     * Jamais pour une activité déclarée sans instrumentiste (personne à qui reprendre).
+     */
+    public static function isTakeover(Mission $mission): bool
+    {
+        return $mission->getInstrumentist() !== null
+            && !$mission->isExecutedWithoutInstrumentist()
+            && in_array($mission->getStatus(), self::MANAGER_COMPLETABLE_STATUSES, true);
+    }
+
+    /**
+     * D-171 — les heures prestées manquent encore : aucune heure réelle n'est déclarée (ni début
+     * + fin, ni durée), même définition que MissionExecutionService::resolveDuration() (PLANNED =
+     * simple repli sur le planifié, jamais une saisie). Jamais vrai sans instrumentiste.
+     */
+    public static function hoursMissing(Mission $mission): bool
+    {
+        return $mission->getInstrumentist() !== null
+            && !$mission->isExecutedWithoutInstrumentist()
+            && MissionExecutionService::resolveDuration($mission)->source === EffectiveDurationSource::PLANNED;
+    }
+
+    /**
+     * D-171 — interventions et matériel validés par une reprise manager alors que les heures
+     * manquaient, et elles manquent toujours : l'instrumentiste affectée et le manager peuvent
+     * encore les déclarer malgré le verrou de l'encodage (MissionExecutionVoter::UPDATE,
+     * 'edit_hours', 'remind_hours'). Rien d'autre ne se rouvre. Aussi quand le calcul financier a
+     * été produit sans ces heures (heures en attente), même verrouillé par une facture firme ;
+     * jamais quand un calcul verrouillé les engage. Une fois déclarées, elles sont verrouillées
+     * comme le reste (une correction passe par la réouverture, D-148).
+     */
+    public static function hoursPendingAfterValidation(Mission $mission): bool
+    {
+        if ($mission->getStatus() !== MissionStatus::VALIDATED
+            || $mission->getInvoiceGeneratedAt() !== null
+            || !self::hoursMissing($mission)) {
+            return false;
+        }
+
+        // D-171 — un calcul calculé SANS la prestation horaire (heures en attente) n'engage
+        // jamais ces heures, même verrouillé par une facture firme : elles restent déclarables
+        // (recalcul, ou calcul complémentaire). Tout autre calcul verrouillé les fige.
+        $deferredByCalculation = false;
+        foreach ($mission->getFinancialCalculations() as $calculation) {
+            $active = in_array($calculation->getStatus(), [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true);
+            if ($calculation->getStatus() === FinancialCalculationStatus::LOCKED && !$calculation->isInstrumentistHoursPending()) {
+                return false;
+            }
+            if ($active && $calculation->isInstrumentistHoursPending()) {
+                $deferredByCalculation = true;
+            }
+        }
+
+        return $mission->getEncodingValidatedWithoutHoursAt() !== null || $deferredByCalculation;
     }
 
     public static function reopenBlockedReason(Mission $mission): ?string

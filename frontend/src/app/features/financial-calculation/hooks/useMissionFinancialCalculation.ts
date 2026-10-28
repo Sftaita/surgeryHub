@@ -1,11 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   approveFinancialCalculation,
+  calculateInstrumentistSupplement,
   calculateMission,
   lockFinancialCalculation,
   listMissionCalculations,
   recalculateFinancialCalculation,
 } from "../api/financialCalculation.api";
+import type { FinancialCalculation } from "../api/financialCalculation.api";
 import { useToast } from "../../../ui/toast/useToast";
 
 function extractFinancialError(err: unknown): string {
@@ -46,6 +48,12 @@ export function useMissionFinancialCalculation(missionId: number, { enabled = tr
     onError: (err) => toast.error(extractFinancialError(err)),
   });
 
+  const supplementMutation = useMutation({
+    mutationFn: () => calculateInstrumentistSupplement(missionId),
+    onSuccess: () => { toast.success("Prestation de l'instrumentiste calculée"); invalidate(); },
+    onError: (err) => toast.error(extractFinancialError(err)),
+  });
+
   const approveMutation = useMutation({
     mutationFn: (id: number) => approveFinancialCalculation(id),
     onSuccess: () => { toast.success("Calcul approuvé"); invalidate(); },
@@ -59,8 +67,11 @@ export function useMissionFinancialCalculation(missionId: number, { enabled = tr
   });
 
   const calculations = query.data ?? [];
-  const active = calculations.find((c) => c.status === "CALCULATED" || c.status === "APPROVED" || c.status === "LOCKED");
-  const history = calculations.filter((c) => c.id !== active?.id).sort((a, b) => b.version - a.version);
+  const isActive = (c: FinancialCalculation) => c.status === "CALCULATED" || c.status === "APPROVED" || c.status === "LOCKED";
+  // D-171 — le calcul principal ; un complément instrumentiste (supplementOfCalculationId) est servi à part.
+  const active = calculations.find((c) => isActive(c) && !c.supplementOfCalculationId);
+  const supplement = calculations.find((c) => isActive(c) && !!c.supplementOfCalculationId);
+  const history = calculations.filter((c) => c.id !== active?.id && c.id !== supplement?.id).sort((a, b) => b.version - a.version);
 
-  return { query, active, history, calculateMutation, recalculateMutation, approveMutation, lockMutation };
+  return { query, active, supplement, history, calculateMutation, recalculateMutation, supplementMutation, approveMutation, lockMutation };
 }

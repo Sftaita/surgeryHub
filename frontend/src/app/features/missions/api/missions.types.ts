@@ -18,6 +18,8 @@ export type AllowedAction =
   | "start_encoding"
   | "validate"
   | "reopen"
+  // D-171 — manager : terminer et valider lui-même un encodage encore ouvert
+  | "complete_and_validate"
   // Lot 6 (D-100) — lecture seule chirurgien, jamais un droit d'édition
   | "view_encoding"
   // D-120 — cockpit Suivi des encodages, relance manuelle
@@ -231,6 +233,16 @@ export interface Mission {
   encodingCorrectionFinancialNotice?: string | null;
   /** D-155 — activité exécutée sans instrumentiste (null sinon) : aucune heure, facturation firme seule. */
   executedWithoutInstrumentist?: { declaredAt: string | null; declaredByName: string | null } | null;
+  /** D-171 — pourquoi « Valider l'encodage » n'est pas proposé (managers seulement), affiché tel quel. */
+  encodingValidationBlockedReason?: string | null;
+  /** D-171 — empreinte de l'encodage lu (managers, quand « Terminer et valider » est proposé), renvoyée telle quelle. */
+  encodingRevision?: string | null;
+  /** D-171 — « Terminer et valider » est une reprise : confirmation explicite exigée (managers). */
+  encodingTakeover?: { instrumentistName: string; hoursMissing: boolean } | null;
+  /** D-171 — dernière reprise de l'encodage par un manager (managers et instrumentiste affectée). */
+  lastEncodingTakeover?: { byName: string | null; at: string; hoursMissing: boolean } | null;
+  /** D-171 — encodage validé sans les heures prestées, toujours manquantes : seules elles restent déclarables. */
+  hoursPendingAfterValidation?: boolean;
 
   /** D-151 — affectation en cours, servie au chirurgien de la mission et aux managers seulement. */
   currentAssignment?: CurrentAssignment | null;

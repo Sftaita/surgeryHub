@@ -58,6 +58,7 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
   MISSION_ENCODING_COMPLETED: "Encodage soumis",
   MISSION_ENCODING_REOPENED: "Encodage rouvert",
   MISSION_ENCODING_VALIDATED: "Encodage validé",
+  MISSION_ENCODING_TAKEN_OVER: "Encodage repris par un manager",
   MISSION_ENCODING_REJECTED: "Encodage renvoyé",
   MISSION_ENCODING_MANUAL_REMINDER_SENT: "Relance d'encodage envoyée",
   MISSION_HOURS_MANUAL_REMINDER_SENT: "Relance des heures envoyée",

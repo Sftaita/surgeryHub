@@ -35,6 +35,7 @@ final class MissionEncodingHistoryService
         AuditEventType::MISSION_ENCODING_REOPENED->value  => 'WORKFLOW',
         AuditEventType::MISSION_ENCODING_VALIDATED->value => 'WORKFLOW',
         AuditEventType::MISSION_ENCODING_REJECTED->value  => 'WORKFLOW',
+        AuditEventType::MISSION_ENCODING_TAKEN_OVER->value => 'WORKFLOW',
     ];
 
     /** Hours fields: label, previous key, new key. */

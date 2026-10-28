@@ -67,6 +67,13 @@ function ifMatch(expectedVersion?: number | null): [] | [{ headers: Record<strin
 
 export const ENCODING_CONCURRENT_MODIFICATION = "ENCODING_CONCURRENT_MODIFICATION";
 
+/**
+ * D-171 — validation refusée (409) parce que l'encodage a changé depuis sa lecture : la
+ * confirmation donnée ne vaut que pour la révision relue, jamais pour la nouvelle.
+ */
+export const ENCODING_CHANGED_BEFORE_VALIDATION =
+  "L'encodage a été modifié depuis votre dernière consultation. Consultez les modifications avant de recommencer la validation.";
+
 export function isEncodingConcurrentModification(err: unknown): boolean {
   return (err as { response?: { data?: { error?: { code?: string } } } })?.response?.data?.error?.code === ENCODING_CONCURRENT_MODIFICATION;
 }
@@ -200,8 +207,25 @@ export async function fetchFirmServiceOfferings(firmId: number): Promise<FirmSer
  * `POST /api/missions/{id}/submit` (submitMission dans missions.api.ts) — le backend
  * délègue au même MissionEncodingWorkflowService::complete(), jamais deux implémentations.
  */
-export async function validateMissionEncoding(missionId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${missionId}/encoding/validate`);
+/** D-171 — `expectedRevision` (encodingRevision du détail) : 409 si l'encodage a changé depuis sa lecture. */
+export async function validateMissionEncoding(missionId: number, expectedRevision?: string | null): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/validate`, expectedRevision ? { expectedRevision } : undefined);
+}
+
+/**
+ * D-171 — « Terminer et valider » (manager) : clôt puis valide un encodage encore ouvert.
+ * `expectedRevision` = `encodingRevision` du détail de mission (409 si l'encodage a changé
+ * entre-temps) ; `takeoverConfirmed` = reprise confirmée (exigée quand une instrumentiste est affectée).
+ */
+export async function completeAndValidateMissionEncoding(
+  missionId: number,
+  body: { comment: string | null; expectedRevision: string | null; takeoverConfirmed: boolean },
+): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/complete-and-validate`, {
+    ...(body.comment !== null ? { comment: body.comment } : {}),
+    expectedRevision: body.expectedRevision,
+    takeoverConfirmed: body.takeoverConfirmed,
+  });
 }
 
 export async function rejectMissionEncoding(

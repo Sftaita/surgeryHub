@@ -117,6 +117,15 @@ class Mission
     #[ORM\JoinColumn(name: 'executed_without_instrumentist_by_id', nullable: true, onDelete: 'SET NULL')]
     private ?User $executedWithoutInstrumentistBy = null;
 
+    /**
+     * D-171 — reprise manager : interventions et matériel validés alors que les heures prestées de
+     * l'instrumentiste manquaient. Un FAIT (jamais une heure créée ni validée) : tant que ces heures
+     * manquent, elles restent déclarables malgré le verrou de l'encodage
+     * (MissionEncodingCorrectionPolicy::hoursPendingAfterValidation()).
+     */
+    #[ORM\Column(name: 'encoding_validated_without_hours_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $encodingValidatedWithoutHoursAt = null;
+
     // ✅ Lot B1 — mission_declared fields (modèle uniquement)
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
@@ -308,6 +317,9 @@ class Mission
     {
         return $this->executedWithoutInstrumentistAt !== null;
     }
+
+    public function getEncodingValidatedWithoutHoursAt(): ?\DateTimeImmutable { return $this->encodingValidatedWithoutHoursAt; }
+    public function setEncodingValidatedWithoutHoursAt(?\DateTimeImmutable $at): static { $this->encodingValidatedWithoutHoursAt = $at; return $this; }
 
     /**
      * D-155 — y a-t-il une activité à encoder et à valoriser : une instrumentiste affectée, ou

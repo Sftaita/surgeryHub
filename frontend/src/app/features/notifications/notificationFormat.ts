@@ -52,6 +52,7 @@ const TITLES: Record<string, string> = {
   ENCODING_ANOMALY_INSTRUMENTIST: "Point à vérifier sur votre encodage",
   ENCODING_CORRECTION_REQUESTED: "Correction de votre encodage demandée",
   ENCODING_UPDATED_BY_SURGEON: "Encodage complété par le chirurgien",
+  ENCODING_TAKEN_OVER: "Encodage repris et validé",
   // D-151
   ASSIGNMENT_REFUSED_BY_SURGEON: "Refus d'affectation par le chirurgien",
   ASSIGNMENT_REVIEW_REQUESTED: "Intervention demandée sur une affectation",
@@ -265,6 +266,12 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
   if (n.eventType === "ENCODING_UPDATED_BY_SURGEON") {
     const who = typeof payload.surgeonName === "string" && payload.surgeonName ? payload.surgeonName : "Le chirurgien";
     return `${who} a complété ou corrigé les interventions / le matériel de votre mission du ${missionDate ?? "—"}. Consultez votre encodage.`;
+  }
+  // D-171 — reprise par un manager d'un encodage non soumis ; heures manquantes jamais inventées.
+  if (n.eventType === "ENCODING_TAKEN_OVER") {
+    const who = typeof payload.managerName === "string" && payload.managerName ? payload.managerName : "La coordination";
+    const hours = payload.hoursMissing === true ? " Vos heures prestées restent à déclarer." : "";
+    return `${who} a repris, terminé et validé l'encodage de votre mission du ${missionDate ?? "—"} ; ce que vous aviez encodé est conservé.${hours}`;
   }
   if (n.eventType === "ENCODING_ANOMALY_INSTRUMENTIST") {
     const category = typeof payload.type === "string" && ANOMALY_TYPE_LABELS[payload.type] ? ` (${ANOMALY_TYPE_LABELS[payload.type]})` : "";

@@ -24,8 +24,9 @@ vi.mock("../../../api/apiClient", () => ({
 }));
 
 const toastSuccess = vi.fn();
+const toastWarning = vi.fn();
 vi.mock("../../../ui/toast/useToast", () => ({
-  useToast: () => ({ success: toastSuccess, error: vi.fn(), warning: vi.fn() }),
+  useToast: () => ({ success: toastSuccess, error: vi.fn(), warning: toastWarning }),
 }));
 
 function baseMission(overrides: Partial<Record<string, unknown>> = {}) {
@@ -87,6 +88,7 @@ beforeEach(() => {
   apiGetMock.mockReset();
   apiPostMock.mockReset();
   toastSuccess.mockReset();
+  toastWarning.mockReset();
 });
 
 describe("ManagerMissionDrawer — annulation de mission (Point 5)", () => {
@@ -426,6 +428,30 @@ describe("ManagerMissionDrawer — calcul financier", () => {
     expect(screen.queryByTestId("calculation-obsolete")).toBeNull();
   });
 
+  it("D-171 — calcul sans heures : prestations firme facturables, prestation instrumentiste en attente", async () => {
+    renderDrawer(validated, { calculations: [calculation([line()], { status: "LOCKED", instrumentistHoursPending: true, instrumentistSupplementAvailable: false })] });
+    expect(await screen.findByTestId("drawer-instrumentist-hours-pending")).toHaveTextContent("les prestations firme sont facturables");
+    expect(screen.queryByTestId("drawer-instrumentist-supplement")).toBeNull();
+  });
+
+  it("D-171 — heures déclarées après la facture : « Valoriser la prestation instrumentiste » appelle l'endpoint dédié", async () => {
+    const user = userEvent.setup();
+    renderDrawer(validated, { calculations: [calculation([line()], { status: "LOCKED", instrumentistHoursPending: true, instrumentistSupplementAvailable: true })] });
+    await user.click(await screen.findByTestId("drawer-instrumentist-supplement"));
+    expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/financial-calculations/instrumentist-supplement");
+  });
+
+  it("D-171 — complément calculé : affiché à part, à approuver, jamais confondu avec le calcul principal", async () => {
+    const user = userEvent.setup();
+    const main = calculation([line()], { status: "LOCKED", instrumentistHoursPending: true, instrumentistSupplementAvailable: false });
+    const supplement = calculation([line()], { id: 901, version: 2, status: "CALCULATED", supplementOfCalculationId: main.id });
+    renderDrawer(validated, { calculations: [main, supplement] });
+    expect(await screen.findByTestId("drawer-instrumentist-supplement-status")).toHaveTextContent("complément v2");
+    expect(screen.queryByTestId("drawer-instrumentist-hours-pending")).toBeNull();
+    await user.click(screen.getByTestId("drawer-approve-supplement"));
+    expect(apiPostMock).toHaveBeenCalledWith("/api/financial-calculations/901/approve");
+  });
+
   it("aucun calcul : « Calculer la valorisation »", async () => {
     renderDrawer(validated, { calculations: [] });
     expect(await screen.findByTestId("drawer-calculate")).toHaveTextContent("Calculer la valorisation");
@@ -494,5 +520,71 @@ describe("ManagerMissionDrawer — clavier", () => {
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(parentKeyDown).not.toHaveBeenCalled();
+  });
+});
+
+describe("ManagerMissionDrawer — terminer et valider (D-171)", () => {
+  it("propose « Terminer et valider » quand le backend le sert, et appelle l'endpoint dédié", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "submit", "complete_and_validate"],
+      executedWithoutInstrumentist: { declaredAt: "2026-08-10T12:00:00+02:00", declaredByName: "Jean Dupont" },
+      encodingRevision: "rev-3", encodingTakeover: null,
+    }));
+    await user.click(await screen.findByTestId("manager-complete-and-validate"));
+    await user.click(screen.getByTestId("confirm-complete-and-validate"));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/complete-and-validate", { expectedRevision: "rev-3", takeoverConfirmed: false }));
+  });
+
+  it("reprise : la confirmation explicite est envoyée au backend", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "complete_and_validate"],
+      encodingRevision: "rev-4", encodingTakeover: { instrumentistName: "Marie Dupont", hoursMissing: false },
+    }));
+    await user.click(await screen.findByTestId("manager-complete-and-validate"));
+    expect(screen.getByTestId("confirm-complete-and-validate")).toBeDisabled();
+    await user.click(screen.getByTestId("complete-and-validate-takeover-confirm"));
+    await user.click(screen.getByTestId("confirm-complete-and-validate"));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/complete-and-validate", { expectedRevision: "rev-4", takeoverConfirmed: true }));
+  });
+
+  it("reprise + 409 (encodage modifié) : fenêtre fermée, confirmation annulée, mission relue ; nouvelle confirmation exigée", async () => {
+    const user = userEvent.setup();
+    const conflict = { response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "modifié" } } } };
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "complete_and_validate"],
+      encodingRevision: "rev-4", encodingTakeover: { instrumentistName: "Marie Dupont", hoursMissing: false },
+    }));
+    apiPostMock.mockRejectedValueOnce(conflict);
+    await user.click(await screen.findByTestId("manager-complete-and-validate"));
+    await user.click(screen.getByTestId("complete-and-validate-takeover-confirm"));
+    const reads = apiGetMock.mock.calls.filter(([u]) => u === "/api/missions/42").length;
+    await user.click(screen.getByTestId("confirm-complete-and-validate"));
+
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledWith("L'encodage a été modifié depuis votre dernière consultation. Consultez les modifications avant de recommencer la validation."));
+    await waitFor(() => expect(screen.queryByTestId("confirm-complete-and-validate")).toBeNull());
+    await waitFor(() => expect(apiGetMock.mock.calls.filter(([u]) => u === "/api/missions/42").length).toBeGreaterThan(reads));
+
+    await user.click(await screen.findByTestId("manager-complete-and-validate"));
+    expect(screen.getByTestId("complete-and-validate-takeover-confirm")).not.toBeChecked();
+    expect(screen.getByTestId("confirm-complete-and-validate")).toBeDisabled();
+  });
+
+  it("« Valider l'encodage » avec une révision obsolète (409) : jamais validé, message explicite, confirmation refermée", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], encodingRevision: "rev-9" }));
+    apiPostMock.mockRejectedValueOnce({ response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "modifié" } } } });
+    await user.click(await screen.findByRole("button", { name: "Valider l'encodage" }));
+    await user.click(screen.getByRole("button", { name: "Valider" }));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/encoding/validate", { expectedRevision: "rev-9" }));
+    await waitFor(() => expect(toastWarning).toHaveBeenCalledWith(expect.stringContaining("modifié depuis votre dernière consultation")));
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("jamais sans l'action servie par le backend", async () => {
+    renderDrawer(baseMission({ status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding"] }));
+    expect(await screen.findByTestId("manager-edit-encoding")).toBeInTheDocument();
+    expect(screen.queryByTestId("manager-complete-and-validate")).toBeNull();
   });
 });

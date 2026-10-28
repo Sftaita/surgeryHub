@@ -85,7 +85,10 @@ final class MissionActionsService
             if (MissionEncodingCorrectionPolicy::managerCanEditEncoding($mission)) {
                 $actions[] = 'edit_encoding';
             }
-            if (MissionEncodingCorrectionPolicy::managerCanEditHours($mission)) {
+            // D-171 — or hours still missing after a takeover validated without them: only the
+            // hours stay declarable (same rule as MissionExecutionVoter::UPDATE).
+            if (MissionEncodingCorrectionPolicy::managerCanEditHours($mission)
+                || MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission)) {
                 $actions[] = 'edit_hours';
             }
 
@@ -100,6 +103,11 @@ final class MissionActionsService
             // already grants it); offered only in this mode, where no instrumentist will.
             if ($mission->isExecutedWithoutInstrumentist() && $mission->getStatus() === MissionStatus::ENCODING_IN_PROGRESS) {
                 $actions[] = 'submit';
+            }
+            // D-171 — finish and validate an open encoding himself: same rule exactly as
+            // MissionVoter::ENCODING_COMPLETE_AND_VALIDATE.
+            if (MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now()) === null) {
+                $actions[] = 'complete_and_validate';
             }
 
             return $actions;
@@ -158,6 +166,12 @@ final class MissionActionsService
         // une fois la mission validée ou clôturée — même règle que MissionVoter::canViewEncoding().
         if ($isInstr && $isAssignedInstr && in_array($mission->getStatus(), [MissionStatus::VALIDATED, MissionStatus::CLOSED], true)) {
             $actions[] = 'view_encoding';
+        }
+
+        // D-171 — encodage validé par une reprise manager alors que ses heures manquaient : elle
+        // les déclare encore (seules les heures ; même règle que MissionExecutionVoter::UPDATE).
+        if ($isInstr && $isAssignedInstr && MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission)) {
+            $actions[] = 'edit_hours';
         }
 
         // D-151 — the mission's surgeon: refuse the instrumentist who accepted it while the

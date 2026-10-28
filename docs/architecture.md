@@ -4369,3 +4369,40 @@ publication.
 - **Verrous levés dans ce mode seulement** : heures (`EncodingCompletenessService`), calcul
   (`assertEligible`), recalcul groupé, action « Calculer » du suivi.
 - **Notifications** : renvoi / réouverture → chirurgien ; jamais d'auto-notification de soumission.
+
+### 31.6 Encodage indépendant de la présence d'une instrumentiste (D-171)
+
+- **Trois auteurs possibles d'un encodage** : l'instrumentiste affectée (parcours classique),
+  le manager (D-153, toujours), le chirurgien de **sa** mission (D-154 avec instrumentiste,
+  D-155 après déclaration de l'activité sans instrumentiste). Le chirurgien ne valide jamais,
+  ne voit aucune donnée financière et n'a aucun droit général d'édition des missions.
+- **Terminer et valider (manager)** : `MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason()`
+  lue par `MissionVoter::ENCODING_COMPLETE_AND_VALIDATE`, `MissionActionsService`
+  (`complete_and_validate`) et `MissionEncodingWorkflowService::completeAndValidate()`
+  (`complete()` puis `validate()`, contrôles faits avant toute écriture).
+- **Explication d'un blocage** : `validationBlockedReason()` → `encodingValidationBlockedReason`
+  (détail de mission, managers) ; le suivi affiche l'auteur de la soumission (`submittedBy`).
+- **Instrumentiste affectée après coup** : une activité déclarée n'est plus OPEN, donc ni claim
+  ni affectation ; le manager annule d'abord la déclaration (motif, contenu conservé), puis
+  affecte. Le contenu est repris tel quel par l'instrumentiste ; le chirurgien garde la
+  correction D-154 (version optimiste), jamais les heures ni la soumission.
+- **Reprise manager** (instrumentiste affectée, encodage non soumis) :
+  `MissionEncodingCorrectionPolicy::isTakeover()` ; confirmation explicite (`takeoverConfirmed`),
+  empreinte `EncodingTakeoverService::revision()` comparée sous le verrou de la mission
+  (`MissionAssignmentService::inLockedChange()`, 409 si l'encodage a changé), audit
+  `MISSION_ENCODING_TAKEN_OVER`, notification `ENCODING_TAKEN_OVER` par
+  `MissionLifecycleChangedMessageHandler` après la validation.
+- **Heures indépendantes de la validation** : la validation manager (avec ou sans reprise) n'exige
+  jamais les heures et n'en crée aucune. Le fait `Mission.encodingValidatedWithoutHoursAt` +
+  `hoursPendingAfterValidation()` laissent les seules heures déclarables tant qu'elles manquent
+  (`MissionExecutionVoter::UPDATE`, `edit_hours`, `remind_hours`, une seule règle) ; jamais de
+  prestation horaire valorisée sans heures réelles.
+- **Facturation firme indépendante des heures** : `FinancialCalculationService::evaluate()` ne
+  bloque plus sur des heures absentes (`instrumentistHoursPending`) ; la prestation horaire arrive
+  par recalcul, ou par un calcul complémentaire (`supplementOf`) quand une facture firme a verrouillé
+  le calcul principal. `findActiveCalculation()` et les sélections « calcul actif » excluent les
+  compléments ; relevés et statistiques lisent les lignes.
+- **Sérialisation** : `MissionEncodingLock::run()` (verrou `FOR UPDATE` sur `mission` + relecture
+  de l'état validé) entoure toutes les écritures d'encodage (contrôleurs interventions, matériel,
+  demandes de catalogue ; `MissionExecutionService::updateActuals()`) et toutes les transitions de
+  `MissionEncodingWorkflowService`.

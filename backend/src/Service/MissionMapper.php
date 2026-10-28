@@ -19,6 +19,8 @@ final class MissionMapper
         private readonly EncodingReminderService $reminders,
         // D-151 — optional only so plain unit tests can build the mapper; always autowired.
         private readonly ?MissionAssignmentService $assignments = null,
+        // D-171 — optional for the same reason.
+        private readonly ?EncodingTakeoverService $takeovers = null,
     ) {}
 
     public function toListDto(Mission $m, User $viewer): MissionListDto
@@ -48,6 +50,10 @@ final class MissionMapper
         // D-143 — historique des relances automatiques (J+1/J+2/J+4), manager uniquement.
         $automaticReminders = $isManagerViewer ? $this->reminders->reminderHistory($m) : [];
         $lastAutomatic = $automaticReminders !== [] ? $automaticReminders[array_key_last($automaticReminders)] : null;
+        // D-171 — reprise manager : révision lue, confirmation, dernière reprise, heures en attente.
+        $completeAndValidate = $isManagerViewer
+            && MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($m, Clock::get()->now()) === null;
+        $seesTakeover = $isManagerViewer || ($m->getInstrumentist() !== null && $m->getInstrumentist()->getId() === $viewer->getId());
 
         return new MissionDetailDto(
             id: (int) $m->getId(),
@@ -85,6 +91,15 @@ final class MissionMapper
                     ? trim(($m->getExecutedWithoutInstrumentistBy()->getFirstname() ?? '') . ' ' . ($m->getExecutedWithoutInstrumentistBy()->getLastname() ?? ''))
                     : null,
             ] : null,
+            encodingValidationBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::validationBlockedReason($m, Clock::get()->now()) : null,
+            // Aussi pour « Valider l'encodage » (SUBMITTED) : la validation porte sur ce que le manager a relu.
+            encodingRevision: $completeAndValidate || ($isManagerViewer && $m->getStatus() === \App\Enum\MissionStatus::SUBMITTED) ? $this->takeovers?->revision($m) : null,
+            encodingTakeover: $completeAndValidate && MissionEncodingCorrectionPolicy::isTakeover($m) ? [
+                'instrumentistName' => trim(($m->getInstrumentist()?->getFirstname() ?? '') . ' ' . ($m->getInstrumentist()?->getLastname() ?? '')),
+                'hoursMissing'      => MissionEncodingCorrectionPolicy::hoursMissing($m),
+            ] : null,
+            lastEncodingTakeover: $seesTakeover ? $this->takeovers?->lastTakeover($m) : null,
+            hoursPendingAfterValidation: $seesTakeover && MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($m),
         );
     }
 
