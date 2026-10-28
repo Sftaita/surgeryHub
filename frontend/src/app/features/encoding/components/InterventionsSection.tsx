@@ -67,6 +67,8 @@ type Props = {
    *  interventions RÉELLES uniquement — jamais recomptés ici depuis `entries`, qui
    *  contient aussi les drafts (en attente / historique), affichés "hors décompte". */
   progress: MissionEncodingProgress;
+  /** D-172 — écran de correction manager (présence du délégué « non renseignée » possible). */
+  managerCorrection?: boolean;
 };
 
 const GREEN_900 = "#144D38";
@@ -204,7 +206,7 @@ function WarnIcon() {
   );
 }
 
-export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress }: Props) {
+export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress, managerCorrection = false }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -247,6 +249,10 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   const invalidate = React.useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
     queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
+    // D-172 — une écriture peut faire avancer l'état d'encodage (ex. « Aucun encodage » →
+    // « En cours ») : la liste Missions et le suivi des encodages ne gardent jamais l'ancien.
+    queryClient.invalidateQueries({ queryKey: ["missions"], exact: false });
+    queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false });
   }, [queryClient, missionId]);
 
   const setEncodingCache = React.useCallback(
@@ -808,6 +814,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         onClose={() => (isBusy ? null : setOpenAddIntervention(false))}
         onSubmit={(values) => createInterventionMutation.mutate(values)}
         onSubmitDraft={(values: DraftSubmitValues) => createDraftMutation.mutate(values)}
+        managerCorrection={managerCorrection}
       />
 
       <EditInterventionDialog
@@ -821,6 +828,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
           if (!editIntervention) return;
           patchInterventionMutation.mutate({ interventionId: editIntervention.id, body: values });
         }}
+        managerCorrection={managerCorrection}
       />
 
       <ConfirmDeleteDialog

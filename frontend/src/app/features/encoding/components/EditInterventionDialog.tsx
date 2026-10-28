@@ -5,6 +5,7 @@ import { SheetModal } from "../../../ui/sheet/SheetModal";
 import { SelectField } from "../../../ui/sheet/SelectField";
 import type { CatalogFirm, CatalogInterventionType, MissionEncodingInterventionEntry, PatchInterventionBody } from "../api/encoding.types";
 import { fetchFirmServiceOfferings } from "../api/encoding.api";
+import RepresentativePresenceQuestion, { representativeAnswerBody, type RepresentativeAnswer } from "./RepresentativePresenceQuestion";
 
 const GREEN_500 = "#42A882";
 const GREEN_800 = "#1F6B4F";
@@ -23,6 +24,8 @@ type Props = {
   firms: CatalogFirm[];
   onClose: () => void;
   onSubmit: (values: PatchInterventionBody) => void;
+  /** D-172 — correction manager : la présence du délégué peut être « non renseignée ». */
+  managerCorrection?: boolean;
 };
 
 /**
@@ -37,10 +40,11 @@ export default function EditInterventionDialog({
   firms,
   onClose,
   onSubmit,
+  managerCorrection = false,
 }: Props) {
   const [typeId, setTypeId] = React.useState<number | null>(null);
   const [firmId, setFirmId] = React.useState<number>(NO_FIRM);
-  const [representativePresent, setRepresentativePresent] = React.useState<boolean | null>(null);
+  const [representativePresent, setRepresentativePresent] = React.useState<RepresentativeAnswer>(null);
   const [selectedChoiceOptionId, setSelectedChoiceOptionId] = React.useState<number | null>(null);
 
   React.useEffect(() => {
@@ -80,7 +84,7 @@ export default function EditInterventionDialog({
       // Prestation non pertinente désormais : on efface explicitement une éventuelle
       // ancienne réponse (jamais laissée orpheline, liée à une firme/type qui n'est plus
       // celui sélectionné — voir D-092 section 3 du lot instrumentiste).
-      representativePresent: showRepresentativeQuestion ? representativePresent : null,
+      ...(showRepresentativeQuestion ? representativeAnswerBody(representativePresent) : { representativePresent: null }),
       selectedChoiceOptionId: showChoiceQuestion ? selectedChoiceOptionId : null,
     });
   };
@@ -115,37 +119,13 @@ export default function EditInterventionDialog({
         />
 
         {showRepresentativeQuestion && (
-          <Box sx={{ background: "#F5F7FA", borderRadius: "12px", padding: "14px" }}>
-            <Box sx={{ fontSize: 14, fontWeight: 700, mb: "4px" }}>Un délégué de {selectedFirmName} était-il présent ?</Box>
-            <Box sx={{ fontSize: 12.5, color: GRAY_500, mb: "10px" }}>
-              Cette information est nécessaire pour cette intervention.
-            </Box>
-            <Box sx={{ display: "flex", gap: "10px" }}>
-              {([true, false] as const).map((val) => (
-                <Box
-                  key={String(val)}
-                  component="button"
-                  type="button"
-                  onClick={() => setRepresentativePresent(val)}
-                  disabled={loading}
-                  sx={{
-                    flex: 1, height: 42, borderRadius: "10px", cursor: "pointer", fontFamily: "inherit",
-                    fontSize: 14, fontWeight: 700,
-                    border: "1.5px solid", borderColor: representativePresent === val ? GREEN_500 : BORDER_DEFAULT,
-                    background: representativePresent === val ? "rgba(66,168,130,.12)" : "#fff",
-                    color: representativePresent === val ? GREEN_800 : GRAY_800,
-                  }}
-                >
-                  {val ? "Oui" : "Non"}
-                </Box>
-              ))}
-            </Box>
-            {representativePresent === null && (
-              <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
-                Indiquez si un délégué de {selectedFirmName} était présent.
-              </Box>
-            )}
-          </Box>
+          <RepresentativePresenceQuestion
+            firmName={selectedFirmName}
+            value={representativePresent}
+            onChange={setRepresentativePresent}
+            disabled={loading}
+            managerCorrection={managerCorrection}
+          />
         )}
 
         {showChoiceQuestion && (

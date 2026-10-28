@@ -562,3 +562,34 @@ describe("ManagerMissionDrawer — terminer et valider (D-171)", () => {
     expect(screen.queryByTestId("manager-complete-and-validate")).toBeNull();
   });
 });
+
+describe("ManagerMissionDrawer — état d'encodage, auteur et verrous (D-172)", () => {
+  it("affiche qui a finalisé l'encodage et la raison de chaque verrou servi", async () => {
+    renderDrawer(baseMission({
+      status: "VALIDATED",
+      instrumentist: null,
+      allowedActions: ["view"],
+      encoding: {
+        state: "VALIDATED", stateLabel: "Validé",
+        finalizedBy: { name: "Sophie Manager", role: "MANAGER", at: "2026-10-23T08:00:00+02:00" },
+        validatedBy: { name: "Sophie Manager", role: "MANAGER", at: "2026-10-23T08:00:00+02:00" },
+        locks: [{ level: "ENCODING", label: "Encodage verrouillé", reason: "Encodage validé le 23/10/2026 : interventions, matériel et heures ne sont plus modifiables." }],
+      },
+    }), { calculations: [] });
+    const notice = await screen.findByTestId("drawer-encoding-overview");
+    expect(notice).toHaveTextContent("Encodage : validé");
+    expect(notice).toHaveTextContent("Encodage finalisé par Sophie Manager (manager).");
+    expect(screen.getByTestId("drawer-lock-ENCODING")).toHaveTextContent("ne sont plus modifiables");
+    expect(screen.queryByTestId("drawer-lock-FINANCIAL_CALCULATION")).toBeNull();
+  });
+
+  it("mission passée sans instrumentiste non déclarée : « Aucun encodage », jamais présentée comme réalisée", async () => {
+    renderDrawer(baseMission({
+      status: "OPEN", instrumentist: null, allowedActions: ["view"],
+      encoding: { state: "NOT_DECLARED", stateLabel: "Aucun encodage", finalizedBy: null, validatedBy: null, locks: [] },
+    }), { calculations: [] });
+    const notice = await screen.findByTestId("drawer-encoding-overview");
+    expect(notice).toHaveTextContent("Encodage : aucun encodage");
+    expect(notice).toHaveTextContent("aucune activité n'a été déclarée réalisée");
+  });
+});

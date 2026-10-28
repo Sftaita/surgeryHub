@@ -191,28 +191,44 @@ final class EncodingStateResolverTest extends TestCase
         self::assertSame(EncodingState::NOT_APPLICABLE, $this->resolve($facts));
     }
 
-    /** DRAFT/OPEN/REJECTED sont hors cycle au même titre que CANCELLED. */
+    /** DRAFT/REJECTED (et OPEN pas encore terminée) sont hors cycle au même titre que CANCELLED. */
     public function testNonEncodableStatusesAreNotApplicable(): void
     {
-        foreach ([MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::REJECTED] as $status) {
+        foreach ([MissionStatus::DRAFT, MissionStatus::REJECTED] as $status) {
             self::assertSame(
                 EncodingState::NOT_APPLICABLE,
                 $this->resolve($this->facts($status)),
                 sprintf('%s ne participe pas au cycle d\'encodage', $status->value),
             );
         }
+        // Publiée sans instrumentiste, pas encore terminée : rien n'est attendu.
+        self::assertSame(EncodingState::NOT_APPLICABLE, $this->resolve($this->facts(MissionStatus::OPEN, endAt: '2026-09-12 18:00:00')));
+    }
+
+    /**
+     * D-172 — publiée sans instrumentiste et terminée : jamais « sans objet » (l'activité a pu
+     * avoir lieu, facturable à une firme) ni « réalisée » : aucune activité n'a été déclarée.
+     */
+    public function testPastOpenMissionIsNotDeclared(): void
+    {
+        self::assertSame(EncodingState::NOT_DECLARED, $this->resolve($this->facts(MissionStatus::OPEN, endAt: '2026-09-11 10:00:00')));
+        self::assertSame(EncodingState::NOT_DECLARED, $this->resolve($this->facts(MissionStatus::OPEN, endAt: self::NOW)));
+        self::assertSame('Aucun encodage', EncodingState::NOT_DECLARED->label());
+        self::assertFalse(EncodingState::NOT_DECLARED->requiresInstrumentistAction());
+        self::assertSame(EncodingState::NOT_APPLICABLE, $this->resolve($this->facts(MissionStatus::CANCELLED, endAt: '2026-09-11 10:00:00')));
     }
 
     /**
      * Une mission NOT_APPLICABLE n'est jamais un manquement : c'est ce qui empêche les
      * missions annulées de polluer éternellement le KPI "à encoder".
      */
-    public function testOnlyNotApplicableIsExcludedFromExpectedEncoding(): void
+    public function testOnlyNotApplicableAndNotDeclaredAreExcludedFromExpectedEncoding(): void
     {
         self::assertFalse(EncodingState::NOT_APPLICABLE->isEncodingExpected());
+        self::assertFalse(EncodingState::NOT_DECLARED->isEncodingExpected());
 
         foreach (EncodingState::cases() as $state) {
-            if ($state !== EncodingState::NOT_APPLICABLE) {
+            if ($state !== EncodingState::NOT_APPLICABLE && $state !== EncodingState::NOT_DECLARED) {
                 self::assertTrue($state->isEncodingExpected(), $state->value);
             }
         }

@@ -62,7 +62,9 @@ class InterventionService
             ? $this->resolveChoiceOption($dto->selectedChoiceOptionId, $firm, $type)
             : null;
 
-        $this->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
+        if (!$dto->representativePresenceUnknown) {
+            $this->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
+        }
         $this->assertChoiceAnswered($firm, $type, $selectedChoiceOption);
 
         $intervention = null;
@@ -124,7 +126,10 @@ class InterventionService
         // modifie pas au sens métier (voir docblock de section "rétrocompatibilité" —
         // l'ouverture/la consultation ne doivent jamais être cassées par cette règle).
         if ($dto->interventionTypeId !== null || $dto->primaryFirmIdProvided || $dto->representativePresentProvided || $dto->selectedChoiceOptionIdProvided) {
-            $this->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
+            // D-172 — « non renseignée » explicite (manager) : enregistrée inconnue, jamais refusée ici.
+            if (!$dto->representativePresenceUnknown) {
+                $this->assertRepresentativePresenceAnswered($firm, $type, $representativePresent);
+            }
             $this->assertChoiceAnswered($firm, $type, $selectedChoiceOption);
         }
 

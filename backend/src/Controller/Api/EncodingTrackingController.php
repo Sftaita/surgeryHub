@@ -141,6 +141,7 @@ final class EncodingTrackingController extends AbstractController
             'validated' => $summary->validated,
             'locked' => $summary->locked,
             'notApplicable' => $summary->notApplicable,
+            'notDeclared' => $summary->notDeclared,
             'staleInProgress' => $summary->staleInProgress,
             'financialAnomalies' => $summary->financialAnomalies,
             // Dérivés exposés explicitement : le frontend ne doit jamais les recomposer,

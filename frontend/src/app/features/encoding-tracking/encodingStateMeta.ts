@@ -3,7 +3,7 @@ import type { EncodingFinancialState, EncodingState, EffectiveDurationSource, Ho
 import type { StatusBadgeConfig } from "../../ui/StatusBadge";
 
 /**
- * Suivi des encodages (D-118) — mapping PUREMENT présentationnel des 7 EncodingState et
+ * Suivi des encodages (D-118) — mapping PUREMENT présentationnel des 8 EncodingState et
  * des 6 EncodingFinancialState backend.
  *
  * Ce fichier ne doit JAMAIS contenir de logique de dérivation (aucune comparaison de
@@ -20,6 +20,7 @@ export const ENCODING_STATE_CONFIG: Record<EncodingState, StatusBadgeConfig> = {
   VALIDATED: { label: "Validé", color: "success" },
   LOCKED: { label: "Verrouillé", color: "success", variant: "outlined" },
   NOT_APPLICABLE: { label: "Sans objet", color: "default", variant: "outlined" },
+  NOT_DECLARED: { label: "Aucun encodage", color: "warning", variant: "outlined" },
 };
 
 export const FINANCIAL_STATE_CONFIG: Record<EncodingFinancialState, StatusBadgeConfig> = {
@@ -53,7 +54,7 @@ export const MISSION_TYPE_LABEL: Record<MissionType, string> = {
 };
 
 export const ENCODING_STATE_ORDER: EncodingState[] = [
-  "UPCOMING", "TO_ENCODE", "IN_PROGRESS", "SUBMITTED", "VALIDATED", "LOCKED", "NOT_APPLICABLE",
+  "UPCOMING", "TO_ENCODE", "IN_PROGRESS", "SUBMITTED", "VALIDATED", "LOCKED", "NOT_DECLARED", "NOT_APPLICABLE",
 ];
 
 export function formatMinutes(minutes: number): string {

@@ -65,6 +65,8 @@ class MissionVoter extends Voter
     public const ENCODING_REOPEN   = 'MISSION_ENCODING_REOPEN';
     // D-171 — « Terminer et valider » (manager), MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason().
     public const ENCODING_COMPLETE_AND_VALIDATE = 'MISSION_ENCODING_COMPLETE_AND_VALIDATE';
+    // D-172 — correction manager : présence du délégué enregistrée « non renseignée » (inconnue).
+    public const RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE = 'MISSION_RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE';
 
     // Relance manuelle (cockpit Suivi des encodages, D-120) — manager/admin uniquement,
     // ne mute aucun statut : simple envoi de notification + trace d'audit.
@@ -123,6 +125,7 @@ class MissionVoter extends Voter
             self::ENCODING_REJECT,
             self::ENCODING_REOPEN,
             self::ENCODING_COMPLETE_AND_VALIDATE,
+            self::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE,
             self::ENCODING_REMIND,
             self::HOURS_REMIND,
             self::REFUSE_ASSIGNMENT,
@@ -189,6 +192,7 @@ class MissionVoter extends Voter
             self::ENCODING_REOPEN             => $isManager && $mission->getStatus() === MissionStatus::VALIDATED,
             self::ENCODING_COMPLETE_AND_VALIDATE => $isManager
                 && MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now()) === null,
+            self::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE => $isManager && $this->canEditEncoding($mission, $user, $isManager),
             self::ENCODING_REMIND             => $isManager && $this->canEncodingRemind($mission),
             self::HOURS_REMIND                => $isManager && MissionHoursReminderPolicy::isReminderRelevant($mission),
             self::REFUSE_ASSIGNMENT,

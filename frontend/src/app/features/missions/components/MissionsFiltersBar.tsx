@@ -1,4 +1,4 @@
-import { Box, Button, MenuItem, TextField, ToggleButton, ToggleButtonGroup, Tooltip } from "@mui/material";
+import { Box, Button, FormControlLabel, MenuItem, Switch, TextField, ToggleButton, ToggleButtonGroup, Tooltip } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import ViewDayOutlinedIcon from "@mui/icons-material/ViewDayOutlined";
 import TableRowsOutlinedIcon from "@mui/icons-material/TableRowsOutlined";
@@ -16,6 +16,10 @@ export interface MissionsFiltersValue {
   type?: string;
   siteId?: number;
   view: MissionsView;
+  /** D-172 — annulées masquées par défaut (un statut choisi explicitement prime). */
+  showCancelled: boolean;
+  /** D-172 — seulement les missions sans instrumentiste affectée. */
+  withoutInstrumentist: boolean;
 }
 
 type Props = {
@@ -126,6 +130,20 @@ export function MissionsFiltersBar({ value, onChange, statusLocked, onReset }: P
           <MenuItem value="">Tous les sites</MenuItem>
           {sites.map((s) => <MenuItem key={s.id} value={String(s.id)}>{s.name}</MenuItem>)}
         </TextField>
+
+        <FormControlLabel
+          control={<Switch size="small" checked={value.withoutInstrumentist} onChange={(e) => onChange({ withoutInstrumentist: e.target.checked })} />}
+          label="Sans instrumentiste"
+          data-testid="filter-without-instrumentist"
+        />
+
+        {!statusLocked && !value.status && (
+          <FormControlLabel
+            control={<Switch size="small" checked={value.showCancelled} onChange={(e) => onChange({ showCancelled: e.target.checked })} />}
+            label="Afficher les missions annulées"
+            data-testid="filter-show-cancelled"
+          />
+        )}
 
         {onReset && (
           <Button size="small" onClick={onReset} sx={{ textTransform: "none" }}>

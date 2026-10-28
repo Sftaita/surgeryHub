@@ -78,6 +78,35 @@ export type PaginatedResponse<T> = {
   total: number;
   page?: number;
   limit?: number;
+  /** D-172 — GET /api/missions : missions annulées masquées par `excludeCancelled` (null : aucun masquage). */
+  cancelledExcluded?: number | null;
+};
+
+/**
+ * D-172 — état d'encodage d'une mission, distinct de son statut de planification
+ * (EncodingStateResolver côté backend, jamais recalculé ici).
+ */
+export type MissionEncodingState =
+  | "UPCOMING" | "TO_ENCODE" | "IN_PROGRESS" | "SUBMITTED" | "VALIDATED" | "LOCKED" | "NOT_APPLICABLE" | "NOT_DECLARED";
+
+/** D-172 — un verrou réel confirmé par le backend, par niveau (jamais déduit d'un statut). */
+export type MissionLock = {
+  level: "ENCODING" | "FINANCIAL_CALCULATION" | "DOCUMENT" | "CLOSED";
+  label: string;
+  reason: string;
+};
+
+export type MissionEncodingActor = { name: string | null; role: "INSTRUMENTIST" | "SURGEON" | "MANAGER" | null; at: string };
+
+/** D-172 — servi aux managers seulement (liste et détail), null sinon. */
+export type MissionEncodingOverview = {
+  state: MissionEncodingState;
+  stateLabel: string;
+  /** Auteur de la dernière finalisation (soumission) de l'encodage. */
+  finalizedBy: MissionEncodingActor | null;
+  /** Auteur de la validation, quand l'encodage est validé. */
+  validatedBy: MissionEncodingActor | null;
+  locks: MissionLock[];
 };
 
 export type SiteListItem = {
@@ -243,6 +272,9 @@ export interface Mission {
   lastEncodingTakeover?: { byName: string | null; at: string; hoursMissing: boolean } | null;
   /** D-171 — encodage validé sans les heures prestées, toujours manquantes : seules elles restent déclarables. */
   hoursPendingAfterValidation?: boolean;
+
+  /** D-172 — état d'encodage, auteur et verrous réels (managers seulement). */
+  encoding?: MissionEncodingOverview | null;
 
   /** D-151 — affectation en cours, servie au chirurgien de la mission et aux managers seulement. */
   currentAssignment?: CurrentAssignment | null;

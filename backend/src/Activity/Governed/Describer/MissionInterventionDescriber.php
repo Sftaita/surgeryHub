@@ -23,7 +23,7 @@ final class MissionInterventionDescriber extends AbstractGovernedDescriber
     {
         return [
             'interventionType' => 'Type d\'intervention', 'code' => 'Code', 'label' => 'Libellé', 'primaryFirm' => 'Firme',
-            'representativePresent' => 'Représentant présent', 'selectedChoiceOption' => 'Choix obligatoire',
+            'representativePresent' => 'Délégué de la firme présent', 'selectedChoiceOption' => 'Choix obligatoire',
         ];
     }
 

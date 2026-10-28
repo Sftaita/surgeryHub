@@ -21,9 +21,28 @@ final class MissionMapper
         private readonly ?MissionAssignmentService $assignments = null,
         // D-171 — optional for the same reason.
         private readonly ?EncodingTakeoverService $takeovers = null,
+        // D-172 — optional for the same reason.
+        private readonly ?MissionEncodingOverviewService $encodingOverview = null,
     ) {}
 
-    public function toListDto(Mission $m, User $viewer): MissionListDto
+    /**
+     * D-172 — a page of missions: the managers' encoding block is computed once for the page
+     * (fixed number of queries), never per mission.
+     *
+     * @param list<Mission> $missions
+     * @return list<MissionListDto>
+     */
+    public function toListDtos(array $missions, User $viewer): array
+    {
+        $overview = self::isManager($viewer) && $this->encodingOverview !== null
+            ? $this->encodingOverview->overviewOf($missions, Clock::get()->now())
+            : [];
+
+        return array_map(fn (Mission $m) => $this->toListDto($m, $viewer, $overview[(int) $m->getId()] ?? null), $missions);
+    }
+
+    /** @param array<string,mixed>|null $encoding D-172 — see toListDtos() */
+    public function toListDto(Mission $m, User $viewer, ?array $encoding = null): MissionListDto
     {
         return new MissionListDto(
             id: (int) $m->getId(),
@@ -40,7 +59,13 @@ final class MissionMapper
             allowedActions: $this->actions->allowedActions($m, $viewer),
             covered: $this->coverage->isCovered($m),
             targetedOffer: $this->targetedOffer($m),
+            encoding: $encoding,
         );
+    }
+
+    private static function isManager(User $user): bool
+    {
+        return in_array('ROLE_MANAGER', $user->getRoles(), true) || in_array('ROLE_ADMIN', $user->getRoles(), true);
     }
 
     public function toDetailDto(Mission $m, User $viewer): MissionDetailDto
@@ -100,6 +125,7 @@ final class MissionMapper
             ] : null,
             lastEncodingTakeover: $seesTakeover ? $this->takeovers?->lastTakeover($m) : null,
             hoursPendingAfterValidation: $seesTakeover && MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($m),
+            encoding: $isManagerViewer ? $this->encodingOverview?->overviewOfMission($m, Clock::get()->now()) : null,
         );
     }
 

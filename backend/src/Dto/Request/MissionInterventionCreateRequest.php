@@ -29,6 +29,12 @@ class MissionInterventionCreateRequest
     public ?bool $representativePresent = null;
 
     /**
+     * D-172 — correction manager seulement (MissionVoter::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE) :
+     * présence du délégué historiquement inconnue, enregistrée null — jamais « non ».
+     */
+    public bool $representativePresenceUnknown = false;
+
+    /**
      * Tarification firme conditionnée à un choix obligatoire (voir docs/decisions.md) —
      * facultative à la création tant que la prestation (firm, interventionType) ne
      * l'exige pas ; bloquant sinon (voir InterventionService::assertChoiceAnswered()).

@@ -8,6 +8,7 @@ import { useMissionManagerActions, type MissionActionDescriptor } from "../hooks
 import { useMissionFinancialCalculation } from "../../financial-calculation/hooks/useMissionFinancialCalculation";
 import { AnomalyReportsManagerPanel } from "../../encoding-anomaly-reports/components/AnomalyReportsManagerPanel";
 import { MissionStatusChip } from "../components/MissionsDayList";
+import { MissionEncodingOverviewNotice } from "../components/MissionEncodingOverviewNotice";
 import { formatMissionStatus } from "../utils/missions.format";
 import { MissionDrawer, financeLabel, type DrawerFooterAction } from "./MissionDrawer";
 import { buildMissionDrawerView, FINANCE_STATUSES, NO_ENCODING_STATUSES } from "./missionDrawerModel";
@@ -181,6 +182,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
           <strong>{mission.targetedOffer.instrumentist?.name ?? "L'instrumentiste"}</strong> a refusé la demande — la mission reste à couvrir.
         </p>
       )}
+      <MissionEncodingOverviewNotice encoding={mission.encoding} />
       {mission.executedWithoutInstrumentist && (
         <p className="mdw-notice mdw-notice--muted" data-testid="manager-without-instrumentist">
           Activité réalisée sans instrumentiste

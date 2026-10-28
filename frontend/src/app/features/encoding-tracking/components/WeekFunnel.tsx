@@ -32,6 +32,8 @@ export function WeekFunnel({ summary }: Props) {
     { key: "submitted", label: "soumises", count: summary?.submitted ?? 0, color: BLUE_700 },
     { key: "validated", label: "validées", count: summary?.validated ?? 0, color: GREEN_500 },
     { key: "locked", label: "verrouillées", count: summary?.locked ?? 0, color: GREEN_700 },
+    // D-172 — passées publiées sans instrumentiste, aucune activité déclarée.
+    { key: "notDeclared", label: "aucun encodage", count: summary?.notDeclared ?? 0, color: "#B7791F" },
     { key: "notApplicable", label: "sans objet", count: summary?.notApplicable ?? 0, color: GRAY_500 },
   ];
   const missions = summary?.totalMissions ?? 0;

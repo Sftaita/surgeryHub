@@ -6,6 +6,7 @@ import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
 import type { Mission } from "../api/missions.types";
 import { formatMissionStatus, formatMissionType, formatPersonLabel } from "../utils/missions.format";
 import { formatBrusselsTime, formatDayLabel, groupByDay, relativeDayLabel } from "../utils/dayGroups";
+import { MissionEncodingBadge } from "./MissionEncodingBadge";
 
 type ChipColor = "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning";
 
@@ -50,7 +51,7 @@ function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(mission); } }}
       sx={{
         display: "grid",
-        gridTemplateColumns: { xs: "1fr auto", md: "120px minmax(180px, 1.4fr) minmax(140px, 1fr) minmax(140px, 1fr) 130px 24px" },
+        gridTemplateColumns: { xs: "1fr auto", md: "120px minmax(180px, 1.4fr) minmax(140px, 1fr) minmax(140px, 1fr) minmax(130px, 210px) 24px" },
         alignItems: "center",
         columnGap: 2,
         rowGap: 0.5,
@@ -86,9 +87,11 @@ function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (
         </Typography>
       </Stack>
 
-      <Box sx={{ gridRow: { xs: "1 / 2", md: "auto" }, gridColumn: { xs: "2 / 3", md: "auto" }, justifySelf: { xs: "end", md: "start" } }}>
+      <Stack spacing={0.5} alignItems={{ xs: "flex-end", md: "flex-start" }} sx={{ gridRow: { xs: "1 / 2", md: "auto" }, gridColumn: { xs: "2 / 3", md: "auto" }, justifySelf: { xs: "end", md: "start" } }}>
         <MissionStatusChip status={mission.status} />
-      </Box>
+        {/* D-172 — statut de planification et état d'encodage restent deux informations distinctes. */}
+        <MissionEncodingBadge encoding={mission.encoding} />
+      </Stack>
 
       <ChevronRightIcon sx={{ color: "text.disabled", display: { xs: "none", md: "block" } }} />
     </Box>

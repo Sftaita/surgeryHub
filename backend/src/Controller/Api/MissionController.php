@@ -419,13 +419,15 @@ class MissionController extends AbstractController
 
         $result = $this->missionService->list($dto, $user);
 
-        $items = array_map(fn (Mission $m) => $this->mapper->toListDto($m, $user), $result['items']);
+        $items = $this->mapper->toListDtos($result['items'], $user);
 
         return $this->json([
             'items' => $items,
             'total' => $result['total'],
             'page' => $result['page'],
             'limit' => $result['limit'],
+            // D-172 — nombre de missions annulées masquées (null : aucun masquage demandé).
+            'cancelledExcluded' => $result['cancelledExcluded'] ?? null,
         ]);
     }
 

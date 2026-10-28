@@ -275,3 +275,51 @@ describe("EditInterventionDialog — tarification firme conditionnée à un choi
     expect(screen.queryByText(CHOICE_GROUP.question)).not.toBeInTheDocument();
   });
 });
+
+describe("EditInterventionDialog — correction manager de la présence du délégué (D-172)", () => {
+  function offeringRelevant() {
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.includes("/firms/10/service-offerings")) {
+        return Promise.resolve({ data: [{ id: 501, interventionType: TYPES[0], active: true, representativePresenceRelevant: true }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+  }
+
+  it("propose « Délégué présent », « Aucun délégué » et « Information non renseignée », jamais une réponse par défaut", async () => {
+    offeringRelevant();
+    renderDialog({ managerCorrection: true });
+    expect(await screen.findByRole("button", { name: "Délégué présent" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Aucun délégué" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Information non renseignée" })).toBeInTheDocument();
+    expect(screen.getByText(/pas l'instrumentiste SurgicalHub/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enregistrer" })).toBeDisabled();
+  });
+
+  it("« Information non renseignée » est envoyée comme inconnue, jamais comme « non »", async () => {
+    const user = userEvent.setup();
+    offeringRelevant();
+    const { onSubmit } = renderDialog({ managerCorrection: true });
+    await user.click(await screen.findByRole("button", { name: "Information non renseignée" }));
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    expect(onSubmit).toHaveBeenCalledWith({
+      interventionTypeId: 1, primaryFirmId: 10, representativePresent: null, representativePresenceUnknown: true, selectedChoiceOptionId: null,
+    });
+  });
+
+  it("« Aucun délégué » envoie false", async () => {
+    const user = userEvent.setup();
+    offeringRelevant();
+    const { onSubmit } = renderDialog({ managerCorrection: true, intervention: makeIntervention({ representativePresent: true }) });
+    await user.click(await screen.findByRole("button", { name: "Aucun délégué" }));
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, representativePresent: false, selectedChoiceOptionId: null });
+  });
+
+  it("hors correction manager : seulement Oui / Non", async () => {
+    offeringRelevant();
+    renderDialog();
+    expect(await screen.findByRole("button", { name: "Oui" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Information non renseignée" })).toBeNull();
+  });
+});

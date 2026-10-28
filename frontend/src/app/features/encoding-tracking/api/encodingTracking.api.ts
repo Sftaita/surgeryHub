@@ -18,7 +18,9 @@ export type EncodingState =
   | "SUBMITTED"
   | "VALIDATED"
   | "LOCKED"
-  | "NOT_APPLICABLE";
+  | "NOT_APPLICABLE"
+  /** D-172 — passée, publiée sans instrumentiste, aucune activité déclarée : « Aucun encodage ». */
+  | "NOT_DECLARED";
 
 export type EncodingFinancialState =
   | "NOT_CALCULABLE"
@@ -58,6 +60,8 @@ export interface EncodingTrackingSummary {
   validated: number;
   locked: number;
   notApplicable: number;
+  /** D-172 — missions passées publiées sans instrumentiste, aucune activité déclarée. */
+  notDeclared?: number;
   staleInProgress: number;
   financialAnomalies: number;
   encoded: number;

@@ -29,6 +29,14 @@ final class MissionInterventionUpdateRequest
     public ?bool $representativePresent = null;
 
     /**
+     * D-172 — correction manager seulement (MissionVoter::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE) :
+     * la présence du délégué est historiquement inconnue. Enregistrée telle quelle (null),
+     * jamais transformée en « non » ; ses conséquences restent celles du backend (encodage
+     * non validable, calcul en anomalie tant qu'elle est requise et non renseignée).
+     */
+    public bool $representativePresenceUnknown = false;
+
+    /**
      * Tarification firme conditionnée à un choix obligatoire — même tri-état que
      * representativePresent : absent = inchangé, présent avec null = retire
      * explicitement le choix (rare), présent avec une valeur = nouvelle option.

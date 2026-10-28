@@ -9,6 +9,7 @@ import { fetchMissions, type MissionsFilters } from "../../features/missions/api
 import type { Mission } from "../../features/missions/api/missions.types";
 import { MissionsFiltersBar, type MissionsFiltersValue, type MissionsView } from "../../features/missions/components/MissionsFiltersBar";
 import { MissionsDayList, MissionStatusChip } from "../../features/missions/components/MissionsDayList";
+import { MissionEncodingBadge } from "../../features/missions/components/MissionEncodingBadge";
 import {
   formatBrusselsRange,
   formatPersonLabel,
@@ -61,6 +62,8 @@ export default function MissionsListPage() {
     type: searchParams.get("type") ?? undefined,
     siteId: Number(searchParams.get("siteId")) || undefined,
     view: (searchParams.get("view") as MissionsView) === "table" ? "table" : "day",
+    showCancelled: searchParams.get("cancelled") === "1",
+    withoutInstrumentist: searchParams.get("withoutInstrumentist") === "1",
   };
 
   // La saisie est locale (fluide), l'URL et la requête suivent après 300 ms.
@@ -90,15 +93,18 @@ export default function MissionsListPage() {
     if ("type" in patch) p.type = patch.type;
     if ("siteId" in patch) p.siteId = patch.siteId ? String(patch.siteId) : undefined;
     if ("view" in patch) p.view = patch.view === "table" ? "table" : undefined;
+    if ("showCancelled" in patch) p.cancelled = patch.showCancelled ? "1" : undefined;
+    if ("withoutInstrumentist" in patch) p.withoutInstrumentist = patch.withoutInstrumentist ? "1" : undefined;
     if (Object.keys(p).length > 0) patchParams(p);
   };
 
   const hasActiveFilters = Boolean(
-    searchInput || filters.type || filters.siteId || (!isToValidateView && filters.status) || rawPeriod,
+    searchInput || filters.type || filters.siteId || (!isToValidateView && filters.status) || rawPeriod
+      || filters.showCancelled || filters.withoutInstrumentist,
   );
   const resetFilters = () => {
     setSearchInput("");
-    patchParams({ q: undefined, period: undefined, status: undefined, type: undefined, siteId: undefined });
+    patchParams({ q: undefined, period: undefined, status: undefined, type: undefined, siteId: undefined, cancelled: undefined, withoutInstrumentist: undefined });
   };
 
   // Les bornes de période sont recalculées à chaque changement de filtre, pas à chaque
@@ -113,8 +119,11 @@ export default function MissionsListPage() {
     if (filters.siteId) base.siteId = filters.siteId;
     if (filters.search.trim()) base.q = filters.search.trim();
     if (validatedWithoutCalculation) base.validatedWithoutCalculation = true;
+    // D-172 — masquage côté serveur (compteur exact) ; un statut explicite prime.
+    if (!filters.showCancelled && !filters.status) base.excludeCancelled = true;
+    if (filters.withoutInstrumentist) base.withoutInstrumentist = true;
     return base;
-  }, [filters.period, filters.status, filters.type, filters.siteId, filters.search, validatedWithoutCalculation]);
+  }, [filters.period, filters.status, filters.type, filters.siteId, filters.search, validatedWithoutCalculation, filters.showCancelled, filters.withoutInstrumentist]);
 
   const dayQuery = useInfiniteQuery({
     queryKey: ["missions", "by-day", effectiveFilters],
@@ -137,6 +146,13 @@ export default function MissionsListPage() {
   const activeQuery = filters.view === "day" ? dayQuery : tableQuery;
   const dayMissions = useMemo(() => dayQuery.data?.pages.flatMap((p) => p.items) ?? [], [dayQuery.data]);
   const total = filters.view === "day" ? dayQuery.data?.pages[0]?.total ?? 0 : tableQuery.data?.total ?? 0;
+  const cancelledExcluded = filters.view === "day" ? dayQuery.data?.pages[0]?.cancelledExcluded ?? null : tableQuery.data?.cancelledExcluded ?? null;
+  // D-172 — le compteur dit toujours s'il inclut ou exclut les annulées (nombre servi par le backend).
+  const cancelledNote = filters.status
+    ? null
+    : cancelledExcluded !== null
+      ? `annulées exclues${cancelledExcluded > 0 ? ` (${cancelledExcluded} masquée${cancelledExcluded > 1 ? "s" : ""})` : ""}`
+      : "annulées incluses";
 
   // Chargement automatique de la page suivante en bas de liste (bouton en secours).
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -209,6 +225,13 @@ export default function MissionsListPage() {
         sortable: false,
         renderCell: ({ row }) => <MissionStatusChip status={row.status} />,
       },
+      {
+        field: "encoding",
+        headerName: "Encodage",
+        flex: 1.1,
+        sortable: false,
+        renderCell: ({ row }) => <MissionEncodingBadge encoding={row.encoding} />,
+      },
     ],
     [],
   );
@@ -273,7 +296,7 @@ export default function MissionsListPage() {
 
           <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.5, minHeight: 24 }}>
             <Typography variant="body2" color="text.secondary" data-testid="missions-total">
-              {activeQuery.isLoading ? "Chargement…" : `${total} mission${total > 1 ? "s" : ""}`}
+              {activeQuery.isLoading ? "Chargement…" : `${total} mission${total > 1 ? "s" : ""}${cancelledNote ? ` · ${cancelledNote}` : ""}`}
             </Typography>
             {activeQuery.isFetching && !activeQuery.isLoading && <CircularProgress size={14} />}
           </Stack>

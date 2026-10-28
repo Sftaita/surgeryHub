@@ -43,6 +43,7 @@ const STATE_TONE: Record<EncodingState, { bg: string; fg: string }> = {
   VALIDATED: { bg: GREEN_100, fg: GREEN_800 },
   LOCKED: { bg: GREEN_100, fg: GREEN_800 },
   NOT_APPLICABLE: { bg: GRAY_100, fg: GRAY_500 },
+  NOT_DECLARED: { bg: AMBER_100, fg: AMBER_700 },
 };
 
 function initials(name: string): string {
