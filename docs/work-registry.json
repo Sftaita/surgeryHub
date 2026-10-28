@@ -662,6 +662,34 @@
           "validation": "utilisateur"
         }
       ]
+    },
+    {
+      "id": "D-172",
+      "title": "Tarifs instrumentistes à date d'effet choisie, état d'encodage et verrous réels des missions, annulées masquées, délégué « non renseigné »",
+      "description": "Date de prise d'effet rétroactive (frontière déplacée, période verrouillée refusée, calculs obsolètes signalés et recalculés à la demande), ancien flux tarifaire retiré de la fiche, état d'encodage NOT_DECLARED et bloc encoding (auteur, verrous par niveau) dans la liste et le détail manager, annulées masquées par défaut avec compteur, délégué « Information non renseignée » en correction manager. Diagnostic #1079 : même cause que D-171.",
+      "kind": "fix",
+      "priority": "P1",
+      "userImpact": "Tarif de Salve inapplicable avant le 11/10 ; missions passées sans instrumentiste illisibles ; Validée/Verrouillée confondues ; listes encombrées d'annulées.",
+      "status": "teste",
+      "refs": {
+        "branches": [
+          "fix/tarifs-missions-encodage"
+        ],
+        "decision": "D-172",
+        "worktrees": [
+          "SurgicalHub-tarifs-missions"
+        ]
+      },
+      "nextAction": "Construite sur PR #47 (D-171) : revue puis fusion après #47 ; aucun déploiement sans accord.",
+      "lastReviewed": "2026-10-28",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Après déploiement : déplacer au 01/10 la date d'effet du tarif 65 € de Salve depuis la fiche, puis recalculer la mission #1039 depuis son tiroir (aucun script)",
+          "validation": "utilisateur"
+        }
+      ]
     }
   ]
 }

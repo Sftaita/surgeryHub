@@ -1305,6 +1305,10 @@ d'appel direct au service bas niveau.
 une intervention d'une firme peut contenir du matériel d'autres firmes, chaque ligne se
 résout indépendamment. `PricingRuleResolver`/`InstrumentistRateResolver` restent
 inchangés dans leur signature (déjà conformes : date explicite, jamais `now()`).
+D-172 : la date de prise d'effet d'un `InstrumentistRate` se déplace (rétroactivement aussi)
+par `InstrumentistRateService::changeEffectiveDate()` ; `InstrumentistRateStalenessService`
+rejoue le résolveur à la date de chaque ligne pour signaler un calcul non verrouillé devenu
+obsolète (ni approuvable ni verrouillable avant recalcul manuel).
 
 **Concurrence** : verrouillage pessimiste déterministe réutilisé tel quel
 (`PricingRuleWriteService`, prouvé par `PricingRuleConcurrencyTest` — inchangé) ;
@@ -3567,7 +3571,7 @@ consomme seulement la ventilation du suivi pour expliquer ses zéros.
 
 | Composant | Rôle |
 |---|---|
-| `Enum\EncodingState` | 7 états dérivés + libellés FR + prédicats d'action |
+| `Enum\EncodingState` | 8 états dérivés (dont `NOT_DECLARED`, D-172) + libellés FR + prédicats d'action |
 | `Dto\EncodingStateFacts` | faits bruts nécessaires à la dérivation |
 | `Service\EncodingStateResolver` | **définition canonique unique** de `EncodingState` |
 | `Enum\EncodingFinancialState` | statut financier synthétique (sans montant) |
@@ -3580,6 +3584,7 @@ consomme seulement la ventilation du suivi pour expliquer ses zéros.
 | `Service\EncodingTrackingService` | orchestration (n'décide rien) |
 | `Service\EncodingTrackingRequestParser` | params propres au module |
 | `Controller\Api\EncodingTrackingController` | 2 routes, `BillingVoter::MANAGE` |
+| `Service\MissionEncodingOverviewService` | D-172 — bloc `encoding` des missions (liste et détail manager) : état via `EncodingStateResolver`, auteurs (audit), verrous réels par niveau ; lecture seule, requêtes fixes par page |
 | `Service\MissionPopulationClauseBuilder` | filtres partagés avec D-077 |
 
 Aucune entité, aucune migration : tous les états sont dérivés de données existantes.
