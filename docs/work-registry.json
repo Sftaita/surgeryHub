@@ -670,7 +670,7 @@
       "kind": "fix",
       "priority": "P1",
       "userImpact": "Tarif de Salve inapplicable avant le 11/10 ; missions passées sans instrumentiste illisibles ; Validée/Verrouillée confondues ; listes encombrées d'annulées.",
-      "status": "teste",
+      "status": "pr-ouverte",
       "refs": {
         "branches": [
           "fix/tarifs-missions-encodage"
@@ -678,15 +678,24 @@
         "decision": "D-172",
         "worktrees": [
           "SurgicalHub-tarifs-missions"
+        ],
+        "prs": [
+          48
         ]
       },
-      "nextAction": "Construite sur PR #47 (D-171) : revue puis fusion après #47 ; aucun déploiement sans accord.",
+      "nextAction": "PR #48 empilée sur #47 : fusionner #47 d'abord, vérifier la compatibilité avec main et relancer les tests, puis #48 ; aucun déploiement sans accord.",
       "lastReviewed": "2026-10-28",
       "pendingOps": [
         {
           "type": "validation",
           "status": "en-attente",
-          "description": "Après déploiement : déplacer au 01/10 la date d'effet du tarif 65 € de Salve depuis la fiche, puis recalculer la mission #1039 depuis son tiroir (aucun script)",
+          "description": "Après déploiement : fiche de Salve Decorte, « Modifier la date d'effet » du tarif 65 € au 01/10/2026 (vérifier l'aperçu), recalculer les prestations listées dont la mission #1039 depuis leur tiroir, contrôler les montants avant approbation (aucun script)",
+          "validation": "utilisateur"
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Après déploiement : mission #1079 (Arnaud Deltour, 22/10/2026) — vérifier son état, « Terminer et valider » par un manager si nécessaire, puis vérifier que le calcul financier s'effectue normalement (aucun script)",
           "validation": "utilisateur"
         }
       ]
