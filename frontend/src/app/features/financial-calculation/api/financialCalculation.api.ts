@@ -67,6 +67,8 @@ export interface FinancialCalculation {
   /** D-153 — encodage rouvert depuis ce calcul : à recalculer, jamais approuvé, verrouillé ni facturé. */
   obsolete?: boolean;
   encodingReopenedAt?: string | null;
+  /** D-172 — tarif instrumentiste applicable modifié depuis ce calcul : à recalculer (raison servie par le backend). */
+  tariffStaleReason?: string | null;
   /** D-171 — calculé sans heures réelles : prestation horaire non valorisée (jamais sur le planifié). */
   instrumentistHoursPending?: boolean;
   /** D-171 — calcul complémentaire : la seule prestation instrumentiste d'un calcul principal verrouillé. */

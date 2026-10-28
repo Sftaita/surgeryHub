@@ -418,6 +418,15 @@ describe("ManagerMissionDrawer — calcul financier", () => {
     expect(screen.queryByTestId("drawer-approve-calculation")).toBeNull();
   });
 
+  it("D-172 — tarif modifié depuis le calcul : raison servie affichée, seul « Recalculer » est proposé", async () => {
+    const reason = "Le tarif instrumentiste applicable au 01/10/2026 a changé depuis ce calcul (40.00 EUR → 65.00 EUR) : il doit être recalculé avant approbation ou verrouillage.";
+    renderDrawer(validated, { calculations: [calculation([line()], { status: "CALCULATED", obsolete: false, tariffStaleReason: reason })] });
+    expect(await screen.findByTestId("calculation-tariff-stale")).toHaveTextContent("40.00 EUR → 65.00 EUR");
+    expect(screen.getByTestId("drawer-recalculate")).toBeInTheDocument();
+    expect(screen.queryByTestId("drawer-approve-calculation")).toBeNull();
+    expect(screen.queryByTestId("drawer-lock-calculation")).toBeNull();
+  });
+
   it("calcul approuvé à jour : « Verrouiller le calcul » appelle POST /lock", async () => {
     const user = userEvent.setup();
     renderDrawer(validated, { calculations: [calculation([line()], { status: "APPROVED", obsolete: false })] });

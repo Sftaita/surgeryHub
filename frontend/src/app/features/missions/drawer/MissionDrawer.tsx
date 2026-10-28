@@ -251,6 +251,7 @@ export function financeLabel(m: MissionDrawerView): string {
   if (m.finance === undefined) return 'Chargement…';
   if (!m.finance) return 'Calcul à générer';
   if (m.finance.obsolete) return 'Calcul obsolète — à recalculer';
+  if (m.finance.tariffStaleReason) return 'Tarif modifié — à recalculer';
   return FIN_LABEL[m.finance.stage - 1];
 }
 
@@ -260,7 +261,7 @@ function FinanceCard({ m }: { m: MissionDrawerView }) {
     <section className="mdw-card" data-testid="drawer-finance">
       <div className="mdw-card__head mdw-card__head--bordered">
         <span className="mdw-eyebrow">CALCUL FINANCIER</span>
-        <span className="mdw-gap" style={{ color: !f ? 'var(--gray-400)' : f.obsolete ? 'var(--amber-700)' : f.stage === 3 ? 'var(--green-700)' : 'var(--blue-700)' }}>
+        <span className="mdw-gap" style={{ color: !f ? 'var(--gray-400)' : f.obsolete || f.tariffStaleReason ? 'var(--amber-700)' : f.stage === 3 ? 'var(--green-700)' : 'var(--blue-700)' }}>
           {f ? financeLabel(m) : 'Non calculé'}
         </span>
       </div>
@@ -283,6 +284,12 @@ function FinanceCard({ m }: { m: MissionDrawerView }) {
             <p className="mdw-notice mdw-notice--warn" style={{ margin: '12px 18px 0' }} data-testid="calculation-obsolete">
               <span className="mdw-notice__title">Calcul obsolète</span>
               L’encodage a été rouvert après ce calcul : il ne peut être ni approuvé, ni verrouillé, ni facturé. Recalculez-le une fois l’encodage revalidé.
+            </p>
+          )}
+          {f.tariffStaleReason && (
+            <p className="mdw-notice mdw-notice--warn" style={{ margin: '12px 18px 0' }} data-testid="calculation-tariff-stale">
+              <span className="mdw-notice__title">Calcul à actualiser</span>
+              {f.tariffStaleReason}
             </p>
           )}
           <div className="mdw-fin">

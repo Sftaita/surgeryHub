@@ -39,6 +39,8 @@ export interface Finance {
   calculatedAt: string;
   /** D-153 — encodage rouvert depuis ce calcul : ni approuvable, ni verrouillable. */
   obsolete: boolean;
+  /** D-172 — raison servie par le backend : le tarif instrumentiste applicable a changé depuis ce calcul. */
+  tariffStaleReason: string | null;
   groups: FinanceGroup[];
   /** Versions précédentes (remplacées / annulées). */
   previous: FinanceVersion[];

@@ -8,6 +8,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Security\Voter\BillingVoter;
 use App\Service\FinancialCalculationService;
+use App\Service\InstrumentistRateStalenessService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -30,6 +31,7 @@ final class FinancialCalculationController extends AbstractController
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly FinancialCalculationService $service,
+        private readonly InstrumentistRateStalenessService $tariffStaleness,
     ) {}
 
     #[Route('/api/missions/{missionId}/financial-calculations', name: 'api_missions_financial_calculations_create', methods: ['POST'])]
@@ -166,6 +168,8 @@ final class FinancialCalculationController extends AbstractController
             // D-153 — encodage rouvert depuis ce calcul : plus jamais approuvé, verrouillé ni facturé.
             'obsolete' => $c->isObsolete(),
             'encodingReopenedAt' => $c->getEncodingReopenedAt()?->format(DATE_ATOM),
+            // D-172 — tarif instrumentiste applicable modifié depuis ce calcul (non verrouillé) : à recalculer.
+            'tariffStaleReason' => $this->tariffStaleness->staleReasonOfCalculation($c),
             'totalsByCurrency' => $c->totalsByCurrency(),
             'lines' => array_map($this->serializeLine(...), $c->getLines()->toArray()),
         ];

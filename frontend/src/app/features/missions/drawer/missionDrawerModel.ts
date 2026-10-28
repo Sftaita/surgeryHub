@@ -162,6 +162,7 @@ function buildFinance(calc: FinancialCalculation, mission: Mission, previous: Fi
     version: `v${calc.version}`,
     calculatedAt: shortDateTime(calc.calculatedAt),
     obsolete: !!calc.obsolete,
+    tariffStaleReason: calc.tariffStaleReason ?? null,
     groups,
     previous: previous.map((c) => ({
       id: c.id,

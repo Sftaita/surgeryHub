@@ -19,6 +19,7 @@ use App\Exception\PricingRulePeriodOverlapException;
 use App\Exception\PricingRuleConflictException;
 use App\Exception\InstrumentistRateConflictException;
 use App\Exception\InstrumentistRateImmutableException;
+use App\Exception\InstrumentistRateLockedPeriodException;
 use App\Exception\InstrumentistRatePeriodOverlapException;
 use App\Exception\FinancialCalculationIneligibleException;
 use App\Exception\FinancialCalculationAnomaliesException;
@@ -165,6 +166,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'INSTRUMENTIST_RATE_PERIOD_OVERLAP';
             $message = $e->getMessage() ?: 'Un tarif existe déjà pour cette période.';
+        } elseif ($e instanceof InstrumentistRateLockedPeriodException) {
+            $status = 409;
+            $code = 'INSTRUMENTIST_RATE_LOCKED_PERIOD';
+            $message = $e->getMessage() ?: 'La période modifiée contient des calculs financiers verrouillés.';
         } elseif ($e instanceof InstrumentistRateImmutableException) {
             $status = 409;
             $code = 'INSTRUMENTIST_RATE_IMMUTABLE';

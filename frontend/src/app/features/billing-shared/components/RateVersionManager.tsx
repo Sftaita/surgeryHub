@@ -7,6 +7,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import RateEffectiveDatePanel, { type RateDateImpactView } from "./RateEffectiveDatePanel";
 
 export interface RateVersion {
   id: number;
@@ -20,7 +21,8 @@ type Status = "active" | "future" | "expired";
 
 function statusOf(v: RateVersion, today: string): Status {
   if (v.validFrom && v.validFrom > today) return "future";
-  if (v.validTo && v.validTo < today) return "expired";
+  // validTo est exclusif (D-072) : un tarif qui s'arrête aujourd'hui ne couvre plus aujourd'hui.
+  if (v.validTo && v.validTo <= today) return "expired";
   return "active";
 }
 
@@ -38,6 +40,13 @@ interface Props {
   onReplaceActive: (id: number, body: { amount: number; currency: string; effectiveFrom: string }) => void;
   onEditFuture: (id: number, body: { amount?: number; currency?: string; validFrom?: string | null; validTo?: string | null }) => void;
   onCancelFuture: (id: number) => void;
+  /**
+   * D-172 — date de prise d'effet d'une version en vigueur ou passée, rétroactive comprise
+   * (`dryRun` : impact calculé par le backend, rien n'est écrit). Absent = action non proposée.
+   */
+  onChangeEffectiveDate?: (id: number, validFrom: string, dryRun: boolean) => Promise<RateDateImpactView>;
+  /** D-172 — le remplacement accepte une date passée ; un « à partir de » vide vaut aujourd'hui. */
+  retroactive?: boolean;
   isSaving?: boolean;
 }
 
@@ -48,10 +57,10 @@ interface Props {
  * nouveau). Seuls les tarifs programmés dans le futur restent modifiables/annulables directement.
  */
 export default function RateVersionManager({
-  versions, defaultCurrency = "EUR", onCreateFirst, onReplaceActive, onEditFuture, onCancelFuture, isSaving,
+  versions, defaultCurrency = "EUR", onCreateFirst, onReplaceActive, onEditFuture, onCancelFuture, onChangeEffectiveDate, retroactive, isSaving,
 }: Props) {
   const today = new Date().toISOString().slice(0, 10);
-  const [mode, setMode] = React.useState<null | "create" | "replace" | { edit: number }>(null);
+  const [mode, setMode] = React.useState<null | "create" | "replace" | { edit: number } | { effectiveDate: number }>(null);
   const [amount, setAmount] = React.useState("");
   const [currency, setCurrency] = React.useState(defaultCurrency);
   const [effectiveFrom, setEffectiveFrom] = React.useState("");
@@ -86,7 +95,14 @@ export default function RateVersionManager({
     setMode({ edit: v.id });
   }
 
-  const editingId = typeof mode === "object" && mode !== null ? mode.edit : null;
+  const editingId = typeof mode === "object" && mode !== null && "edit" in mode ? mode.edit : null;
+  const effectiveDateId = typeof mode === "object" && mode !== null && "effectiveDate" in mode ? mode.effectiveDate : null;
+  const effectiveDateVersion = versions.find((v) => v.id === effectiveDateId);
+  const effectiveDateButton = (v: RateVersion) => onChangeEffectiveDate && (
+    <Button size="small" onClick={() => setMode({ effectiveDate: v.id })} disabled={isSaving} data-testid={`rate-effective-date-${v.id}`}>
+      Modifier la date d'effet
+    </Button>
+  );
 
   return (
     <Stack spacing={1.5}>
@@ -99,6 +115,7 @@ export default function RateVersionManager({
             {active.validTo ? ` jusqu'au ${active.validTo}` : ""}
           </Typography>
           <Button size="small" onClick={openReplace} disabled={isSaving}>Remplacer à partir d'une date</Button>
+          {effectiveDateButton(active)}
         </Stack>
       ) : (
         <Stack spacing={1}>
@@ -129,9 +146,12 @@ export default function RateVersionManager({
         <Stack spacing={0.5}>
           <Typography variant="caption" fontWeight={700} color="text.secondary">Historique</Typography>
           {past.map((v) => (
-            <Typography key={v.id} variant="caption" color="text.secondary" display="block">
-              {Number(v.amount).toFixed(2)} {v.currency} — {v.validFrom ?? "…"} → {v.validTo ?? "…"}
-            </Typography>
+            <Stack key={v.id} direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {Number(v.amount).toFixed(2)} {v.currency} — {v.validFrom ?? "…"} → {v.validTo ?? "…"}
+              </Typography>
+              {effectiveDateButton(v)}
+            </Stack>
           ))}
         </Stack>
       )}
@@ -140,6 +160,7 @@ export default function RateVersionManager({
         <Stack spacing={1} sx={{ p: 1.5, bgcolor: "grey.50", borderRadius: 1 }}>
           <Alert severity="info" sx={{ py: 0.5 }}>
             Le tarif actuel reste inchangé avant la date choisie ; le nouveau montant s'applique automatiquement à partir de cette date.
+            {retroactive && " Une date passée est permise : les calculs non verrouillés concernés devront être recalculés, un calcul verrouillé bloque le remplacement."}
           </Alert>
           <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
             <TextField label="Nouveau montant" type="number" size="small" value={amount} onChange={(e) => setAmount(e.target.value)} inputProps={{ min: 0, step: "0.01" }} sx={{ width: 160 }} />
@@ -164,7 +185,7 @@ export default function RateVersionManager({
           <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
             <TextField label="Montant" type="number" size="small" value={amount} onChange={(e) => setAmount(e.target.value)} inputProps={{ min: 0, step: "0.01" }} sx={{ width: 160 }} />
             <TextField label="Devise" size="small" value={currency} onChange={(e) => setCurrency(e.target.value.toUpperCase())} sx={{ width: 90 }} />
-            <TextField label="Valide à partir de" type="date" size="small" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Vide = sans date de début : s'applique aussi aux prestations passées" />
+            <TextField label="Valide à partir de" type="date" size="small" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} InputLabelProps={{ shrink: true }} helperText={retroactive ? "Vide = à partir d'aujourd'hui. Une date passée s'applique aux missions réalisées depuis." : "Vide = sans date de début : s'applique aussi aux prestations passées"} />
             <TextField label="Valide jusqu'à" type="date" size="small" value={validTo} onChange={(e) => setValidTo(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Vide = sans fin. Date exclue : le dernier jour couvert est la veille." />
           </Stack>
           <Stack direction="row" spacing={1}>
@@ -178,6 +199,16 @@ export default function RateVersionManager({
             </Button>
           </Stack>
         </Stack>
+      )}
+
+      {effectiveDateVersion && onChangeEffectiveDate && (
+        <RateEffectiveDatePanel
+          key={effectiveDateVersion.id}
+          version={effectiveDateVersion}
+          onCheck={(date) => onChangeEffectiveDate(effectiveDateVersion.id, date, true)}
+          onConfirm={(date) => onChangeEffectiveDate(effectiveDateVersion.id, date, false)}
+          onClose={() => setMode(null)}
+        />
       )}
 
       {editingId !== null && (

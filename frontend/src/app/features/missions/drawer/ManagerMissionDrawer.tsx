@@ -136,12 +136,12 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
         key: "calculate", label: "Calculer la valorisation", tone: "primary", icon: "check", testId: "drawer-calculate",
         disabled: finance.calculateMutation.isPending, onClick: () => finance.calculateMutation.mutate(),
       });
-    } else if (!active.obsolete && active.status === "CALCULATED") {
+    } else if (!active.obsolete && !active.tariffStaleReason && active.status === "CALCULATED") {
       footerActions.push({
         key: "approveCalculation", label: "Approuver le calcul", tone: "primary", icon: "check", testId: "drawer-approve-calculation",
         disabled: finance.approveMutation.isPending, onClick: () => finance.approveMutation.mutate(active.id),
       });
-    } else if (!active.obsolete && active.status === "APPROVED") {
+    } else if (!active.obsolete && !active.tariffStaleReason && active.status === "APPROVED") {
       footerActions.push({
         key: "lockCalculation", label: "Verrouiller le calcul", tone: "primary", icon: "check", testId: "drawer-lock-calculation",
         disabled: finance.lockMutation.isPending, onClick: () => finance.lockMutation.mutate(active.id),
