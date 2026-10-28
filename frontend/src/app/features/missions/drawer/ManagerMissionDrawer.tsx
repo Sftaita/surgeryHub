@@ -7,9 +7,8 @@ import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
 import { useMissionManagerActions, type MissionActionDescriptor } from "../hooks/useMissionManagerActions";
 import { useMissionFinancialCalculation } from "../../financial-calculation/hooks/useMissionFinancialCalculation";
 import { AnomalyReportsManagerPanel } from "../../encoding-anomaly-reports/components/AnomalyReportsManagerPanel";
-import { MissionStatusChip } from "../components/MissionsDayList";
+import { MissionStatusChip, missionStatusLabel } from "../components/MissionsDayList";
 import { MissionEncodingOverviewNotice } from "../components/MissionEncodingOverviewNotice";
-import { formatMissionStatus } from "../utils/missions.format";
 import { MissionDrawer, financeLabel, type DrawerFooterAction } from "./MissionDrawer";
 import { buildMissionDrawerView, FINANCE_STATUSES, NO_ENCODING_STATUSES } from "./missionDrawerModel";
 
@@ -164,7 +163,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
   }
 
   const executed = financeApplicable;
-  const footerTitle = !mission ? "" : executed ? "Encodage validé" : formatMissionStatus(status);
+  const footerTitle = !mission ? "" : executed ? "Encodage validé" : missionStatusLabel(status, mission.encoding?.state);
   const footerSub = [view && executed ? financeLabel(view) : null, mission?.encodingCorrectionBlockedReason ?? null]
     .filter(Boolean)
     .join(" · ") || undefined;
@@ -227,7 +226,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
         missionId={id}
         view={view}
         placeholder={placeholder}
-        statusPill={mission ? <MissionStatusChip status={mission.status} /> : null}
+        statusPill={mission ? <MissionStatusChip status={mission.status} encodingState={mission.encoding?.state} /> : null}
         notices={notices}
         extra={mission ? <AnomalyReportsManagerPanel missionId={mission.id} /> : null}
         footer={{ title: footerTitle, sub: footerSub, actions: mission ? footerActions : [] }}

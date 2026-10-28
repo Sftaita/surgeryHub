@@ -273,7 +273,9 @@ describe("MissionsListPage — annulées, état d'encodage et verrous (D-172)", 
 
     const rows = await screen.findAllByTestId("mission-row");
     const open = rows.find((r) => r.getAttribute("data-mission-id") === "1079")!;
-    expect(within(open).getByText("Publiée")).toBeInTheDocument();
+    // Passée, sans instrumentiste, rien de déclaré : « Non couverte », jamais « Publiée ».
+    expect(within(open).getByText("Non couverte")).toBeInTheDocument();
+    expect(within(open).queryByText("Publiée")).toBeNull();
     expect(within(open).getByText("Encodage : aucun encodage")).toBeInTheDocument();
     expect(within(open).queryByTestId("mission-lock")).toBeNull();
 

@@ -25,12 +25,24 @@ export function statusChipColor(status: string): ChipColor {
   }
 }
 
-export function MissionStatusChip({ status }: { status?: string | null }) {
+/**
+ * D-172 — une mission passée, publiée sans instrumentiste et sans activité déclarée n'est plus
+ * « Publiée » pour le manager (plus personne ne peut la prendre) : elle est « Non couverte ».
+ * Aucune date comparée ici : on lit l'état NOT_DECLARED servi par le backend (managers) ; le
+ * statut OPEN n'est pas modifié.
+ */
+export function missionStatusLabel(status?: string | null, encodingState?: string | null): string {
+  if (status === "OPEN" && encodingState === "NOT_DECLARED") return "Non couverte";
+  return formatMissionStatus(status);
+}
+
+export function MissionStatusChip({ status, encodingState }: { status?: string | null; encodingState?: string | null }) {
   const s = String(status ?? "");
+  const uncoveredPast = s === "OPEN" && encodingState === "NOT_DECLARED";
   return (
     <Chip
-      label={formatMissionStatus(s)}
-      color={statusChipColor(s)}
+      label={missionStatusLabel(s, encodingState)}
+      color={uncoveredPast ? "default" : statusChipColor(s)}
       size="small"
       variant={s === "DRAFT" || s === "CLOSED" || s === "CANCELLED" ? "outlined" : "filled"}
     />
@@ -88,7 +100,7 @@ function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (
       </Stack>
 
       <Stack spacing={0.5} alignItems={{ xs: "flex-end", md: "flex-start" }} sx={{ gridRow: { xs: "1 / 2", md: "auto" }, gridColumn: { xs: "2 / 3", md: "auto" }, justifySelf: { xs: "end", md: "start" } }}>
-        <MissionStatusChip status={mission.status} />
+        <MissionStatusChip status={mission.status} encodingState={mission.encoding?.state} />
         {/* D-172 — statut de planification et état d'encodage restent deux informations distinctes. */}
         <MissionEncodingBadge encoding={mission.encoding} status={mission.status} />
       </Stack>

@@ -591,5 +591,7 @@ describe("ManagerMissionDrawer — état d'encodage, auteur et verrous (D-172)",
     const notice = await screen.findByTestId("drawer-encoding-overview");
     expect(notice).toHaveTextContent("Encodage : aucun encodage");
     expect(notice).toHaveTextContent("aucune activité n'a été déclarée réalisée");
+    expect(screen.getAllByText("Non couverte").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Publiée")).toBeNull();
   });
 });
