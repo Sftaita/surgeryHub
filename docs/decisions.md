@@ -15522,6 +15522,10 @@ reste en place sans appelant, les anciens documents (`legacySource`) restent con
   état (`EncodingStateResolver`, seule dérivation), auteur de la finalisation et de la validation
   (journal d'audit, rôle sur la mission), verrous. Les états couvrent : aucun encodage, commencé
   (« En cours »), terminé (« Soumis »), validé, verrouillé.
+- Affichage manager : une telle mission ne s'affiche plus « Publiée » (plus personne ne peut la
+  prendre) mais « Non couverte », avec « Encodage : aucun encodage » — lu sur cet état servi par
+  le backend, sans comparaison de date à l'écran ; le statut `OPEN` n'est pas modifié. Le badge
+  d'encodage n'est jamais affiché quand il répète le statut (« Encodage en cours », « Validée »…).
 - Liste manager : filtre « Sans instrumentiste » (`withoutInstrumentist`), combinable avec la période
   « Passées », le statut, le site et la recherche, pour retrouver les missions passées sans
   instrumentiste dont l'encodage est absent ou incomplet.
