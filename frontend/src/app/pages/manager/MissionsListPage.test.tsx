@@ -279,6 +279,8 @@ describe("MissionsListPage — annulées, état d'encodage et verrous (D-172)", 
 
     const validated = rows.find((r) => r.getAttribute("data-mission-id") === "1080")!;
     expect(within(validated).getByText("Validée")).toBeInTheDocument();
+    // Le statut dit déjà « Validée » : pas de second badge « Encodage : validé », le cadenas reste.
+    expect(within(validated).queryByText("Encodage : validé")).toBeNull();
     const lock = within(validated).getByTestId("mission-lock");
     expect(lock).toHaveAttribute("data-lock-levels", "ENCODING,FINANCIAL_CALCULATION");
     expect(lock).toHaveAccessibleName(/Calcul financier verrouillé : Calcul financier verrouillé le 24\/10\/2026 : ses montants sont définitifs/);

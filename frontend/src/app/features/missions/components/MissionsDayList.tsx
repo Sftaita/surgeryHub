@@ -90,7 +90,7 @@ function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (
       <Stack spacing={0.5} alignItems={{ xs: "flex-end", md: "flex-start" }} sx={{ gridRow: { xs: "1 / 2", md: "auto" }, gridColumn: { xs: "2 / 3", md: "auto" }, justifySelf: { xs: "end", md: "start" } }}>
         <MissionStatusChip status={mission.status} />
         {/* D-172 — statut de planification et état d'encodage restent deux informations distinctes. */}
-        <MissionEncodingBadge encoding={mission.encoding} />
+        <MissionEncodingBadge encoding={mission.encoding} status={mission.status} />
       </Stack>
 
       <ChevronRightIcon sx={{ color: "text.disabled", display: { xs: "none", md: "block" } }} />

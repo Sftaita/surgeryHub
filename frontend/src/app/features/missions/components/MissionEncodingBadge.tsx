@@ -65,10 +65,27 @@ export function MissionLocksIndicator({ locks }: { locks: MissionLock[] }) {
   );
 }
 
-/** D-172 — état d'encodage (distinct du statut de planification) et ses verrous, managers seulement. */
-export function MissionEncodingBadge({ encoding, showActor = false }: { encoding?: MissionEncodingOverview | null; showActor?: boolean }) {
+/**
+ * Statut de mission dont le libellé dit déjà l'état d'encodage correspondant (« Encodage en
+ * cours », « Soumise », « Validée », « Clôturée ») : le badge d'encodage serait un doublon.
+ * Purement présentationnel — les deux valeurs viennent du backend.
+ */
+const STATUS_ALREADY_SAYS: Partial<Record<string, MissionEncodingState>> = {
+  ENCODING_IN_PROGRESS: "IN_PROGRESS",
+  SUBMITTED: "SUBMITTED",
+  VALIDATED: "VALIDATED",
+  CLOSED: "LOCKED",
+};
+
+/**
+ * D-172 — état d'encodage (distinct du statut de planification) et ses verrous, managers
+ * seulement. Le badge n'apparaît que s'il apporte une information que le statut ne donne pas ;
+ * le cadenas, lui, est toujours affiché quand un verrou réel existe.
+ */
+export function MissionEncodingBadge({ encoding, status, showActor = false }: { encoding?: MissionEncodingOverview | null; status?: string | null; showActor?: boolean }) {
   if (!encoding) return null;
-  const hidden = encoding.state === "NOT_APPLICABLE" || encoding.state === "UPCOMING";
+  const hidden = encoding.state === "NOT_APPLICABLE" || encoding.state === "UPCOMING"
+    || (status != null && STATUS_ALREADY_SAYS[status] === encoding.state);
   const actor = showActor ? encodingActorLabel(encoding.finalizedBy) : null;
 
   return (

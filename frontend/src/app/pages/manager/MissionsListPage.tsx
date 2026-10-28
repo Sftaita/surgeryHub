@@ -230,7 +230,7 @@ export default function MissionsListPage() {
         headerName: "Encodage",
         flex: 1.1,
         sortable: false,
-        renderCell: ({ row }) => <MissionEncodingBadge encoding={row.encoding} />,
+        renderCell: ({ row }) => <MissionEncodingBadge encoding={row.encoding} status={row.status} />,
       },
     ],
     [],
