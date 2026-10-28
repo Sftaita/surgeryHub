@@ -37,6 +37,8 @@ final readonly class MissionFinancialEvaluation
         public array $lineSpecs,
         public array $anomalies,
         public array $outcomes,
+        // D-171 — aucune heure réelle déclarée : prestation horaire non valorisée, jamais une anomalie.
+        public bool $instrumentistHoursPending = false,
     ) {}
 
     public function succeeds(): bool

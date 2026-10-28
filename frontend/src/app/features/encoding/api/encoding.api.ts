@@ -200,8 +200,9 @@ export async function fetchFirmServiceOfferings(firmId: number): Promise<FirmSer
  * `POST /api/missions/{id}/submit` (submitMission dans missions.api.ts) — le backend
  * délègue au même MissionEncodingWorkflowService::complete(), jamais deux implémentations.
  */
-export async function validateMissionEncoding(missionId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${missionId}/encoding/validate`);
+/** D-171 — `expectedRevision` (encodingRevision du détail) : 409 si l'encodage a changé depuis sa lecture. */
+export async function validateMissionEncoding(missionId: number, expectedRevision?: string | null): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/validate`, expectedRevision ? { expectedRevision } : undefined);
 }
 
 /**

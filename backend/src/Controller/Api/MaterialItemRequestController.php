@@ -10,6 +10,7 @@ use App\Message\CatalogueRequestCreatedMessage;
 use App\Security\Voter\MissionVoter;
 use App\Service\MaterialItemRequestService;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingLock;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -32,6 +33,8 @@ class MaterialItemRequestController extends AbstractController
         private readonly SerializerInterface $serializer,
         private readonly MessageBusInterface $bus,
         private readonly ValidatorInterface $validator,
+        // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
+        private readonly MissionEncodingLock $encodingLock,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -60,7 +63,7 @@ class MaterialItemRequestController extends AbstractController
             throw new UnprocessableEntityHttpException((string) $errors);
         }
 
-        $req = $this->service->create($mission, $dto, $user);
+        $req = $this->encodingLock->run($mission, fn () => $this->service->create($mission, $dto, $user));
 
         // Follow-up D-093 — prévient les managers/admins (jamais bloquant, voir handler
         // async). Toujours après le flush transactionnel ci-dessus.

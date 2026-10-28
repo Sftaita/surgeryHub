@@ -64,7 +64,8 @@ final class FirmBillingRecalculationService
             }
 
             $active = $this->em->getRepository(FinancialCalculation::class)->findOneBy(
-                ['mission' => $mission, 'status' => [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED]],
+                // D-171 — le calcul principal, jamais un complément instrumentiste.
+                ['mission' => $mission, 'supplementOf' => null, 'status' => [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED]],
                 ['version' => 'DESC'],
             );
             if ($active?->getStatus() === FinancialCalculationStatus::LOCKED) {

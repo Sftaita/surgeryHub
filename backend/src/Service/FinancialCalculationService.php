@@ -82,7 +82,7 @@ final class FinancialCalculationService
                 );
             }
 
-            $calculation = $this->buildAndPersist($mission, $actor, version: 1, anomaliesOut: $anomalies);
+            $calculation = $this->buildAndPersist($mission, $actor, version: $this->nextVersion($mission), anomaliesOut: $anomalies);
             if ($calculation === null) {
                 return; // anomalies déjà auditées par buildAndPersist ; transaction validée quand même.
             }
@@ -136,7 +136,7 @@ final class FinancialCalculationService
                 throw new FinancialCalculationIneligibleException('This mission\'s calculation is LOCKED and can no longer be recalculated.');
             }
 
-            $new = $this->buildAndPersist($mission, $actor, version: $current->getVersion() + 1, anomaliesOut: $anomalies);
+            $new = $this->buildAndPersist($mission, $actor, version: $this->nextVersion($mission), anomaliesOut: $anomalies);
             if ($new === null) {
                 return; // anomalies déjà auditées par buildAndPersist ; l'ancien calcul reste actif, inchangé.
             }
@@ -259,16 +259,148 @@ final class FinancialCalculationService
         }
     }
 
+    /** Le calcul principal actif (D-171 : jamais un calcul complémentaire instrumentiste). */
     public function findActiveCalculation(Mission $mission): ?FinancialCalculation
     {
         return $this->em->getRepository(FinancialCalculation::class)->findOneBy(
-            ['mission' => $mission, 'status' => [
-                FinancialCalculationStatus::CALCULATED,
-                FinancialCalculationStatus::APPROVED,
-                FinancialCalculationStatus::LOCKED,
-            ]],
+            ['mission' => $mission, 'supplementOf' => null, 'status' => self::ACTIVE_STATUSES],
             ['version' => 'DESC'],
         );
+    }
+
+    private const ACTIVE_STATUSES = [
+        FinancialCalculationStatus::CALCULATED,
+        FinancialCalculationStatus::APPROVED,
+        FinancialCalculationStatus::LOCKED,
+    ];
+
+    /** D-171 — le calcul complémentaire instrumentiste actif d'un calcul principal, s'il existe. */
+    public function findActiveSupplement(FinancialCalculation $main): ?FinancialCalculation
+    {
+        return $this->em->getRepository(FinancialCalculation::class)->findOneBy(
+            ['supplementOf' => $main, 'status' => self::ACTIVE_STATUSES],
+            ['version' => 'DESC'],
+        );
+    }
+
+    /**
+     * D-171 — pourquoi la prestation instrumentiste ne peut PAS être valorisée maintenant par un
+     * calcul complémentaire (null = possible). Seule règle de l'endpoint, du service et de
+     * l'indicateur servi au tiroir. Le complément n'existe que pour un calcul principal VERROUILLÉ
+     * (facture émise) calculé sans heures : sinon, un simple recalcul suffit.
+     */
+    public function instrumentistSupplementBlockedReason(Mission $mission): ?string
+    {
+        if ($mission->getStatus() !== MissionStatus::VALIDATED || $mission->getInstrumentist() === null || $mission->isExecutedWithoutInstrumentist()) {
+            return "Aucune prestation d'instrumentiste à valoriser pour cette mission.";
+        }
+        $main = $this->findActiveCalculation($mission);
+        if ($main === null || !$main->isInstrumentistHoursPending()) {
+            return "Le calcul de la mission comprend déjà la prestation de l'instrumentiste (ou n'existe pas encore).";
+        }
+        if ($main->getStatus() !== FinancialCalculationStatus::LOCKED) {
+            return "Le calcul n'est pas verrouillé : recalculez-le pour y ajouter la prestation de l'instrumentiste.";
+        }
+        if ($this->findActiveSupplement($main) !== null) {
+            return "La prestation de l'instrumentiste a déjà été calculée.";
+        }
+        if (MissionExecutionService::resolveDuration($mission)->source === EffectiveDurationSource::PLANNED) {
+            return "Les heures prestées de l'instrumentiste ne sont pas encore déclarées.";
+        }
+
+        return null;
+    }
+
+    /**
+     * D-171 — calcul complémentaire : la seule prestation instrumentiste, une fois ses heures
+     * déclarées, d'une mission dont le calcul principal (sans heures) est verrouillé par une
+     * facture firme. Mêmes contrôles que calculate() (verrou de la mission, tarif instrumentiste,
+     * durée valide, échec global structuré) ; les lignes firme ne sont jamais recalculées.
+     */
+    public function calculateInstrumentistSupplement(Mission $mission, User $actor): FinancialCalculation
+    {
+        $result = null;
+        $anomalies = null;
+
+        $this->em->wrapInTransaction(function () use (&$result, &$anomalies, $mission, $actor): void {
+            $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+            $this->assertEligible($mission);
+            $blocked = $this->instrumentistSupplementBlockedReason($mission);
+            if ($blocked !== null) {
+                throw new FinancialCalculationIneligibleException($blocked);
+            }
+            $main = $this->findActiveCalculation($mission);
+
+            $supplement = $this->buildAndPersist($mission, $actor, version: $this->nextVersion($mission), anomaliesOut: $anomalies, supplementOf: $main);
+            if ($supplement === null) {
+                return;
+            }
+
+            $this->audit->record($mission, $actor, AuditEventType::FINANCIAL_CALCULATION_CREATED, $this->summaryPayload($supplement));
+            $this->em->flush();
+            $result = $supplement;
+        });
+
+        if ($anomalies !== null) {
+            throw new FinancialCalculationAnomaliesException($anomalies);
+        }
+
+        return $result;
+    }
+
+    /** D-171 — nouvelle version d'un calcul complémentaire non verrouillé (l'ancien passe SUPERSEDED). */
+    public function recalculateInstrumentistSupplement(FinancialCalculation $current, User $actor): FinancialCalculation
+    {
+        $mission = $current->getMission();
+        $result = null;
+        $anomalies = null;
+
+        $this->em->wrapInTransaction(function () use (&$result, &$anomalies, $mission, $actor, $current): void {
+            $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+            $this->assertEligible($mission);
+            $current = $this->em->createQueryBuilder()
+                ->select('c')->from(FinancialCalculation::class, 'c')
+                ->where('c.id = :id')->setParameter('id', $current->getId())
+                ->getQuery()
+                ->setLockMode(LockMode::PESSIMISTIC_WRITE)
+                ->setHint(\Doctrine\ORM\Query::HINT_REFRESH, true)
+                ->getOneOrNullResult();
+            if (!in_array($current?->getStatus(), [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED], true)) {
+                throw new FinancialCalculationIneligibleException('Ce complément est verrouillé ou a changé entre-temps : il ne peut plus être recalculé.');
+            }
+
+            $new = $this->buildAndPersist($mission, $actor, version: $this->nextVersion($mission), anomaliesOut: $anomalies, supplementOf: $current->getSupplementOf());
+            if ($new === null) {
+                return;
+            }
+            $current->setStatus(FinancialCalculationStatus::SUPERSEDED);
+            $current->setSupersededAt(new \DateTimeImmutable());
+            $current->setSupersededByCalculation($new);
+            $this->audit->record($mission, $actor, AuditEventType::FINANCIAL_CALCULATION_SUPERSEDED, [
+                'financialCalculationId' => $current->getId(),
+                'version' => $current->getVersion(),
+                'supersededByCalculationId' => $new->getId(),
+            ]);
+            $this->audit->record($mission, $actor, AuditEventType::FINANCIAL_CALCULATION_RECALCULATED, $this->summaryPayload($new) + [
+                'previousCalculationId' => $current->getId(),
+            ]);
+            $this->em->flush();
+            $result = $new;
+        });
+
+        if ($anomalies !== null) {
+            throw new FinancialCalculationAnomaliesException($anomalies);
+        }
+
+        return $result;
+    }
+
+    private function nextVersion(Mission $mission): int
+    {
+        return 1 + (int) $this->em->createQueryBuilder()
+            ->select('COALESCE(MAX(c.version), 0)')->from(FinancialCalculation::class, 'c')
+            ->where('c.mission = :mission')->setParameter('mission', $mission)
+            ->getQuery()->getSingleScalarResult();
     }
 
     /**
@@ -279,7 +411,7 @@ final class FinancialCalculationService
      * Consommée en lecture par les explications d'anomalies (D-141) pour dire si une cause
      * existe encore et ce qu'un recalcul produirait — jamais pour afficher un montant validé.
      */
-    public function evaluate(Mission $mission): MissionFinancialEvaluation
+    public function evaluate(Mission $mission, bool $instrumentistOnly = false): MissionFinancialEvaluation
     {
         $effectiveAt = $this->resolveEffectiveAt($mission);
 
@@ -287,8 +419,10 @@ final class FinancialCalculationService
         $anomalies = [];
         $lineSpecs = [];
         $outcomes = [];
+        $hoursPending = false;
 
-        foreach ($mission->getInterventions() as $intervention) {
+        // D-171 — calcul complémentaire : la seule prestation instrumentiste.
+        foreach ($instrumentistOnly ? [] : $mission->getInterventions() as $intervention) {
             $before = count($anomalies);
             $spec = $this->resolveFirmInterventionLine($intervention, $effectiveAt, $anomalies);
             if ($spec !== null) {
@@ -297,7 +431,7 @@ final class FinancialCalculationService
             $outcomes['MISSION_INTERVENTION:' . $intervention->getId()] = $this->outcome($spec, array_slice($anomalies, $before), MissionFinancialEvaluation::FEE_NOT_APPLICABLE);
         }
 
-        foreach ($mission->getMaterialLines() as $materialLine) {
+        foreach ($instrumentistOnly ? [] : $mission->getMaterialLines() as $materialLine) {
             $before = count($anomalies);
             $spec = $this->resolveFirmMaterialLine($materialLine, $effectiveAt, $anomalies);
             if ($spec !== null) {
@@ -311,14 +445,14 @@ final class FinancialCalculationService
             if ($mission->getType() === MissionType::CONSULTATION) {
                 $spec = $this->resolveInstrumentistConsultationLine($instrumentist, $effectiveAt, $anomalies);
             } else {
-                $spec = $this->resolveInstrumentistHourlyLine($mission, $instrumentist, $effectiveAt, $anomalies);
+                $spec = $this->resolveInstrumentistHourlyLine($mission, $instrumentist, $effectiveAt, $anomalies, $hoursPending);
             }
             if ($spec !== null) {
                 $lineSpecs[] = $spec;
             }
         }
 
-        return new MissionFinancialEvaluation($effectiveAt, $lineSpecs, $anomalies, $outcomes);
+        return new MissionFinancialEvaluation($effectiveAt, $lineSpecs, $anomalies, $outcomes, $hoursPending);
     }
 
     /**
@@ -362,9 +496,9 @@ final class FinancialCalculationService
      *
      * @param FinancialCalculationAnomaly[]|null $anomaliesOut renseigné uniquement en cas d'échec
      */
-    private function buildAndPersist(Mission $mission, User $actor, int $version, ?array &$anomaliesOut): ?FinancialCalculation
+    private function buildAndPersist(Mission $mission, User $actor, int $version, ?array &$anomaliesOut, ?FinancialCalculation $supplementOf = null): ?FinancialCalculation
     {
-        $evaluation = $this->evaluate($mission);
+        $evaluation = $this->evaluate($mission, $supplementOf !== null);
         $effectiveAt = $evaluation->effectiveAt;
         $anomalies = $evaluation->anomalies;
         $lineSpecs = $evaluation->lineSpecs;
@@ -389,6 +523,8 @@ final class FinancialCalculationService
         $calculation->setEffectiveAt($effectiveAt);
         $calculation->setCalculatedAt(new \DateTimeImmutable());
         $calculation->setCalculatedBy($actor);
+        $calculation->setInstrumentistHoursPending($evaluation->instrumentistHoursPending);
+        $calculation->setSupplementOf($supplementOf);
 
         foreach ($lineSpecs as $spec) {
             $line = $this->hydrateLine($spec);
@@ -706,20 +842,17 @@ final class FinancialCalculationService
      *
      * @param FinancialCalculationAnomaly[] &$anomalies
      */
-    private function resolveInstrumentistHourlyLine(Mission $mission, User $instrumentist, \DateTimeImmutable $effectiveAt, array &$anomalies): ?array
+    private function resolveInstrumentistHourlyLine(Mission $mission, User $instrumentist, \DateTimeImmutable $effectiveAt, array &$anomalies, bool &$hoursPending): ?array
     {
         $duration = $this->missionExecutionService->resolveEffectiveDuration($mission);
 
         // D-143 (intégration) — une prestation n'est JAMAIS valorisée sur les seuls horaires
-        // planifiés : sans aucune déclaration réelle (ni début + fin + pause, ni durée déclarée
-        // avant D-143), le calcul est bloqué. Aucune durée n'est fabriquée ; les calculs déjà
-        // persistés (approuvés, verrouillés, documents émis) ne sont jamais rejoués.
+        // planifiés : aucune durée n'est fabriquée. D-171 — l'absence d'heures ne bloque plus la
+        // facturation firme : la prestation horaire n'est simplement pas valorisée, le calcul
+        // est marqué « heures instrumentiste en attente » (recalcul, ou calcul complémentaire
+        // si la facture firme a déjà verrouillé ce calcul, une fois les heures déclarées).
         if ($duration->source === EffectiveDurationSource::PLANNED) {
-            $anomalies[] = new FinancialCalculationAnomaly(
-                'MISSING_ACTUAL_HOURS',
-                sprintf('No declared actual hours for mission #%d: planned hours are never paid.', $mission->getId()),
-                ['missionId' => $mission->getId()],
-            );
+            $hoursPending = true;
             return null;
         }
 
@@ -887,6 +1020,8 @@ final class FinancialCalculationService
             'status' => $calculation->getStatus()->value,
             'effectiveAt' => $calculation->getEffectiveAt()?->format('Y-m-d'),
             'totalsByCurrency' => $calculation->totalsByCurrency(),
+            'instrumentistHoursPending' => $calculation->isInstrumentistHoursPending(),
+            'supplementOfCalculationId' => $calculation->getSupplementOf()?->getId(),
         ];
     }
 }

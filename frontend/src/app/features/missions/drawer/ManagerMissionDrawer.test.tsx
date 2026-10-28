@@ -426,6 +426,30 @@ describe("ManagerMissionDrawer — calcul financier", () => {
     expect(screen.queryByTestId("calculation-obsolete")).toBeNull();
   });
 
+  it("D-171 — calcul sans heures : prestations firme facturables, prestation instrumentiste en attente", async () => {
+    renderDrawer(validated, { calculations: [calculation([line()], { status: "LOCKED", instrumentistHoursPending: true, instrumentistSupplementAvailable: false })] });
+    expect(await screen.findByTestId("drawer-instrumentist-hours-pending")).toHaveTextContent("les prestations firme sont facturables");
+    expect(screen.queryByTestId("drawer-instrumentist-supplement")).toBeNull();
+  });
+
+  it("D-171 — heures déclarées après la facture : « Valoriser la prestation instrumentiste » appelle l'endpoint dédié", async () => {
+    const user = userEvent.setup();
+    renderDrawer(validated, { calculations: [calculation([line()], { status: "LOCKED", instrumentistHoursPending: true, instrumentistSupplementAvailable: true })] });
+    await user.click(await screen.findByTestId("drawer-instrumentist-supplement"));
+    expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/financial-calculations/instrumentist-supplement");
+  });
+
+  it("D-171 — complément calculé : affiché à part, à approuver, jamais confondu avec le calcul principal", async () => {
+    const user = userEvent.setup();
+    const main = calculation([line()], { status: "LOCKED", instrumentistHoursPending: true, instrumentistSupplementAvailable: false });
+    const supplement = calculation([line()], { id: 901, version: 2, status: "CALCULATED", supplementOfCalculationId: main.id });
+    renderDrawer(validated, { calculations: [main, supplement] });
+    expect(await screen.findByTestId("drawer-instrumentist-supplement-status")).toHaveTextContent("complément v2");
+    expect(screen.queryByTestId("drawer-instrumentist-hours-pending")).toBeNull();
+    await user.click(screen.getByTestId("drawer-approve-supplement"));
+    expect(apiPostMock).toHaveBeenCalledWith("/api/financial-calculations/901/approve");
+  });
+
   it("aucun calcul : « Calculer la valorisation »", async () => {
     renderDrawer(validated, { calculations: [] });
     expect(await screen.findByTestId("drawer-calculate")).toHaveTextContent("Calculer la valorisation");

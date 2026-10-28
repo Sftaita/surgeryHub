@@ -55,11 +55,27 @@ final class MissionEncodingWorkflowService
         private readonly EncodingContentCompletenessService $contentCompleteness,
         // D-171 — optional only so plain unit tests can build the service; always autowired.
         private readonly ?EncodingTakeoverService $takeovers = null,
-        private readonly ?MissionAssignmentService $assignments = null,
+        // D-171 — every transition runs under the mission lock (serialized with encoding writes).
+        private readonly ?MissionEncodingLock $encodingLock = null,
     ) {}
+
+    /**
+     * @template T
+     * @param callable(): T $transition
+     * @return T
+     */
+    private function locked(Mission $mission, callable $transition): mixed
+    {
+        return $this->encodingLock !== null ? $this->encodingLock->run($mission, $transition) : $transition();
+    }
 
     /** ASSIGNED|IN_PROGRESS → ENCODING_IN_PROGRESS. */
     public function start(Mission $mission, User $actor): Mission
+    {
+        return $this->locked($mission, fn (): Mission => $this->startTransition($mission, $actor));
+    }
+
+    private function startTransition(Mission $mission, User $actor): Mission
     {
         $this->encodingGuard->assertEncodingAllowed($mission, $actor);
 
@@ -105,7 +121,7 @@ final class MissionEncodingWorkflowService
      */
     public function complete(Mission $mission, User $actor, ?string $comment = null): Mission
     {
-        return $this->completeTransition($mission, $actor, $comment, true);
+        return $this->locked($mission, fn (): Mission => $this->completeTransition($mission, $actor, $comment, true));
     }
 
     /** $requireHours = false only for a manager takeover (D-171): missing hours stay missing. */
@@ -218,11 +234,11 @@ final class MissionEncodingWorkflowService
      */
     public function completeAndValidate(Mission $mission, User $actor, ?string $comment, ?string $expectedRevision, bool $takeoverConfirmed): Mission
     {
-        if ($this->takeovers === null || $this->assignments === null) {
-            throw new \LogicException('completeAndValidate() requires EncodingTakeoverService and MissionAssignmentService.');
+        if ($this->takeovers === null || $this->encodingLock === null) {
+            throw new \LogicException('completeAndValidate() requires EncodingTakeoverService and MissionEncodingLock.');
         }
 
-        return $this->assignments->inLockedChange($mission, function () use ($mission, $actor, $comment, $expectedRevision, $takeoverConfirmed): Mission {
+        return $this->encodingLock->run($mission, function () use ($mission, $actor, $comment, $expectedRevision, $takeoverConfirmed): Mission {
             $blocked = MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now());
             if ($blocked !== null) {
                 throw new ConflictHttpException($blocked);
@@ -295,9 +311,21 @@ final class MissionEncodingWorkflowService
     }
 
     /** SUBMITTED → VALIDATED (verrouille l'encodage — encodingLockedAt, lu par MissionEncodingGuard). */
-    public function validate(Mission $mission, User $actor): Mission
+    /**
+     * $expectedRevision (D-171, optionnel) : empreinte de l'encodage relu par le manager ; une
+     * écriture concurrente entre sa lecture et sa validation → 409, rien n'est validé.
+     */
+    public function validate(Mission $mission, User $actor, ?string $expectedRevision = null): Mission
     {
-        return $this->validateTransition($mission, $actor, true);
+        return $this->locked($mission, function () use ($mission, $actor, $expectedRevision): Mission {
+            $expectedRevision = $expectedRevision !== null ? trim($expectedRevision) : '';
+            if ($expectedRevision !== '' && $this->takeovers !== null
+                && !hash_equals($this->takeovers->revision($mission), $expectedRevision)) {
+                throw EncodingConcurrencyException::modified(EncodingConcurrencyException::SUBJECT_ENCODING);
+            }
+
+            return $this->validateTransition($mission, $actor, true);
+        });
     }
 
     /** $requireHours = false only for a manager takeover (D-171): missing hours stay missing. */
@@ -351,6 +379,11 @@ final class MissionEncodingWorkflowService
      */
     public function reject(Mission $mission, User $actor, string $comment): Mission
     {
+        return $this->locked($mission, fn (): Mission => $this->rejectTransition($mission, $actor, $comment));
+    }
+
+    private function rejectTransition(Mission $mission, User $actor, string $comment): Mission
+    {
         if ($mission->getStatus() !== MissionStatus::SUBMITTED) {
             throw new ConflictHttpException('Mission must be SUBMITTED to reject its encoding');
         }
@@ -382,6 +415,11 @@ final class MissionEncodingWorkflowService
      * avant ce lot — rien ne change tant qu'aucun engagement financier n'existe.
      */
     public function reopen(Mission $mission, User $actor, string $comment): Mission
+    {
+        return $this->locked($mission, fn (): Mission => $this->reopenTransition($mission, $actor, $comment));
+    }
+
+    private function reopenTransition(Mission $mission, User $actor, string $comment): Mission
     {
         if ($mission->getStatus() === MissionStatus::CLOSED) {
             throw new ConflictHttpException(MissionEncodingCorrectionPolicy::CLOSED_MESSAGE);

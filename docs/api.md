@@ -8606,6 +8606,23 @@ interventions / matériel conservés, audit `MISSION_EXECUTED_WITHOUT_INSTRUMENT
   reprise), `allowedActions` contient `edit_hours` pour l'instrumentiste affectée et le manager
   (`remind_hours` pour le manager), et `PATCH .../execution` est accepté pour eux seuls ;
   interventions et matériel restent verrouillés. Une fois début et fin déclarés : verrouillées.
+- **D-171 (facturation)** — calculs financiers (`GET /api/missions/{id}/financial-calculations`,
+  `GET /api/financial-calculations/{id}`) : `instrumentistHoursPending` (calculé sans heures réelles :
+  aucune ligne `INSTRUMENTIST_HOURLY`, firme facturable), `supplementOfCalculationId` (calcul
+  complémentaire instrumentiste), `instrumentistSupplementAvailable` (complément possible maintenant).
+  `MISSING_ACTUAL_HOURS` n'est plus une anomalie bloquante du calcul (code conservé pour l'historique).
+  **`POST /api/missions/{id}/financial-calculations/instrumentist-supplement`** (`BillingVoter::MANAGE`) :
+  calcul principal **verrouillé** et calculé sans heures, heures désormais déclarées, aucun complément
+  actif → `201` calcul `CALCULATED` avec la seule ligne `INSTRUMENTIST_HOURLY` ; `409
+  FINANCIAL_CALCULATION_INELIGIBLE` sinon (message : recalculez si non verrouillé, heures encore
+  manquantes, complément déjà calculé) ; `422 FINANCIAL_CALCULATION_ANOMALIES` (tarif instrumentiste…).
+  `POST /api/financial-calculations/{id}/recalculate` sur un complément non verrouillé : nouvelle
+  version du complément (jamais du calcul principal).
+- **D-171 (concurrence)** — `POST .../encoding/validate` accepte `{ "expectedRevision": "…" }`
+  (`encodingRevision`, désormais servi aussi en `SUBMITTED`) : `409 ENCODING_CONCURRENT_MODIFICATION`
+  si l'encodage a changé. Toute écriture d'encodage (interventions, matériel, demandes de catalogue,
+  heures) et toute transition répond `409` (« La mission a été modifiée entre-temps… », rien
+  d'enregistré) quand une transition a été validée depuis sa lecture.
 - **D-171** — notification `ENCODING_TAKEN_OVER` (instrumentiste ; configurable, défauts in-app
   oui / e-mail non / push non) : payload `missionId`, `missionDate`, `siteName`, `managerName`,
   `hoursMissing` ; lien `/app/i/missions/{id}/encoding`.

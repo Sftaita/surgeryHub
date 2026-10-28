@@ -18,6 +18,7 @@ use App\Entity\PricingRule;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\FinancialCalculationStatus;
+use App\Enum\FinancialLineType;
 use App\Enum\InstrumentistRateType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -929,7 +930,12 @@ final class FinancialCalculationServiceTest extends KernelTestCase
     }
 
     /** Situation 3 — aucune déclaration horaire : calcul bloqué, rien n'est persisté. */
-    public function test_no_declared_hours_blocks_the_calculation_instead_of_paying_planned_hours(): void
+    /**
+     * D-171 — l'absence d'heures réelles ne bloque plus le calcul (facturation firme
+     * indépendante) mais la prestation horaire n'est JAMAIS valorisée sur le planifié : aucune
+     * ligne instrumentiste, calcul marqué « heures instrumentiste en attente ».
+     */
+    public function test_no_declared_hours_never_pays_planned_hours_and_leaves_the_instrumentist_line_pending(): void
     {
         $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
         $this->hourlyRate($instrumentist, '40.00', new \DateTimeImmutable('2020-01-01'));
@@ -939,13 +945,15 @@ final class FinancialCalculationServiceTest extends KernelTestCase
         $mission->setExecution(null);
         $this->em->flush();
 
-        try {
-            $this->service->calculate($mission, $this->makeUser('ROLE_MANAGER'));
-            self::fail('Une mission sans heure déclarée ne doit jamais être valorisée sur le planifié.');
-        } catch (FinancialCalculationAnomaliesException $e) {
-            self::assertContains('MISSING_ACTUAL_HOURS', array_map(static fn ($a) => $a->code, $e->getAnomalies()));
+        $evaluation = $this->service->evaluate($mission);
+        self::assertTrue($evaluation->succeeds(), 'même verdict en lecture seule (worklist, suivi) : plus bloquant');
+        self::assertTrue($evaluation->instrumentistHoursPending);
+
+        $calculation = $this->service->calculate($mission, $this->makeUser('ROLE_MANAGER'));
+        $this->created['calculations'][] = $calculation->getId();
+        self::assertTrue($calculation->isInstrumentistHoursPending());
+        foreach ($calculation->getLines() as $line) {
+            self::assertNotSame(FinancialLineType::INSTRUMENTIST_HOURLY, $line->getLineType(), 'jamais les heures planifiées');
         }
-        self::assertNull($this->service->findActiveCalculation($mission));
-        self::assertFalse($this->service->evaluate($mission)->succeeds(), 'même verdict en lecture seule (worklist, suivi)');
     }
 }

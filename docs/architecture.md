@@ -4395,5 +4395,14 @@ publication.
 - **Heures indépendantes de la validation** : la validation manager (avec ou sans reprise) n'exige
   jamais les heures et n'en crée aucune. Le fait `Mission.encodingValidatedWithoutHoursAt` +
   `hoursPendingAfterValidation()` laissent les seules heures déclarables tant qu'elles manquent
-  (`MissionExecutionVoter::UPDATE`, `edit_hours`, `remind_hours`, une seule règle) ; le calcul
-  financier continue de refuser une prestation sans heures réelles.
+  (`MissionExecutionVoter::UPDATE`, `edit_hours`, `remind_hours`, une seule règle) ; jamais de
+  prestation horaire valorisée sans heures réelles.
+- **Facturation firme indépendante des heures** : `FinancialCalculationService::evaluate()` ne
+  bloque plus sur des heures absentes (`instrumentistHoursPending`) ; la prestation horaire arrive
+  par recalcul, ou par un calcul complémentaire (`supplementOf`) quand une facture firme a verrouillé
+  le calcul principal. `findActiveCalculation()` et les sélections « calcul actif » excluent les
+  compléments ; relevés et statistiques lisent les lignes.
+- **Sérialisation** : `MissionEncodingLock::run()` (verrou `FOR UPDATE` sur `mission` + relecture
+  de l'état validé) entoure toutes les écritures d'encodage (contrôleurs interventions, matériel,
+  demandes de catalogue ; `MissionExecutionService::updateActuals()`) et toutes les transitions de
+  `MissionEncodingWorkflowService`.

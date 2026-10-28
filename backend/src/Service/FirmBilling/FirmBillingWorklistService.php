@@ -901,6 +901,7 @@ final class FirmBillingWorklistService
             ->from(FinancialCalculation::class, 'fc')
             ->where('IDENTITY(fc.mission) IN (:ids)')
             ->andWhere('fc.status IN (:active)')
+            ->andWhere('fc.supplementOf IS NULL') // D-171 — jamais un complément instrumentiste
             ->setParameter('ids', $missionIds)
             ->setParameter('active', self::ACTIVE_STATUSES)
             ->orderBy('fc.version', 'ASC')

@@ -187,26 +187,34 @@ final class MissionEncodingCorrectionPolicy
      * D-171 — interventions et matériel validés par une reprise manager alors que les heures
      * manquaient, et elles manquent toujours : l'instrumentiste affectée et le manager peuvent
      * encore les déclarer malgré le verrou de l'encodage (MissionExecutionVoter::UPDATE,
-     * 'edit_hours', 'remind_hours'). Rien d'autre ne se rouvre. Jamais après facturation ni avec
-     * un calcul LOCKED ; une fois les heures déclarées, elles sont verrouillées comme le reste
-     * (une correction passe par la réouverture, D-148).
+     * 'edit_hours', 'remind_hours'). Rien d'autre ne se rouvre. Aussi quand le calcul financier a
+     * été produit sans ces heures (heures en attente), même verrouillé par une facture firme ;
+     * jamais quand un calcul verrouillé les engage. Une fois déclarées, elles sont verrouillées
+     * comme le reste (une correction passe par la réouverture, D-148).
      */
     public static function hoursPendingAfterValidation(Mission $mission): bool
     {
         if ($mission->getStatus() !== MissionStatus::VALIDATED
-            || $mission->getEncodingValidatedWithoutHoursAt() === null
             || $mission->getInvoiceGeneratedAt() !== null
             || !self::hoursMissing($mission)) {
             return false;
         }
 
+        // D-171 — un calcul calculé SANS la prestation horaire (heures en attente) n'engage
+        // jamais ces heures, même verrouillé par une facture firme : elles restent déclarables
+        // (recalcul, ou calcul complémentaire). Tout autre calcul verrouillé les fige.
+        $deferredByCalculation = false;
         foreach ($mission->getFinancialCalculations() as $calculation) {
-            if ($calculation->getStatus() === FinancialCalculationStatus::LOCKED) {
+            $active = in_array($calculation->getStatus(), [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED], true);
+            if ($calculation->getStatus() === FinancialCalculationStatus::LOCKED && !$calculation->isInstrumentistHoursPending()) {
                 return false;
+            }
+            if ($active && $calculation->isInstrumentistHoursPending()) {
+                $deferredByCalculation = true;
             }
         }
 
-        return true;
+        return $mission->getEncodingValidatedWithoutHoursAt() !== null || $deferredByCalculation;
     }
 
     public static function reopenBlockedReason(Mission $mission): ?string

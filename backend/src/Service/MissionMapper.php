@@ -92,7 +92,8 @@ final class MissionMapper
                     : null,
             ] : null,
             encodingValidationBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::validationBlockedReason($m, Clock::get()->now()) : null,
-            encodingRevision: $completeAndValidate ? $this->takeovers?->revision($m) : null,
+            // Aussi pour « Valider l'encodage » (SUBMITTED) : la validation porte sur ce que le manager a relu.
+            encodingRevision: $completeAndValidate || ($isManagerViewer && $m->getStatus() === \App\Enum\MissionStatus::SUBMITTED) ? $this->takeovers?->revision($m) : null,
             encodingTakeover: $completeAndValidate && MissionEncodingCorrectionPolicy::isTakeover($m) ? [
                 'instrumentistName' => trim(($m->getInstrumentist()?->getFirstname() ?? '') . ' ' . ($m->getInstrumentist()?->getLastname() ?? '')),
                 'hoursMissing'      => MissionEncodingCorrectionPolicy::hoursMissing($m),

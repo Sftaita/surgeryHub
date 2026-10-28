@@ -142,7 +142,7 @@ export function useMissionManagerActions(
   /** Lot 7 (D-070) — validate/reject/reopen de l'encodage, distincts d'approve/reject
    *  ci-dessus qui ne concernent que le statut DECLARED. */
   const validateEncodingMutation = useMutation({
-    mutationFn: async () => validateMissionEncoding(missionId),
+    mutationFn: async () => validateMissionEncoding(missionId, data?.encodingRevision ?? null),
     onSuccess: async () => {
       await refreshAfterAction();
       toast.success("Encodage validé.");

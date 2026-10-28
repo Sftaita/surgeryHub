@@ -70,13 +70,20 @@ final class MissionEncodingWorkflowController extends AbstractController
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
     }
 
+    /**
+     * Corps optionnel (D-171) : `expectedRevision` — empreinte de l'encodage relu
+     * (`encodingRevision` du détail) ; différente de l'encodage actuel → 409, rien n'est validé.
+     */
     #[Route('/validate', name: 'api_missions_encoding_validate', methods: ['POST'])]
-    public function validate(int $missionId, #[CurrentUser] User $user): JsonResponse
+    public function validate(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->getMissionOr404($missionId);
         $this->denyAccessUnlessGranted(MissionVoter::ENCODING_VALIDATE, $mission);
 
-        $mission = $this->workflow->validate($mission, $user);
+        $body = json_decode($request->getContent() ?: '{}', true);
+        $expectedRevision = is_array($body) && is_string($body['expectedRevision'] ?? null) ? $body['expectedRevision'] : null;
+
+        $mission = $this->workflow->validate($mission, $user, $expectedRevision);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
     }

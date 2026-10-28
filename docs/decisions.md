@@ -15259,8 +15259,9 @@ mission…), non couvertes par la maquette. Aucun changement backend.
 
 **Statut : branche `feat/encodage-sans-instrumentiste` ; non fusionné, non déployé.**
 Amende D-070 (seule une mission `SUBMITTED` se valide), D-143 (heures exigées à la validation,
-sauf reprise manager) et D-153 (le manager corrige sans soumettre) ; complète D-154 et D-155.
-Une migration additive (`Version20261027090000`, décision 7).
+sauf reprise manager ; heures manquantes bloquant tout le calcul financier), D-073 (une anomalie
+bloque tout le calcul) et D-153 (le manager corrige sans soumettre) ; complète D-154 et D-155.
+Une migration additive (`Version20261027090000`, décisions 7 et 8).
 
 ### Contexte — cas réel de la mission #1079 (lecture seule en production)
 
@@ -15358,13 +15359,13 @@ Quand une instrumentiste est affectée et n'a pas soumis (`MissionEncodingCorrec
   (`expectedRevision`, obligatoire : 428 sinon) ; sous le verrou de la mission, une empreinte
   différente donne `409 ENCODING_CONCURRENT_MODIFICATION`, rien n'est validé, la mission est relue.
   Après validation, l'encodage est verrouillé (`MissionEncodingGuard`) : toute écriture ultérieure
-  de l'instrumentiste ou du chirurgien est refusée. Limite : une écriture déjà contrôlée par son
-  propre garde quelques millisecondes avant le verrou peut encore aboutir ; elle reste journalisée.
+  de l'instrumentiste ou du chirurgien est refusée. Écritures et transitions sont sérialisées
+  (décision 9) : aucune écriture ne peut aboutir sur un encodage validé entre-temps.
 
 **Heures indépendantes de la validation.** Interventions et matériel se valident sans heures, avec
 ou sans reprise. Des heures manquantes ne sont **ni inventées ni validées** : aucune
-`MissionExecution` n'est créée, le calcul financier continue de refuser une prestation sans heures
-réelles (`MISSING_ACTUAL_HOURS`, D-143). Le fait `Mission.encodingValidatedWithoutHoursAt`
+`MissionExecution` n'est créée, aucune prestation horaire n'est valorisée sans heures réelles
+(décision 8). Le fait `Mission.encodingValidatedWithoutHoursAt`
 (migration additive `Version20261027090000`, aucune mission existante marquée) les laisse
 **déclarables** tant qu'elles manquent (`hoursPendingAfterValidation()`) : `edit_hours` et
 `MissionExecutionVoter::UPDATE` pour l'instrumentiste affectée et le manager, `remind_hours` pour
@@ -15374,13 +15375,54 @@ par aucun automatisme : le manager les contrôle au calcul financier, qu'il déc
 lui-même. Une reprise où les heures sont déjà déclarées les valide avec l'encodage, comme
 `validate()`. Le parcours instrumentiste classique (soumission avec heures, D-143) est inchangé.
 
+### Décision 8 — facturation firme indépendante des heures de l'instrumentiste (2026-10-28)
+
+Jusqu'ici, une seule anomalie bloquait tout le calcul (D-073 §14) et l'absence d'heures réelles en
+était une (`MISSING_ACTUAL_HOURS`, D-143) : sans heures, ni les interventions ni le matériel ne
+pouvaient être facturés à la firme. Désormais :
+
+- **Calcul principal** : sans heures réelles déclarées, la prestation horaire n'est **pas
+  valorisée** (jamais sur le planifié) et n'est plus une anomalie ; les lignes firme sont produites
+  normalement et le calcul est marqué `instrumentistHoursPending`. Toutes les autres anomalies
+  (tarif firme ou matériel, tarif instrumentiste manquant ou en conflit, durée nulle, réponses
+  obligatoires) restent bloquantes : aucun contrôle métier n'est levé.
+- **Heures déclarées ensuite** : elles restent déclarables tant qu'elles manquent
+  (`hoursPendingAfterValidation()`, y compris quand un calcul principal sans heures est verrouillé).
+  - calcul principal non verrouillé → « Recalculer » (nouvelle version complète, sans marqueur) ;
+  - calcul principal **verrouillé par une facture firme** → **calcul complémentaire**
+    (`FinancialCalculation.supplementOf`, `POST /api/missions/{id}/financial-calculations/instrumentist-supplement`) :
+    la seule ligne `INSTRUMENTIST_HOURLY`, mêmes contrôles (tarif, durée), son propre cycle
+    approuver → verrouiller (le relevé instrumentiste le verrouille). Les lignes firme ne sont
+    jamais recalculées, la facture émise n'est jamais touchée. Un seul complément actif ; règle
+    unique `instrumentistSupplementBlockedReason()`.
+- Le calcul « actif » d'une mission reste le calcul principal (`findActiveCalculation()`, liste et
+  recalcul groupé de facturation firme) ; relevés et statistiques lisent les lignes, compléments
+  inclus. Aucun calcul n'est jamais déclenché automatiquement.
+
+### Décision 9 — écritures et transitions d'encodage sérialisées (2026-10-28)
+
+`MissionEncodingLock` : toute écriture d'encodage (interventions, matériel, demandes de catalogue,
+heures réelles) et toute transition (start, complete, validate, reject, reopen,
+complete-and-validate) s'exécute dans une transaction qui verrouille la ligne `mission`
+(`SELECT … FOR UPDATE`) et relit son état validé en base (statut, instrumentiste, verrou
+d'encodage, facturation, activité sans instrumentiste). Si cet état diffère de celui sur lequel
+l'écriture a été autorisée, elle est refusée (409, rien d'écrit). Conséquences :
+
+- une écriture autorisée avant une validation validée entre-temps n'aboutit jamais ;
+- une validation attend la fin d'une écriture en cours, puis la voit : `expectedRevision` (désormais
+  aussi accepté par `POST .../encoding/validate`, envoyé par les écrans) ne correspond plus → 409 ;
+- deux déclarations d'heures concurrentes après une validation sans heures : la seconde est
+  refusée (heures relues sous le verrou), jamais un écrasement.
+
+Les messages de cycle de vie partent dans la même transaction (transport Doctrine) : aucune
+notification pour une transition annulée.
+
 ### Impacts
 
 - **Workflow** : aucun nouveau statut ; `SUBMITTED` reste traversé (audité) même en une étape.
-- **Facturation** : moteur inchangé. Une mission validée de cette façon suit D-073 / D-155 (calcul
-  firme seul sans instrumentiste). Avec une instrumentiste dont les heures manquent, le calcul de
-  la mission reste refusé (`MISSING_ACTUAL_HOURS`, comme aujourd'hui), y compris la part firme,
-  jusqu'à leur déclaration. Aucun calcul déclenché par la validation.
+- **Facturation** : décision 8 — firme facturable sans les heures ; prestation horaire valorisée
+  seulement sur des heures réelles, par recalcul ou par calcul complémentaire. Aucun calcul
+  déclenché par la validation. Les calculs déjà existants ne changent pas (marqueur à `false`).
 - **#1079** : aucune donnée modifiée ; après déploiement, le manager peut « Terminer et valider »
   depuis le suivi (BLOCK avec matériel : aucun commentaire exigé).
 
@@ -15403,4 +15445,11 @@ chirurgien sur tous statuts × fait × heures × calcul `LOCKED`),
 `MissionTrackingDrawer.test.tsx` (bouton, raison, refus affiché, auteur, confirmation de reprise,
 409 relu, bandeau de reprise), `ManagerMissionDrawer.test.tsx` (révision et confirmation envoyées),
 `notificationFormat.test.ts` (`ENCODING_TAKEN_OVER`),
+`FirmBillingWithoutInstrumentistHoursD171Test` (firme facturée sans heures, verrouillage, heures
+tardives, complément instrumentiste puis relevé ; recalcul quand le calcul n'est pas verrouillé ;
+mission sans instrumentiste validée et facturée à la firme seule),
+`MissionEncodingConcurrencyD171Test` (connexions distinctes : écriture autorisée avant une
+validation validée → refusée sans écriture ; écriture bloquée pendant une transition puis refusée ;
+« Terminer et valider » bloqué pendant une écriture puis 409 ; deux déclarations d'heures
+concurrentes sans écrasement), `ManagerMissionDrawer.test.tsx` (heures en attente, complément),
 `SurgeonEncodingPage.test.tsx` (brouillon, « Soumettre l'encodage »).

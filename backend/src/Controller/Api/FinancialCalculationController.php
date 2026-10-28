@@ -43,6 +43,22 @@ final class FinancialCalculationController extends AbstractController
         return $this->json($this->serialize($calculation), Response::HTTP_CREATED);
     }
 
+    /**
+     * D-171 — valorise la seule prestation instrumentiste d'une mission dont le calcul principal,
+     * produit sans heures, a été verrouillé par une facture firme : calcul complémentaire.
+     * Règle unique : FinancialCalculationService::instrumentistSupplementBlockedReason() (409 sinon).
+     */
+    #[Route('/api/missions/{missionId}/financial-calculations/instrumentist-supplement', name: 'api_missions_financial_calculations_instrumentist_supplement', methods: ['POST'])]
+    public function createInstrumentistSupplement(int $missionId, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $mission = $this->getMissionOr404($missionId);
+
+        $calculation = $this->service->calculateInstrumentistSupplement($mission, $actor);
+
+        return $this->json($this->serialize($calculation), Response::HTTP_CREATED);
+    }
+
     #[Route('/api/missions/{missionId}/financial-calculations', name: 'api_missions_financial_calculations_list', methods: ['GET'])]
     public function list(int $missionId): JsonResponse
     {
@@ -72,7 +88,10 @@ final class FinancialCalculationController extends AbstractController
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
         $calculation = $this->getCalculationOr404($id);
 
-        $new = $this->service->recalculate($calculation->getMission(), $actor);
+        // D-171 — un complément instrumentiste se recalcule seul, jamais le calcul principal.
+        $new = $calculation->isSupplement()
+            ? $this->service->recalculateInstrumentistSupplement($calculation, $actor)
+            : $this->service->recalculate($calculation->getMission(), $actor);
 
         return $this->json($this->serialize($new), Response::HTTP_CREATED);
     }
@@ -138,6 +157,12 @@ final class FinancialCalculationController extends AbstractController
             'cancelledBy' => $c->getCancelledBy()?->getId(),
             'supersededAt' => $c->getSupersededAt()?->format(DATE_ATOM),
             'supersededByCalculationId' => $c->getSupersededByCalculation()?->getId(),
+            // D-171 — prestation horaire non valorisée faute d'heures ; complément instrumentiste.
+            'instrumentistHoursPending' => $c->isInstrumentistHoursPending(),
+            'supplementOfCalculationId' => $c->getSupplementOf()?->getId(),
+            'instrumentistSupplementAvailable' => !$c->isSupplement() && $c->isInstrumentistHoursPending()
+                && $c->getMission() !== null && $this->service->instrumentistSupplementBlockedReason($c->getMission()) === null
+                && $this->service->findActiveCalculation($c->getMission())?->getId() === $c->getId(),
             // D-153 — encodage rouvert depuis ce calcul : plus jamais approuvé, verrouillé ni facturé.
             'obsolete' => $c->isObsolete(),
             'encodingReopenedAt' => $c->getEncodingReopenedAt()?->format(DATE_ATOM),

@@ -1154,7 +1154,7 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
      * aucune valorisation possible tant que les heures manquent ; « Rouvrir » est autorisé
      * (aucun calcul verrouillé) puis le même circuit s'applique.
      */
-    public function test_historical_validated_mission_without_hours_is_blocked_financially_then_reopened(): void
+    public function test_historical_validated_mission_without_hours_is_never_paid_on_planned_hours_then_reopened(): void
     {
         $client  = $this->boot();
         $manager = $this->createUser('ROLE_MANAGER');
@@ -1170,8 +1170,9 @@ final class MissionEncodingWorkflowControllerTest extends WebTestCase
         /** @var \App\Service\FinancialCalculationService $finance */
         $finance = static::getContainer()->get(\App\Service\FinancialCalculationService::class);
         $evaluation = $finance->evaluate($this->em->find(Mission::class, $id));
-        self::assertFalse($evaluation->succeeds(), 'aucune valorisation sur le planifié');
-        self::assertContains('MISSING_ACTUAL_HOURS', array_map(static fn ($a) => $a->code, $evaluation->anomalies));
+        // D-171 — plus bloquant pour la firme, mais jamais de prestation valorisée sur le planifié.
+        self::assertTrue($evaluation->instrumentistHoursPending, 'heures instrumentiste en attente');
+        self::assertSame([], array_filter($evaluation->lineSpecs, static fn (array $spec) => ($spec['lineType'] ?? null) === \App\Enum\FinancialLineType::INSTRUMENTIST_HOURLY), 'aucune valorisation sur le planifié');
 
         $instrToken   = $this->login($client, $instr);
         $managerToken = $this->login($client, $manager);

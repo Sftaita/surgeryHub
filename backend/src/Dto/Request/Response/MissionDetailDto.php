@@ -87,7 +87,7 @@ final class MissionDetailDto
          */
         public readonly ?string $encodingValidationBlockedReason = null,
         /**
-         * D-171 — managers only, when « Terminer et valider » is offered: fingerprint of the
+         * D-171 — managers only, when « Terminer et valider » or « Valider » (SUBMITTED) is offered: fingerprint of the
          * encoding as read now (EncodingTakeoverService::revision()), sent back as
          * `expectedRevision`; a different one at confirmation time means someone changed it.
          */

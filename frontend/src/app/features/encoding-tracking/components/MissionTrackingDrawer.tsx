@@ -225,7 +225,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   }
 
   const validateMutation = useMutation({
-    mutationFn: async () => validateMissionEncoding(missionId!),
+    mutationFn: async () => validateMissionEncoding(missionId!, missionQuery.data?.encodingRevision ?? null),
     onSuccess: async () => { toast.success("Encodage validé."); await refreshAfterAction(); },
     onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? extractErrorMessage(err)),
   });

@@ -147,6 +147,19 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
         disabled: finance.lockMutation.isPending, onClick: () => finance.lockMutation.mutate(active.id),
       });
     }
+    // D-171 — prestation instrumentiste valorisée à part une fois ses heures déclarées (servi par le backend).
+    const supplement = finance.supplement;
+    if (active?.instrumentistSupplementAvailable) {
+      footerActions.push({
+        key: "instrumentistSupplement", label: "Valoriser la prestation instrumentiste", tone: "primary", icon: "check", testId: "drawer-instrumentist-supplement",
+        disabled: finance.supplementMutation.isPending, onClick: () => finance.supplementMutation.mutate(),
+      });
+    } else if (supplement && !supplement.obsolete && supplement.status === "CALCULATED") {
+      footerActions.push({
+        key: "approveSupplement", label: "Approuver la prestation instrumentiste", tone: "primary", icon: "check", testId: "drawer-approve-supplement",
+        disabled: finance.approveMutation.isPending, onClick: () => finance.approveMutation.mutate(supplement.id),
+      });
+    }
   }
 
   const executed = financeApplicable;
@@ -179,6 +192,18 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
         <p className="mdw-notice mdw-notice--warn">
           <span className="mdw-notice__title">En attente de validation</span>
           L'instrumentiste a déclaré cette mission. Vérifiez l'encodage et approuvez ou rejetez.
+        </p>
+      )}
+      {/* D-171 — facturation firme indépendante des heures : la prestation horaire attend les heures réelles. */}
+      {finance.active?.instrumentistHoursPending && !finance.supplement && (
+        <p className="mdw-notice mdw-notice--info" data-testid="drawer-instrumentist-hours-pending">
+          Calcul fait sans les heures prestées : les prestations firme sont facturables, la prestation de l'instrumentiste
+          sera valorisée une fois ses heures déclarées (jamais sur les heures planifiées).
+        </p>
+      )}
+      {finance.supplement && (
+        <p className="mdw-notice mdw-notice--muted" data-testid="drawer-instrumentist-supplement-status">
+          Prestation de l'instrumentiste calculée à part (complément v{finance.supplement.version}, {finance.supplement.status === "LOCKED" ? "verrouillé" : finance.supplement.status === "APPROVED" ? "approuvé" : "à approuver"}).
         </p>
       )}
       {mission.encodingCorrectionFinancialNotice && (
