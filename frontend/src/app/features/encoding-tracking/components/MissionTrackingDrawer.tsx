@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
-import { fetchMissionEncoding, newActionBatchId, rejectMissionEncoding, remindMissionEncoding, reopenMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
+import { ENCODING_CHANGED_BEFORE_VALIDATION, isEncodingConcurrentModification, fetchMissionEncoding, newActionBatchId, rejectMissionEncoding, remindMissionEncoding, reopenMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
 import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
 import { EncodingContentPanel } from "./EncodingContentPanel";
 import type { EncodingAnomalyMarks, EncodingFocusTarget } from "./EncodingContentPanel";
@@ -227,7 +227,15 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   const validateMutation = useMutation({
     mutationFn: async () => validateMissionEncoding(missionId!, missionQuery.data?.encodingRevision ?? null),
     onSuccess: async () => { toast.success("Encodage validé."); await refreshAfterAction(); },
-    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? extractErrorMessage(err)),
+    onError: async (err: any) => {
+      // D-171 — révision obsolète : jamais validée ; la mission est relue avant toute nouvelle tentative.
+      if (isEncodingConcurrentModification(err)) {
+        toast.warning(ENCODING_CHANGED_BEFORE_VALIDATION);
+        await refreshAfterAction();
+        return;
+      }
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? extractErrorMessage(err));
+    },
   });
 
   const remindMutation = useMutation({
@@ -745,7 +753,10 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           toast.success("Encodage terminé et validé.");
           await refreshAfterAction();
         }}
-        onConflict={async () => { await refreshAfterAction(); }}
+        onConflict={async () => {
+          toast.warning(ENCODING_CHANGED_BEFORE_VALIDATION);
+          await refreshAfterAction();
+        }}
       />
 
       <EncodingCorrectionDialog

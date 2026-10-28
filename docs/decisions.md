@@ -15417,6 +15417,50 @@ l'écriture a été autorisée, elle est refusée (409, rien d'écrit). Conséqu
 Les messages de cycle de vie partent dans la même transaction (transport Doctrine) : aucune
 notification pour une transition annulée.
 
+### Décision 10 — une confirmation ne vaut que pour la révision relue (revue de la PR #47)
+
+Constat : sur un `409 ENCODING_CONCURRENT_MODIFICATION`, la fenêtre « Terminer et valider » restait
+ouverte, case de reprise cochée, et la relecture de la mission remplaçait la révision envoyée : un
+second clic aurait validé le nouveau contenu sans relecture. Désormais :
+
+- la fenêtre envoie la révision lue **à son ouverture** (jamais la valeur rafraîchie pendant qu'elle
+  est ouverte) ;
+- sur un 409, elle annule son contexte (case de reprise, commentaire, état de la mutation) et se
+  ferme ; l'écran (tiroir mission, tiroir du suivi) relit la mission et affiche « L'encodage a été
+  modifié depuis votre dernière consultation. Consultez les modifications avant de recommencer la
+  validation. » ; une nouvelle ouverture et une nouvelle confirmation sont exigées ;
+- « Valider l'encodage » (mission soumise) : même message, confirmation refermée, mission relue ;
+  jamais validé sur une révision obsolète.
+
+Le contrôle backend est inchangé (comparaison de `expectedRevision` sous `MissionEncodingLock`,
+409 sans aucune écriture). Tests : `MissionTrackingDrawer.test.tsx` et `ManagerMissionDrawer.test.tsx`
+(reprise + 409, validation + 409), `EncodingWithoutInstrumentistD171Test` (validation d'un encodage
+soumis avec une révision obsolète : 409, statut, verrou et audit inchangés, puis validation de la
+révision relue ; reprise + 409 : aucun verrou ni notification de reprise).
+
+### Migration `Version20261027090000` (additive)
+
+| Colonne | Usage | Conséquence |
+|---|---|---|
+| `mission.encoding_validated_without_hours_at` (DATETIME, null) | Fait « encodage validé sans les heures » (décision 7). | Seules les heures restent déclarables après la validation (`hoursPendingAfterValidation()`), tant qu'elles manquent. |
+| `financial_calculation.instrumentist_hours_pending` (BOOL, défaut 0) | Calcul principal fait sans heures réelles (décision 8). | Les lignes firme sont produites et peuvent être approuvées, verrouillées et facturées ; la prestation horaire n'est pas valorisée (jamais sur le planifié). |
+| `financial_calculation.supplement_of_id` (FK → `financial_calculation`, index) | Calcul complémentaire rattaché au calcul principal (décision 8). | Seule la ligne `INSTRUMENTIST_HOURLY` y est calculée, avec son propre cycle approuver → verrouiller (le relevé instrumentiste le verrouille). Les lignes firme verrouillées ne sont ni recalculées ni modifiées. |
+
+Aucune ligne existante n'est modifiée (valeurs nulles ou à 0). **Rollback (`down()`)** : il supprime
+les trois colonnes. Il n'est sûr que si aucune donnée D-171 n'existe :
+
+```sql
+SELECT COUNT(*) FROM mission WHERE encoding_validated_without_hours_at IS NOT NULL;
+SELECT COUNT(*) FROM financial_calculation WHERE instrumentist_hours_pending = 1 OR supplement_of_id IS NOT NULL;
+```
+
+Si l'un de ces comptes n'est pas nul, ne pas exécuter `down()` sans décision métier. Après un
+rollback, un calcul complémentaire perdrait son rattachement et serait traité comme un calcul
+principal de la mission (il ne porte que la prestation instrumentiste). Un calcul principal sans
+heures n'afficherait plus qu'il attend les heures. Et les heures d'un encodage validé sans heures
+ne seraient plus déclarables. Préférer un correctif en avant. Sinon, traiter explicitement chaque
+calcul concerné avant le rollback (annulation contrôlée, jamais sur un document émis).
+
 ### Impacts
 
 - **Workflow** : aucun nouveau statut ; `SUBMITTED` reste traversé (audité) même en une étape.

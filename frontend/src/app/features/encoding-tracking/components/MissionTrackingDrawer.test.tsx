@@ -34,7 +34,10 @@ const remindMissionEncodingMock = vi.fn();
 const rejectMissionEncodingMock = vi.fn();
 const reopenMissionEncodingMock = vi.fn();
 const completeAndValidateMissionEncodingMock = vi.fn();
-vi.mock("../../encoding/api/encoding.api", () => ({
+vi.mock("../../encoding/api/encoding.api", async (importOriginal) => ({
+  // Détection du conflit et message (D-171) : les vrais, jamais réimplémentés dans le test.
+  isEncodingConcurrentModification: (await importOriginal<typeof import("../../encoding/api/encoding.api")>()).isEncodingConcurrentModification,
+  ENCODING_CHANGED_BEFORE_VALIDATION: (await importOriginal<typeof import("../../encoding/api/encoding.api")>()).ENCODING_CHANGED_BEFORE_VALIDATION,
   completeAndValidateMissionEncoding: (...args: unknown[]) => completeAndValidateMissionEncodingMock(...args),
   rejectMissionEncoding: (...args: unknown[]) => rejectMissionEncodingMock(...args),
   reopenMissionEncoding: (...args: unknown[]) => reopenMissionEncodingMock(...args),
@@ -983,18 +986,52 @@ describe("MissionTrackingDrawer — terminer et valider, blocage expliqué (D-17
     await waitFor(() => expect(completeAndValidateMissionEncodingMock).toHaveBeenCalledWith(42, { comment: null, expectedRevision: "rev-7", takeoverConfirmed: true }));
   });
 
-  it("encodage modifié entre-temps (409) : message affiché et mission relue, rien n'est validé", async () => {
+  it("encodage modifié entre-temps (409) : la confirmation de reprise est annulée, la fenêtre fermée, la mission relue — une nouvelle confirmation est exigée", async () => {
     const user = userEvent.setup();
-    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"], encodingRevision: "rev-1" });
-    completeAndValidateMissionEncodingMock.mockRejectedValue({ response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "L'encodage a été modifié entre-temps (interventions, matériel ou heures). Rien n'a été validé : relisez-le puis recommencez." } } } });
+    const takeover = { instrumentistName: "Marie Dupont", hoursMissing: true };
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"], encodingRevision: "rev-1", encodingTakeover: takeover });
+    completeAndValidateMissionEncodingMock.mockRejectedValueOnce({ response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "L'encodage a été modifié entre-temps." } } } });
     renderDrawer(makeItem({ missionStatus: "ENCODING_IN_PROGRESS", encodingState: "IN_PROGRESS", encodingStateLabel: "En cours" }));
 
     await user.click(await screen.findByTestId("drawer-complete-and-validate"));
-    const dialog = await screen.findByRole("dialog", { name: "Terminer et valider l'encodage" });
+    let dialog = await screen.findByRole("dialog", { name: "Reprendre, terminer et valider l'encodage" });
+    await user.click(within(dialog).getByTestId("complete-and-validate-takeover-confirm"));
+    await user.type(within(dialog).getByTestId("complete-and-validate-comment"), "Vu");
+    // Pendant ce temps, l'instrumentiste a modifié l'encodage : la relecture servira rev-2.
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "complete_and_validate"], encodingRevision: "rev-2", encodingTakeover: takeover });
     const readsBefore = fetchMissionByIdMock.mock.calls.length;
     await user.click(within(dialog).getByTestId("confirm-complete-and-validate"));
 
-    expect(await within(dialog).findByTestId("complete-and-validate-error")).toHaveTextContent("modifié entre-temps");
+    expect(completeAndValidateMissionEncodingMock).toHaveBeenCalledWith(42, expect.objectContaining({ expectedRevision: "rev-1", takeoverConfirmed: true }));
+    expect(await screen.findByText("L'encodage a été modifié depuis votre dernière consultation. Consultez les modifications avant de recommencer la validation.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Reprendre, terminer et valider l'encodage" })).toBeNull());
+    await waitFor(() => expect(fetchMissionByIdMock.mock.calls.length).toBeGreaterThan(readsBefore));
+
+    // Nouvelle ouverture : rien de l'ancienne confirmation n'est réutilisé.
+    await user.click(await screen.findByTestId("drawer-complete-and-validate"));
+    dialog = await screen.findByRole("dialog", { name: "Reprendre, terminer et valider l'encodage" });
+    expect(within(dialog).getByTestId("complete-and-validate-takeover-confirm")).not.toBeChecked();
+    expect(within(dialog).getByTestId("complete-and-validate-comment")).toHaveValue("");
+    expect(within(dialog).getByTestId("confirm-complete-and-validate")).toBeDisabled();
+    expect(within(dialog).queryByTestId("complete-and-validate-error")).toBeNull();
+    completeAndValidateMissionEncodingMock.mockResolvedValueOnce(undefined);
+    await user.click(within(dialog).getByTestId("complete-and-validate-takeover-confirm"));
+    await user.click(within(dialog).getByTestId("confirm-complete-and-validate"));
+    expect(completeAndValidateMissionEncodingMock).toHaveBeenLastCalledWith(42, expect.objectContaining({ expectedRevision: "rev-2", takeoverConfirmed: true }));
+  });
+
+  it("« Valider l'encodage » (soumis) avec une révision obsolète : jamais validé, message explicite, mission relue", async () => {
+    const user = userEvent.setup();
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], encodingRevision: "rev-1" });
+    validateMissionEncodingMock.mockRejectedValueOnce({ response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "modifié" } } } });
+    renderDrawer(makeItem({ missionStatus: "SUBMITTED", encodingState: "SUBMITTED", encodingStateLabel: "Soumis" }));
+
+    const button = await screen.findByRole("button", { name: "Valider l'encodage" });
+    await waitFor(() => expect(button).not.toBeDisabled());
+    const readsBefore = fetchMissionByIdMock.mock.calls.length;
+    await user.click(button);
+    expect(validateMissionEncodingMock).toHaveBeenCalledWith(42, "rev-1");
+    expect(await screen.findByText(/L'encodage a été modifié depuis votre dernière consultation/)).toBeInTheDocument();
     await waitFor(() => expect(fetchMissionByIdMock.mock.calls.length).toBeGreaterThan(readsBefore));
   });
 
