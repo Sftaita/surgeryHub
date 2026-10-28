@@ -3,6 +3,7 @@ import type { DrawerStep, Finance, MissionDrawerView } from './types';
 import { compareHours, dayLabel, hh, initials, eur, signOf, signed, signFg, groupTotal, balanceOf } from './format';
 import { useFollowScroll } from './useFollowScroll';
 import { Icon } from './Icon';
+import { OperativeActivityBody } from '../components/OperativeActivityCard';
 import { resolveApiAssetUrl } from '../../../api/apiAssetUrl';
 import './mission-drawer.css';
 
@@ -74,15 +75,20 @@ function Steps({ steps }: { steps: DrawerStep[] }) {
 
 /* ---------- Heures : DÉBUT | DURÉE TOTALE | FIN ---------- */
 function HoursCard({ m, edit }: { m: MissionDrawerView; edit?: DrawerInlineAction }) {
-  if (!m.hours) {
-    // D-155 — aucune heure d'instrumentiste n'existe ni n'est attendue.
+  if (m.activity) {
+    // D-172 — activité sans instrumentiste : état réel de l'encodage, auteur, validation, à la
+    // place d'un suivi d'heures d'instrumentiste qui n'existe pas.
     return (
-      <section className="mdw-card mdw-card--pad" data-testid="drawer-hours-without-instrumentist">
-        <div className="mdw-card__head"><span className="mdw-eyebrow">HEURES</span></div>
-        <p className="mdw-iv__empty" style={{ padding: 0, fontStyle: 'normal' }}>Activité réalisée sans instrumentiste — aucune prestation horaire attendue</p>
+      <section className="mdw-card mdw-card--pad">
+        <div className="mdw-card__head"><span className="mdw-eyebrow">ACTIVITÉ OPÉRATOIRE</span></div>
+        <OperativeActivityBody
+          activity={m.activity}
+          financeText={m.financeApplicable ? financeLabel(m) : "disponible après validation de l'encodage"}
+        />
       </section>
     );
   }
+  if (!m.hours) return null;
   const h = compareHours(m.hours.planStart, m.hours.planEnd, m.hours.real);
   const chip = (v: string, bg: string, fg: string, total?: boolean) => (
     <span className={`mdw-tl__val tabular${total ? ' mdw-tl__val--total' : ''}`} style={{ background: bg, color: fg }}>

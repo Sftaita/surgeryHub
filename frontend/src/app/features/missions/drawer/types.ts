@@ -62,6 +62,8 @@ export interface DrawerDispute { id: number; reason: string; status: string; ope
 /** Lot 7 (D-070) — signaux de cohérence (informationnels) et commentaires manager. */
 export interface DrawerEncodingReview { flags: string[]; comments: { id: number; text: string; who: string; when: string }[]; }
 
+import type { OperativeActivity } from "../components/OperativeActivityCard";
+
 export interface MissionDrawerView {
   id: number;
   status: string;
@@ -75,6 +77,8 @@ export interface MissionDrawerView {
   /** D-155 — activité exécutée sans instrumentiste (libellé « déclarée par… »). */
   withoutInstrumentist: string | null;
   hours: DrawerHours | null;
+  /** D-172 — activité déclarée sans instrumentiste : remplace le suivi des heures (null sinon). */
+  activity: OperativeActivity | null;
   steps: DrawerStep[];
   interventions: DrawerIntervention[];
   encodingEmpty: string;

@@ -34,7 +34,12 @@ export function useMissionFinancialCalculation(missionId: number, { enabled = tr
     enabled: enabled && Number.isFinite(missionId),
   });
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["mission-financial-calculations", missionId] });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["mission-financial-calculations", missionId] });
+    // D-172 — un calcul verrouillé (ou remplacé) change les verrous servis avec la mission.
+    qc.invalidateQueries({ queryKey: ["mission", missionId] });
+    qc.invalidateQueries({ queryKey: ["missions"], exact: false });
+  };
 
   const calculateMutation = useMutation({
     mutationFn: () => calculateMission(missionId),

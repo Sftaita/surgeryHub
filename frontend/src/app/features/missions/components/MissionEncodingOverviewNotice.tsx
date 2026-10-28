@@ -5,8 +5,21 @@ import { encodingActorLabel, MissionLocksIndicator } from "./MissionEncodingBadg
  * D-172 — détail manager : état d'encodage (distinct du statut de planification), qui l'a
  * finalisé et validé, et l'explication de chaque verrou réel servi par le backend.
  */
-export function MissionEncodingOverviewNotice({ encoding }: { encoding?: MissionEncodingOverview | null }) {
+export function MissionEncodingOverviewNotice({ encoding, locksOnly = false }: { encoding?: MissionEncodingOverview | null; locksOnly?: boolean }) {
   if (!encoding || encoding.state === "NOT_APPLICABLE" || encoding.state === "UPCOMING") return null;
+  // Activité sans instrumentiste : état et auteurs sont dans le bloc « Activité opératoire ».
+  if (locksOnly) {
+    if (encoding.locks.length === 0) return null;
+    return (
+      <div className="mdw-notice mdw-notice--muted" data-testid="drawer-encoding-overview">
+        {encoding.locks.map((lock) => (
+          <span key={lock.level} className="mdw-notice__body mdw-notice__line" data-testid={`drawer-lock-${lock.level}`}>
+            <strong>{lock.label}</strong> — {lock.reason}
+          </span>
+        ))}
+      </div>
+    );
+  }
   const finalizedBy = encodingActorLabel(encoding.finalizedBy);
   const validatedBy = encodingActorLabel(encoding.validatedBy);
 

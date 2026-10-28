@@ -113,6 +113,9 @@ calculé une fois par page (nombre fixe de requêtes) :
 "encoding": {
   "state": "VALIDATED",
   "stateLabel": "Validé",
+  "executedWithoutInstrumentist": false,
+  "interventionCount": 2,
+  "materialLineCount": 3,
   "finalizedBy": { "name": "Sophie Manager", "role": "MANAGER", "at": "2026-10-23T08:00:00+02:00" },
   "validatedBy": { "name": "Sophie Manager", "role": "MANAGER", "at": "2026-10-23T08:00:00+02:00" },
   "locks": [
@@ -128,6 +131,9 @@ calculé une fois par page (nombre fixe de requêtes) :
   instrumentiste), aucune activité déclarée réalisée (D-155) — elle n'est ni « sans objet »
   ni réputée réalisée. Comme `NOT_APPLICABLE`, hors KPI d'encodage attendu ; le résumé du
   suivi des encodages sert son compteur `notDeclared`.
+- `executedWithoutInstrumentist` : activité déclarée réalisée sans instrumentiste (D-155).
+  `interventionCount` / `materialLineCount` : interventions et lignes de matériel actives
+  enregistrées — jamais une preuve de finalisation.
 - `finalizedBy` : dernier auteur de `MISSION_ENCODING_COMPLETED` (soumission / finalisation),
   avec son rôle **sur cette mission** (`INSTRUMENTIST`, `SURGEON`, `MANAGER`). `validatedBy` :
   dernier `MISSION_ENCODING_VALIDATED`, seulement si la mission est `VALIDATED`/`CLOSED`.

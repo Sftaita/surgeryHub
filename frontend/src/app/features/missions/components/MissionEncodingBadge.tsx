@@ -84,8 +84,11 @@ const STATUS_ALREADY_SAYS: Partial<Record<string, MissionEncodingState>> = {
  */
 export function MissionEncodingBadge({ encoding, status, showActor = false }: { encoding?: MissionEncodingOverview | null; status?: string | null; showActor?: boolean }) {
   if (!encoding) return null;
-  const hidden = encoding.state === "NOT_APPLICABLE" || encoding.state === "UPCOMING"
-    || (status != null && STATUS_ALREADY_SAYS[status] === encoding.state);
+  // D-172 — finalisation par le chirurgien (audit, jamais déduite des lignes) : toujours dite.
+  const bySurgeon = encoding.finalizedBy?.role === "SURGEON"
+    && (encoding.state === "SUBMITTED" || encoding.state === "VALIDATED" || encoding.state === "LOCKED");
+  const hidden = !bySurgeon && (encoding.state === "NOT_APPLICABLE" || encoding.state === "UPCOMING"
+    || (status != null && STATUS_ALREADY_SAYS[status] === encoding.state));
   const actor = showActor ? encodingActorLabel(encoding.finalizedBy) : null;
 
   return (
@@ -94,8 +97,8 @@ export function MissionEncodingBadge({ encoding, status, showActor = false }: { 
         <Chip
           size="small"
           variant="outlined"
-          color={STATE_COLOR[encoding.state] ?? "default"}
-          label={`Encodage : ${encoding.stateLabel.toLowerCase()}`}
+          color={bySurgeon ? "success" : STATE_COLOR[encoding.state] ?? "default"}
+          label={bySurgeon ? "Encodage terminé par le chirurgien" : `Encodage : ${encoding.stateLabel.toLowerCase()}`}
         />
       )}
       <MissionLocksIndicator locks={encoding.locks} />

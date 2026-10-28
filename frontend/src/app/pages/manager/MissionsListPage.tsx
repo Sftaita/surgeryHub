@@ -223,7 +223,7 @@ export default function MissionsListPage() {
         headerName: "Statut",
         flex: 0.9,
         sortable: false,
-        renderCell: ({ row }) => <MissionStatusChip status={row.status} encodingState={row.encoding?.state} />,
+        renderCell: ({ row }) => <MissionStatusChip status={row.status} encoding={row.encoding} />,
       },
       {
         field: "encoding",

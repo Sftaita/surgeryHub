@@ -2,6 +2,7 @@ import * as React from "react";
 import { Box, CircularProgress, Dialog, DialogContent, DialogTitle, Tooltip } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MissionLocksIndicator } from "../../missions/components/MissionEncodingBadge";
+import { buildOperativeActivity, OperativeActivityBody } from "../../missions/components/OperativeActivityCard";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
@@ -331,6 +332,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   // pour laquelle la validation n'est pas possible est servie par le backend, affichée telle quelle.
   const canCompleteAndValidate = allowedActions.includes("complete_and_validate");
   const validationBlockedReason = missionQuery.data?.encodingValidationBlockedReason ?? null;
+  const operativeActivity = missionQuery.data ? buildOperativeActivity(missionQuery.data) : null;
   const canRemind = allowedActions.includes("remind");
   // D-136 — décidé uniquement par le backend (MissionHoursReminderPolicy) : jamais déduit
   // ici de hasRealHours ou de la date.
@@ -477,13 +479,18 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         {withoutInstrumentist ? (
           // D-155 — aucune heure d'instrumentiste n'existe ni ne se saisit : ni « non renseignées »,
           // ni barres planifié / réel, ni rappel ou correction des heures.
+          // D-172 — à la place des heures : état réel de l'encodage, auteur, validation (backend).
           <Card>
             <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
-              <Eyebrow>HEURES</Eyebrow>
+              <Eyebrow>ACTIVITÉ OPÉRATOIRE</Eyebrow>
             </Box>
-            <Box data-testid="drawer-hours-without-instrumentist" sx={{ fontSize: 13, fontWeight: 600, color: GRAY_700 }}>
-              {NO_HOURS_WITHOUT_INSTRUMENTIST}
-            </Box>
+            {operativeActivity ? (
+              <OperativeActivityBody activity={operativeActivity} financeText={item.financial.label} />
+            ) : (
+              <Box data-testid="drawer-hours-without-instrumentist" sx={{ fontSize: 13, fontWeight: 600, color: GRAY_700 }}>
+                {NO_HOURS_WITHOUT_INSTRUMENTIST}
+              </Box>
+            )}
           </Card>
         ) : (
         <Card>

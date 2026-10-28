@@ -102,6 +102,11 @@ export type MissionEncodingActor = { name: string | null; role: "INSTRUMENTIST" 
 export type MissionEncodingOverview = {
   state: MissionEncodingState;
   stateLabel: string;
+  /** Activité déclarée réalisée sans instrumentiste (D-155) — un fait backend. */
+  executedWithoutInstrumentist?: boolean;
+  /** Interventions et lignes de matériel enregistrées — jamais une preuve de finalisation. */
+  interventionCount?: number | null;
+  materialLineCount?: number | null;
   /** Auteur de la dernière finalisation (soumission) de l'encodage. */
   finalizedBy: MissionEncodingActor | null;
   /** Auteur de la validation, quand l'encodage est validé. */

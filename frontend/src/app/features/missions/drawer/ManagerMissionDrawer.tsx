@@ -9,6 +9,7 @@ import { useMissionFinancialCalculation } from "../../financial-calculation/hook
 import { AnomalyReportsManagerPanel } from "../../encoding-anomaly-reports/components/AnomalyReportsManagerPanel";
 import { MissionStatusChip, missionStatusLabel } from "../components/MissionsDayList";
 import { MissionEncodingOverviewNotice } from "../components/MissionEncodingOverviewNotice";
+import { encodingActorLabel } from "../components/MissionEncodingBadge";
 import { MissionDrawer, financeLabel, type DrawerFooterAction } from "./MissionDrawer";
 import { buildMissionDrawerView, FINANCE_STATUSES, NO_ENCODING_STATUSES } from "./missionDrawerModel";
 
@@ -163,7 +164,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
   }
 
   const executed = financeApplicable;
-  const footerTitle = !mission ? "" : executed ? "Encodage validé" : missionStatusLabel(status, mission.encoding?.state);
+  const footerTitle = !mission ? "" : executed ? "Encodage validé" : missionStatusLabel(status, mission.encoding);
   const footerSub = [view && executed ? financeLabel(view) : null, mission?.encodingCorrectionBlockedReason ?? null]
     .filter(Boolean)
     .join(" · ") || undefined;
@@ -181,14 +182,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
           <strong>{mission.targetedOffer.instrumentist?.name ?? "L'instrumentiste"}</strong> a refusé la demande — la mission reste à couvrir.
         </p>
       )}
-      <MissionEncodingOverviewNotice encoding={mission.encoding} />
-      {mission.executedWithoutInstrumentist && (
-        <p className="mdw-notice mdw-notice--muted" data-testid="manager-without-instrumentist">
-          Activité réalisée sans instrumentiste
-          {mission.executedWithoutInstrumentist.declaredByName ? ` — déclarée par ${mission.executedWithoutInstrumentist.declaredByName}` : ""}.
-          Aucune heure ni prestation d'instrumentiste : seules les prestations applicables à la firme sont valorisées.
-        </p>
-      )}
+      <MissionEncodingOverviewNotice encoding={mission.encoding} locksOnly={!!mission.executedWithoutInstrumentist} />
       {status === "DECLARED" && (
         <p className="mdw-notice mdw-notice--warn">
           <span className="mdw-notice__title">En attente de validation</span>
@@ -212,7 +206,10 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
       )}
       {mission.submittedWithoutMaterial === true && mission.noMaterialComment && (
         <p className="mdw-notice mdw-notice--warn">
-          <span className="mdw-notice__title">Aucun matériel encodé — justification de l'instrumentiste</span>
+          {/* D-172 — l'auteur réel de la soumission (instrumentiste, chirurgien ou manager), servi par le backend. */}
+          <span className="mdw-notice__title">
+            Aucun matériel encodé — justification{mission.encoding?.finalizedBy ? ` de ${encodingActorLabel(mission.encoding.finalizedBy)}` : ""}
+          </span>
           <span className="mdw-notice__body">{mission.noMaterialComment}</span>
         </p>
       )}
@@ -226,7 +223,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
         missionId={id}
         view={view}
         placeholder={placeholder}
-        statusPill={mission ? <MissionStatusChip status={mission.status} encodingState={mission.encoding?.state} /> : null}
+        statusPill={mission ? <MissionStatusChip status={mission.status} encoding={mission.encoding} /> : null}
         notices={notices}
         extra={mission ? <AnomalyReportsManagerPanel missionId={mission.id} /> : null}
         footer={{ title: footerTitle, sub: footerSub, actions: mission ? footerActions : [] }}

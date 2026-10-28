@@ -7,6 +7,7 @@ import { formatAuditEventType } from "../../audit-journal/auditEventLabels";
 import { formatMinutes } from "../../encoding-tracking/encodingStateMeta";
 import { formatMissionType, formatPersonLabel, formatSchedulePrecision } from "../utils/missions.format";
 import { shortDateTime } from "./format";
+import { buildOperativeActivity } from "../components/OperativeActivityCard";
 import type { DrawerEncodingReview, DrawerIntervention, DrawerStep, Finance, FinanceGroup, FinanceLine, FinanceLineDetail, HistoryEvent, MissionDrawerView } from "./types";
 
 /**
@@ -222,6 +223,7 @@ export function buildMissionDrawerView(input: {
     surgeon: person(mission.surgeon),
     instrumentist: person(mission.instrumentist),
     withoutInstrumentist: without ? `Activité déclarée${without.declaredByName ? ` par ${without.declaredByName}` : ""}` : null,
+    activity: buildOperativeActivity(mission, execution?.hasExecutionRecord ? { start: execution.actualStartAt, end: execution.actualEndAt } : null),
     hours: without ? null : {
       planStart: mission.startAt,
       planEnd: mission.endAt,

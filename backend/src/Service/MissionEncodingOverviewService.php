@@ -63,6 +63,11 @@ final class MissionEncodingOverviewService
             $overview[$id] = [
                 'state'       => $state->value,
                 'stateLabel'  => $state->label(),
+                // Activité déclarée réalisée sans instrumentiste (D-155) — un fait, jamais déduit.
+                'executedWithoutInstrumentist' => $mission->isExecutedWithoutInstrumentist(),
+                // Ce qui est enregistré, finalisé ou non : jamais une preuve de finalisation.
+                'interventionCount' => isset($facts[$id]) ? $facts[$id]->interventionCount : null,
+                'materialLineCount' => isset($facts[$id]) ? $facts[$id]->activeMaterialLineCount : null,
                 'finalizedBy' => $finalizedBy !== null ? $this->actor($mission, $finalizedBy['user'], $finalizedBy['at']) : null,
                 'validatedBy' => $validated !== null ? $this->actor($mission, $validated['user'], $validated['at']) : null,
                 'locks'       => $this->locks($mission, $lockedCalculations[$id] ?? null, $documents[$id] ?? 0),

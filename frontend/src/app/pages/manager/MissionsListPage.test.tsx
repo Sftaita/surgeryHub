@@ -288,3 +288,31 @@ describe("MissionsListPage — annulées, état d'encodage et verrous (D-172)", 
     expect(lock).toHaveAccessibleName(/Calcul financier verrouillé : Calcul financier verrouillé le 24\/10\/2026 : ses montants sont définitifs/);
   });
 });
+
+describe("MissionsListPage — activité sans instrumentiste encodée par le chirurgien (D-172)", () => {
+  const surgeonActor = { name: "Dr Arnaud Deltour", role: "SURGEON" as const, at: "2026-10-23T09:00:00+02:00" };
+  it("B en cours, C soumise par le chirurgien (« À valider »), C validée", async () => {
+    vi.mocked(fetchMissions).mockResolvedValue({
+      items: [
+        mission(1, "2026-10-22T07:45:00+02:00", { status: "ENCODING_IN_PROGRESS", instrumentist: null, encoding: { state: "IN_PROGRESS", stateLabel: "En cours", executedWithoutInstrumentist: true, interventionCount: 2, materialLineCount: 2, finalizedBy: null, validatedBy: null, locks: [] } }),
+        mission(2, "2026-10-21T07:45:00+02:00", { status: "SUBMITTED", instrumentist: null, encoding: { state: "SUBMITTED", stateLabel: "Soumis", executedWithoutInstrumentist: true, interventionCount: 2, materialLineCount: 2, finalizedBy: surgeonActor, validatedBy: null, locks: [] } }),
+        mission(3, "2026-10-20T07:45:00+02:00", { status: "VALIDATED", instrumentist: null, encoding: { state: "VALIDATED", stateLabel: "Validé", executedWithoutInstrumentist: true, interventionCount: 1, materialLineCount: 1, finalizedBy: surgeonActor, validatedBy: null, locks: [{ level: "ENCODING", label: "Encodage verrouillé", reason: "Encodage validé." }] } }),
+      ],
+      total: 3,
+      cancelledExcluded: 0,
+    } as never);
+    renderPage();
+    const rows = await screen.findAllByTestId("mission-row");
+    const byId = (id: number) => rows.find((r) => r.getAttribute("data-mission-id") === String(id))!;
+
+    expect(within(byId(1)).getByText("Encodage en cours")).toBeInTheDocument();
+    expect(within(byId(1)).queryByText("Encodage terminé par le chirurgien")).toBeNull();
+
+    expect(within(byId(2)).getByText("À valider")).toBeInTheDocument();
+    expect(within(byId(2)).getByText("Encodage terminé par le chirurgien")).toBeInTheDocument();
+
+    expect(within(byId(3)).getByText("Validée")).toBeInTheDocument();
+    expect(within(byId(3)).getByText("Encodage terminé par le chirurgien")).toBeInTheDocument();
+    expect(within(byId(3)).getByTestId("mission-lock")).toBeInTheDocument();
+  });
+});

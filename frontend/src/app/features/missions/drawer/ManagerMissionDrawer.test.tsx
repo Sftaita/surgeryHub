@@ -255,7 +255,7 @@ describe("ManagerMissionDrawer — activité réalisée sans instrumentiste (D-1
       status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "submit", "cancel_executed_without_instrumentist"],
       executedWithoutInstrumentist: declared,
     }));
-    expect(await screen.findByTestId("manager-without-instrumentist")).toHaveTextContent("déclarée par Jean Dupont");
+    expect(await screen.findByTestId("drawer-operative-activity")).toHaveTextContent("déclarée par Jean Dupont");
     await user.click(screen.getByTestId("manager-cancel-declaration"));
     const confirm = screen.getAllByRole("button", { name: "Annuler la déclaration" }).at(-1)!;
     expect(confirm).toBeDisabled();
@@ -271,10 +271,44 @@ describe("ManagerMissionDrawer — activité réalisée sans instrumentiste (D-1
     expect(screen.queryByTestId("manager-cancel-declaration")).toBeNull();
   });
 
-  it("aucune frise horaire : information explicite à la place", async () => {
-    renderDrawer(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], executedWithoutInstrumentist: declared }));
-    expect(await screen.findByTestId("drawer-hours-without-instrumentist")).toHaveTextContent("Activité réalisée sans instrumentiste — aucune prestation horaire attendue");
+  // D-172 — « Activité opératoire » à la place des heures instrumentiste, uniquement des faits servis.
+  const surgeonActor = { name: "Dr Paul Martin", role: "SURGEON" as const, at: "2026-10-23T09:00:00+02:00" };
+  const managerActor = { name: "Sophie Manager", role: "MANAGER" as const, at: "2026-10-24T09:00:00+02:00" };
+
+  it("C — soumise par le chirurgien : « Encodage terminé par le chirurgien », « À valider », compteurs, aucune frise horaire", async () => {
+    renderDrawer(baseMission({
+      status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], executedWithoutInstrumentist: declared,
+      encoding: { state: "SUBMITTED", stateLabel: "Soumis", executedWithoutInstrumentist: true, interventionCount: 2, materialLineCount: 3, finalizedBy: surgeonActor, validatedBy: null, locks: [] },
+    }));
+    const card = await screen.findByTestId("drawer-operative-activity");
+    expect(card).toHaveTextContent("Mission réalisée sans instrumentiste — déclarée par Jean Dupont");
+    expect(screen.getByTestId("operative-activity-finalized")).toHaveTextContent("Encodage terminé par le chirurgien — Dr Paul Martin");
+    expect(screen.getByTestId("operative-activity-validation")).toHaveTextContent("À valider");
+    expect(card).toHaveTextContent("2 interventions · 3 lignes de matériel enregistrées");
+    expect(card).toHaveTextContent("Aucune prestation d'instrumentiste");
+    expect(card).not.toHaveTextContent("Horaires opératoires réels");
     expect(screen.queryByTestId("drawer-hours")).toBeNull();
+  });
+
+  it("C — validée par le manager : l'auteur de la finalisation (chirurgien) est conservé", async () => {
+    renderDrawer(baseMission({
+      status: "VALIDATED", allowedActions: ["view", "reopen_encoding"], executedWithoutInstrumentist: declared,
+      encoding: { state: "VALIDATED", stateLabel: "Validé", executedWithoutInstrumentist: true, interventionCount: 1, materialLineCount: 1, finalizedBy: surgeonActor, validatedBy: managerActor, locks: [] },
+    }), { calculations: [] });
+    expect(await screen.findByTestId("operative-activity-finalized")).toHaveTextContent("Encodage terminé par le chirurgien");
+    expect(screen.getByTestId("operative-activity-validation")).toHaveTextContent("Validé par Sophie Manager (manager)");
+  });
+
+  it("B — interventions enregistrées mais rien de soumis : toujours « Encodage en cours », jamais « terminé »", async () => {
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding"], executedWithoutInstrumentist: declared,
+      encoding: { state: "IN_PROGRESS", stateLabel: "En cours", executedWithoutInstrumentist: true, interventionCount: 1, materialLineCount: 2, finalizedBy: null, validatedBy: null, locks: [] },
+      encodingValidationBlockedReason: "L'encodage n'est pas encore soumis. Vous pouvez le terminer et le valider vous-même.",
+    }));
+    expect(await screen.findByTestId("operative-activity-finalized")).toHaveTextContent("Encodage en cours — pas encore finalisé");
+    expect(screen.queryByTestId("operative-activity-validation")).toBeNull();
+    expect(screen.getByTestId("operative-activity-blocked")).toHaveTextContent("pas encore soumis");
+    expect(screen.getByTestId("drawer-operative-activity")).toHaveTextContent("1 intervention · 2 lignes de matériel enregistrées");
   });
 
   it("« Rejeter l'encodage » annonce le renvoi au chirurgien, avec des exemples de contenu", async () => {

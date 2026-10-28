@@ -15561,6 +15561,43 @@ missions annulées », indique « annulées exclues (n masquées) » ou « annul
 « Annulée » (également « Déclarée », « Refusée », auparavant en code brut). Planning, historique,
 journal d'activité, audits et fiches chirurgien sont inchangés.
 
+### Décision 8 — activité réalisée sans instrumentiste, encodage terminé par le chirurgien (complément)
+
+**Audit (aucune règle backend ne bloque le parcours).** Le chirurgien de la mission déclare l'activité
+(D-155, `ExecutedWithoutInstrumentistPolicy::canDeclare`), encode interventions, firmes et matériel
+(`SurgeonEncodingPolicy::canEditEncoding`, D-154 : mission commencée, encodage ouvert, aucun calcul
+`LOCKED`), puis soumet (`MissionVoter::SUBMIT` via `surgeonCanSubmit`, statut `SUBMITTED`) — sans
+`instrumentistId`, sans heures réelles. Le manager valide (`ENCODING_VALIDATE`, `expectedRevision`,
+pas de reprise : `encodingTakeover` nul) ; « Terminer et valider » (D-171) reste réservé à un encodage
+non soumis. Le calcul accepte `hasEncodableActivity()` et ne produit que des lignes firme ; aucune
+`MissionExecution`, aucune ligne ni décompte instrumentiste, complément instrumentiste refusé.
+L'auteur de la finalisation reste celui de `MISSION_ENCODING_COMPLETED` après la validation manager.
+La présence du délégué reste exigée quand la prestation la rend pertinente (422 avec motif).
+
+**Affichage (manager).** Le bloc `encoding` sert en plus `executedWithoutInstrumentist`,
+`interventionCount`, `materialLineCount` (enregistrés, jamais une preuve de finalisation).
+- Liste / tableau : soumise sans instrumentiste → statut « À valider » ; finalisée par le chirurgien
+  (`finalizedBy.role = SURGEON`, états soumis / validé / verrouillé) → badge « Encodage terminé par le
+  chirurgien » ; non soumise → « Encodage en cours » ; rien de déclaré → « Non couverte » + « Aucun
+  encodage ».
+- Tiroir mission et tiroir du suivi des encodages : le bloc « Heures » est remplacé par « Activité
+  opératoire » (réalisée sans instrumentiste et par qui, encodage terminé par le chirurgien ou finalisé
+  par…, « À valider » / « Validé par … », interventions et lignes enregistrées, disponibilité du calcul,
+  motif de blocage servi, horaires opératoires réels seulement s'ils existent, aucune prestation
+  instrumentiste). Avec une instrumentiste, le suivi des heures est inchangé.
+- La justification « aucun matériel » cite son auteur réel (plus « de l'instrumentiste » d'office).
+- Après calcul, approbation ou verrouillage, la mission et la liste sont relues (verrous à jour).
+
+**Tests.** `SurgeonEncodingWithoutInstrumentistD172Test` : A (rien de déclaré → `NOT_DECLARED`) ;
+B (encodé par le chirurgien, non soumis → `IN_PROGRESS`, `finalizedBy` nul, compteurs) ; C (soumis par
+le chirurgien → `SURGEON`, validation manager, auteur conservé, encodage verrouillé pour le chirurgien,
+calcul firme 135 € + 2 × 45 € calculé / approuvé / verrouillé, zéro `MissionExecution`, zéro ligne et
+décompte instrumentiste, réouverture refusée avec « Verrou financier ») ; refus : délégué non renseigné
+(422 avec motif), calcul obsolète après réouverture (409 `FINANCIAL_CALCULATION_INELIGIBLE`).
+Frontend : `ManagerMissionDrawer.test.tsx` (B, C soumise, C validée), `MissionsListPage.test.tsx`
+(B, C « À valider », C validée). Vérifié dans le navigateur : parcours chirurgien par l'API réelle,
+puis validation, calcul, approbation et verrouillage par le manager depuis l'interface.
+
 ### Rafraîchissement
 
 Toute écriture d'encodage (interventions, matériel) invalide aussi la liste Missions et le suivi des

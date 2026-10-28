@@ -3,7 +3,7 @@ import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
 
-import type { Mission } from "../api/missions.types";
+import type { Mission, MissionEncodingOverview } from "../api/missions.types";
 import { formatMissionStatus, formatMissionType, formatPersonLabel } from "../utils/missions.format";
 import { formatBrusselsTime, formatDayLabel, groupByDay, relativeDayLabel } from "../utils/dayGroups";
 import { MissionEncodingBadge } from "./MissionEncodingBadge";
@@ -31,17 +31,20 @@ export function statusChipColor(status: string): ChipColor {
  * Aucune date comparée ici : on lit l'état NOT_DECLARED servi par le backend (managers) ; le
  * statut OPEN n'est pas modifié.
  */
-export function missionStatusLabel(status?: string | null, encodingState?: string | null): string {
-  if (status === "OPEN" && encodingState === "NOT_DECLARED") return "Non couverte";
+export function missionStatusLabel(status?: string | null, encoding?: Pick<MissionEncodingOverview, "state" | "executedWithoutInstrumentist"> | null): string {
+  if (status === "OPEN" && encoding?.state === "NOT_DECLARED") return "Non couverte";
+  // Activité sans instrumentiste soumise (par le chirurgien ou un manager) : la prochaine étape
+  // est la validation manager.
+  if (status === "SUBMITTED" && encoding?.executedWithoutInstrumentist) return "À valider";
   return formatMissionStatus(status);
 }
 
-export function MissionStatusChip({ status, encodingState }: { status?: string | null; encodingState?: string | null }) {
+export function MissionStatusChip({ status, encoding }: { status?: string | null; encoding?: Pick<MissionEncodingOverview, "state" | "executedWithoutInstrumentist"> | null }) {
   const s = String(status ?? "");
-  const uncoveredPast = s === "OPEN" && encodingState === "NOT_DECLARED";
+  const uncoveredPast = s === "OPEN" && encoding?.state === "NOT_DECLARED";
   return (
     <Chip
-      label={missionStatusLabel(s, encodingState)}
+      label={missionStatusLabel(s, encoding)}
       color={uncoveredPast ? "default" : statusChipColor(s)}
       size="small"
       variant={s === "DRAFT" || s === "CLOSED" || s === "CANCELLED" ? "outlined" : "filled"}
@@ -100,7 +103,7 @@ function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (
       </Stack>
 
       <Stack spacing={0.5} alignItems={{ xs: "flex-end", md: "flex-start" }} sx={{ gridRow: { xs: "1 / 2", md: "auto" }, gridColumn: { xs: "2 / 3", md: "auto" }, justifySelf: { xs: "end", md: "start" } }}>
-        <MissionStatusChip status={mission.status} encodingState={mission.encoding?.state} />
+        <MissionStatusChip status={mission.status} encoding={mission.encoding} />
         {/* D-172 — statut de planification et état d'encodage restent deux informations distinctes. */}
         <MissionEncodingBadge encoding={mission.encoding} status={mission.status} />
       </Stack>
