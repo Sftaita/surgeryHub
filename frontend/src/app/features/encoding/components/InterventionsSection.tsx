@@ -245,6 +245,11 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   // brouillon existant (rechargement de page) — les lignes déjà enregistrées ne portent
   // jamais le badge.
   const [newLineIds, setNewLineIds] = React.useState<Set<number>>(new Set());
+  // D-172 — le pied dit l'action réellement offerte : « Soumettre l'encodage » (chirurgien) n'est
+  // jamais une validation.
+  const readyText = submitLabel === "Valider"
+    ? "Tout est encodé. Vous pouvez valider la mission."
+    : `Tout est encodé. Vous pouvez ${submitLabel.charAt(0).toLowerCase()}${submitLabel.slice(1)} au manager.`;
 
   const invalidate = React.useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
@@ -690,7 +695,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
 
         {/* Sans intervention, "0 / 0 — Mission complète" serait faux : l'état vide
             ci-dessous suffit. */}
-        {totalCount > 0 && <EncodingProgress done={doneCount} total={totalCount} />}
+        {totalCount > 0 && <EncodingProgress done={doneCount} total={totalCount} readyText={readyText} />}
 
         {/* En-tête de liste */}
         <Box ref={listHeadRef} sx={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -780,7 +785,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
                 {totalCount === 0
                   ? "Aucune intervention encodée."
                   : allDone
-                  ? "Tout est encodé. Vous pouvez valider la mission."
+                  ? readyText
                   : `Encore ${totalCount - doneCount > 1 ? `${totalCount - doneCount} interventions` : "1 intervention"} et la mission est complète.`}
               </Box>
             </Box>

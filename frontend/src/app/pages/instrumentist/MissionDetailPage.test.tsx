@@ -315,6 +315,17 @@ describe("MissionDetailPage — espace chirurgien : encodage et activité sans i
     expect(await screen.findByText("Surgeon encoding screen")).toBeInTheDocument();
   });
 
+  it("D-172 — encodage soumis : « en attente de validation », correction encore possible, plus de « Terminer l'encodage »", async () => {
+    renderSurgeonAt(baseMission({
+      status: "SUBMITTED", instrumentist: null, allowedActions: ["view_encoding", "edit_encoding", "submit"],
+      executedWithoutInstrumentist: { declaredAt: "2026-07-20T12:00:00Z", declaredByName: "Jean Dupont" },
+    }));
+    expect(await screen.findByText(/Encodage soumis — en attente de validation par le manager/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Modifier l'encodage" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Encoder la mission" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Terminer l'encodage" })).toBeNull();
+  });
+
   it("D-155 — sans le droit servi par le backend, aucune déclaration n'est proposée", async () => {
     renderSurgeonAt(baseMission({ status: "OPEN", instrumentist: null, allowedActions: ["view"] }));
     expect(await screen.findByText("CHU Test")).toBeInTheDocument();

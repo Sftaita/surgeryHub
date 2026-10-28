@@ -28,6 +28,8 @@ function CheckCircleIcon() {
 type Props = {
   done: number;
   total: number;
+  /** D-172 — message quand tout est encodé (« soumettre » pour le chirurgien, jamais « valider »). */
+  readyText?: string;
 };
 
 /**
@@ -36,7 +38,7 @@ type Props = {
  * au moins un matériel — supprimer le dernier matériel fait reculer la jauge, c'est
  * voulu (§3). Pas de pastille de points : aucun système de score n'existe dans l'app.
  */
-export function EncodingProgress({ done, total }: Props) {
+export function EncodingProgress({ done, total, readyText = "Tout est encodé. Vous pouvez valider la mission." }: Props) {
   const left = total - done;
   const allDone = left === 0;
 
@@ -79,7 +81,7 @@ export function EncodingProgress({ done, total }: Props) {
       <Box sx={{ display: "flex", alignItems: "center", gap: "8px", fontSize: 13, fontWeight: 600, color: GRAY_600 }}>
         {allDone ? <CheckCircleIcon /> : <ClockIcon />}
         {allDone
-          ? "Tout est encodé. Vous pouvez valider la mission."
+          ? readyText
           : `Encore ${left > 1 ? `${left} interventions` : "1 intervention"} et la mission est complète.`}
       </Box>
     </Box>

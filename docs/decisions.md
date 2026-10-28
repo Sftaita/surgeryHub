@@ -15598,6 +15598,26 @@ Frontend : `ManagerMissionDrawer.test.tsx` (B, C soumise, C validée), `Missions
 (B, C « À valider », C validée). Vérifié dans le navigateur : parcours chirurgien par l'API réelle,
 puis validation, calcul, approbation et verrouillage par le manager depuis l'interface.
 
+### Décision 9 — écrans chirurgien : on soumet au manager, on ne valide ni ne clôture (test navigateur)
+
+Vérification Playwright du parcours chirurgien complet (déclaration, intervention et firme, présence
+du délégué, matériel, reprise du brouillon dans une nouvelle session, soumission), puis manager
+(« À valider » + « Encodage terminé par le chirurgien », validation, calcul firme 135 € + 2 × 45 €,
+approbation, verrouillage, cadenas). Trois libellés contredisaient le rôle du chirurgien — l'action
+et les règles étaient correctes, seul l'affichage est corrigé :
+
+- récapitulatif d'une activité sans instrumentiste : « Récapitulatif avant soumission »,
+  « Soumettre l'encodage au manager », confirmation « Encodage soumis au manager pour validation »
+  (au lieu de « Valider et clôturer la mission » / « Mission clôturée ») ; le parcours instrumentiste
+  garde ses libellés ;
+- progression : « Tout est encodé. Vous pouvez soumettre l'encodage au manager. » quand l'action
+  offerte est la soumission (jamais « valider la mission ») ;
+- fiche mission après soumission (statut `SUBMITTED`) : « Encodage soumis — en attente de validation
+  par le manager », bouton « Modifier l'encodage » tant que le backend sert la correction, plus de
+  « Terminer l'encodage » (une nouvelle soumission n'a pas de sens).
+
+Tests : `SubmitDialog.test.tsx`, `EncodingProgress.test.tsx`, `MissionDetailPage.test.tsx`.
+
 ### Rafraîchissement
 
 Toute écriture d'encodage (interventions, matériel) invalide aussi la liste Missions et le suivi des

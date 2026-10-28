@@ -247,4 +247,16 @@ describe("SubmitDialog — activité réalisée sans instrumentiste (D-155)", ()
     expect(screen.queryByTestId("submit-incomplete")).toBeNull();
     expect(await screen.findByLabelText(/Décrivez les interventions réalisées/)).toBeInTheDocument();
   });
-});
+});
+
+describe("SubmitDialog — activité sans instrumentiste : on soumet au manager (D-172)", () => {
+  it("parle de soumission au manager, jamais de validation ni de clôture", async () => {
+    const user = userEvent.setup();
+    renderDialog(1, { ...MISSION, executedWithoutInstrumentist: { declaredAt: "2026-10-23T06:31:00Z", declaredByName: "Arnaud Deltour" } } as Mission);
+    expect(await screen.findByText("Récapitulatif avant soumission")).toBeInTheDocument();
+    expect(screen.queryByText("Valider et clôturer la mission")).toBeNull();
+    expect(screen.getByText(/le manager le vérifiera et le validera/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Soumettre l'encodage au manager" }));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalled());
+  });
+});
