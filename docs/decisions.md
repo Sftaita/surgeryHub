@@ -15744,9 +15744,13 @@ rester conforme à D-171/D-172 :
   valider », `DECLARED` « Déclarée », `ENCODING_IN_PROGRESS` ajouté). « Non couverte » et « À
   encoder » ne sont pas des statuts : « Passées » + « Sans instrumentiste », et le suivi des encodages.
 
-**Point ouvert (décision produit).** L'onglet « À valider » de la page Missions et le compteur du
-tableau de bord ciblent `DECLARED`, alors que la pastille « À valider » désigne `SUBMITTED`. Laissé
-inchangé.
+**Terminologie (décision produit, 2026-10-29).** « À valider » désignait deux réalités. Désormais :
+`DECLARED` → onglet de la page Missions et compteur du tableau de bord **« À approuver »** (mêmes
+missions, même requête `status=DECLARED`, même valeur), pastille « Déclarée » ; `SUBMITTED` →
+pastille « À valider » ; `VALIDATED` → « Validée ». Aucune transition, permission, requête ni règle de
+filtrage modifiée. Hors périmètre, sans collision : écrans instrumentiste/chirurgien (`DECLARED`
+« À valider », `SUBMITTED` « Soumise ») et libellé de notification `MISSION_DECLARED` « Mission
+déclarée à valider » (aussi servi par le backend).
 
 **Tests.** `deriveStatus.test.ts` (12 scénarios maquette + verrous par niveau, chirurgien, mission
 commencée, dates absentes), `MissionsListPage.test.tsx` (une pastille, verrou financier, chirurgien,

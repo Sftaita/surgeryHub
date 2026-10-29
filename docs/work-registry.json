@@ -743,7 +743,7 @@
           52
         ]
       },
-      "nextAction": "Déployer avec D-173 dans v2026.10.29-prod-2, sur autorisation explicite. Point produit ouvert : l'onglet « À valider » et le compteur du tableau de bord ciblent DECLARED, la pastille « À valider » SUBMITTED.",
+      "nextAction": "Déployer avec D-173 dans v2026.10.29-prod-2. Terminologie tranchée : « À approuver » (DECLARED) / « À valider » (SUBMITTED).",
       "lastReviewed": "2026-10-29"
     }
   ]

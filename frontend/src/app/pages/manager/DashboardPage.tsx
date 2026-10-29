@@ -141,7 +141,7 @@ export default function DashboardPage() {
             <StatCard label="Aujourd'hui" value={todayMissionsQuery.data?.total ?? "—"} onClick={() => navigate("/app/m/missions")} />
             <StatCard label="Cette semaine" value={weekMissionsQuery.data?.total ?? "—"} onClick={() => navigate("/app/m/missions")} />
             <StatCard
-              label="À valider" value={toValidateQuery.data?.total ?? "—"}
+              label="À approuver" value={toValidateQuery.data?.total ?? "—"}
               hint={toValidateQuery.data && toValidateQuery.data.total > 0 ? "À traiter" : undefined}
               onClick={() => navigate("/app/m/missions/to-validate")}
             />

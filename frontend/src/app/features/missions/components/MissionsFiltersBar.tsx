@@ -25,7 +25,7 @@ export interface MissionsFiltersValue {
 type Props = {
   value: MissionsFiltersValue;
   onChange: (patch: Partial<MissionsFiltersValue>) => void;
-  /** « À valider » : le statut est imposé par l'onglet. */
+  /** « À approuver » (DECLARED) : le statut est imposé par l'onglet. */
   statusLocked?: boolean;
   onReset?: () => void;
 };

@@ -157,6 +157,19 @@ describe("DashboardPage", () => {
     expect(navigateMock).toHaveBeenCalledWith("/app/m/missions");
   });
 
+  it("compteur « À approuver » : missions DECLARED (même requête), ouvre l'onglet du même nom ; plus de « À valider »", async () => {
+    const user = userEvent.setup();
+    fetchMissionsMock.mockImplementation((_page: number, _limit: number, filters: { status?: string }) =>
+      Promise.resolve({ items: [], total: filters?.status === "DECLARED" ? 4 : 41 }));
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("4")).toBeInTheDocument());
+    expect(fetchMissionsMock).toHaveBeenCalledWith(1, 1, { status: "DECLARED" });
+    expect(screen.queryByText("À valider")).toBeNull();
+    await user.click(screen.getByText("À approuver"));
+    expect(navigateMock).toHaveBeenCalledWith("/app/m/missions/to-validate");
+  });
+
   it("navigue vers /app/m/missions avec le filtre validatedWithoutCalculation au clic sur la tuile « Missions validées sans calcul » (diagnostic tarifs instrumentistes, 2026-08-05)", async () => {
     const user = userEvent.setup();
     renderPage();
