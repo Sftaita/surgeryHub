@@ -630,7 +630,7 @@
       "kind": "fix",
       "priority": "P1",
       "userImpact": "Les managers ne peuvent pas valider les missions encodées sans instrumentiste (#1079).",
-      "status": "deploye",
+      "status": "valide-production",
       "refs": {
         "branches": [
           "feat/encodage-sans-instrumentiste"
@@ -646,7 +646,7 @@
           47
         ]
       },
-      "nextAction": "Déployé v2026.10.29-prod (8b3a962). Reste : « Terminer et valider » de #1079 par un manager depuis l'interface, puis calcul firme.",
+      "nextAction": "Validé en production (tests manuels, 2026-10-29). Reste : « Terminer et valider » de #1079 par un manager, puis calcul firme.",
       "lastReviewed": "2026-10-29",
       "pendingOps": [
         {
@@ -672,7 +672,7 @@
       "kind": "fix",
       "priority": "P1",
       "userImpact": "Tarif de Salve inapplicable avant le 11/10 ; missions passées sans instrumentiste illisibles ; Validée/Verrouillée confondues ; listes encombrées d'annulées.",
-      "status": "deploye",
+      "status": "valide-production",
       "refs": {
         "branches": [
           "fix/tarifs-missions-encodage"
@@ -685,20 +685,16 @@
           48
         ]
       },
-      "nextAction": "Déployé v2026.10.29-prod (8b3a962). Reste : opérations manuelles Salve/#1039 et #1079, puis validation fonctionnelle utilisateur.",
+      "nextAction": "Validé en production (tests manuels, 2026-10-29). Salve régularisée ; reste #1079 (suivi sous D-171).",
       "lastReviewed": "2026-10-29",
       "pendingOps": [
         {
           "type": "validation",
-          "status": "en-attente",
+          "status": "fait",
           "description": "Après déploiement : fiche de Salve Decorte, « Modifier la date d'effet » du tarif 65 € au 01/10/2026 (vérifier l'aperçu), recalculer les prestations listées dont la mission #1039 depuis leur tiroir, contrôler les montants avant approbation (aucun script)",
-          "validation": "utilisateur"
-        },
-        {
-          "type": "validation",
-          "status": "en-attente",
-          "description": "Après déploiement : mission #1079 (Arnaud Deltour, 22/10/2026) — vérifier son état, « Terminer et valider » par un manager si nécessaire, puis vérifier que le calcul financier s'effectue normalement (aucun script)",
-          "validation": "utilisateur"
+          "validation": "utilisateur",
+          "confirmedAt": "2026-10-29",
+          "evidence": "Lecture seule 2026-10-29 : audit INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED 05:45:06 UTC (rate 12 depuis 2026-10-01, rate 8 jusqu'au 2026-10-01) ; #1039 calcul 29 (INSTRUMENTIST_HOURLY 11 h × 65 € = 715 €) approuvé 05:46:22 et verrouillé 05:46:23, calcul 27 (0 €) SUPERSEDED."
         }
       ]
     }
