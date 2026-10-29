@@ -707,7 +707,7 @@
       "kind": "fix",
       "priority": "P2",
       "userImpact": "« — » inexpliqués sur 48 exécutions sur 75 ; durée planifiée affichée comme réelle sur une déclaration partielle.",
-      "status": "fusionne",
+      "status": "deploye",
       "refs": {
         "branches": [
           "fix/affichage-heures-reelles"
@@ -720,8 +720,9 @@
           51
         ]
       },
-      "nextAction": "Déployer avec D-174 dans la prochaine release (v2026.10.29-prod-2), sur autorisation explicite.",
-      "lastReviewed": "2026-10-29"
+      "nextAction": "Déployé v2026.10.29-prod-2 (23cb707). Reste : validation fonctionnelle par l'utilisateur.",
+      "lastReviewed": "2026-10-29",
+      "prodEvidence": "v2026.10.29-prod-2 (23cb707) activé le 2026-10-29 10:10 UTC par deploy.sh, aucune migration (91/91), mark OFFICIAL ; contrôles API publique en lecture seule (comptes jetables supprimés) et session manager existante : voir docs/production.md. #1218 : « 8h30 · déclarée », bornes « Non renseigné », motif du verrou financier ; barre « Réel » vide sans heure (#1081)."
     },
     {
       "id": "D-174",
@@ -730,21 +731,24 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Jusqu'à deux pastilles et un cadenas par mission dans la liste manager.",
-      "status": "fusionne",
+      "status": "deploye",
       "refs": {
         "branches": [
-          "feat/mission-status-pill"
+          "feat/mission-status-pill",
+          "fix/libelle-a-approuver"
         ],
         "decision": "D-174",
         "worktrees": [
           "SurgicalHub-mission-status"
         ],
         "prs": [
-          52
+          52,
+          53
         ]
       },
-      "nextAction": "Déployer avec D-173 dans v2026.10.29-prod-2. Terminologie tranchée : « À approuver » (DECLARED) / « À valider » (SUBMITTED).",
-      "lastReviewed": "2026-10-29"
+      "nextAction": "Déployé v2026.10.29-prod-2 (23cb707), terminologie « À approuver » (DECLARED) / « À valider » (SUBMITTED) incluse. Reste : validation fonctionnelle par l'utilisateur.",
+      "lastReviewed": "2026-10-29",
+      "prodEvidence": "v2026.10.29-prod-2 (23cb707) activé le 2026-10-29 10:10 UTC par deploy.sh, aucune migration (91/91), mark OFFICIAL ; contrôles API publique en lecture seule (comptes jetables supprimés) et session manager existante : voir docs/production.md. Une pastille par mission, verrous réels (21 calcul financier, 2 encodage), encoding.started sur 236/236 missions passées, onglet et tuile « À approuver »."
     }
   ]
 }
