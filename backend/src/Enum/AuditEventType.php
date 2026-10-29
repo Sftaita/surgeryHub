@@ -163,6 +163,7 @@ enum AuditEventType: string
     case INSTRUMENTIST_RATE_REPLACED          = 'INSTRUMENTIST_RATE_REPLACED';
     case INSTRUMENTIST_RATE_FUTURE_UPDATED    = 'INSTRUMENTIST_RATE_FUTURE_UPDATED';
     case INSTRUMENTIST_RATE_FUTURE_CANCELLED  = 'INSTRUMENTIST_RATE_FUTURE_CANCELLED';
+    case INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED = 'INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED';
 
     // Exécution & Valorisation, Lot 3 (D-073) — FinancialCalculationService. Mission-
     // scopés (contrairement aux événements tarifaires du Lot 2) : AuditService::record()

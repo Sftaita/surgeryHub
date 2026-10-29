@@ -208,7 +208,7 @@ final class EncodingTrackingService
             submittedByName: $submittedBy !== null && $submittedBy->getId() === $surgeon?->getId()
                 ? $surgeon->getDrName()
                 : $this->displayName($submittedBy),
-            submittedByRole: $this->submitterRole($mission, $submittedBy),
+            submittedByRole: self::roleOnMission($mission, $submittedBy),
         );
     }
 
@@ -242,8 +242,11 @@ final class EncodingTrackingService
         return $submitters;
     }
 
-    /** Rôle de l'auteur sur CETTE mission ; le chirurgien ou l'instrumentiste de la mission avant tout rôle global. */
-    private function submitterRole(Mission $mission, ?User $user): ?string
+    /**
+     * Rôle de l'auteur sur CETTE mission ; le chirurgien ou l'instrumentiste de la mission avant
+     * tout rôle global. Partagé avec MissionEncodingOverviewService (D-172).
+     */
+    public static function roleOnMission(Mission $mission, ?User $user): ?string
     {
         if ($user === null) {
             return null;

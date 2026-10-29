@@ -109,5 +109,7 @@ final class MissionDetailDto
          * remain declarable ('edit_hours'). Never invented, never validated automatically.
          */
         public readonly bool $hoursPendingAfterValidation = false,
+        /** D-172 — managers only: same block as the list (MissionEncodingOverviewService). */
+        public readonly ?array $encoding = null,
     ) {}
 }

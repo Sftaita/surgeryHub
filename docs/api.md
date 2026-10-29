@@ -103,6 +103,58 @@ une approximation.
 
 ---
 
+### 3.3 État d'encodage, verrous réels et missions annulées (D-172, 2026-10-28)
+
+**Bloc `encoding` (managers seulement, `null` pour tout autre rôle)** sur chaque élément de
+`GET /api/missions` et sur `GET /api/missions/{id}` — `MissionEncodingOverviewService`,
+calculé une fois par page (nombre fixe de requêtes) :
+
+```json
+"encoding": {
+  "state": "VALIDATED",
+  "stateLabel": "Validé",
+  "executedWithoutInstrumentist": false,
+  "interventionCount": 2,
+  "materialLineCount": 3,
+  "finalizedBy": { "name": "Sophie Manager", "role": "MANAGER", "at": "2026-10-23T08:00:00+02:00" },
+  "validatedBy": { "name": "Sophie Manager", "role": "MANAGER", "at": "2026-10-23T08:00:00+02:00" },
+  "locks": [
+    { "level": "ENCODING", "label": "Encodage verrouillé", "reason": "Encodage validé le 23/10/2026 : …" },
+    { "level": "FINANCIAL_CALCULATION", "label": "Calcul financier verrouillé", "reason": "Calcul financier verrouillé le 24/10/2026 : …" }
+  ]
+}
+```
+
+- `state` / `stateLabel` : `EncodingState` (`EncodingStateResolver`, seule dérivation) —
+  distinct du `status` de planification, qui n'est jamais modifié pour l'affichage. Nouvel
+  état **`NOT_DECLARED` (« Aucun encodage »)** : mission terminée, `OPEN` (publiée sans
+  instrumentiste), aucune activité déclarée réalisée (D-155) — elle n'est ni « sans objet »
+  ni réputée réalisée. Comme `NOT_APPLICABLE`, hors KPI d'encodage attendu ; le résumé du
+  suivi des encodages sert son compteur `notDeclared`.
+- `executedWithoutInstrumentist` : activité déclarée réalisée sans instrumentiste (D-155).
+  `interventionCount` / `materialLineCount` : interventions et lignes de matériel actives
+  enregistrées — jamais une preuve de finalisation.
+- `finalizedBy` : dernier auteur de `MISSION_ENCODING_COMPLETED` (soumission / finalisation),
+  avec son rôle **sur cette mission** (`INSTRUMENTIST`, `SURGEON`, `MANAGER`). `validatedBy` :
+  dernier `MISSION_ENCODING_VALIDATED`, seulement si la mission est `VALIDATED`/`CLOSED`.
+- `locks` : uniquement des verrous réels, un par niveau — `ENCODING` (`encodingLockedAt`,
+  réouvrable), `FINANCIAL_CALCULATION` (un calcul `LOCKED`), `DOCUMENT` (facture firme ou
+  décompte instrumentiste `SENT`/`PAID`, ou `invoiceGeneratedAt`), `CLOSED`. Un calcul
+  approuvé n'est pas un verrou.
+
+**Filtres de `GET /api/missions`** :
+
+| Paramètre | Effet |
+|-----------|-------|
+| `excludeCancelled=true` | masque les missions `CANCELLED` ; **sans effet si `status` est fourni** (un statut explicite prime, « Annulée » reste consultable) |
+| `withoutInstrumentist=true` | seulement les missions sans instrumentiste affectée |
+
+La réponse sert en plus `cancelledExcluded` : nombre de missions annulées masquées par ce
+filtre (avec les mêmes autres filtres), `null` quand aucun masquage n'est demandé. Les
+missions annulées restent en base, dans le détail, l'historique et les audits.
+
+---
+
 ## 4. Missions standard
 
 ### `POST /api/missions`
@@ -831,6 +883,18 @@ plutôt que d'enchaîner plusieurs requêtes pour ouvrir une intervention.
   liste toutes les prestations actives pour que l'instrumentiste choisisse.
 - `offerings` : toutes les prestations actives pour ce type, chacune avec ses propres
   matériels suggérés (jamais fusionnées entre firmes).
+
+### Présence du délégué « non renseignée » — correction manager (D-172)
+
+`POST /api/missions/{id}/interventions` et `PATCH /api/missions/{id}/interventions/{interventionId}`
+acceptent `"representativePresenceUnknown": true` : la présence du délégué de la firme
+principale est historiquement inconnue. Réservé à `MissionVoter::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE`
+(manager/admin pouvant corriger l'encodage, sinon `403`). La réponse est enregistrée `null`
+(jamais `false`) ; la règle « réponse requise » (422) n'est pas appliquée à cette écriture.
+Ses conséquences restent celles du backend : tant que la prestation exige la réponse,
+l'encodage n'est pas validable (`422 ENCODING_INCOMPLETE`, `missing[].code =
+INTERVENTION_REPRESENTATIVE_PRESENCE`) et un calcul serait en anomalie. Le journal
+(H5b) trace l'ancienne et la nouvelle valeur, l'auteur et la date.
 
 ---
 
@@ -6456,6 +6520,10 @@ lot : "les tarifs relèvent uniquement du manager/admin", jamais l'instrumentist
 lui-même). Réutilise le voter existant plutôt qu'un nouveau, même périmètre que les
 règles tarifaires firmes.
 
+> **D-172 — l'interface n'utilise plus l'endpoint legacy** (section « Ancien flux » retirée
+> de la fiche instrumentiste) ; il reste en place, sans appelant frontend, et
+> `User.hourlyRate`/`consultationFee` ne sont lus par aucun calcul financier.
+>
 > **Coexistence avec l'endpoint legacy** `PATCH /api/instrumentists/{id}/rates`
 > (inchangé, écrit directement `User.hourlyRate`/`consultationFee`, autosave manager) :
 > chevauchement de préfixe d'URL assumé et documenté (`PATCH .../rates` légexistant vs
@@ -6512,7 +6580,50 @@ Le cas principal — même mécanique atomique que `.../pricing-rules/{id}/repla
 
 **Body JSON :** `{ "amount": 50, "currency": "EUR", "effectiveFrom": "2026-08-01" }`
 
-**Réponse — 201 :** le nouveau tarif.
+**D-172 :** `effectiveFrom` peut être **passée** (toujours strictement postérieure au début du
+tarif actuel). Refusé en entier (`409 INSTRUMENTIST_RATE_LOCKED_PERIOD`, missions citées)
+si un calcul `LOCKED` porte une ligne de cet instrumentiste et de ce type dans la période
+concernée.
+
+**Réponse — 201 :** le nouveau tarif, plus `staleCalculations` (calculs non verrouillés de la
+période qui portent encore l'ancien tarif, à recalculer ; `[]` si `effectiveFrom` ≥ aujourd'hui).
+
+#### `POST /api/instrumentists/{userId}/rates/{id}/effective-date` (D-172)
+
+Date de prise d'effet d'une version (en vigueur ou passée), **rétroactive comprise**.
+Déplace la frontière avec la version précédente (celle dont `validTo` = l'ancien
+`validFrom`), qui s'arrête désormais à la nouvelle date ; aucune version n'est supprimée.
+
+**Body JSON :** `{ "validFrom": "2026-10-01", "dryRun": true }`
+
+- `dryRun: true` : rien n'est écrit, l'impact est renvoyé.
+- Refus `409 INSTRUMENTIST_RATE_IMMUTABLE` : date identique, date ≥ fin de ce tarif, ou date
+  ≤ début du tarif précédent (il disparaîtrait de l'historique).
+- Refus `409 INSTRUMENTIST_RATE_LOCKED_PERIOD` : un calcul `LOCKED` (facture ou relevé émis)
+  utilise la période dont le tarif change — rien n'est écrit.
+- Audit `INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED` (ancienne/nouvelle date, version
+  précédente et son ancienne/nouvelle fin, calculs devenus obsolètes).
+
+**Réponse — 200 :**
+
+```json
+{
+  "dryRun": false,
+  "rate": { "id": 12, "rateType": "HOURLY_RATE", "amount": "65.00", "currency": "EUR", "validFrom": "2026-10-01", "validTo": null, "instrumentist": { "id": 18 } },
+  "previousRate": { "id": 8, "amount": "0.00", "validFrom": "2026-09-07", "validTo": "2026-10-01" },
+  "oldValidFrom": "2026-10-11",
+  "newValidFrom": "2026-10-01",
+  "period": { "from": "2026-10-01", "to": "2026-10-11" },
+  "lockedCalculations": [],
+  "staleCalculations": [{ "calculationId": 27, "missionId": 1039, "missionDate": "2026-10-01", "status": "CALCULATED" }]
+}
+```
+
+**Calculs devenus obsolètes.** Aucun recalcul automatique. Le calcul (`GET .../financial-calculations`)
+sert `tariffStaleReason` (texte) tant que le tarif applicable à la date de la mission n'est plus
+celui figé dans la ligne ; il n'est alors ni approuvable ni verrouillable
+(`409 FINANCIAL_CALCULATION_INELIGIBLE` avec cette raison) — seul « Recalculer » reste possible.
+Un calcul `LOCKED` n'est jamais signalé ni modifié.
 
 ### Audit
 

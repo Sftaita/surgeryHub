@@ -3,7 +3,6 @@ import {
   InstrumentistsListResponseDTO,
   InstrumentistDetailDTO,
   CreateInstrumentistResponseDTO,
-  InstrumentistRatesDTO,
   InstrumentistActiveStateDTO,
   SiteMembershipDTO,
   DeleteMembershipResponseDTO,
@@ -13,7 +12,6 @@ import {
 import {
   InstrumentistsListQuery,
   CreateInstrumentistRequest,
-  UpdateInstrumentistRatesRequest,
   AddSiteMembershipRequest,
   InstrumentistPlanningQuery,
 } from "./instrumentists.requests";
@@ -45,17 +43,6 @@ export const createInstrumentist = async (
   body: CreateInstrumentistRequest,
 ): Promise<CreateInstrumentistResponseDTO> => {
   const res = await apiClient.post("/api/instrumentists", body);
-  return res.data;
-};
-
-/**
- * PATCH /api/instrumentists/{id}/rates
- */
-export const updateInstrumentistRates = async (
-  id: number,
-  body: UpdateInstrumentistRatesRequest,
-): Promise<InstrumentistRatesDTO> => {
-  const res = await apiClient.patch(`/api/instrumentists/${id}/rates`, body);
   return res.data;
 };
 

@@ -39,6 +39,8 @@ export interface Finance {
   calculatedAt: string;
   /** D-153 — encodage rouvert depuis ce calcul : ni approuvable, ni verrouillable. */
   obsolete: boolean;
+  /** D-172 — raison servie par le backend : le tarif instrumentiste applicable a changé depuis ce calcul. */
+  tariffStaleReason: string | null;
   groups: FinanceGroup[];
   /** Versions précédentes (remplacées / annulées). */
   previous: FinanceVersion[];
@@ -60,6 +62,8 @@ export interface DrawerDispute { id: number; reason: string; status: string; ope
 /** Lot 7 (D-070) — signaux de cohérence (informationnels) et commentaires manager. */
 export interface DrawerEncodingReview { flags: string[]; comments: { id: number; text: string; who: string; when: string }[]; }
 
+import type { OperativeActivity } from "../components/OperativeActivityCard";
+
 export interface MissionDrawerView {
   id: number;
   status: string;
@@ -73,6 +77,8 @@ export interface MissionDrawerView {
   /** D-155 — activité exécutée sans instrumentiste (libellé « déclarée par… »). */
   withoutInstrumentist: string | null;
   hours: DrawerHours | null;
+  /** D-172 — activité déclarée sans instrumentiste : remplace le suivi des heures (null sinon). */
+  activity: OperativeActivity | null;
   steps: DrawerStep[];
   interventions: DrawerIntervention[];
   encodingEmpty: string;

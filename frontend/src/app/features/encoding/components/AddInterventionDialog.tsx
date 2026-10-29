@@ -6,6 +6,7 @@ import { SelectField } from "../../../ui/sheet/SelectField";
 import { Field } from "../../../ui/sheet/Field";
 import type { CatalogFirm, CatalogInterventionType, CreateInterventionBody } from "../api/encoding.types";
 import { fetchFirmServiceOfferings, type FirmServiceOfferingSummary } from "../api/encoding.api";
+import RepresentativePresenceQuestion, { representativeAnswerBody, type RepresentativeAnswer } from "./RepresentativePresenceQuestion";
 
 const GREEN_500 = "#42A882";
 const GREEN_700 = "#2C7D5F";
@@ -48,6 +49,8 @@ type Props = {
   onSubmit: (values: CreateInterventionBody) => void;
   /** Type absent du catalogue pour cette firme — crée une demande provisoire (draft). */
   onSubmitDraft: (values: DraftSubmitValues) => void;
+  /** D-172 — correction manager : la présence du délégué peut être « non renseignée ». */
+  managerCorrection?: boolean;
 };
 
 function SearchIcon() {
@@ -91,7 +94,7 @@ function searchInputSx() {
  * pour un seul geste métier ("je veux encoder cette intervention").
  */
 export default function AddInterventionDialog({
-  open, loadingIntervention, loadingDraft, interventionTypes, firms, existingCount, onClose, onSubmit, onSubmitDraft,
+  open, loadingIntervention, loadingDraft, interventionTypes, firms, existingCount, onClose, onSubmit, onSubmitDraft, managerCorrection = false,
 }: Props) {
   const [step, setStep] = React.useState<Step>(1);
   const [firmQuery, setFirmQuery] = React.useState("");
@@ -100,7 +103,7 @@ export default function AddInterventionDialog({
   const [proposedFirmName, setProposedFirmName] = React.useState<string | null>(null);
 
   const [typeId, setTypeId] = React.useState<number | null>(null);
-  const [representativePresent, setRepresentativePresent] = React.useState<boolean | null>(null);
+  const [representativePresent, setRepresentativePresent] = React.useState<RepresentativeAnswer>(null);
   const [selectedChoiceOptionId, setSelectedChoiceOptionId] = React.useState<number | null>(null);
 
   const [draftLabel, setDraftLabel] = React.useState("");
@@ -207,7 +210,7 @@ export default function AddInterventionDialog({
       interventionTypeId: typeId,
       primaryFirmId: firmId,
       orderIndex: existingCount,
-      ...(showRepresentativeQuestion && representativePresent !== null ? { representativePresent } : {}),
+      ...(showRepresentativeQuestion && representativePresent !== null ? representativeAnswerBody(representativePresent) : {}),
       ...(showChoiceQuestion && selectedChoiceOptionId !== null ? { selectedChoiceOptionId } : {}),
     });
   }
@@ -364,39 +367,14 @@ export default function AddInterventionDialog({
           )}
 
           {showRepresentativeQuestion && (
-            <Box sx={{ mt: "16px", background: "#F5F7FA", borderRadius: "12px", padding: "14px" }}>
-              <Box sx={{ fontSize: 14, fontWeight: 700, mb: "4px" }}>
-                Un délégué de {firmName} était-il présent ?
-              </Box>
-              <Box sx={{ fontSize: 12.5, color: GRAY_500, mb: "10px" }}>
-                Cette information est nécessaire pour cette intervention.
-              </Box>
-              <Box sx={{ display: "flex", gap: "10px" }}>
-                {([true, false] as const).map((val) => (
-                  <Box
-                    key={String(val)}
-                    component="button"
-                    type="button"
-                    onClick={() => setRepresentativePresent(val)}
-                    disabled={loading}
-                    sx={{
-                      flex: 1, height: 42, borderRadius: "10px", cursor: "pointer", fontFamily: "inherit",
-                      fontSize: 14, fontWeight: 700,
-                      border: "1.5px solid", borderColor: representativePresent === val ? GREEN_500 : BORDER_DEFAULT,
-                      background: representativePresent === val ? "rgba(66,168,130,.12)" : "#fff",
-                      color: representativePresent === val ? GREEN_800 : GRAY_800,
-                    }}
-                  >
-                    {val ? "Oui" : "Non"}
-                  </Box>
-                ))}
-              </Box>
-              {representativePresent === null && (
-                <Box sx={{ mt: "10px", fontSize: 12.5, color: RED_600, fontWeight: 600 }}>
-                  Indiquez si un délégué de {firmName} était présent.
-                </Box>
-              )}
-            </Box>
+            <RepresentativePresenceQuestion
+              mt="16px"
+              firmName={firmName}
+              value={representativePresent}
+              onChange={setRepresentativePresent}
+              disabled={loading}
+              managerCorrection={managerCorrection}
+            />
           )}
 
           {showChoiceQuestion && (

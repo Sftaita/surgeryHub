@@ -10,7 +10,6 @@ import {
   Paper,
   Stack,
   Switch,
-  TextField,
   Typography,
 } from "@mui/material";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -39,7 +38,6 @@ const ORTHO_SPECIALTIES = [
 ];
 import {
   getEmploymentTypeLabel,
-  normalizeRateValue,
 } from "../utils/instrumentists.utils";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 
@@ -73,14 +71,6 @@ export function InstrumentistDrawer({
     displayedMemberships,
     handleSetDisplayedMemberships,
 
-    hourlyRateInput,
-    setHourlyRateInput,
-    consultationFeeInput,
-    setConsultationFeeInput,
-    ratesFeedback,
-    setRatesFeedback,
-    ratesMutation,
-    handleSaveRates,
 
     deleteMembershipMutation,
     refreshInstrumentistDetail,
@@ -112,9 +102,6 @@ export function InstrumentistDrawer({
       : [...current, value];
     specialtiesMutation.mutate(next);
   }
-
-  const hasRatesFeedback =
-    ratesFeedback.type !== "idle" && ratesFeedback.message;
 
   return (
     <>
@@ -469,116 +456,8 @@ export function InstrumentistDrawer({
 
                 <Box ref={ratesSectionRef}>
                   <DrawerSection title="Tarifs">
-                    <Stack spacing={2}>
-                      <Typography variant="subtitle2" fontWeight={700}>Ancien flux (décompte classique)</Typography>
-                      <Typography variant="body2" color="text.secondary">
-                        Modifiez les tarifs puis enregistrez uniquement les
-                        changements.
-                      </Typography>
-                      <Alert severity="info" variant="outlined">
-                        Ces champs n'alimentent que l'ancien flux de génération de décompte — ils n'affectent pas
-                        le calcul financier des missions. Pour valoriser une mission, configurez le tarif horaire
-                        dans « Nouveau flux (calcul financier) » ci-dessous.
-                      </Alert>
-
-                      <Stack spacing={1.5}>
-                        <TextField
-                          label="Tarif bloc"
-                          value={hourlyRateInput}
-                          onChange={(event) => {
-                            setHourlyRateInput(event.target.value);
-                            if (ratesFeedback.type !== "idle") {
-                              setRatesFeedback({
-                                type: "idle",
-                                message: "",
-                              });
-                            }
-                          }}
-                          size="small"
-                          fullWidth
-                          disabled={ratesMutation.isPending}
-                          inputProps={{
-                            inputMode: "decimal",
-                          }}
-                        />
-
-                        <TextField
-                          label="Tarif consultation"
-                          value={consultationFeeInput}
-                          onChange={(event) => {
-                            setConsultationFeeInput(event.target.value);
-                            if (ratesFeedback.type !== "idle") {
-                              setRatesFeedback({
-                                type: "idle",
-                                message: "",
-                              });
-                            }
-                          }}
-                          size="small"
-                          fullWidth
-                          disabled={ratesMutation.isPending}
-                          inputProps={{
-                            inputMode: "decimal",
-                          }}
-                        />
-                      </Stack>
-
-                      {hasRatesFeedback ? (
-                        <Alert
-                          severity={
-                            ratesFeedback.type === "error"
-                              ? "error"
-                              : ratesFeedback.type === "success"
-                                ? "success"
-                                : "info"
-                          }
-                        >
-                          {ratesFeedback.message}
-                        </Alert>
-                      ) : null}
-
-                      <Stack
-                        direction="row"
-                        spacing={1}
-                        justifyContent="flex-end"
-                      >
-                        <Button
-                          variant="outlined"
-                          onClick={() => {
-                            setHourlyRateInput(
-                              normalizeRateValue(instrumentist.hourlyRate),
-                            );
-                            setConsultationFeeInput(
-                              normalizeRateValue(
-                                instrumentist.consultationFee,
-                              ),
-                            );
-                            setRatesFeedback({
-                              type: "idle",
-                              message: "",
-                            });
-                          }}
-                          disabled={ratesMutation.isPending}
-                        >
-                          Réinitialiser
-                        </Button>
-
-                        <Button
-                          variant="contained"
-                          onClick={handleSaveRates}
-                          disabled={ratesMutation.isPending}
-                        >
-                          {ratesMutation.isPending
-                            ? "Enregistrement..."
-                            : "Enregistrer"}
-                        </Button>
-                      </Stack>
-
-                      <Divider />
-
-                      <Typography variant="subtitle2" fontWeight={700}>Nouveau flux (calcul financier)</Typography>
-                      {instrumentistId && <InstrumentistVersionedRates instrumentistId={instrumentistId} />}
-                    </Stack>
+                    {/* D-172 — seul système de tarification affiché : les tarifs historisés du calcul financier. */}
+                    {instrumentistId && <InstrumentistVersionedRates instrumentistId={instrumentistId} />}
                   </DrawerSection>
                 </Box>
 

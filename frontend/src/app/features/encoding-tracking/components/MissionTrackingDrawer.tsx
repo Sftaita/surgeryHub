@@ -1,6 +1,8 @@
 import * as React from "react";
 import { Box, CircularProgress, Dialog, DialogContent, DialogTitle, Tooltip } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { MissionLocksIndicator } from "../../missions/components/MissionEncodingBadge";
+import { buildOperativeActivity, OperativeActivityBody } from "../../missions/components/OperativeActivityCard";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
@@ -52,6 +54,7 @@ const STATE_TONE: Record<string, { bg: string; fg: string }> = {
   VALIDATED: { bg: GREEN_100, fg: GREEN_800 },
   LOCKED: { bg: GREEN_100, fg: GREEN_800 },
   NOT_APPLICABLE: { bg: GRAY_100, fg: GRAY_500 },
+  NOT_DECLARED: { bg: AMBER_100, fg: AMBER_700 },
 };
 
 function initials(name: string): string {
@@ -337,6 +340,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   // pour laquelle la validation n'est pas possible est servie par le backend, affichée telle quelle.
   const canCompleteAndValidate = allowedActions.includes("complete_and_validate");
   const validationBlockedReason = missionQuery.data?.encodingValidationBlockedReason ?? null;
+  const operativeActivity = missionQuery.data ? buildOperativeActivity(missionQuery.data) : null;
   const canRemind = allowedActions.includes("remind");
   // D-136 — décidé uniquement par le backend (MissionHoursReminderPolicy) : jamais déduit
   // ici de hasRealHours ou de la date.
@@ -483,13 +487,18 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         {withoutInstrumentist ? (
           // D-155 — aucune heure d'instrumentiste n'existe ni ne se saisit : ni « non renseignées »,
           // ni barres planifié / réel, ni rappel ou correction des heures.
+          // D-172 — à la place des heures : état réel de l'encodage, auteur, validation (backend).
           <Card>
             <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
-              <Eyebrow>HEURES</Eyebrow>
+              <Eyebrow>ACTIVITÉ OPÉRATOIRE</Eyebrow>
             </Box>
-            <Box data-testid="drawer-hours-without-instrumentist" sx={{ fontSize: 13, fontWeight: 600, color: GRAY_700 }}>
-              {NO_HOURS_WITHOUT_INSTRUMENTIST}
-            </Box>
+            {operativeActivity ? (
+              <OperativeActivityBody activity={operativeActivity} financeText={item.financial.label} />
+            ) : (
+              <Box data-testid="drawer-hours-without-instrumentist" sx={{ fontSize: 13, fontWeight: 600, color: GRAY_700 }}>
+                {NO_HOURS_WITHOUT_INSTRUMENTIST}
+              </Box>
+            )}
           </Card>
         ) : (
         <Card>
@@ -663,6 +672,17 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             {validationBlockedReason}
           </Box>
         )}
+        {/* D-172 — verrous réels (encodage, calcul, document, clôture) et leur raison, servis par le backend. */}
+        {(missionQuery.data?.encoding?.locks.length ?? 0) > 0 && (
+          <Box data-testid="drawer-encoding-locks" sx={{ flexBasis: "100%", order: -1, display: "flex", flexDirection: "column", gap: "4px", padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
+            {missionQuery.data!.encoding!.locks.map((lock) => (
+              <Box key={lock.level} sx={{ display: "flex", gap: "6px", alignItems: "flex-start" }}>
+                <MissionLocksIndicator locks={[lock]} />
+                <span><strong>{lock.label}</strong> — {lock.reason}</span>
+              </Box>
+            ))}
+          </Box>
+        )}
         {/* D-171 — reprise manager et heures restées à déclarer : servies par le backend, jamais déduites. */}
         {missionQuery.data?.lastEncodingTakeover && (
           <Box data-testid="drawer-encoding-taken-over" sx={{ flexBasis: "100%", order: -1, padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
@@ -802,6 +822,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
               canSubmit={false}
               onValidate={() => undefined}
               progress={encodingQuery.data.progress}
+              managerCorrection
             />
           </DialogContent>
         </Dialog>

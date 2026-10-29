@@ -155,7 +155,10 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
   const mutation = useMutation({
     mutationFn: () => submitMission(mission.id, { noMaterial: materialLineCount === 0, comment: comment.trim() }),
     onSuccess: () => {
-      toast.success("Mission clôturée. Encodage transmis à l'établissement.");
+      // D-172 — activité sans instrumentiste : on soumet au manager, rien n'est clôturé.
+      toast.success(withoutInstrumentist
+        ? "Encodage soumis au manager pour validation."
+        : "Mission clôturée. Encodage transmis à l'établissement.");
       requestMissionSync();
       onClose();
       onSubmitted?.();
@@ -172,7 +175,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
   });
 
   return (
-    <SheetModal open={open} title="Récapitulatif avant validation" onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
+    <SheetModal open={open} title={withoutInstrumentist ? "Récapitulatif avant soumission" : "Récapitulatif avant validation"} onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
       {isLoading ? (
         <Box sx={{ mt: "14px", fontSize: 14, color: GRAY_500 }}>Chargement…</Box>
       ) : (
@@ -228,7 +231,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
 
       <Box sx={{ mt: "14px", fontSize: 13, color: GRAY_500, lineHeight: 1.5 }}>
         {withoutInstrumentist
-          ? "Activité réalisée sans instrumentiste : aucune heure n'est déclarée. Vérifiez les interventions et le matériel, puis validez pour transmettre l'encodage au manager."
+          ? "Activité réalisée sans instrumentiste : aucune heure n'est déclarée. Vérifiez les interventions et le matériel, puis soumettez l'encodage : le manager le vérifiera et le validera."
           : "Vérifiez les informations, encodez vos heures prestées et validez pour clôturer la mission."}
       </Box>
 
@@ -245,7 +248,7 @@ export default function SubmitDialog({ open, mission, onClose, onSubmitted, help
           "&:disabled": { opacity: 0.6, cursor: "default", boxShadow: "none" },
         }}
       >
-        {mutation.isPending ? "…" : "Valider et clôturer la mission"}
+        {mutation.isPending ? "…" : withoutInstrumentist ? "Soumettre l'encodage au manager" : "Valider et clôturer la mission"}
       </Box>
       <Box
         component="button"

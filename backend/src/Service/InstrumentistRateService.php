@@ -7,6 +7,8 @@ use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\InstrumentistRateType;
 use App\Exception\InstrumentistRateImmutableException;
+use App\Exception\InstrumentistRateLockedPeriodException;
+use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -23,6 +25,7 @@ final class InstrumentistRateService
         private readonly InstrumentistRateWriteService $writeService,
         private readonly InstrumentistRateResolver $resolver,
         private readonly AuditService $audit,
+        private readonly InstrumentistRateStalenessService $staleness,
     ) {}
 
     public function createInitialRate(
@@ -81,12 +84,20 @@ final class InstrumentistRateService
         $this->assertPositiveAmount($newAmount);
         $this->assertValidCurrency($newCurrency);
 
-        $today = new \DateTimeImmutable('today');
-        if ($effectiveFrom < $today) {
-            throw new InstrumentistRateImmutableException("La date d'effet d'un remplacement ne peut jamais être dans le passé.");
-        }
+        $effectiveFrom = $effectiveFrom->setTime(0, 0);
         if ($effectiveFrom <= $currentRate->getValidFrom()) {
             throw new InstrumentistRateImmutableException("La date d'effet doit être strictement postérieure au début du tarif actuel.");
+        }
+        // D-172 — une date d'effet passée est permise : les missions réalisées depuis cette
+        // date relèvent du nouveau tarif, sauf si l'une d'elles est déjà verrouillée.
+        $stale = [];
+        if ($effectiveFrom < new \DateTimeImmutable('today')) {
+            $instrumentist = $currentRate->getInstrumentist();
+            $locked = $this->staleness->calculationsInWindow($instrumentist, $currentRate->getRateType(), $effectiveFrom, $currentRate->getValidTo(), true);
+            if ($locked !== []) {
+                throw new InstrumentistRateLockedPeriodException(self::lockedPeriodMessage($locked));
+            }
+            $stale = $this->staleness->calculationsInWindow($instrumentist, $currentRate->getRateType(), $effectiveFrom, $currentRate->getValidTo(), false);
         }
 
         $oldAmount = $currentRate->getAmount();
@@ -113,10 +124,119 @@ final class InstrumentistRateService
             'oldAmount' => $oldAmount, 'newAmount' => $newAmount,
             'oldCurrency' => $oldCurrency, 'newCurrency' => $created->getCurrency(),
             'effectiveFrom' => $effectiveFrom->format('Y-m-d'),
+            'staleCalculationIds' => array_column($stale, 'calculationId'),
         ]);
         $this->em->flush();
 
         return $created;
+    }
+
+    /**
+     * D-172 — date de prise d'effet d'un tarif, rétroactive comprise. Déplace la frontière
+     * entre ce tarif et le précédent (qui s'arrête désormais à $newValidFrom) sans supprimer
+     * aucune version : l'historique reste continu. Refusé en entier si la période dont le
+     * tarif change contient un calcul verrouillé ; les calculs non verrouillés de cette période
+     * sont listés (ils deviennent obsolètes, InstrumentistRateStalenessService) et ne sont
+     * jamais recalculés ici.
+     *
+     * $dryRun : mêmes contrôles et même impact, rien n'est écrit.
+     *
+     * @return array{rate: InstrumentistRate, previousRate: ?InstrumentistRate, oldValidFrom: string, newValidFrom: string,
+     *     periodFrom: string, periodTo: string, lockedCalculations: list<array<string, mixed>>, staleCalculations: list<array<string, mixed>>}
+     */
+    public function changeEffectiveDate(InstrumentistRate $rate, \DateTimeImmutable $newValidFrom, User $actor, bool $dryRun = false): array
+    {
+        $newValidFrom = $newValidFrom->setTime(0, 0);
+        $result = null;
+
+        $this->em->wrapInTransaction(function () use (&$result, $rate, $newValidFrom, $actor, $dryRun): void {
+            $instrumentist = $rate->getInstrumentist();
+            $this->em->lock($instrumentist, LockMode::PESSIMISTIC_WRITE);
+            $this->em->refresh($rate);
+
+            $oldValidFrom = $rate->getValidFrom();
+            if ($newValidFrom == $oldValidFrom) {
+                throw new InstrumentistRateImmutableException('Ce tarif prend déjà effet à cette date.');
+            }
+            if ($rate->getValidTo() !== null && $newValidFrom >= $rate->getValidTo()) {
+                throw new InstrumentistRateImmutableException(sprintf(
+                    'La date de prise d\'effet doit précéder la fin de ce tarif (%s).', $rate->getValidTo()->format('d/m/Y'),
+                ));
+            }
+
+            $previous = $this->em->getRepository(InstrumentistRate::class)->findOneBy([
+                'instrumentist' => $instrumentist, 'rateType' => $rate->getRateType(), 'validTo' => $oldValidFrom,
+            ]);
+            if ($previous !== null && $newValidFrom <= $previous->getValidFrom()) {
+                throw new InstrumentistRateImmutableException(sprintf(
+                    'La date de prise d\'effet doit suivre le début du tarif précédent (%s %s depuis le %s) : il ne peut pas disparaître de l\'historique.',
+                    $previous->getAmount(), $previous->getCurrency(), $previous->getValidFrom()->format('d/m/Y'),
+                ));
+            }
+
+            $periodFrom = min($oldValidFrom, $newValidFrom);
+            $periodTo = max($oldValidFrom, $newValidFrom);
+            $locked = $this->staleness->calculationsInWindow($instrumentist, $rate->getRateType(), $periodFrom, $periodTo, true);
+            $stale = $this->staleness->calculationsInWindow($instrumentist, $rate->getRateType(), $periodFrom, $periodTo, false);
+
+            $result = [
+                'rate' => $rate, 'previousRate' => $previous,
+                'oldValidFrom' => $oldValidFrom->format('Y-m-d'), 'newValidFrom' => $newValidFrom->format('Y-m-d'),
+                'periodFrom' => $periodFrom->format('Y-m-d'), 'periodTo' => $periodTo->format('Y-m-d'),
+                'lockedCalculations' => $locked, 'staleCalculations' => $stale,
+            ];
+            if ($dryRun) {
+                return;
+            }
+            if ($locked !== []) {
+                throw new InstrumentistRateLockedPeriodException(self::lockedPeriodMessage($locked));
+            }
+
+            $previousOldValidTo = $previous?->getValidTo();
+            // Ordre sans chevauchement transitoire : on raccourcit d'abord la version qui cède
+            // du terrain, puis on étend l'autre.
+            if ($newValidFrom < $oldValidFrom) {
+                $previous?->setValidTo($newValidFrom);
+                if ($previous !== null) {
+                    $this->writeService->update($previous);
+                }
+                $rate->setValidFrom($newValidFrom);
+                $this->writeService->update($rate);
+            } else {
+                $rate->setValidFrom($newValidFrom);
+                $this->writeService->update($rate);
+                $previous?->setValidTo($newValidFrom);
+                if ($previous !== null) {
+                    $this->writeService->update($previous);
+                }
+            }
+
+            $this->audit->recordGlobal($actor, AuditEventType::INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED, $this->scopePayload($rate) + [
+                'amount' => $rate->getAmount(), 'currency' => $rate->getCurrency(),
+                'oldValidFrom' => $oldValidFrom->format('Y-m-d'), 'newValidFrom' => $newValidFrom->format('Y-m-d'),
+                'previousInstrumentistRateId' => $previous?->getId(),
+                'previousOldValidTo' => $previousOldValidTo?->format('Y-m-d'),
+                'previousNewValidTo' => $previous?->getValidTo()?->format('Y-m-d'),
+                'staleCalculationIds' => array_column($stale, 'calculationId'),
+            ]);
+            $this->em->flush();
+        });
+
+        return $result;
+    }
+
+    /** @param list<array{missionId: int, missionDate: string}> $locked */
+    private static function lockedPeriodMessage(array $locked): string
+    {
+        $missions = array_map(
+            static fn (array $c) => sprintf('#%d (%s)', $c['missionId'], (new \DateTimeImmutable($c['missionDate']))->format('d/m/Y')),
+            $locked,
+        );
+
+        return sprintf(
+            'Impossible de modifier cette période tarifaire : %d calcul(s) financier(s) verrouillé(s) par une facture ou un relevé l\'utilisent (missions %s). Leurs montants ne sont jamais modifiés ; une correction passe par la procédure de correction des documents émis.',
+            count($locked), implode(', ', array_unique($missions)),
+        );
     }
 
     public function updateFutureRate(

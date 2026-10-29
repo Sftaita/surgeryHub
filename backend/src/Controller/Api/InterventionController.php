@@ -52,6 +52,10 @@ class InterventionController extends AbstractController
 
         /** @var MissionInterventionCreateRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionInterventionCreateRequest::class);
+        if ($dto->representativePresenceUnknown) {
+            $this->denyAccessUnlessGranted(MissionVoter::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE, $mission);
+            $dto->representativePresent = null;
+        }
 
         $intervention = $this->encodingLock->run($mission, fn () => $this->service->create($mission, $dto));
         $this->surgeonChanges->afterWrite($mission, $user);
@@ -116,6 +120,13 @@ class InterventionController extends AbstractController
         }
 
         $dto->confirmRemoveIncompatibleMaterial = (bool) ($body['confirmRemoveIncompatibleMaterial'] ?? false);
+
+        if (($body['representativePresenceUnknown'] ?? false) === true) {
+            $this->denyAccessUnlessGranted(MissionVoter::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE, $mission);
+            $dto->representativePresenceUnknown = true;
+            $dto->representativePresentProvided = true;
+            $dto->representativePresent = null;
+        }
 
         $this->encodingLock->run($mission, fn () => $this->service->update($intervention, $dto));
         $this->surgeonChanges->afterWrite($mission, $user);

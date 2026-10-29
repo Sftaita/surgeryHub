@@ -70,6 +70,17 @@ class MissionFilter
     public ?bool $validatedWithoutCalculation = null;
 
     /**
+     * D-172 — liste opérationnelle : missions annulées masquées (jamais supprimées). Sans effet
+     * quand un filtre `status` explicite est fourni : il prime (« Annulée » reste consultable).
+     */
+    #[Assert\Type('boolean')]
+    public ?bool $excludeCancelled = null;
+
+    /** D-172 — missions sans instrumentiste affectée (m.instrumentist IS NULL). */
+    #[Assert\Type('boolean')]
+    public ?bool $withoutInstrumentist = null;
+
+    /**
      * D-147 — free-text search (manager missions list): surgeon / instrumentist name, site
      * name, or the mission id (`#123` or `123`). Case-insensitive substring match, see
      * MissionService::list().
@@ -122,6 +133,12 @@ class MissionFilter
 
         if (isset($q['eligibleToMe'])) {
             $dto->eligibleToMe = filter_var($q['eligibleToMe'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        }
+
+        foreach (['excludeCancelled', 'withoutInstrumentist'] as $flag) {
+            if (isset($q[$flag])) {
+                $dto->{$flag} = filter_var($q[$flag], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            }
         }
 
         if (isset($q['validatedWithoutCalculation'])) {

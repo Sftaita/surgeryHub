@@ -77,23 +77,3 @@ export function mergeMembershipsBySiteId(
     a.site.name.localeCompare(b.site.name, "fr", { sensitivity: "base" }),
   );
 }
-
-export function normalizeRateValue(value: string | null | undefined): string {
-  return value ?? "";
-}
-
-export function parseRateInput(value: string): number | null {
-  const trimmed = value.trim();
-
-  if (trimmed === "") {
-    return null;
-  }
-
-  const parsed = Number(trimmed);
-
-  if (!Number.isFinite(parsed)) {
-    return null;
-  }
-
-  return parsed;
-}

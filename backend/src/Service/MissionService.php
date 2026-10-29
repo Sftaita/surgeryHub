@@ -643,6 +643,22 @@ class MissionService
                 ->andWhere('vwcFc.id IS NULL');
         }
 
+        if ($filter->withoutInstrumentist === true) {
+            $qb->andWhere('m.instrumentist IS NULL');
+        }
+
+        // D-172 — annulées masquées sur demande ; le nombre masqué est servi pour que le compteur
+        // dise exactement ce qu'il exclut. Un filtre de statut explicite prime.
+        $cancelledExcluded = null;
+        if ($filter->excludeCancelled === true && $statusList === null) {
+            $cancelledExcluded = (int) (clone $qb)
+                ->select('COUNT(DISTINCT m.id)')
+                ->resetDQLPart('orderBy')
+                ->andWhere('m.status = :cancelledOnly')->setParameter('cancelledOnly', MissionStatus::CANCELLED)
+                ->getQuery()->getSingleScalarResult();
+            $qb->andWhere('m.status != :excludedCancelled')->setParameter('excludedCancelled', MissionStatus::CANCELLED);
+        }
+
         $page = max(1, (int) ($filter->page ?? 1));
         $limit = max(1, min(100, (int) ($filter->limit ?? 20)));
 
@@ -655,6 +671,7 @@ class MissionService
             'total' => count($paginator),
             'page' => $page,
             'limit' => $limit,
+            'cancelledExcluded' => $cancelledExcluded,
         ];
     }
 

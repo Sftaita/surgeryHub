@@ -313,7 +313,9 @@ export type CreateInterventionBody = {
   primaryFirmId?: number;
   orderIndex: number;
   /** Refonte Catalogue/Prestations (D-092) — facultatif, uniquement si déjà connu à la création. */
-  representativePresent?: boolean;
+  representativePresent?: boolean | null;
+  /** D-172 — correction manager : présence du délégué historiquement inconnue (jamais « non »). */
+  representativePresenceUnknown?: true;
   /** Tarification firme conditionnée à un choix obligatoire — facultatif tant que non exigé. */
   selectedChoiceOptionId?: number;
 };
@@ -328,6 +330,8 @@ export type PatchInterventionBody = {
   primaryFirmId?: number | null;
   orderIndex?: number;
   representativePresent?: boolean | null;
+  /** D-172 — correction manager : présence du délégué historiquement inconnue (jamais « non »). */
+  representativePresenceUnknown?: true;
   selectedChoiceOptionId?: number | null;
   /** §8 du prompt — requis pour confirmer le retrait de matériel devenu incompatible. */
   confirmRemoveIncompatibleMaterial?: boolean;

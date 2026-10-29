@@ -257,7 +257,7 @@ describe("ManagerMissionDrawer — activité réalisée sans instrumentiste (D-1
       status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding", "submit", "cancel_executed_without_instrumentist"],
       executedWithoutInstrumentist: declared,
     }));
-    expect(await screen.findByTestId("manager-without-instrumentist")).toHaveTextContent("déclarée par Jean Dupont");
+    expect(await screen.findByTestId("drawer-operative-activity")).toHaveTextContent("déclarée par Jean Dupont");
     await user.click(screen.getByTestId("manager-cancel-declaration"));
     const confirm = screen.getAllByRole("button", { name: "Annuler la déclaration" }).at(-1)!;
     expect(confirm).toBeDisabled();
@@ -273,10 +273,44 @@ describe("ManagerMissionDrawer — activité réalisée sans instrumentiste (D-1
     expect(screen.queryByTestId("manager-cancel-declaration")).toBeNull();
   });
 
-  it("aucune frise horaire : information explicite à la place", async () => {
-    renderDrawer(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], executedWithoutInstrumentist: declared }));
-    expect(await screen.findByTestId("drawer-hours-without-instrumentist")).toHaveTextContent("Activité réalisée sans instrumentiste — aucune prestation horaire attendue");
+  // D-172 — « Activité opératoire » à la place des heures instrumentiste, uniquement des faits servis.
+  const surgeonActor = { name: "Dr Paul Martin", role: "SURGEON" as const, at: "2026-10-23T09:00:00+02:00" };
+  const managerActor = { name: "Sophie Manager", role: "MANAGER" as const, at: "2026-10-24T09:00:00+02:00" };
+
+  it("C — soumise par le chirurgien : « Encodage terminé par le chirurgien », « À valider », compteurs, aucune frise horaire", async () => {
+    renderDrawer(baseMission({
+      status: "SUBMITTED", allowedActions: ["view", "validate", "reject"], executedWithoutInstrumentist: declared,
+      encoding: { state: "SUBMITTED", stateLabel: "Soumis", executedWithoutInstrumentist: true, interventionCount: 2, materialLineCount: 3, finalizedBy: surgeonActor, validatedBy: null, locks: [] },
+    }));
+    const card = await screen.findByTestId("drawer-operative-activity");
+    expect(card).toHaveTextContent("Mission réalisée sans instrumentiste — déclarée par Jean Dupont");
+    expect(screen.getByTestId("operative-activity-finalized")).toHaveTextContent("Encodage terminé par le chirurgien — Dr Paul Martin");
+    expect(screen.getByTestId("operative-activity-validation")).toHaveTextContent("À valider");
+    expect(card).toHaveTextContent("2 interventions · 3 lignes de matériel enregistrées");
+    expect(card).toHaveTextContent("Aucune prestation d'instrumentiste");
+    expect(card).not.toHaveTextContent("Horaires opératoires réels");
     expect(screen.queryByTestId("drawer-hours")).toBeNull();
+  });
+
+  it("C — validée par le manager : l'auteur de la finalisation (chirurgien) est conservé", async () => {
+    renderDrawer(baseMission({
+      status: "VALIDATED", allowedActions: ["view", "reopen_encoding"], executedWithoutInstrumentist: declared,
+      encoding: { state: "VALIDATED", stateLabel: "Validé", executedWithoutInstrumentist: true, interventionCount: 1, materialLineCount: 1, finalizedBy: surgeonActor, validatedBy: managerActor, locks: [] },
+    }), { calculations: [] });
+    expect(await screen.findByTestId("operative-activity-finalized")).toHaveTextContent("Encodage terminé par le chirurgien");
+    expect(screen.getByTestId("operative-activity-validation")).toHaveTextContent("Validé par Sophie Manager (manager)");
+  });
+
+  it("B — interventions enregistrées mais rien de soumis : toujours « Encodage en cours », jamais « terminé »", async () => {
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding"], executedWithoutInstrumentist: declared,
+      encoding: { state: "IN_PROGRESS", stateLabel: "En cours", executedWithoutInstrumentist: true, interventionCount: 1, materialLineCount: 2, finalizedBy: null, validatedBy: null, locks: [] },
+      encodingValidationBlockedReason: "L'encodage n'est pas encore soumis. Vous pouvez le terminer et le valider vous-même.",
+    }));
+    expect(await screen.findByTestId("operative-activity-finalized")).toHaveTextContent("Encodage en cours — pas encore finalisé");
+    expect(screen.queryByTestId("operative-activity-validation")).toBeNull();
+    expect(screen.getByTestId("operative-activity-blocked")).toHaveTextContent("pas encore soumis");
+    expect(screen.getByTestId("drawer-operative-activity")).toHaveTextContent("1 intervention · 2 lignes de matériel enregistrées");
   });
 
   it("« Rejeter l'encodage » annonce le renvoi au chirurgien, avec des exemples de contenu", async () => {
@@ -418,6 +452,15 @@ describe("ManagerMissionDrawer — calcul financier", () => {
     expect(screen.getByTestId("drawer-recalculate")).toBeInTheDocument();
     expect(screen.queryByTestId("drawer-lock-calculation")).toBeNull();
     expect(screen.queryByTestId("drawer-approve-calculation")).toBeNull();
+  });
+
+  it("D-172 — tarif modifié depuis le calcul : raison servie affichée, seul « Recalculer » est proposé", async () => {
+    const reason = "Le tarif instrumentiste applicable au 01/10/2026 a changé depuis ce calcul (40.00 EUR → 65.00 EUR) : il doit être recalculé avant approbation ou verrouillage.";
+    renderDrawer(validated, { calculations: [calculation([line()], { status: "CALCULATED", obsolete: false, tariffStaleReason: reason })] });
+    expect(await screen.findByTestId("calculation-tariff-stale")).toHaveTextContent("40.00 EUR → 65.00 EUR");
+    expect(screen.getByTestId("drawer-recalculate")).toBeInTheDocument();
+    expect(screen.queryByTestId("drawer-approve-calculation")).toBeNull();
+    expect(screen.queryByTestId("drawer-lock-calculation")).toBeNull();
   });
 
   it("calcul approuvé à jour : « Verrouiller le calcul » appelle POST /lock", async () => {
@@ -586,5 +629,38 @@ describe("ManagerMissionDrawer — terminer et valider (D-171)", () => {
     renderDrawer(baseMission({ status: "ENCODING_IN_PROGRESS", allowedActions: ["view", "edit_encoding"] }));
     expect(await screen.findByTestId("manager-edit-encoding")).toBeInTheDocument();
     expect(screen.queryByTestId("manager-complete-and-validate")).toBeNull();
+  });
+});
+
+describe("ManagerMissionDrawer — état d'encodage, auteur et verrous (D-172)", () => {
+  it("affiche qui a finalisé l'encodage et la raison de chaque verrou servi", async () => {
+    renderDrawer(baseMission({
+      status: "VALIDATED",
+      instrumentist: null,
+      allowedActions: ["view"],
+      encoding: {
+        state: "VALIDATED", stateLabel: "Validé",
+        finalizedBy: { name: "Sophie Manager", role: "MANAGER", at: "2026-10-23T08:00:00+02:00" },
+        validatedBy: { name: "Sophie Manager", role: "MANAGER", at: "2026-10-23T08:00:00+02:00" },
+        locks: [{ level: "ENCODING", label: "Encodage verrouillé", reason: "Encodage validé le 23/10/2026 : interventions, matériel et heures ne sont plus modifiables." }],
+      },
+    }), { calculations: [] });
+    const notice = await screen.findByTestId("drawer-encoding-overview");
+    expect(notice).toHaveTextContent("Encodage : validé");
+    expect(notice).toHaveTextContent("Encodage finalisé par Sophie Manager (manager).");
+    expect(screen.getByTestId("drawer-lock-ENCODING")).toHaveTextContent("ne sont plus modifiables");
+    expect(screen.queryByTestId("drawer-lock-FINANCIAL_CALCULATION")).toBeNull();
+  });
+
+  it("mission passée sans instrumentiste non déclarée : « Aucun encodage », jamais présentée comme réalisée", async () => {
+    renderDrawer(baseMission({
+      status: "OPEN", instrumentist: null, allowedActions: ["view"],
+      encoding: { state: "NOT_DECLARED", stateLabel: "Aucun encodage", finalizedBy: null, validatedBy: null, locks: [] },
+    }), { calculations: [] });
+    const notice = await screen.findByTestId("drawer-encoding-overview");
+    expect(notice).toHaveTextContent("Encodage : aucun encodage");
+    expect(notice).toHaveTextContent("aucune activité n'a été déclarée réalisée");
+    expect(screen.getAllByText("Non couverte").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Publiée")).toBeNull();
   });
 });

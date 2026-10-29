@@ -208,6 +208,9 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
   const withoutInstrumentist = mission.executedWithoutInstrumentist ?? null;
   const canEncoding = allowed.includes("encoding") || allowed.includes("edit_encoding");
   const canSubmit = allowed.includes("submit");
+  // D-172 — encodage déjà soumis (statut backend) : il attend la validation du manager ; une
+  // correction reste possible tant que le backend la sert, une nouvelle soumission n'a pas de sens.
+  const encodingSubmitted = mission.status === "SUBMITTED";
   const canEditHours = allowed.includes("edit_hours");
   // Lot 6 (D-100) — lecture seule chirurgien : jamais en même temps que canEncoding
   // (allowedActions ne renvoie jamais les deux pour un même viewer), mais vérifié quand
@@ -359,7 +362,9 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
         }
       >
         <Typography variant="body2" color="text.secondary">
-          {canEncoding
+          {canEncoding && encodingSubmitted
+            ? "Encodage soumis — en attente de validation par le manager. Vous pouvez encore le corriger tant qu'il n'est pas validé."
+            : canEncoding
             ? "Encodez les interventions et le matériel utilisé."
             : canViewEncoding
             ? isInstrumentistView
@@ -396,7 +401,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
               onClick={() => navigate(encodingPath)}
               sx={{ borderRadius: 2, fontWeight: 700 }}
             >
-              Encoder la mission
+              {encodingSubmitted ? "Modifier l'encodage" : "Encoder la mission"}
             </Button>
           )}
           {canViewEncoding && (
@@ -411,7 +416,7 @@ export function MissionDetailContent({ missionId, embedded = false, onCloseEmbed
               Encodage de l'intervention
             </Button>
           )}
-          {canSubmit && (
+          {canSubmit && !encodingSubmitted && (
             <Button
               variant={canEncoding ? "outlined" : "contained"}
               disableElevation

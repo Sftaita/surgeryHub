@@ -662,6 +662,43 @@
           "validation": "utilisateur"
         }
       ]
+    },
+    {
+      "id": "D-172",
+      "title": "Tarifs instrumentistes à date d'effet choisie, état d'encodage et verrous réels des missions, annulées masquées, délégué « non renseigné »",
+      "description": "Date de prise d'effet rétroactive (frontière déplacée, période verrouillée refusée, calculs obsolètes signalés et recalculés à la demande), ancien flux tarifaire retiré de la fiche, état d'encodage NOT_DECLARED et bloc encoding (auteur, verrous par niveau) dans la liste et le détail manager, annulées masquées par défaut avec compteur, délégué « Information non renseignée » en correction manager. Diagnostic #1079 : même cause que D-171.",
+      "kind": "fix",
+      "priority": "P1",
+      "userImpact": "Tarif de Salve inapplicable avant le 11/10 ; missions passées sans instrumentiste illisibles ; Validée/Verrouillée confondues ; listes encombrées d'annulées.",
+      "status": "pr-ouverte",
+      "refs": {
+        "branches": [
+          "fix/tarifs-missions-encodage"
+        ],
+        "decision": "D-172",
+        "worktrees": [
+          "SurgicalHub-tarifs-missions"
+        ],
+        "prs": [
+          48
+        ]
+      },
+      "nextAction": "PR #48 empilée sur #47 : fusionner #47 d'abord, vérifier la compatibilité avec main et relancer les tests, puis #48 ; aucun déploiement sans accord.",
+      "lastReviewed": "2026-10-28",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Après déploiement : fiche de Salve Decorte, « Modifier la date d'effet » du tarif 65 € au 01/10/2026 (vérifier l'aperçu), recalculer les prestations listées dont la mission #1039 depuis leur tiroir, contrôler les montants avant approbation (aucun script)",
+          "validation": "utilisateur"
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Après déploiement : mission #1079 (Arnaud Deltour, 22/10/2026) — vérifier son état, « Terminer et valider » par un manager si nécessaire, puis vérifier que le calcul financier s'effectue normalement (aucun script)",
+          "validation": "utilisateur"
+        }
+      ]
     }
   ]
 }

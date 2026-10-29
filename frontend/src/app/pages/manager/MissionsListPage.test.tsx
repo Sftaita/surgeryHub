@@ -220,3 +220,99 @@ describe("MissionsListPage — vue manager (D-147)", () => {
     expect(await screen.findByText("3")).toBeInTheDocument();
   });
 });
+
+describe("MissionsListPage — annulées, état d'encodage et verrous (D-172)", () => {
+  it("annulées masquées par défaut côté serveur, compteur explicite, interrupteur pour les afficher", async () => {
+    const user = userEvent.setup();
+    vi.mocked(fetchMissions).mockResolvedValue({ items: [mission(1, "2026-10-22T07:45:00+02:00")], total: 1, cancelledExcluded: 3 } as never);
+    renderPage();
+
+    await waitFor(() => expect(lastFilters().excludeCancelled).toBe(true));
+    expect(await screen.findByTestId("missions-total")).toHaveTextContent("1 mission · annulées exclues (3 masquées)");
+
+    vi.mocked(fetchMissions).mockResolvedValue({
+      items: [mission(1, "2026-10-22T07:45:00+02:00"), mission(2, "2026-10-22T13:00:00+02:00", { status: "CANCELLED" })], total: 2, cancelledExcluded: null,
+    } as never);
+    await user.click(screen.getByLabelText("Afficher les missions annulées"));
+    await waitFor(() => expect(lastFilters()).not.toHaveProperty("excludeCancelled"));
+    expect(lastSearch).toContain("cancelled=1");
+    expect(await screen.findByText("Annulée")).toBeInTheDocument();
+    expect(screen.getByTestId("missions-total")).toHaveTextContent("2 missions · annulées incluses");
+  });
+
+  it("un statut choisi explicitement prime sur le masquage", async () => {
+    renderPage("/app/m/missions?status=CANCELLED");
+    await waitFor(() => expect(lastFilters().status).toBe("CANCELLED"));
+    expect(lastFilters()).not.toHaveProperty("excludeCancelled");
+    expect(screen.queryByTestId("filter-show-cancelled")).toBeNull();
+  });
+
+  it("filtre « Sans instrumentiste » transmis au serveur, combiné aux autres", async () => {
+    const user = userEvent.setup();
+    renderPage("/app/m/missions?period=past&siteId=1");
+    await waitFor(() => expect(fetchMissions).toHaveBeenCalled());
+    await user.click(screen.getByLabelText("Sans instrumentiste"));
+    await waitFor(() => expect(lastFilters().withoutInstrumentist).toBe(true));
+    expect(lastFilters().siteId).toBe(1);
+    expect(lastFilters().excludeCancelled).toBe(true);
+  });
+
+  it("statut de planification et état d'encodage distincts ; cadenas seulement pour un verrou servi", async () => {
+    vi.mocked(fetchMissions).mockResolvedValue({
+      items: [
+        mission(1079, "2026-10-22T07:45:00+02:00", { status: "OPEN", instrumentist: null, encoding: { state: "NOT_DECLARED", stateLabel: "Aucun encodage", finalizedBy: null, validatedBy: null, locks: [] } }),
+        mission(1080, "2026-10-22T13:00:00+02:00", { status: "VALIDATED", encoding: {
+          state: "VALIDATED", stateLabel: "Validé", finalizedBy: { name: "Sophie Manager", role: "MANAGER", at: "2026-10-23T08:00:00+02:00" }, validatedBy: null,
+          locks: [{ level: "ENCODING", label: "Encodage verrouillé", reason: "Encodage validé le 23/10/2026 : …" }, { level: "FINANCIAL_CALCULATION", label: "Calcul financier verrouillé", reason: "Calcul financier verrouillé le 24/10/2026 : ses montants sont définitifs." }],
+        } }),
+      ],
+      total: 2,
+      cancelledExcluded: 0,
+    } as never);
+    renderPage();
+
+    const rows = await screen.findAllByTestId("mission-row");
+    const open = rows.find((r) => r.getAttribute("data-mission-id") === "1079")!;
+    // Passée, sans instrumentiste, rien de déclaré : « Non couverte », jamais « Publiée ».
+    expect(within(open).getByText("Non couverte")).toBeInTheDocument();
+    expect(within(open).queryByText("Publiée")).toBeNull();
+    expect(within(open).getByText("Encodage : aucun encodage")).toBeInTheDocument();
+    expect(within(open).queryByTestId("mission-lock")).toBeNull();
+
+    const validated = rows.find((r) => r.getAttribute("data-mission-id") === "1080")!;
+    expect(within(validated).getByText("Validée")).toBeInTheDocument();
+    // Le statut dit déjà « Validée » : pas de second badge « Encodage : validé », le cadenas reste.
+    expect(within(validated).queryByText("Encodage : validé")).toBeNull();
+    const lock = within(validated).getByTestId("mission-lock");
+    expect(lock).toHaveAttribute("data-lock-levels", "ENCODING,FINANCIAL_CALCULATION");
+    expect(lock).toHaveAccessibleName(/Calcul financier verrouillé : Calcul financier verrouillé le 24\/10\/2026 : ses montants sont définitifs/);
+  });
+});
+
+describe("MissionsListPage — activité sans instrumentiste encodée par le chirurgien (D-172)", () => {
+  const surgeonActor = { name: "Dr Arnaud Deltour", role: "SURGEON" as const, at: "2026-10-23T09:00:00+02:00" };
+  it("B en cours, C soumise par le chirurgien (« À valider »), C validée", async () => {
+    vi.mocked(fetchMissions).mockResolvedValue({
+      items: [
+        mission(1, "2026-10-22T07:45:00+02:00", { status: "ENCODING_IN_PROGRESS", instrumentist: null, encoding: { state: "IN_PROGRESS", stateLabel: "En cours", executedWithoutInstrumentist: true, interventionCount: 2, materialLineCount: 2, finalizedBy: null, validatedBy: null, locks: [] } }),
+        mission(2, "2026-10-21T07:45:00+02:00", { status: "SUBMITTED", instrumentist: null, encoding: { state: "SUBMITTED", stateLabel: "Soumis", executedWithoutInstrumentist: true, interventionCount: 2, materialLineCount: 2, finalizedBy: surgeonActor, validatedBy: null, locks: [] } }),
+        mission(3, "2026-10-20T07:45:00+02:00", { status: "VALIDATED", instrumentist: null, encoding: { state: "VALIDATED", stateLabel: "Validé", executedWithoutInstrumentist: true, interventionCount: 1, materialLineCount: 1, finalizedBy: surgeonActor, validatedBy: null, locks: [{ level: "ENCODING", label: "Encodage verrouillé", reason: "Encodage validé." }] } }),
+      ],
+      total: 3,
+      cancelledExcluded: 0,
+    } as never);
+    renderPage();
+    const rows = await screen.findAllByTestId("mission-row");
+    const byId = (id: number) => rows.find((r) => r.getAttribute("data-mission-id") === String(id))!;
+
+    expect(within(byId(1)).getByText("Encodage en cours")).toBeInTheDocument();
+    expect(within(byId(1)).queryByText("Encodage terminé par le chirurgien")).toBeNull();
+
+    expect(within(byId(2)).getByText("À valider")).toBeInTheDocument();
+    expect(within(byId(2)).getByText("Encodage terminé par le chirurgien")).toBeInTheDocument();
+
+    expect(within(byId(3)).getByText("Validée")).toBeInTheDocument();
+    expect(within(byId(3)).getByText("Encodage terminé par le chirurgien")).toBeInTheDocument();
+    expect(within(byId(3)).getByTestId("mission-lock")).toBeInTheDocument();
+  });
+});

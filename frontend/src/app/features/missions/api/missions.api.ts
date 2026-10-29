@@ -49,6 +49,11 @@ export type MissionsFilters = {
   // D-147 — recherche libre (chirurgien, instrumentiste, site, #id) et ordre sur startAt.
   q?: string;
   order?: "asc" | "desc";
+
+  // D-172 — liste opérationnelle : annulées masquées (un filtre `status` explicite prime) ;
+  // missions sans instrumentiste affectée.
+  excludeCancelled?: boolean;
+  withoutInstrumentist?: boolean;
 };
 
 export async function fetchMissions(

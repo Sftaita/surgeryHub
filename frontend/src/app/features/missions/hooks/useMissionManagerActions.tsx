@@ -545,6 +545,7 @@ export function useMissionManagerActions(
                 canSubmit={false}
                 onValidate={() => undefined}
                 progress={encodingQuery.data.progress}
+                managerCorrection
               />
             ) : (
               <Typography variant="body2" color="text.secondary">

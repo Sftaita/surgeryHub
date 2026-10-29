@@ -36,6 +36,8 @@ final readonly class EncodingTrackingSummary
         public int $validated,
         public int $locked,
         public int $notApplicable,
+        /** D-172 — missions passées publiées sans instrumentiste, aucune activité déclarée. */
+        public int $notDeclared,
         /**
          * Missions terminées chronologiquement dont l'encodage est commencé mais pas
          * soumis — sous-ensemble de $inProgress. Un encodage entamé sur une mission déjà
@@ -68,7 +70,7 @@ final readonly class EncodingTrackingSummary
 
         return new self(
             totalMissions: $total,
-            encodingExpected: $total - $count(EncodingState::NOT_APPLICABLE),
+            encodingExpected: $total - $count(EncodingState::NOT_APPLICABLE) - $count(EncodingState::NOT_DECLARED),
             upcoming: $count(EncodingState::UPCOMING),
             toEncode: $count(EncodingState::TO_ENCODE),
             inProgress: $count(EncodingState::IN_PROGRESS),
@@ -76,6 +78,7 @@ final readonly class EncodingTrackingSummary
             validated: $count(EncodingState::VALIDATED),
             locked: $count(EncodingState::LOCKED),
             notApplicable: $count(EncodingState::NOT_APPLICABLE),
+            notDeclared: $count(EncodingState::NOT_DECLARED),
             staleInProgress: $staleInProgress,
             financialAnomalies: $financialAnomalies,
         );

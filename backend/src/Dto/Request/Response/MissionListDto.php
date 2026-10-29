@@ -33,5 +33,12 @@ final class MissionListDto
          * @var array<string,mixed>|null
          */
         public readonly ?array $targetedOffer = null,
+        /**
+         * D-172 — managers only (null otherwise): encoding state, who finalized / validated it,
+         * and its real locks by level (MissionEncodingOverviewService). Never a MissionStatus.
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $encoding = null,
     ) {}
 }

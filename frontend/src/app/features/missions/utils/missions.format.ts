@@ -137,6 +137,13 @@ export function formatMissionStatus(value?: string | null): string {
       return "Validée";
     case "CLOSED":
       return "Clôturée";
+    // D-172 — mêmes libellés que MissionStatus::label() côté backend.
+    case "CANCELLED":
+      return "Annulée";
+    case "DECLARED":
+      return "Déclarée";
+    case "REJECTED":
+      return "Refusée";
     default:
       return value; // fallback volontaire, aucune correction frontend
   }

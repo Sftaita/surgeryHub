@@ -163,6 +163,8 @@
 .mdw-notice--muted { background: var(--gray-75); color: var(--gray-600); }
 .mdw-notice__title { display: block; font-weight: 800; margin-bottom: 2px; }
 .mdw-notice__body { white-space: pre-wrap; font-weight: 500; }
+/* D-172 — une ligne par information (auteur, verrou et sa raison). */
+.mdw-notice__line { display: block; margin-top: 2px; }
 .mdw-fin__adjusted { margin-left: 6px; font-size: 11px; font-weight: 700; color: var(--blue-700); }
 .mdw-loading { flex: 1; display: grid; place-items: center; font-size: 13px; font-weight: 600; color: var(--gray-500); }
 .mdw-btn:disabled { cursor: default; opacity: .6; }

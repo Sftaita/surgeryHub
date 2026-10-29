@@ -69,12 +69,6 @@ export type CreateInstrumentistResponseDTO = {
   }[];
 };
 
-export type InstrumentistRatesDTO = {
-  id: number;
-  hourlyRate: string | null;
-  consultationFee: string | null;
-};
-
 export type InstrumentistActiveStateDTO = {
   id: number;
   active: boolean;

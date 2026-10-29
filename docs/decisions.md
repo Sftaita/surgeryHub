@@ -15497,3 +15497,201 @@ validation validée → refusée sans écriture ; écriture bloquée pendant une
 « Terminer et valider » bloqué pendant une écriture puis 409 ; deux déclarations d'heures
 concurrentes sans écrasement), `ManagerMissionDrawer.test.tsx` (heures en attente, complément),
 `SurgeonEncodingPage.test.tsx` (brouillon, « Soumettre l'encodage »).
+
+## D-172 — Tarifs instrumentistes à date d'effet choisie, état d'encodage et verrous réels des missions, annulées masquées, délégué « non renseigné » (2026-10-28)
+
+**Statut : branche `fix/tarifs-missions-encodage`, construite sur `feat/encodage-sans-instrumentiste`
+(PR #47, D-171) ; non fusionné, non déployé.** Amende D-072 (un tarif déjà applicable n'était jamais
+déplacé ni remplacé dans le passé), D-118 (une mission `OPEN` terminée était « sans objet ») et
+D-092 (la réponse délégué était toujours obligatoire à l'écriture). Aucune migration.
+
+### Contexte — constats en production (lecture seule, 2026-10-28, release `9345655`)
+
+- **Salve Decorte (#18)** : tarif horaire 0,00 € du 07/09 au 11/10 (exclu), remplacé le 10/10 par
+  65 € « à partir du 11/10 ». La mission #1039 du 01/10 est calculée (`CALCULATED`) sur 0,00 €.
+  Le résolveur utilisait déjà la date effective de la mission (`resolveEffectiveAt()`), jamais
+  celle du jour : la cause est qu'**aucune opération ne permettait d'avancer la date d'effet** d'un
+  tarif déjà en vigueur (`replace` refusait une date passée, `PATCH` ne touchait que les tarifs
+  futurs), et l'écran affichait « Vide = s'applique aussi aux prestations passées » alors que le
+  backend prend aujourd'hui.
+- **Arnaud Deltour, 22/10/2026 (#1079)** : `ENCODING_IN_PROGRESS`, aucune instrumentiste, activité
+  déclarée réalisée sans instrumentiste par le manager #7 le 23/10, 8 interventions (présence
+  délégué non pertinente pour ces prestations), 10 lignes de matériel, une demande de matériel
+  résolue, aucune soumission (`submitted_at` nul), aucun calcul, aucune `MissionExecution`. Cause :
+  celle déjà établie par D-171 (la validation exige `SUBMITTED` et aucun écran manager ne proposait
+  la soumission) — corrigée par PR #47, non déployée. Aucune autre condition bloquante trouvée.
+  Les missions #1076, #1077, #1078 du 21/10 (même chirurgien) sont `OPEN`, sans instrumentiste,
+  non déclarées : elles apparaissaient « Publiée » sans aucune information d'encodage.
+
+### Décision 1 — date de prise d'effet, rétroactive comprise
+
+`InstrumentistRateService::changeEffectiveDate()` (`POST /api/instrumentists/{id}/rates/{rateId}/effective-date`,
+aperçu `dryRun` puis confirmation) déplace la **frontière** entre une version et la précédente
+(celle dont `validTo` vaut l'ancien `validFrom`) : la précédente s'arrête à la nouvelle date, aucune
+version n'est supprimée ni réécrite en montant ; date ≤ début de la précédente ou ≥ fin de la
+version refusées. `replaceCurrentRateFrom()` accepte désormais une date d'effet passée. Le tout sous
+le verrou existant de l'instrumentiste ; audit `INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED`
+(anciennes et nouvelles bornes, calculs concernés). Bloc et consultation restent deux types
+distincts (`HOURLY_RATE`, `CONSULTATION_FEE`), chacun avec son historique sans chevauchement.
+
+### Décision 2 — jamais un document émis modifié, jamais un recalcul implicite
+
+- Si un calcul `LOCKED` (facture firme ou décompte émis) porte une ligne de cet instrumentiste et de
+  ce type dans la période dont le tarif change, le changement est **refusé en entier**
+  (`409 INSTRUMENTIST_RATE_LOCKED_PERIOD`, missions citées) : une correction passe par la procédure
+  de correction des documents émis.
+- `InstrumentistRateStalenessService` : un calcul non verrouillé est **obsolète** dès que le tarif
+  applicable à la date de sa ligne (résolveur rejoué) n'est plus celui figé (tarif, montant,
+  devise). Il sert `tariffStaleReason`, n'est **ni approuvé ni verrouillé** tant qu'il n'a pas été
+  recalculé (`approve()`/`lock()` refusés avec cette raison — donc ni facture ni décompte sur
+  l'ancien montant) ; le manager recalcule mission par mission (« Recalculer », existant). Aucun
+  recalcul automatique ni massif. Un calcul `LOCKED` n'est jamais signalé.
+- Sources financières vérifiées : le calcul (`evaluate()`/`buildAndPersist()`), l'explicateur
+  d'anomalies et la file firme rejouent le même résolveur à la date effective de la mission ; les
+  décomptes, statistiques et corrections lisent les lignes figées — aucune autre lecture de tarif.
+
+### Décision 3 — l'ancien flux tarifaire n'est plus affiché
+
+Section « Ancien flux (décompte classique) » retirée de la fiche instrumentiste (champs
+`User.hourlyRate`/`consultationFee`, boutons, appel `PATCH /api/instrumentists/{id}/rates`) ; seul le
+système historisé est affiché. Rien n'est supprimé côté données ni backend : l'endpoint legacy
+reste en place sans appelant, les anciens documents (`legacySource`) restent consultables.
+
+### Décision 4 — état d'encodage distinct du statut de planification
+
+- `EncodingState::NOT_DECLARED` (« Aucun encodage ») : mission terminée, `OPEN`, aucune activité
+  déclarée (D-155). Jamais déduite réalisée ni encodée de sa date ; hors KPI d'encodage attendu
+  (aucune instrumentiste à relancer), compteur `notDeclared` dans le résumé du suivi.
+- `MissionEncodingOverviewService` sert aux managers, sur la liste et le détail, le bloc `encoding` :
+  état (`EncodingStateResolver`, seule dérivation), auteur de la finalisation et de la validation
+  (journal d'audit, rôle sur la mission), verrous. Les états couvrent : aucun encodage, commencé
+  (« En cours »), terminé (« Soumis »), validé, verrouillé.
+- Affichage manager : une telle mission ne s'affiche plus « Publiée » (plus personne ne peut la
+  prendre) mais « Non couverte », avec « Encodage : aucun encodage » — lu sur cet état servi par
+  le backend, sans comparaison de date à l'écran ; le statut `OPEN` n'est pas modifié. Le badge
+  d'encodage n'est jamais affiché quand il répète le statut (« Encodage en cours », « Validée »…).
+- Liste manager : filtre « Sans instrumentiste » (`withoutInstrumentist`), combinable avec la période
+  « Passées », le statut, le site et la recherche, pour retrouver les missions passées sans
+  instrumentiste dont l'encodage est absent ou incomplet.
+- Le parcours d'une activité sans instrumentiste reste celui de D-155/D-171 : déclaration, encodage,
+  « Terminer et valider », calcul **firme seule** (aucune ligne instrumentiste n'est jamais créée
+  pour une instrumentiste absente).
+
+### Décision 5 — « Validée » et « Verrouillée » : seulement des verrous réels, par niveau
+
+`locks[]` : `ENCODING` (encodage validé, réouvrable), `FINANCIAL_CALCULATION` (calcul `LOCKED`),
+`DOCUMENT` (facture firme / décompte `SENT`/`PAID`, ou `invoiceGeneratedAt`), `CLOSED`. Chaque verrou
+porte sa raison ; un calcul approuvé n'en est pas un. L'écran garde le libellé du statut
+(« Validée ») et ajoute un cadenas (contour : encodage seul ; plein : verrou comptable), avec
+l'explication au survol, au focus clavier et en texte dans le tiroir mission et le suivi des
+encodages. Aucun statut métier n'est modifié pour l'affichage.
+
+### Décision 6 — délégué « Information non renseignée » (correction manager)
+
+Dans la correction manager (tiroir mission, suivi des encodages), la question devient « Délégué
+présent / Aucun délégué / Information non renseignée », toujours au niveau de l'intervention et de
+sa firme principale (D-092) et distincte de l'instrumentiste. « Non renseignée » envoie
+`representativePresenceUnknown: true`, réservé à `MissionVoter::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE`
+(manager pouvant corriger l'encodage) : la valeur reste `null`, jamais « non ». Les règles du backend
+s'appliquent ensuite sans exception : encodage non validable tant que la réponse est requise
+(`INTERVENTION_REPRESENTATIVE_PRESENCE`), calcul en anomalie. L'instrumentiste garde Oui/Non
+obligatoire. Chaque correction est tracée par le journal (champ, avant → après, auteur, date).
+
+### Décision 7 — missions annulées masquées dans la liste opérationnelle
+
+`GET /api/missions?excludeCancelled=true` (sans effet quand un statut est choisi) et
+`cancelledExcluded` (nombre masqué). La liste manager les masque par défaut, propose « Afficher les
+missions annulées », indique « annulées exclues (n masquées) » ou « annulées incluses », et affiche
+« Annulée » (également « Déclarée », « Refusée », auparavant en code brut). Planning, historique,
+journal d'activité, audits et fiches chirurgien sont inchangés.
+
+### Décision 8 — activité réalisée sans instrumentiste, encodage terminé par le chirurgien (complément)
+
+**Audit (aucune règle backend ne bloque le parcours).** Le chirurgien de la mission déclare l'activité
+(D-155, `ExecutedWithoutInstrumentistPolicy::canDeclare`), encode interventions, firmes et matériel
+(`SurgeonEncodingPolicy::canEditEncoding`, D-154 : mission commencée, encodage ouvert, aucun calcul
+`LOCKED`), puis soumet (`MissionVoter::SUBMIT` via `surgeonCanSubmit`, statut `SUBMITTED`) — sans
+`instrumentistId`, sans heures réelles. Le manager valide (`ENCODING_VALIDATE`, `expectedRevision`,
+pas de reprise : `encodingTakeover` nul) ; « Terminer et valider » (D-171) reste réservé à un encodage
+non soumis. Le calcul accepte `hasEncodableActivity()` et ne produit que des lignes firme ; aucune
+`MissionExecution`, aucune ligne ni décompte instrumentiste, complément instrumentiste refusé.
+L'auteur de la finalisation reste celui de `MISSION_ENCODING_COMPLETED` après la validation manager.
+La présence du délégué reste exigée quand la prestation la rend pertinente (422 avec motif).
+
+**Affichage (manager).** Le bloc `encoding` sert en plus `executedWithoutInstrumentist`,
+`interventionCount`, `materialLineCount` (enregistrés, jamais une preuve de finalisation).
+- Liste / tableau : soumise sans instrumentiste → statut « À valider » ; finalisée par le chirurgien
+  (`finalizedBy.role = SURGEON`, états soumis / validé / verrouillé) → badge « Encodage terminé par le
+  chirurgien » ; non soumise → « Encodage en cours » ; rien de déclaré → « Non couverte » + « Aucun
+  encodage ».
+- Tiroir mission et tiroir du suivi des encodages : le bloc « Heures » est remplacé par « Activité
+  opératoire » (réalisée sans instrumentiste et par qui, encodage terminé par le chirurgien ou finalisé
+  par…, « À valider » / « Validé par … », interventions et lignes enregistrées, disponibilité du calcul,
+  motif de blocage servi, horaires opératoires réels seulement s'ils existent, aucune prestation
+  instrumentiste). Avec une instrumentiste, le suivi des heures est inchangé.
+- La justification « aucun matériel » cite son auteur réel (plus « de l'instrumentiste » d'office).
+- Après calcul, approbation ou verrouillage, la mission et la liste sont relues (verrous à jour).
+
+**Tests.** `SurgeonEncodingWithoutInstrumentistD172Test` : A (rien de déclaré → `NOT_DECLARED`) ;
+B (encodé par le chirurgien, non soumis → `IN_PROGRESS`, `finalizedBy` nul, compteurs) ; C (soumis par
+le chirurgien → `SURGEON`, validation manager, auteur conservé, encodage verrouillé pour le chirurgien,
+calcul firme 135 € + 2 × 45 € calculé / approuvé / verrouillé, zéro `MissionExecution`, zéro ligne et
+décompte instrumentiste, réouverture refusée avec « Verrou financier ») ; refus : délégué non renseigné
+(422 avec motif), calcul obsolète après réouverture (409 `FINANCIAL_CALCULATION_INELIGIBLE`).
+Frontend : `ManagerMissionDrawer.test.tsx` (B, C soumise, C validée), `MissionsListPage.test.tsx`
+(B, C « À valider », C validée). Vérifié dans le navigateur : parcours chirurgien par l'API réelle,
+puis validation, calcul, approbation et verrouillage par le manager depuis l'interface.
+
+### Décision 9 — écrans chirurgien : on soumet au manager, on ne valide ni ne clôture (test navigateur)
+
+Vérification Playwright du parcours chirurgien complet (déclaration, intervention et firme, présence
+du délégué, matériel, reprise du brouillon dans une nouvelle session, soumission), puis manager
+(« À valider » + « Encodage terminé par le chirurgien », validation, calcul firme 135 € + 2 × 45 €,
+approbation, verrouillage, cadenas). Trois libellés contredisaient le rôle du chirurgien — l'action
+et les règles étaient correctes, seul l'affichage est corrigé :
+
+- récapitulatif d'une activité sans instrumentiste : « Récapitulatif avant soumission »,
+  « Soumettre l'encodage au manager », confirmation « Encodage soumis au manager pour validation »
+  (au lieu de « Valider et clôturer la mission » / « Mission clôturée ») ; le parcours instrumentiste
+  garde ses libellés ;
+- progression : « Tout est encodé. Vous pouvez soumettre l'encodage au manager. » quand l'action
+  offerte est la soumission (jamais « valider la mission ») ;
+- fiche mission après soumission (statut `SUBMITTED`) : « Encodage soumis — en attente de validation
+  par le manager », bouton « Modifier l'encodage » tant que le backend sert la correction, plus de
+  « Terminer l'encodage » (une nouvelle soumission n'a pas de sens).
+
+Tests : `SubmitDialog.test.tsx`, `EncodingProgress.test.tsx`, `MissionDetailPage.test.tsx`.
+
+### Rafraîchissement
+
+Toute écriture d'encodage (interventions, matériel) invalide aussi la liste Missions et le suivi des
+encodages : un ancien « Encodage en cours » ne reste plus affiché après une correction manager.
+
+### Points non résolus / hors périmètre
+
+- #1079 ne sera validable qu'après le déploiement de PR #47 puis de cette branche ; à faire par le
+  manager depuis l'interface (aucune modification de données en production).
+- Salve : après déploiement, la date d'effet du tarif 65 € se déplace au 01/10 depuis la fiche ; la
+  mission #1039 (calcul non verrouillé) sera alors signalée et recalculée par le manager. Rien n'a
+  été modifié en production.
+- L'endpoint legacy `PATCH /api/instrumentists/{id}/rates` reste en place (aucun appelant) ; sa
+  suppression éventuelle est une décision séparée.
+
+### Tests
+
+Backend : `InstrumentistRateEffectiveDateD172Test` (tarif créé le 11/10 applicable au 01/10 :
+missions du 01/10 au 10/10 recalculées à 65 €, 30/09 conservée à 40 €, 11/10 inchangée ; aperçu sans
+écriture ; audit ; approbation et verrouillage refusés sur un calcul obsolète ; période contenant un
+calcul verrouillé refusée sans aucune écriture ; historique jamais effacé ; remplacement rétroactif
+listant les calculs à recalculer), `InstrumentistRateServiceTest` (remplacement à date passée),
+`MissionsEncodingOverviewD172Test` (annulées masquées / comptées / statut explicite prioritaire /
+combinées ; `NOT_DECLARED` ; bloc réservé aux managers ; déclaration, intervention « non
+renseignée » enregistrée nulle puis validation refusée avec la vraie raison ; « Aucun délégué »,
+« Terminer et valider », auteur et validateur manager ; calcul firme seule ; verrous `ENCODING` puis
+`FINANCIAL_CALCULATION` ; instrumentiste refusée sur « non renseignée »),
+`EncodingStateResolverTest` (`NOT_DECLARED`). Frontend : `InstrumentistVersionedRates.test.tsx`
+(aucune mention de l'ancien flux, aperçu puis confirmation, calcul verrouillé bloquant),
+`ManagerMissionDrawer.test.tsx` (calcul à actualiser, état d'encodage, auteur, verrous),
+`MissionsListPage.test.tsx` (annulées, compteur, statut explicite, sans instrumentiste, badge et
+cadenas accessible), `EditInterventionDialog.test.tsx` (trois options manager, inconnue jamais
+« non »).

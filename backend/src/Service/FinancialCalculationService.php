@@ -50,6 +50,7 @@ final class FinancialCalculationService
         private readonly RepresentativePolicyResolver $representativePolicyResolver,
         private readonly RequiredChoiceGroupResolver $choiceGroupResolver,
         private readonly AuditService $audit,
+        private readonly ?InstrumentistRateStalenessService $tariffStaleness = null,
     ) {}
 
     /**
@@ -171,6 +172,7 @@ final class FinancialCalculationService
             throw new FinancialCalculationIneligibleException('Only a CALCULATED calculation can be approved.');
         }
         $this->assertNotObsolete($calculation);
+        $this->assertTariffStillApplicable($calculation);
 
         $calculation->setStatus(FinancialCalculationStatus::APPROVED);
         $calculation->setApprovedAt(new \DateTimeImmutable());
@@ -189,6 +191,7 @@ final class FinancialCalculationService
             throw new FinancialCalculationIneligibleException('Only an APPROVED calculation can be locked.');
         }
         $this->assertNotObsolete($calculation);
+        $this->assertTariffStillApplicable($calculation);
 
         $calculation->setStatus(FinancialCalculationStatus::LOCKED);
         $calculation->setLockedAt(new \DateTimeImmutable());
@@ -225,6 +228,18 @@ final class FinancialCalculationService
     {
         if ($calculation->isObsolete()) {
             throw new FinancialCalculationIneligibleException(self::OBSOLETE_MESSAGE);
+        }
+    }
+
+    /**
+     * D-172 — un calcul dont le tarif instrumentiste applicable a changé depuis (date d'effet
+     * modifiée) n'est jamais approuvé ni verrouillé avec l'ancien montant : recalculer d'abord.
+     */
+    private function assertTariffStillApplicable(FinancialCalculation $calculation): void
+    {
+        $reason = $this->tariffStaleness?->staleReasonOfCalculation($calculation);
+        if ($reason !== null) {
+            throw new FinancialCalculationIneligibleException($reason);
         }
     }
 
