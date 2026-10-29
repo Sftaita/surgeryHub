@@ -6,6 +6,13 @@ import { MemoryRouter } from "react-router-dom";
 import { MissionTrackingDrawer } from "./MissionTrackingDrawer";
 import { ToastProvider } from "../../../ui/toast/ToastProvider";
 import type { EncodingTrackingItem } from "../api/encodingTracking.api";
+import { HOURS_COMPARISON_TONE } from "../encodingStateMeta";
+
+/** jsdom normalise les couleurs en rgb(). */
+function rgb(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+}
 
 const fetchMissionByIdMock = vi.fn();
 const getMissionExecutionMock = vi.fn();
@@ -311,6 +318,105 @@ describe("MissionTrackingDrawer", () => {
     // la ligne Planifié, la ligne Réel affiche « — ».
     expect(screen.getAllByText("4 h")).toHaveLength(1);
     expect(within(screen.getByText("Réel").parentElement!).getByText("—")).toBeInTheDocument();
+  });
+
+  // Heures réelles affichées telles que déclarées (GET .../execution), jamais complétées par le planning.
+  const realExecution = (overrides: object) => ({
+    hasExecutionRecord: true, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: "INSTRUMENTIST",
+    effectiveDurationMinutes: 240, effectiveDurationSource: "PLANNED", disputes: [], ...overrides,
+  });
+  const overPlan = { plannedMinutes: 240, effectiveMinutes: 510, effectiveSource: "ACTUAL_EXPLICIT" as const, hasRealHours: true, comparison: "OVER_PLAN" as const };
+
+  it("heures réelles 07:00–15:30 : les deux bornes et 8 h 30", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({
+      actualStartAt: "2026-09-10T07:00:00+02:00", actualEndAt: "2026-09-10T15:30:00+02:00", effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_TIMES",
+    }));
+    renderDrawer(makeItem({ hours: { ...overPlan, effectiveSource: "ACTUAL_TIMES" } }));
+    await screen.findByText("07:00 → 15:30");
+    expect(screen.getByText("Réel").parentElement!).toHaveTextContent("8 h 30");
+    expect(screen.getByTestId("drawer-hours-status")).toHaveTextContent("Dépasse le temps planifié");
+    expect(screen.queryByTestId("drawer-hours-note")).toBeNull();
+  });
+
+  it("durée seule : durée déclarée, début et fin « non renseignés », explication et correction proposée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "edit_hours"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ hours: overPlan }));
+    expect(await screen.findByText("Durée déclarée · début et fin non renseignés")).toBeInTheDocument();
+    expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent(
+      "Une durée réelle de 8h30 a été déclarée, mais les heures de début et de fin n'ont pas été renseignées. Utilisez « Corriger les heures » pour renseigner les horaires.",
+    );
+    // Aucune borne reconstruite depuis le planifié (08:00–12:00).
+    expect(within(screen.getByText("Réel").parentElement!).queryByText(/08:00|12:00|16:30/)).toBeNull();
+  });
+
+  it("début seul : « Déclaration incomplète », la fin reste non renseignée, aucune durée inventée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualStartAt: "2026-09-10T07:00:00+02:00" }));
+    renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } }));
+    expect(await screen.findByText("Début 07:00 · fin non renseignée")).toBeInTheDocument();
+    expect(screen.getByTestId("drawer-hours-status")).toHaveTextContent("Déclaration incomplète");
+    expect(screen.getAllByText("4 h")).toHaveLength(1);
+    expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Déclaration incomplète : l'heure de fin n'a pas été renseignée.");
+  });
+
+  it("validée, réouverture servie : l'explication renvoie à la réouverture, aucune correction directe", async () => {
+    fetchMissionByIdMock.mockResolvedValue({
+      id: 42, status: "VALIDATED", allowedActions: ["view", "reopen"],
+      encoding: { locks: [{ level: "ENCODING", label: "Encodage verrouillé", reason: "Encodage validé." }] },
+    });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ missionStatus: "VALIDATED", hours: overPlan }));
+    await waitFor(() => expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Les heures sont verrouillées avec l'encodage : une correction passe par sa réouverture."));
+    expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+  });
+
+  it("verrou financier : le motif servi est affiché, jamais une réouverture impossible", async () => {
+    fetchMissionByIdMock.mockResolvedValue({
+      id: 42, status: "VALIDATED", allowedActions: ["view"], encodingCorrectionBlockedReason: "Verrou financier : le calcul de cette mission est intégré à un document financier. Son encodage ne peut plus être rouvert.",
+      encoding: { locks: [{ level: "FINANCIAL_CALCULATION", label: "Calcul financier verrouillé", reason: "Calcul verrouillé." }] },
+    });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ missionStatus: "VALIDATED", hours: overPlan }));
+    await waitFor(() => expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Les heures ne sont plus modifiables. Verrou financier : le calcul de cette mission est intégré à un document financier. Son encodage ne peut plus être rouvert."));
+    expect(screen.getByTestId("drawer-hours-note")).not.toHaveTextContent("une correction passe par sa réouverture");
+    expect(screen.getByTestId("drawer-hours-note")).not.toHaveTextContent("Corriger les heures");
+    expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+  });
+
+  // Barre « Réel » : remplie uniquement par une durée réellement déclarée.
+  const barFill = () => screen.getByTestId("drawer-real-bar-fill");
+
+  it("barre « Réel » vide et neutre sans heure déclarée, même si le backend sert le planifié de repli", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } }));
+    await waitFor(() => expect(getMissionExecutionMock).toHaveBeenCalled());
+    expect(barFill()).toHaveStyle({ width: "0%", background: rgb(HOURS_COMPARISON_TONE.NO_REAL_HOURS.bar) });
+  });
+
+  it("barre « Réel » vide et neutre pour un début seul sans durée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualStartAt: "2026-09-10T07:00:00+02:00" }));
+    renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } }));
+    await screen.findByText("Début 07:00 · fin non renseignée");
+    expect(barFill()).toHaveStyle({ width: "0%", background: rgb(HOURS_COMPARISON_TONE.NO_REAL_HOURS.bar) });
+  });
+
+  it("barre « Réel » : durée déclarée sous le planifié → progression proportionnelle, verte", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 180, effectiveDurationMinutes: 180, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 180, effectiveSource: "ACTUAL_EXPLICIT", hasRealHours: true, comparison: "WITHIN_PLAN" } }));
+    await screen.findByText("Durée déclarée · début et fin non renseignés");
+    expect(barFill()).toHaveStyle({ width: "75%", background: rgb(HOURS_COMPARISON_TONE.WITHIN_PLAN.bar) });
+  });
+
+  it("barre « Réel » : durée déclarée au-delà du planifié → pleine, orange", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ hours: overPlan }));
+    await screen.findByText("Durée déclarée · début et fin non renseignés");
+    expect(barFill()).toHaveStyle({ width: "100%", background: rgb(HOURS_COMPARISON_TONE.OVER_PLAN.bar) });
   });
 
   it("« Rappeler les heures » n'apparaît que si allowedActions contient remind_hours", async () => {

@@ -51,9 +51,12 @@ export interface HistoryEvent { id: string; when: string; what: string; who: str
 export interface DrawerHours {
   planStart: string;
   planEnd: string;
-  /** null = aucune heure déclarée. start/end null = durée seule (ACTUAL_EXPLICIT). */
-  real: { start: string | null; end: string | null; minutes: number } | null;
+  /** Heures réellement déclarées (realHoursOf) — jamais complétées à partir du planning. */
+  real: RealHours;
+  /** Précision du PLANNING (« Planning : horaire confirmé »), jamais une confirmation des heures prestées. */
   precision: string;
+  /** Suite de l'explication : action réellement disponible ou motif de blocage servi (hoursCorrectionHint). */
+  correctionHint: string;
   openDisputes: number;
   disputes: DrawerDispute[];
 }
@@ -63,6 +66,7 @@ export interface DrawerDispute { id: number; reason: string; status: string; ope
 export interface DrawerEncodingReview { flags: string[]; comments: { id: number; text: string; who: string; when: string }[]; }
 
 import type { OperativeActivity } from "../components/OperativeActivityCard";
+import type { RealHours } from "../utils/realHours";
 
 export interface MissionDrawerView {
   id: number;

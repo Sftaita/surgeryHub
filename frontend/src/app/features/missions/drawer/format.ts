@@ -1,4 +1,5 @@
 import type { FinanceGroup } from './types';
+import type { RealHours } from '../utils/realHours';
 
 const BRUSSELS_TZ = 'Europe/Brussels';
 
@@ -25,25 +26,38 @@ export type Tone = { bg: string; fg: string };
 export const OK: Tone = { bg: 'var(--green-50)', fg: 'var(--green-800)' };
 export const WARN: Tone = { bg: 'var(--amber-50)', fg: 'var(--amber-700)' };
 export const PLAN: Tone = { bg: 'var(--gray-150)', fg: 'var(--gray-700)' };
+/** Valeur réelle non déclarée ou non comparable : jamais colorée comme conforme ou dépassée. */
+export const NEUTRAL: Tone = { bg: 'var(--gray-75)', fg: 'var(--gray-500)' };
 
 /**
  * Compare planifié / réel — COULEUR D'AFFICHAGE uniquement, à partir des valeurs servies
- * (horaire planifié de la mission, heures prestées de GET .../execution).
- * Chaque valeur réelle porte sa propre couleur : début plus tôt, fin plus tard,
- * total plus long → ambre ; sinon vert.
+ * (horaire planifié de la mission, heures déclarées de GET .../execution, via realHoursOf).
+ * Seule une valeur réelle effectivement déclarée est colorée : début plus tôt, fin plus tard,
+ * total plus long → ambre ; sinon vert. Une valeur absente est neutre (« Non renseigné ») et
+ * n'est jamais remplacée par le planifié ; aucun dépassement n'est affirmé sans durée réelle.
  */
-export function compareHours(planStart: string, planEnd: string, real: { start: string | null; end: string | null; minutes: number } | null) {
+export function compareHours(planStart: string, planEnd: string, real: RealHours) {
   const pD = minutesBetween(planStart, planEnd);
-  const base = { pStart: hh(planStart), pEnd: hh(planEnd), pTotal: fmtDur(pD) };
-  if (!real) return { ...base, started: false as const, label: 'Pas encore réalisée', labelFg: 'var(--gray-400)' };
+  const base = { pStart: hh(planStart), pEnd: hh(planEnd), pTotal: fmtDur(pD), note: real.note };
+  if (real.kind === 'NONE') {
+    return { ...base, started: false as const, label: 'Heures réelles non déclarées', labelFg: 'var(--gray-500)' };
+  }
+  const missing = { v: 'Non renseigné', ...NEUTRAL };
   const rD = real.minutes;
+  const durationOnly = real.kind === 'DURATION_ONLY';
+  const over = rD != null && rD > pD;
+  const label = real.kind === 'PARTIAL'
+    ? (over ? `Déclaration incomplète · durée déclarée supérieure au planifié de ${fmtDur(rD - pD)}` : 'Déclaration incomplète')
+    : over
+      ? `${durationOnly ? 'Durée déclarée : dépasse' : 'Dépasse'} le planifié de ${fmtDur(rD - pD)}`
+      : `${durationOnly ? 'Durée déclarée conforme' : 'Conforme'} au planifié`;
   return {
     ...base, started: true as const,
-    rStart: real.start ? { v: hh(real.start), ...(new Date(real.start) < new Date(planStart) ? WARN : OK) } : { v: '—', ...PLAN },
-    rEnd: real.end ? { v: hh(real.end), ...(new Date(real.end) > new Date(planEnd) ? WARN : OK) } : { v: '—', ...PLAN },
-    rTotal: { v: fmtDur(rD), ...(rD > pD ? WARN : OK) },
-    label: rD > pD ? `Dépasse le planifié de ${fmtDur(rD - pD)}` : 'Conforme au planifié',
-    labelFg: rD > pD ? 'var(--amber-700)' : 'var(--green-700)',
+    rStart: real.start ? { v: hh(real.start), ...(new Date(real.start) < new Date(planStart) ? WARN : OK) } : missing,
+    rEnd: real.end ? { v: hh(real.end), ...(new Date(real.end) > new Date(planEnd) ? WARN : OK) } : missing,
+    rTotal: rD != null ? { v: durationOnly ? `${fmtDur(rD)} · déclarée` : fmtDur(rD), ...(over ? WARN : OK) } : { v: '—', ...NEUTRAL },
+    label,
+    labelFg: real.kind === 'PARTIAL' ? 'var(--gray-600)' : over ? 'var(--amber-700)' : 'var(--green-700)',
   };
 }
 

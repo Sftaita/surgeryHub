@@ -82,7 +82,7 @@ function renderDrawer(
 }
 
 /** Le corps n'est rendu qu'une fois la mission chargée. */
-const loaded = () => screen.findByTestId(/^drawer-hours/);
+const loaded = () => screen.findByTestId(/^drawer-hours(-without-instrumentist)?$/);
 
 beforeEach(() => {
   apiGetMock.mockReset();
@@ -234,7 +234,7 @@ describe("ManagerMissionDrawer — heures et contestations", () => {
 
   it("mission classique sans heures déclarées : frise vide, aucune contestation", async () => {
     renderDrawer(baseMission({ status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] }));
-    expect(await screen.findByText("Pas encore d’heures déclarées")).toBeInTheDocument();
+    expect(await screen.findByTestId("drawer-hours-none")).toHaveTextContent("Heures réelles non déclarées");
     expect(screen.queryByTestId("drawer-disputes")).toBeNull();
     expect(screen.queryByTestId("drawer-hours-without-instrumentist")).toBeNull();
   });

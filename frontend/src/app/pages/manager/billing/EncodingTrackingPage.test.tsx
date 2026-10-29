@@ -228,7 +228,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     await waitFor(() => expect(screen.getByText("5 h 12")).toBeInTheDocument());
     expect(screen.getByText("/ 5 h")).toBeInTheDocument();
-    expect(screen.getByText("Heures prestées")).toBeInTheDocument();
+    expect(screen.getByText("Début et fin déclarés")).toBeInTheDocument();
   });
 
   it("n'affiche jamais d'heures « effectives » quand la source est PLANNED (pas de champ encodedMinutes fantôme)", async () => {
