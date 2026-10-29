@@ -3,6 +3,7 @@ import { Box, CircularProgress, Dialog, DialogContent, DialogTitle, Tooltip } fr
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MissionLocksIndicator } from "../../missions/components/MissionEncodingBadge";
 import { buildOperativeActivity, OperativeActivityBody } from "../../missions/components/OperativeActivityCard";
+import { hoursCorrectionHint, realHoursOf } from "../../missions/utils/realHours";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
@@ -366,13 +367,28 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   const planRange = item.startAt && item.endAt
     ? `${formatDateTime(item.startAt).slice(-5)} → ${formatDateTime(item.endAt).slice(-5)}`
     : "—";
-  const realRange = executionQuery.data?.actualStartAt && executionQuery.data?.actualEndAt
-    ? `${formatDateTime(executionQuery.data.actualStartAt).slice(-5)} → ${formatDateTime(executionQuery.data.actualEndAt).slice(-5)}`
-    : item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : HOURS_COMPARISON_TONE.NO_REAL_HOURS.label;
+  // Heures réellement déclarées (même lecture que le tiroir mission) : jamais complétées par le planifié.
+  const real = executionQuery.data ? realHoursOf(executionQuery.data) : null;
+  const clock = (iso: string) => formatDateTime(iso).slice(-5);
+  const realRange = real?.kind === "TIMES"
+    ? `${clock(real.start!)} → ${clock(real.end!)}`
+    : real?.kind === "DURATION_ONLY"
+      ? "Durée déclarée · début et fin non renseignés"
+      : real?.kind === "PARTIAL"
+        ? (real.start ? `Début ${clock(real.start)} · fin non renseignée` : `Début non renseigné · fin ${clock(real.end!)}`)
+        : item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : HOURS_COMPARISON_TONE.NO_REAL_HOURS.label;
+  // Durée réellement déclarée, ou null : le planifié de repli (source PLANNED) n'est jamais une
+  // prestation effectuée — ni total, ni barre « Réel » remplie, ni couleur de comparaison.
+  const realMinutes = real ? real.minutes : item.hours.hasRealHours ? item.hours.effectiveMinutes : null;
+  const realTotal = realMinutes != null ? formatMinutes(realMinutes) : "—";
   const hoursTone = HOURS_COMPARISON_TONE[item.hours.comparison];
-  const realPct = item.hours.plannedMinutes > 0
-    ? Math.min(100, Math.round((item.hours.effectiveMinutes / item.hours.plannedMinutes) * 100))
+  const realTone = realMinutes != null ? hoursTone : HOURS_COMPARISON_TONE.NO_REAL_HOURS;
+  // Une saisie partielle n'est ni « non renseignée » ni comparable : on le dit.
+  const hoursStatusLabel = real?.kind === "PARTIAL" ? "Déclaration incomplète" : hoursTone.label;
+  const realPct = realMinutes != null && item.hours.plannedMinutes > 0
+    ? Math.min(100, Math.round((realMinutes / item.hours.plannedMinutes) * 100))
     : 0;
+  const hoursHint = hoursCorrectionHint(missionQuery.data);
 
   const automaticHistory = automaticRemindersLabel(missionQuery.data?.automaticReminders);
   const reminderTooltip = [
@@ -505,7 +521,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
             <Eyebrow>HEURES</Eyebrow>
             <Box data-testid="drawer-hours-status" data-hours-comparison={item.hours.comparison} sx={{ fontSize: 11.5, fontWeight: 800, color: hoursTone.fg }}>
-              {hoursTone.label}
+              {hoursStatusLabel}
             </Box>
             {canRemindHours && (
               <Tooltip title={hoursReminderTooltip} describeChild>
@@ -544,8 +560,14 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           </Box>
           <Box sx={{ display: "flex", flexDirection: "column", gap: "7px" }}>
             <Bar label="Planifié" text={planRange} total={formatMinutes(item.hours.plannedMinutes)} pct={100} color={GRAY_400} plan />
-            <Bar label="Réel" text={realRange} total={item.hours.hasRealHours ? formatMinutes(item.hours.effectiveMinutes) : "—"} totalColor={hoursTone.fg} pct={realPct} color={hoursTone.bar} />
+            <Bar label="Réel" text={realRange} total={realTotal} totalColor={realTone.fg} pct={realPct} color={realTone.bar} />
           </Box>
+          {real?.note && (
+            <Box data-testid="drawer-hours-note" sx={{ fontSize: 12, fontWeight: 600, lineHeight: 1.45, color: GRAY_600 }}>
+              {real.note}
+              {hoursHint && ` ${hoursHint}`}
+            </Box>
+          )}
         </Card>
         )}
 
@@ -870,7 +892,7 @@ function Bar({ label, text, total, totalColor, pct, color, plan }: { label: stri
     <Box sx={{ display: "flex", alignItems: "center", gap: "10px" }}>
       <Box sx={{ width: 56, flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: GRAY_500 }}>{label}</Box>
       <Box sx={{ flex: 1, height: 22, borderRadius: "7px", background: plan ? GRAY_100 : GRAY_75, position: "relative", overflow: "hidden" }}>
-        {!plan && <Box sx={{ position: "absolute", inset: "0 auto 0 0", width: `${pct}%`, borderRadius: "7px", background: color }} />}
+        {!plan && <Box data-testid="drawer-real-bar-fill" sx={{ position: "absolute", inset: "0 auto 0 0", width: `${pct}%`, borderRadius: "7px", background: color }} />}
         <Box sx={{ position: "absolute", left: 9, top: 3, fontSize: 11.5, fontWeight: 700, color: GRAY_700, fontVariantNumeric: "tabular-nums" }}>{text}</Box>
       </Box>
       <Box sx={{ width: 50, flexShrink: 0, textAlign: "right", fontSize: 12.5, fontWeight: 800, color: totalColor ?? GRAY_950, fontVariantNumeric: "tabular-nums" }}>{total}</Box>
