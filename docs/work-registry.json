@@ -730,7 +730,7 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Jusqu'à deux pastilles et un cadenas par mission dans la liste manager.",
-      "status": "pr-ouverte",
+      "status": "fusionne",
       "refs": {
         "branches": [
           "feat/mission-status-pill"
@@ -739,9 +739,11 @@
         "worktrees": [
           "SurgicalHub-mission-status"
         ],
-        "prs": []
+        "prs": [
+          52
+        ]
       },
-      "nextAction": "Fusionner après CI, puis déployer avec D-173 (v2026.10.29-prod-2) sur autorisation explicite. Point produit ouvert : onglet « À valider » = DECLARED.",
+      "nextAction": "Déployer avec D-173 dans v2026.10.29-prod-2, sur autorisation explicite. Point produit ouvert : l'onglet « À valider » et le compteur du tableau de bord ciblent DECLARED, la pastille « À valider » SUBMITTED.",
       "lastReviewed": "2026-10-29"
     }
   ]
