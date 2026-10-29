@@ -6,24 +6,7 @@ import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
 import type { Mission, MissionEncodingOverview } from "../api/missions.types";
 import { formatMissionStatus, formatMissionType, formatPersonLabel } from "../utils/missions.format";
 import { formatBrusselsTime, formatDayLabel, groupByDay, relativeDayLabel } from "../utils/dayGroups";
-import { MissionEncodingBadge } from "./MissionEncodingBadge";
-
-type ChipColor = "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning";
-
-export function statusChipColor(status: string): ChipColor {
-  switch (status) {
-    case "DRAFT": return "default";
-    case "OPEN": return "info";
-    case "ASSIGNED": return "primary";
-    case "SUBMITTED": return "warning";
-    case "DECLARED": return "warning";
-    case "VALIDATED": return "success";
-    case "CLOSED": return "default";
-    case "REJECTED": return "error";
-    case "CANCELLED": return "error";
-    default: return "default";
-  }
-}
+import { MissionStatusCell, missionDisplayStatus } from "../status";
 
 /**
  * D-172 — une mission passée, publiée sans instrumentiste et sans activité déclarée n'est plus
@@ -37,19 +20,6 @@ export function missionStatusLabel(status?: string | null, encoding?: Pick<Missi
   // est la validation manager.
   if (status === "SUBMITTED" && encoding?.executedWithoutInstrumentist) return "À valider";
   return formatMissionStatus(status);
-}
-
-export function MissionStatusChip({ status, encoding }: { status?: string | null; encoding?: Pick<MissionEncodingOverview, "state" | "executedWithoutInstrumentist"> | null }) {
-  const s = String(status ?? "");
-  const uncoveredPast = s === "OPEN" && encoding?.state === "NOT_DECLARED";
-  return (
-    <Chip
-      label={missionStatusLabel(s, encoding)}
-      color={uncoveredPast ? "default" : statusChipColor(s)}
-      size="small"
-      variant={s === "DRAFT" || s === "CLOSED" || s === "CANCELLED" ? "outlined" : "filled"}
-    />
-  );
 }
 
 function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (m: Mission) => void; selected: boolean }) {
@@ -66,7 +36,7 @@ function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(mission); } }}
       sx={{
         display: "grid",
-        gridTemplateColumns: { xs: "1fr auto", md: "120px minmax(180px, 1.4fr) minmax(140px, 1fr) minmax(140px, 1fr) minmax(130px, 210px) 24px" },
+        gridTemplateColumns: { xs: "1fr auto", md: "120px minmax(180px, 1.4fr) minmax(140px, 1fr) minmax(140px, 1fr) 220px 24px" },
         alignItems: "center",
         columnGap: 2,
         rowGap: 0.5,
@@ -102,11 +72,10 @@ function MissionRow({ mission, onOpen, selected }: { mission: Mission; onOpen: (
         </Typography>
       </Stack>
 
-      <Stack spacing={0.5} alignItems={{ xs: "flex-end", md: "flex-start" }} sx={{ gridRow: { xs: "1 / 2", md: "auto" }, gridColumn: { xs: "2 / 3", md: "auto" }, justifySelf: { xs: "end", md: "start" } }}>
-        <MissionStatusChip status={mission.status} encoding={mission.encoding} />
-        {/* D-172 — statut de planification et état d'encodage restent deux informations distinctes. */}
-        <MissionEncodingBadge encoding={mission.encoding} status={mission.status} />
-      </Stack>
+      {/* Maquette « Statut missions » § 2a — une pastille + une ligne grise, plus de badge d'encodage ni de cadenas. */}
+      <Box sx={{ minWidth: 0, maxWidth: 220, gridRow: { xs: "1 / 2", md: "auto" }, gridColumn: { xs: "2 / 3", md: "auto" }, justifySelf: { xs: "end", md: "start" } }}>
+        <MissionStatusCell status={missionDisplayStatus(mission)} />
+      </Box>
 
       <ChevronRightIcon sx={{ color: "text.disabled", display: { xs: "none", md: "block" } }} />
     </Box>

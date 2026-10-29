@@ -63,6 +63,10 @@ final class MissionEncodingOverviewService
             $overview[$id] = [
                 'state'       => $state->value,
                 'stateLabel'  => $state->label(),
+                // Début planifié passé, avec le même $now que `state` : distingue une mission
+                // commencée d'une mission à venir quand le statut ne le dit pas (OPEN, ASSIGNED
+                // avant le cron de démarrage) — jamais une heure comparée côté client.
+                'started'     => $mission->getStartAt() !== null && $mission->getStartAt() <= $now,
                 // Activité déclarée réalisée sans instrumentiste (D-155) — un fait, jamais déduit.
                 'executedWithoutInstrumentist' => $mission->isExecutedWithoutInstrumentist(),
                 // Ce qui est enregistré, finalisé ou non : jamais une preuve de finalisation.

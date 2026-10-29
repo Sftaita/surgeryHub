@@ -1,0 +1,73 @@
+/* Tokens de la maquette, portés par la cellule seule (aucune variable globale) : mêmes
+   valeurs que le tiroir mission (mission-drawer.css). Les --status-* n'existent pas dans
+   le dépôt : ils reprennent les teintes 50 / 700-800 de cette palette. */
+.mst-cell {
+  --gray-100: #EEF1F4; --gray-300: #BBC2CB; --gray-400: #98A2AE; --gray-500: #727E8C;
+  --gray-600: #5A6675; --gray-700: #3A4754;
+  --green-500: #42A882; --green-600: #338F6E; --amber-500: #F0A91B; --red-600: #E5484D; --blue-600: #2F74E8;
+  --status-ok-surface: #EFFAF5;   --status-ok-fg: #1F6B4F;
+  --status-warn-surface: #FEF6E7; --status-warn-fg: #B7791F;
+  --status-crit-surface: #FDEEEE; --status-crit-fg: #C62F36;
+  --status-info-surface: #EDF4FF; --status-info-fg: #1B5FD0;
+  font-family: Inter, system-ui, sans-serif;
+  /* Les cellules DataGrid imposent line-height = hauteur de ligne : la légende ne doit pas en hériter. */
+  line-height: normal;
+}
+
+/* =============================================================================
+   Statut mission (liste admin) — Surgery Hub.
+   Valeurs validées sur maquette « Statut missions - options » § 2a. Ne pas arrondir.
+   Tokens attendus : --gray-*, --green-*, --amber-500, --red-600, --blue-600,
+                     --status-{ok,warn,crit,info}-{fg,surface}.
+   ============================================================================= */
+.mst-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
+
+.mst-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: 999px;
+  font-size: 13px; font-weight: 700; line-height: 1;
+  white-space: nowrap;
+}
+.mst-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: currentColor; }
+
+.mst-caption {
+  padding-left: 2px;
+  font-size: 12px; color: var(--gray-500);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+/* Seconde ligne (D-172 : encodage terminé par le chirurgien) : tient dans une ligne de 64 px. */
+.mst-caption--detail { margin-top: -3px; }
+
+/* ---------- Avant la mission ---------- */
+.mst-pill--brouillon   { background: #fff; border-color: var(--gray-300); color: var(--gray-700); }
+.mst-pill--brouillon .mst-dot { background: var(--gray-400); }
+.mst-pill--publiee     { background: var(--status-info-surface); color: var(--status-info-fg); }
+.mst-pill--publiee .mst-dot { background: var(--blue-600); }
+.mst-pill--assignee    { background: var(--status-ok-surface); color: var(--status-ok-fg); }
+.mst-pill--assignee .mst-dot { background: var(--green-500); }
+.mst-pill--annulee     { background: var(--gray-100); color: var(--gray-600); }
+.mst-pill--annulee .mst-dot { background: var(--gray-400); }
+
+/* ---------- Jour J ---------- */
+.mst-pill--encours     { background: var(--status-ok-surface); color: var(--status-ok-fg); }
+.mst-pill--encours .mst-dot { background: var(--green-500); }
+
+/* ---------- Après la mission ---------- */
+/* Non couverte = neutre (pas dramatique). À encoder = rouge (seule action urgente). */
+.mst-pill--noncouverte { background: var(--gray-100); color: var(--gray-700); }
+.mst-pill--noncouverte .mst-dot { background: var(--gray-400); }
+.mst-pill--aencoder    { background: var(--status-crit-surface); color: var(--status-crit-fg); }
+.mst-pill--aencoder .mst-dot { background: var(--red-600); }
+.mst-pill--encodage    { background: var(--status-warn-surface); color: var(--status-warn-fg); }
+.mst-pill--encodage .mst-dot { background: var(--amber-500); }
+.mst-pill--soumise     { background: var(--status-info-surface); color: var(--status-info-fg); }
+.mst-pill--soumise .mst-dot { background: var(--blue-600); }
+/* Validée = seule pastille PLEINE : état final. */
+.mst-pill--validee     { background: var(--green-600); color: #fff; }
+.mst-pill--validee .mst-dot { background: #fff; }
+
+/* Statut backend hors maquette (DECLARED, REJECTED) : neutre. */
+.mst-pill--autre       { background: var(--gray-100); color: var(--gray-700); }
+.mst-pill--autre .mst-dot { background: var(--gray-400); }

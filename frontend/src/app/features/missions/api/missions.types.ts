@@ -102,6 +102,8 @@ export type MissionEncodingActor = { name: string | null; role: "INSTRUMENTIST" 
 export type MissionEncodingOverview = {
   state: MissionEncodingState;
   stateLabel: string;
+  /** Début planifié passé, avec la même horloge serveur que `state` — jamais comparé côté client. */
+  started?: boolean;
   /** Activité déclarée réalisée sans instrumentiste (D-155) — un fait backend. */
   executedWithoutInstrumentist?: boolean;
   /** Interventions et lignes de matériel enregistrées — jamais une preuve de finalisation. */
