@@ -630,7 +630,7 @@
       "kind": "fix",
       "priority": "P1",
       "userImpact": "Les managers ne peuvent pas valider les missions encodées sans instrumentiste (#1079).",
-      "status": "teste",
+      "status": "deploye",
       "refs": {
         "branches": [
           "feat/encodage-sans-instrumentiste"
@@ -646,14 +646,16 @@
           47
         ]
       },
-      "nextAction": "PR ouverte ; déploiement uniquement après accord final sur le rapport d'écart ; #1079 validée ensuite via l'interface.",
-      "lastReviewed": "2026-10-27",
+      "nextAction": "Déployé v2026.10.29-prod (8b3a962). Reste : « Terminer et valider » de #1079 par un manager depuis l'interface, puis calcul firme.",
+      "lastReviewed": "2026-10-29",
       "pendingOps": [
         {
           "type": "reprise-donnees",
-          "status": "en-attente",
+          "status": "fait",
           "description": "Migration additive Version20261027090000 (mission.encoding_validated_without_hours_at) à jouer au déploiement",
-          "validation": "accord final de déploiement"
+          "validation": "accord final de déploiement",
+          "confirmedAt": "2026-10-29",
+          "evidence": "deploy.sh migrate 2026-10-29 05:37:18 UTC : Version20261027090000 exécutée, 91/91, colonnes présentes (docs/production.md, v2026.10.29-prod)."
         },
         {
           "type": "validation",
@@ -670,7 +672,7 @@
       "kind": "fix",
       "priority": "P1",
       "userImpact": "Tarif de Salve inapplicable avant le 11/10 ; missions passées sans instrumentiste illisibles ; Validée/Verrouillée confondues ; listes encombrées d'annulées.",
-      "status": "pr-ouverte",
+      "status": "deploye",
       "refs": {
         "branches": [
           "fix/tarifs-missions-encodage"
@@ -683,8 +685,8 @@
           48
         ]
       },
-      "nextAction": "PR #48 empilée sur #47 : fusionner #47 d'abord, vérifier la compatibilité avec main et relancer les tests, puis #48 ; aucun déploiement sans accord.",
-      "lastReviewed": "2026-10-28",
+      "nextAction": "Déployé v2026.10.29-prod (8b3a962). Reste : opérations manuelles Salve/#1039 et #1079, puis validation fonctionnelle utilisateur.",
+      "lastReviewed": "2026-10-29",
       "pendingOps": [
         {
           "type": "validation",
