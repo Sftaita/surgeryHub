@@ -37,6 +37,8 @@
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
   font-variant-numeric: tabular-nums;
 }
+/* Seconde ligne (D-172 : encodage terminé par le chirurgien) : tient dans une ligne de 64 px. */
+.mst-caption--detail { margin-top: -3px; }
 
 /* ---------- Avant la mission ---------- */
 .mst-pill--brouillon   { background: #fff; border-color: var(--gray-300); color: var(--gray-700); }

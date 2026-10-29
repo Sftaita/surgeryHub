@@ -15,7 +15,8 @@ export function MissionStatusCell({ status, hideCaption = false }: Props) {
         <span className="mst-dot" aria-hidden="true" />
         {status.label}
       </span>
-      {status.caption && !hideCaption ? <span className="mst-caption">{status.caption}</span> : null}
+      {status.caption && !hideCaption ? <span className="mst-caption" title={status.caption}>{status.caption}</span> : null}
+      {status.detail && !hideCaption ? <span className="mst-caption mst-caption--detail" title={status.detail}>{status.detail}</span> : null}
     </div>
   );
 }

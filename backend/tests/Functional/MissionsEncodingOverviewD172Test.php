@@ -193,6 +193,30 @@ final class MissionsEncodingOverviewD172Test extends WebTestCase
         self::assertArrayHasKey($assigned->getId(), $all['items']);
     }
 
+    public function test_started_is_served_with_the_same_clock_as_the_encoding_state(): void
+    {
+        $client = $this->boot();
+        $manager = $this->user('ROLE_MANAGER', 'Sophie');
+        $surgeon = $this->user('ROLE_SURGEON', 'Arnaud');
+        $site = $this->site();
+        $upcoming = (int) $this->mission($site, $surgeon, MissionStatus::OPEN, '+2 hours')->getId();
+        $running = (int) $this->mission($site, $surgeon, MissionStatus::OPEN, '-1 hour')->getId();
+        $ended = (int) $this->mission($site, $surgeon, MissionStatus::OPEN, '-6 hours')->getId();
+        $token = $this->login($client, $manager);
+
+        $items = $this->listed($client, $token, 'siteId=' . $site->getId())['items'];
+        self::assertFalse($items[$upcoming]['encoding']['started']);
+        self::assertSame('NOT_APPLICABLE', $items[$upcoming]['encoding']['state']);
+        // Commencée, pas terminée : l'état d'encodage (D-172) reste inchangé, seul le fait est servi.
+        self::assertTrue($items[$running]['encoding']['started']);
+        self::assertSame('NOT_APPLICABLE', $items[$running]['encoding']['state']);
+        self::assertSame('OPEN', $items[$running]['status'], 'aucun statut modifié pour l\'affichage');
+        self::assertTrue($items[$ended]['encoding']['started']);
+        self::assertSame('NOT_DECLARED', $items[$ended]['encoding']['state']);
+
+        self::assertTrue($this->json($this->send($client, $token, 'GET', "/api/missions/$running"), 200)['encoding']['started']);
+    }
+
     public function test_a_past_mission_without_instrumentist_shows_its_real_encoding_state_author_and_locks(): void
     {
         $client = $this->boot();

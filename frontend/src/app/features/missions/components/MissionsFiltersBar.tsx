@@ -35,8 +35,10 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "OPEN", label: "Publiée" },
   { value: "ASSIGNED", label: "Assignée" },
   { value: "IN_PROGRESS", label: "En cours" },
-  { value: "SUBMITTED", label: "Soumise" },
-  { value: "DECLARED", label: "À valider" },
+  { value: "ENCODING_IN_PROGRESS", label: "Encodage en cours" },
+  // Mêmes mots que la pastille : une mission SUBMITTED s'affiche « À valider » côté manager.
+  { value: "SUBMITTED", label: "À valider" },
+  { value: "DECLARED", label: "Déclarée" },
   { value: "VALIDATED", label: "Validée" },
   { value: "CLOSED", label: "Clôturée" },
   { value: "REJECTED", label: "Rejetée" },

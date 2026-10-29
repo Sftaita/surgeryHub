@@ -165,6 +165,26 @@ describe("MissionsListPage — vue manager (D-147)", () => {
     expect(lastSearch).toContain("period=past");
   });
 
+  it("filtre Statut : mêmes mots que les pastilles, statut backend envoyé tel quel", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(fetchMissions).toHaveBeenCalled());
+
+    // Une mission SUBMITTED s'affiche « À valider » : le filtre du même nom envoie SUBMITTED.
+    await user.click(screen.getByLabelText("Statut"));
+    await user.click(await screen.findByRole("option", { name: "À valider" }));
+    await waitFor(() => expect(lastFilters().status).toBe("SUBMITTED"));
+
+    await user.click(screen.getByLabelText("Statut"));
+    await user.click(await screen.findByRole("option", { name: "Encodage en cours" }));
+    await waitFor(() => expect(lastFilters().status).toBe("ENCODING_IN_PROGRESS"));
+
+    await user.click(screen.getByLabelText("Statut"));
+    await user.click(await screen.findByRole("option", { name: "Déclarée" }));
+    await waitFor(() => expect(lastFilters().status).toBe("DECLARED"));
+    expect(screen.queryByRole("option", { name: "Soumise" })).toBeNull();
+  });
+
   it("les filtres de l'URL sont repris au chargement", async () => {
     renderPage("/app/m/missions?q=nord&period=all&status=OPEN&siteId=2");
 
@@ -282,8 +302,10 @@ describe("MissionsListPage — annulées, état d'encodage et verrous (D-172)", 
 
     const validated = rows.find((r) => r.getAttribute("data-mission-id") === "1080")!;
     expect(within(validated).getByText("Validée")).toBeInTheDocument();
-    // Verrou réel servi : écrit dans la ligne grise, plus de second badge ni de cadenas.
-    expect(within(validated).getByText("Verrouillée")).toBeInTheDocument();
+    // Verrou réel servi, le plus restrictif, avec son libellé backend : écrit dans la ligne grise,
+    // plus de second badge ni de cadenas ; jamais confondu avec le verrou d'encodage.
+    expect(within(validated).getByText("Calcul financier verrouillé")).toBeInTheDocument();
+    expect(within(validated).queryByText(/^Encodage verrouillé/)).toBeNull();
     expect(within(validated).queryByText(/^Encodage :/)).toBeNull();
     expect(within(validated).queryByTestId("mission-lock")).toBeNull();
     expect(within(validated).getAllByTestId("mission-status")).toHaveLength(1);
@@ -313,6 +335,9 @@ describe("MissionsListPage — activité sans instrumentiste encodée par le chi
     expect(within(byId(2)).getByText("Soumise par le chirurgien le 23/10 à 09h00")).toBeInTheDocument();
 
     expect(within(byId(3)).getByText("Validée")).toBeInTheDocument();
-    expect(within(byId(3)).getByText("Verrouillée")).toBeInTheDocument();
+    expect(within(byId(3)).getByText("Encodage verrouillé")).toBeInTheDocument();
+    // D-172 — la finalisation par le chirurgien reste dite une fois la mission validée.
+    expect(within(byId(3)).getByText("Encodage terminé par le chirurgien")).toBeInTheDocument();
+    expect(within(byId(3)).getAllByTestId("mission-status")).toHaveLength(1);
   });
 });

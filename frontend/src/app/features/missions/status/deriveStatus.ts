@@ -16,13 +16,20 @@ export function deriveStatus(m: MissionStatusInput): MissionStatus {
   }
   // 3. Encodage : il prime sur le calendrier dès qu'il existe
   if (m.encoding === 'validated') {
-    if (m.locked) {
-      let cap = 'Verrouillée';
-      if (m.lockedAt) cap += ' le ' + dayMonth(m.lockedAt);
-      if (m.lockedBy) cap += ' · ' + initials(m.lockedBy);
-      return { key: 'validee', label: 'Validée', caption: cap };
+    // D-172 — une finalisation par le chirurgien reste dite une fois la mission validée.
+    const detail = m.submittedBySurgeon ? { detail: 'Encodage terminé par le chirurgien' } : {};
+    if (!m.locked) {
+      // Une mission validée ne se corrige qu'après réouverture : jamais « modifiable ».
+      return { key: 'validee', label: 'Validée', caption: 'Encodage non verrouillé', ...detail };
     }
-    return { key: 'validee', label: 'Validée', caption: 'Non verrouillée · modifiable' };
+    // Verrou au-delà de l'encodage : son libellé backend, sans date ni auteur de substitution.
+    if (m.lockLevel && m.lockLevel !== 'ENCODING') {
+      return { key: 'validee', label: 'Validée', caption: m.lockLabel ?? 'Verrouillée', ...detail };
+    }
+    let cap = 'Encodage verrouillé';
+    if (m.lockedAt) cap += ' le ' + dayMonth(m.lockedAt);
+    if (m.lockedBy) cap += ' · ' + initials(m.lockedBy);
+    return { key: 'validee', label: 'Validée', caption: cap, ...detail };
   }
   if (m.encoding === 'submitted') {
     // D-172 — une finalisation par le chirurgien est toujours dite.

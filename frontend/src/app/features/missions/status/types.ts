@@ -36,13 +36,24 @@ export interface MissionStatusInput {
   /** D-172 — encodage finalisé par le chirurgien (audit backend, jamais déduit). */
   submittedBySurgeon?: boolean;
   locked?: boolean;                   // uniquement pertinent si encoding === 'validated'
-  lockedAt?: string | null;           // ISO
+  /**
+   * Verrou réel le plus restrictif servi par le backend (MissionEncodingOverview.locks) et son
+   * libellé backend : encodage verrouillé, calcul financier verrouillé, document émis, clôture
+   * ne sont jamais confondus.
+   */
+  lockLevel?: MissionLockLevel | null;
+  lockLabel?: string | null;
+  lockedAt?: string | null;           // ISO — date de la validation, qui pose le verrou d'encodage
   lockedBy?: string | null;           // nom complet du validateur, ex. "Samy Ftaita"
 }
+
+export type MissionLockLevel = 'ENCODING' | 'FINANCIAL_CALCULATION' | 'DOCUMENT' | 'CLOSED';
 
 export interface MissionStatus {
   key: MissionStatusKey;
   label: string;
   /** Ligne secondaire grise. Chaîne vide = pas de ligne. */
   caption: string;
+  /** Seconde ligne grise, seulement quand une information métier ne tient pas dans la première (D-172). */
+  detail?: string;
 }
