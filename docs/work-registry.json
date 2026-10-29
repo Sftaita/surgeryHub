@@ -699,6 +699,50 @@
         }
       ],
       "prodEvidence": "v2026.10.29-prod (8b3a962), mark OFFICIAL ; contrôles API publique en lecture seule (annulées masquées, « Aucun encodage », verrous, aperçu de date d'effet sans écriture) ; tests manuels validés par l'utilisateur le 2026-10-29 ; régularisation Salve faite depuis l'interface (#1039 : 715 € verrouillé, docs/production.md)."
+    },
+    {
+      "id": "D-173",
+      "title": "Heures réelles affichées telles que déclarées (tiroir mission, suivi des encodages)",
+      "description": "Durée seule (#1218) et déclarations partielles affichées sans borne ni durée inventée ; barre « Réel » remplie uniquement par une durée déclarée ; explication du verrou fondée sur les droits et motifs servis. Frontend uniquement.",
+      "kind": "fix",
+      "priority": "P2",
+      "userImpact": "« — » inexpliqués sur 48 exécutions sur 75 ; durée planifiée affichée comme réelle sur une déclaration partielle.",
+      "status": "fusionne",
+      "refs": {
+        "branches": [
+          "fix/affichage-heures-reelles"
+        ],
+        "decision": "D-173",
+        "worktrees": [
+          "SurgicalHub-heures-reelles"
+        ],
+        "prs": [
+          51
+        ]
+      },
+      "nextAction": "Déployer avec D-174 dans la prochaine release (v2026.10.29-prod-2), sur autorisation explicite.",
+      "lastReviewed": "2026-10-29"
+    },
+    {
+      "id": "D-174",
+      "title": "Une seule pastille de statut par mission côté manager",
+      "description": "Pastille + ligne grise (vue par jour, tableau, tiroir) à la place du statut, du badge d'encodage et du cadenas ; verrou le plus restrictif servi, finalisation par le chirurgien conservée, encoding.started servi par le serveur, filtres alignés sur les pastilles.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Jusqu'à deux pastilles et un cadenas par mission dans la liste manager.",
+      "status": "pr-ouverte",
+      "refs": {
+        "branches": [
+          "feat/mission-status-pill"
+        ],
+        "decision": "D-174",
+        "worktrees": [
+          "SurgicalHub-mission-status"
+        ],
+        "prs": []
+      },
+      "nextAction": "Fusionner après CI, puis déployer avec D-173 (v2026.10.29-prod-2) sur autorisation explicite. Point produit ouvert : onglet « À valider » = DECLARED.",
+      "lastReviewed": "2026-10-29"
     }
   ]
 }

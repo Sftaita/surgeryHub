@@ -15695,3 +15695,59 @@ renseignée » enregistrée nulle puis validation refusée avec la vraie raison 
 `MissionsListPage.test.tsx` (annulées, compteur, statut explicite, sans instrumentiste, badge et
 cadenas accessible), `EditInterventionDialog.test.tsx` (trois options manager, inconnue jamais
 « non »).
+
+---
+
+## D-173 — Heures réelles affichées telles que déclarées (2026-10-29)
+
+**Contexte.** Le tiroir mission affichait « — » au début et à la fin des heures réelles de la
+mission #1218 (planifiée 08:00–13:00). Cause : l'exécution ne porte qu'une durée déclarée
+(`actual_duration_minutes = 510`, bornes NULL, `effectiveDurationSource = ACTUAL_EXPLICIT`) — aucune
+donnée perdue ; en production, 48 exécutions sur 75 sont dans ce cas (26 début + fin, 1 vide,
+0 partielle). Second défaut : une déclaration partielle prenait la durée planifiée de repli
+(`PLANNED`) pour une durée réelle (« Conforme au planifié »), et la barre « Réel » du suivi des
+encodages était remplie par ce repli.
+
+**Décision.** Frontend uniquement (PR #51, merge `62be09c`). `realHoursOf()` classe la déclaration
+(NONE / TIMES / DURATION_ONLY / PARTIAL) sans jamais compléter par le planning : bornes absentes
+« Non renseigné », « 8h30 · déclarée », « Déclaration incomplète », explication sous la frise ; la
+barre « Réel » n'est remplie que par une durée déclarée. `hoursCorrectionHint()` ne propose que ce
+que le backend sert : `edit_hours` → « Corriger les heures », `reopen` → réouverture (jamais servie
+sous verrou financier, D-148), sinon `encodingCorrectionBlockedReason` tel quel, sinon « Les heures
+ne sont plus modifiables ». « Horaire confirmé » devient « Planning : horaire confirmé ». Aucune
+logique financière modifiée.
+
+---
+
+## D-174 — Une seule pastille de statut par mission côté manager (2026-10-29)
+
+**Contexte.** La liste des missions empilait le statut de planification, un badge « Encodage : … »
+et un cadenas (maquette `docs/design/prototypes/handoff-mission-status`, § 2a).
+
+**Décision.** Une pastille + une ligne grise (`features/missions/status` : `deriveStatus()` pur,
+`toStatusInput()` qui ne lit que des faits servis), dans la vue par jour, le tableau (une seule
+colonne « Statut ») et le tiroir manager (pastille sans légende). Écarts assumés à la maquette pour
+rester conforme à D-171/D-172 :
+
+- **Verrous** : la ligne grise écrit le verrou réel le plus restrictif servi (`CLOSED` > `DOCUMENT`
+  > `FINANCIAL_CALCULATION` > `ENCODING`) avec son libellé backend ; seul le verrou d'encodage porte
+  une date et des initiales (celles de la validation, qui le pose). « Non verrouillée · modifiable »
+  devient « Encodage non verrouillé » : une mission validée ne se corrige qu'après réouverture.
+- **Chirurgien** (D-172) : « Soumise par le chirurgien le … » ; une fois validée, seconde ligne grise
+  « Encodage terminé par le chirurgien ».
+- **Commencée sans instrumentiste** : la maquette la classe « Non couverte ». Le serveur sert
+  `encoding.started` (même horloge que `state`) ; l'état d'encodage D-172 est inchangé
+  (`NOT_DECLARED` seulement après la fin). Sans bloc `encoding`, aucune horloge client.
+- **Dates** : « Annulée le … » et « Brouillon enregistré le … » ne s'affichent pas — aucune date
+  d'annulation ni d'enregistrement de brouillon n'est servie ; aucune date de substitution.
+- **Filtres** : statuts backend inchangés, libellés alignés sur les pastilles (`SUBMITTED` « À
+  valider », `DECLARED` « Déclarée », `ENCODING_IN_PROGRESS` ajouté). « Non couverte » et « À
+  encoder » ne sont pas des statuts : « Passées » + « Sans instrumentiste », et le suivi des encodages.
+
+**Point ouvert (décision produit).** L'onglet « À valider » de la page Missions et le compteur du
+tableau de bord ciblent `DECLARED`, alors que la pastille « À valider » désigne `SUBMITTED`. Laissé
+inchangé.
+
+**Tests.** `deriveStatus.test.ts` (12 scénarios maquette + verrous par niveau, chirurgien, mission
+commencée, dates absentes), `MissionsListPage.test.tsx` (une pastille, verrou financier, chirurgien,
+filtre Statut), `MissionsEncodingOverviewD172Test::test_started_is_served_with_the_same_clock_as_the_encoding_state`.

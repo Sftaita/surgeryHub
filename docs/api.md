@@ -113,6 +113,7 @@ calculé une fois par page (nombre fixe de requêtes) :
 "encoding": {
   "state": "VALIDATED",
   "stateLabel": "Validé",
+  "started": true,
   "executedWithoutInstrumentist": false,
   "interventionCount": 2,
   "materialLineCount": 3,
@@ -131,6 +132,11 @@ calculé une fois par page (nombre fixe de requêtes) :
   instrumentiste), aucune activité déclarée réalisée (D-155) — elle n'est ni « sans objet »
   ni réputée réalisée. Comme `NOT_APPLICABLE`, hors KPI d'encodage attendu ; le résumé du
   suivi des encodages sert son compteur `notDeclared`.
+- `started` (D-174) : début planifié passé (`startAt <= now`), avec la **même horloge serveur**
+  que `state`. Distingue une mission commencée d'une mission à venir quand ni le statut ni
+  `state` ne le disent (`OPEN` en cours de créneau : `NOT_APPLICABLE` jusqu'à sa fin ; `ASSIGNED`
+  avant le passage du cron de démarrage). Aucun état ni statut n'en dépend côté serveur ; le
+  frontend ne compare jamais d'heure lui-même.
 - `executedWithoutInstrumentist` : activité déclarée réalisée sans instrumentiste (D-155).
   `interventionCount` / `materialLineCount` : interventions et lignes de matériel actives
   enregistrées — jamais une preuve de finalisation.
