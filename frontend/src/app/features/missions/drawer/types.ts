@@ -55,8 +55,8 @@ export interface DrawerHours {
   real: RealHours;
   /** Précision du PLANNING (« Planning : horaire confirmé »), jamais une confirmation des heures prestées. */
   precision: string;
-  /** Un verrou réel (encodage validé, calcul, document) empêche de corriger les heures. */
-  locked: boolean;
+  /** Suite de l'explication : action réellement disponible ou motif de blocage servi (hoursCorrectionHint). */
+  correctionHint: string;
   openDisputes: number;
   disputes: DrawerDispute[];
 }

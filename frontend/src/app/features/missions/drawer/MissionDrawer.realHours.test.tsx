@@ -36,7 +36,9 @@ const PARTIAL = execution({ actualStartAt: "2026-10-02T07:00:00+02:00" });
 const NONE = execution({ hasExecutionRecord: false, hoursSource: null });
 
 const EDIT: DrawerCorrections = { hours: { label: "Corriger les heures", testId: "manager-edit-hours", onClick: vi.fn() } };
-const LOCK: MissionLock = { level: "FINANCIAL_CALCULATION", label: "Calcul verrouillé", reason: "Calcul financier approuvé." };
+const LOCK: MissionLock = { level: "FINANCIAL_CALCULATION", label: "Calcul financier verrouillé", reason: "Calcul financier verrouillé." };
+const ENCODING_LOCK: MissionLock = { level: "ENCODING", label: "Encodage verrouillé", reason: "Encodage validé." };
+const FINANCIAL_BLOCK = "Verrou financier : le calcul de cette mission est intégré à un document financier. Son encodage ne peut plus être rouvert.";
 
 function renderHours(m: Mission, e: MissionExecutionInfo | null, corrections?: DrawerCorrections) {
   const view = buildMissionDrawerView({ mission: m, execution: e ?? undefined, entries: [], encodingError: false, audit: [], calculation: undefined, calculationLoading: false });
@@ -61,7 +63,7 @@ describe("MissionDrawer — heures réelles", () => {
   });
 
   it("2 — durée seule (cas #1218) : durée déclarée, bornes « Non renseigné », explication", () => {
-    const card = renderHours(mission(), DURATION_ONLY, EDIT)!;
+    const card = renderHours(mission({ allowedActions: ["view", "edit_hours"] }), DURATION_ONLY, EDIT)!;
     const [start, total, end] = realRow(card);
     expect(start).toHaveTextContent("Non renseigné");
     expect(total).toHaveTextContent("8h30 · déclarée");
@@ -107,12 +109,31 @@ describe("MissionDrawer — heures réelles", () => {
     expect(card).toHaveTextContent("Planning : horaire confirmé");
   });
 
-  it("6 — validée et verrouillée sans droit de correction : aucune action, explication du verrou", () => {
-    const m = mission({ status: "VALIDATED", allowedActions: ["view"], encoding: { locks: [LOCK] } as unknown as Mission["encoding"] });
+  it("6a — validée, réouverture servie : explication renvoyant à la réouverture, aucune correction directe", () => {
+    const m = mission({ status: "VALIDATED", allowedActions: ["view", "reopen"], encoding: { locks: [ENCODING_LOCK] } as unknown as Mission["encoding"] });
     const card = renderHours(m, DURATION_ONLY)!;
     expect(within(card).queryByRole("button", { name: "Corriger les heures" })).toBeNull();
     expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Les heures sont verrouillées avec l'encodage : une correction passe par sa réouverture.");
     expect(screen.getByTestId("drawer-hours-note")).not.toHaveTextContent("Utilisez « Corriger les heures »");
+  });
+
+  it("6b — verrou financier : motif servi par le backend, jamais une réouverture impossible", () => {
+    const m = mission({
+      status: "VALIDATED", allowedActions: ["view"], encodingCorrectionBlockedReason: FINANCIAL_BLOCK,
+      encoding: { locks: [ENCODING_LOCK, LOCK] } as unknown as Mission["encoding"],
+    });
+    const card = renderHours(m, DURATION_ONLY)!;
+    expect(within(card).queryByRole("button", { name: "Corriger les heures" })).toBeNull();
+    const note = screen.getByTestId("drawer-hours-note");
+    expect(note).toHaveTextContent(`Les heures ne sont plus modifiables. ${FINANCIAL_BLOCK}`);
+    expect(note).not.toHaveTextContent("une correction passe par sa réouverture");
+    expect(note).not.toHaveTextContent("Corriger les heures");
+  });
+
+  it("6c — verrou sans droit ni motif servi : aucune action proposée", () => {
+    const m = mission({ status: "VALIDATED", allowedActions: ["view"], encoding: { locks: [ENCODING_LOCK] } as unknown as Mission["encoding"] });
+    renderHours(m, DURATION_ONLY);
+    expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent(/n'ont pas été renseignées\. Les heures ne sont plus modifiables\.$/);
   });
 
   it("7 — mission sans instrumentiste : « Activité opératoire » inchangée, aucun bloc HEURES", () => {

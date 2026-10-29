@@ -1,4 +1,5 @@
 import type { MissionExecutionInfo } from "../api/missions.api";
+import type { Mission } from "../api/missions.types";
 
 /**
  * Ce qui a réellement été déclaré pour les heures prestées, lu tel quel dans
@@ -49,4 +50,25 @@ export function realHoursOf(e: MissionExecutionInfo | null | undefined): RealHou
     kind: "PARTIAL", start, end, minutes: declared,
     note: `Déclaration incomplète : ${missing}.` + (declared == null ? " Aucune durée réelle ne peut être comparée au planifié." : ""),
   };
+}
+
+/**
+ * Suite de l'explication sous les heures : ce qu'il est possible de faire, lu uniquement dans
+ * ce que sert le backend — jamais une action indisponible.
+ *
+ * - `edit_hours` servi        → la correction directe ;
+ * - `reopen` servi            → la réouverture (jamais servie sous verrou financier, D-148) ;
+ * - motif de blocage servi    → ce motif, tel quel (`encodingCorrectionBlockedReason`) ;
+ * - verrou sans autre droit   → les heures ne sont plus modifiables, sans action proposée.
+ */
+export function hoursCorrectionHint(
+  mission: Pick<Mission, "allowedActions" | "encodingCorrectionBlockedReason" | "encoding"> | null | undefined,
+): string {
+  const actions: readonly string[] = mission?.allowedActions ?? [];
+  if (actions.includes("edit_hours")) return "Utilisez « Corriger les heures » pour renseigner les horaires.";
+  if (actions.includes("reopen")) return "Les heures sont verrouillées avec l'encodage : une correction passe par sa réouverture.";
+  const blocked = mission?.encodingCorrectionBlockedReason ?? null;
+  if (blocked) return `Les heures ne sont plus modifiables. ${blocked}`;
+  if ((mission?.encoding?.locks?.length ?? 0) > 0) return "Les heures ne sont plus modifiables.";
+  return "";
 }

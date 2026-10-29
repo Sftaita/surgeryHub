@@ -132,11 +132,7 @@ function HoursCard({ m, edit }: { m: MissionDrawerView; edit?: DrawerInlineActio
         {h.note && (
           <p className="mdw-tl__note" data-testid="drawer-hours-note">
             {h.note}
-            {edit
-              ? ' Utilisez « Corriger les heures » pour renseigner les horaires.'
-              : m.hours.locked
-                ? " Les heures sont verrouillées avec l'encodage : une correction passe par sa réouverture."
-                : ''}
+            {m.hours.correctionHint && ` ${m.hours.correctionHint}`}
           </p>
         )}
         <div className="mdw-tl__legend">

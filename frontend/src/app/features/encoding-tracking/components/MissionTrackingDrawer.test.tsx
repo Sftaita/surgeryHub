@@ -6,6 +6,13 @@ import { MemoryRouter } from "react-router-dom";
 import { MissionTrackingDrawer } from "./MissionTrackingDrawer";
 import { ToastProvider } from "../../../ui/toast/ToastProvider";
 import type { EncodingTrackingItem } from "../api/encodingTracking.api";
+import { HOURS_COMPARISON_TONE } from "../encodingStateMeta";
+
+/** jsdom normalise les couleurs en rgb(). */
+function rgb(hex: string): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+}
 
 const fetchMissionByIdMock = vi.fn();
 const getMissionExecutionMock = vi.fn();
@@ -354,15 +361,62 @@ describe("MissionTrackingDrawer", () => {
     expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Déclaration incomplète : l'heure de fin n'a pas été renseignée.");
   });
 
-  it("verrouillée sans droit de correction : l'explication renvoie à la réouverture, aucune correction proposée", async () => {
+  it("validée, réouverture servie : l'explication renvoie à la réouverture, aucune correction directe", async () => {
     fetchMissionByIdMock.mockResolvedValue({
-      id: 42, status: "VALIDATED", allowedActions: ["view"],
-      encoding: { locks: [{ level: "FINANCIAL_CALCULATION", label: "Calcul verrouillé", reason: "Calcul approuvé." }] },
+      id: 42, status: "VALIDATED", allowedActions: ["view", "reopen"],
+      encoding: { locks: [{ level: "ENCODING", label: "Encodage verrouillé", reason: "Encodage validé." }] },
     });
     getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
     renderDrawer(makeItem({ missionStatus: "VALIDATED", hours: overPlan }));
     await waitFor(() => expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Les heures sont verrouillées avec l'encodage : une correction passe par sa réouverture."));
     expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+  });
+
+  it("verrou financier : le motif servi est affiché, jamais une réouverture impossible", async () => {
+    fetchMissionByIdMock.mockResolvedValue({
+      id: 42, status: "VALIDATED", allowedActions: ["view"], encodingCorrectionBlockedReason: "Verrou financier : le calcul de cette mission est intégré à un document financier. Son encodage ne peut plus être rouvert.",
+      encoding: { locks: [{ level: "FINANCIAL_CALCULATION", label: "Calcul financier verrouillé", reason: "Calcul verrouillé." }] },
+    });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ missionStatus: "VALIDATED", hours: overPlan }));
+    await waitFor(() => expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Les heures ne sont plus modifiables. Verrou financier : le calcul de cette mission est intégré à un document financier. Son encodage ne peut plus être rouvert."));
+    expect(screen.getByTestId("drawer-hours-note")).not.toHaveTextContent("une correction passe par sa réouverture");
+    expect(screen.getByTestId("drawer-hours-note")).not.toHaveTextContent("Corriger les heures");
+    expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+  });
+
+  // Barre « Réel » : remplie uniquement par une durée réellement déclarée.
+  const barFill = () => screen.getByTestId("drawer-real-bar-fill");
+
+  it("barre « Réel » vide et neutre sans heure déclarée, même si le backend sert le planifié de repli", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } }));
+    await waitFor(() => expect(getMissionExecutionMock).toHaveBeenCalled());
+    expect(barFill()).toHaveStyle({ width: "0%", background: rgb(HOURS_COMPARISON_TONE.NO_REAL_HOURS.bar) });
+  });
+
+  it("barre « Réel » vide et neutre pour un début seul sans durée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualStartAt: "2026-09-10T07:00:00+02:00" }));
+    renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } }));
+    await screen.findByText("Début 07:00 · fin non renseignée");
+    expect(barFill()).toHaveStyle({ width: "0%", background: rgb(HOURS_COMPARISON_TONE.NO_REAL_HOURS.bar) });
+  });
+
+  it("barre « Réel » : durée déclarée sous le planifié → progression proportionnelle, verte", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 180, effectiveDurationMinutes: 180, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 180, effectiveSource: "ACTUAL_EXPLICIT", hasRealHours: true, comparison: "WITHIN_PLAN" } }));
+    await screen.findByText("Durée déclarée · début et fin non renseignés");
+    expect(barFill()).toHaveStyle({ width: "75%", background: rgb(HOURS_COMPARISON_TONE.WITHIN_PLAN.bar) });
+  });
+
+  it("barre « Réel » : durée déclarée au-delà du planifié → pleine, orange", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ hours: overPlan }));
+    await screen.findByText("Durée déclarée · début et fin non renseignés");
+    expect(barFill()).toHaveStyle({ width: "100%", background: rgb(HOURS_COMPARISON_TONE.OVER_PLAN.bar) });
   });
 
   it("« Rappeler les heures » n'apparaît que si allowedActions contient remind_hours", async () => {
