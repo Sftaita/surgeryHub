@@ -257,7 +257,7 @@ describe("MissionsListPage — annulées, état d'encodage et verrous (D-172)", 
     expect(lastFilters().excludeCancelled).toBe(true);
   });
 
-  it("statut de planification et état d'encodage distincts ; cadenas seulement pour un verrou servi", async () => {
+  it("une seule pastille par mission, ligne grise, aucun cadenas (maquette Statut missions § 2a)", async () => {
     vi.mocked(fetchMissions).mockResolvedValue({
       items: [
         mission(1079, "2026-10-22T07:45:00+02:00", { status: "OPEN", instrumentist: null, encoding: { state: "NOT_DECLARED", stateLabel: "Aucun encodage", finalizedBy: null, validatedBy: null, locks: [] } }),
@@ -276,16 +276,17 @@ describe("MissionsListPage — annulées, état d'encodage et verrous (D-172)", 
     // Passée, sans instrumentiste, rien de déclaré : « Non couverte », jamais « Publiée ».
     expect(within(open).getByText("Non couverte")).toBeInTheDocument();
     expect(within(open).queryByText("Publiée")).toBeNull();
-    expect(within(open).getByText("Encodage : aucun encodage")).toBeInTheDocument();
-    expect(within(open).queryByTestId("mission-lock")).toBeNull();
+    expect(within(open).getByText("Aucun instrumentiste assigné")).toBeInTheDocument();
+    expect(within(open).getByTestId("mission-status")).toHaveAttribute("data-status-key", "noncouverte");
+    expect(within(open).queryByText(/^Encodage :/)).toBeNull();
 
     const validated = rows.find((r) => r.getAttribute("data-mission-id") === "1080")!;
     expect(within(validated).getByText("Validée")).toBeInTheDocument();
-    // Le statut dit déjà « Validée » : pas de second badge « Encodage : validé », le cadenas reste.
-    expect(within(validated).queryByText("Encodage : validé")).toBeNull();
-    const lock = within(validated).getByTestId("mission-lock");
-    expect(lock).toHaveAttribute("data-lock-levels", "ENCODING,FINANCIAL_CALCULATION");
-    expect(lock).toHaveAccessibleName(/Calcul financier verrouillé : Calcul financier verrouillé le 24\/10\/2026 : ses montants sont définitifs/);
+    // Verrou réel servi : écrit dans la ligne grise, plus de second badge ni de cadenas.
+    expect(within(validated).getByText("Verrouillée")).toBeInTheDocument();
+    expect(within(validated).queryByText(/^Encodage :/)).toBeNull();
+    expect(within(validated).queryByTestId("mission-lock")).toBeNull();
+    expect(within(validated).getAllByTestId("mission-status")).toHaveLength(1);
   });
 });
 
@@ -306,13 +307,12 @@ describe("MissionsListPage — activité sans instrumentiste encodée par le chi
     const byId = (id: number) => rows.find((r) => r.getAttribute("data-mission-id") === String(id))!;
 
     expect(within(byId(1)).getByText("Encodage en cours")).toBeInTheDocument();
-    expect(within(byId(1)).queryByText("Encodage terminé par le chirurgien")).toBeNull();
+    expect(within(byId(1)).queryByText(/par le chirurgien/)).toBeNull();
 
     expect(within(byId(2)).getByText("À valider")).toBeInTheDocument();
-    expect(within(byId(2)).getByText("Encodage terminé par le chirurgien")).toBeInTheDocument();
+    expect(within(byId(2)).getByText("Soumise par le chirurgien le 23/10 à 09h00")).toBeInTheDocument();
 
     expect(within(byId(3)).getByText("Validée")).toBeInTheDocument();
-    expect(within(byId(3)).getByText("Encodage terminé par le chirurgien")).toBeInTheDocument();
-    expect(within(byId(3)).getByTestId("mission-lock")).toBeInTheDocument();
+    expect(within(byId(3)).getByText("Verrouillée")).toBeInTheDocument();
   });
 });

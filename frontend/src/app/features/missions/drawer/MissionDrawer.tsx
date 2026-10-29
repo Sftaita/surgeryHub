@@ -46,7 +46,7 @@ interface Props {
   /** null = en chargement / erreur (voir `placeholder`). */
   view: MissionDrawerView | null;
   placeholder?: string;
-  /** StatusPill du design system de l'app (MissionStatusChip). */
+  /** StatusPill du design system de l'app (MissionStatusCell). */
   statusPill?: ReactNode;
   /** Avis servis par le backend, posés en tête du corps. */
   notices?: ReactNode;

@@ -7,7 +7,8 @@ import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
 import { useMissionManagerActions, type MissionActionDescriptor } from "../hooks/useMissionManagerActions";
 import { useMissionFinancialCalculation } from "../../financial-calculation/hooks/useMissionFinancialCalculation";
 import { AnomalyReportsManagerPanel } from "../../encoding-anomaly-reports/components/AnomalyReportsManagerPanel";
-import { MissionStatusChip, missionStatusLabel } from "../components/MissionsDayList";
+import { missionStatusLabel } from "../components/MissionsDayList";
+import { MissionStatusCell, missionDisplayStatus } from "../status";
 import { MissionEncodingOverviewNotice } from "../components/MissionEncodingOverviewNotice";
 import { encodingActorLabel } from "../components/MissionEncodingBadge";
 import { MissionDrawer, financeLabel, type DrawerFooterAction } from "./MissionDrawer";
@@ -223,7 +224,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
         missionId={id}
         view={view}
         placeholder={placeholder}
-        statusPill={mission ? <MissionStatusChip status={mission.status} encoding={mission.encoding} /> : null}
+        statusPill={mission ? <MissionStatusCell status={missionDisplayStatus(mission)} hideCaption /> : null}
         notices={notices}
         extra={mission ? <AnomalyReportsManagerPanel missionId={mission.id} /> : null}
         footer={{ title: footerTitle, sub: footerSub, actions: mission ? footerActions : [] }}

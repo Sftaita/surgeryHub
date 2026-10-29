@@ -8,8 +8,8 @@ import AddIcon from "@mui/icons-material/Add";
 import { fetchMissions, type MissionsFilters } from "../../features/missions/api/missions.api";
 import type { Mission } from "../../features/missions/api/missions.types";
 import { MissionsFiltersBar, type MissionsFiltersValue, type MissionsView } from "../../features/missions/components/MissionsFiltersBar";
-import { MissionsDayList, MissionStatusChip } from "../../features/missions/components/MissionsDayList";
-import { MissionEncodingBadge } from "../../features/missions/components/MissionEncodingBadge";
+import { MissionsDayList } from "../../features/missions/components/MissionsDayList";
+import { MissionStatusCell, missionDisplayStatus } from "../../features/missions/status";
 import {
   formatBrusselsRange,
   formatPersonLabel,
@@ -221,16 +221,9 @@ export default function MissionsListPage() {
       {
         field: "status",
         headerName: "Statut",
-        flex: 0.9,
+        width: 220,
         sortable: false,
-        renderCell: ({ row }) => <MissionStatusChip status={row.status} encoding={row.encoding} />,
-      },
-      {
-        field: "encoding",
-        headerName: "Encodage",
-        flex: 1.1,
-        sortable: false,
-        renderCell: ({ row }) => <MissionEncodingBadge encoding={row.encoding} status={row.status} />,
+        renderCell: ({ row }) => <MissionStatusCell status={missionDisplayStatus(row)} />,
       },
     ],
     [],
@@ -333,6 +326,7 @@ export default function MissionsListPage() {
               paginationModel={{ page: tablePage - 1, pageSize: TABLE_PAGE_SIZE }}
               onPaginationModelChange={(m) => setTablePage(m.page + 1)}
               autoHeight
+              rowHeight={64}
               disableRowSelectionOnClick
               onRowClick={({ row }) => openMission(row)}
               getRowClassName={({ row }) => (row.id === openedMissionId ? "is-selected" : "")}
