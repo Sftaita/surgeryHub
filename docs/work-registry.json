@@ -663,7 +663,8 @@
           "description": "Après déploiement : « Terminer et valider » de la mission #1079 par un manager depuis l'interface, sans script ni modification des données existantes",
           "validation": "utilisateur"
         }
-      ]
+      ],
+      "prodEvidence": "v2026.10.29-prod (8b3a962) activé le 2026-10-29 05:37 UTC par deploy.sh, migration Version20261027090000 appliquée (91/91), mark OFFICIAL ; contrôles API publique en lecture seule 27/27 (comptes jetables supprimés), #1079 : « Terminer et valider » proposé ; tests manuels de la version validés par l'utilisateur le 2026-10-29 (docs/production.md)."
     },
     {
       "id": "D-172",
@@ -696,7 +697,8 @@
           "confirmedAt": "2026-10-29",
           "evidence": "Lecture seule 2026-10-29 : audit INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED 05:45:06 UTC (rate 12 depuis 2026-10-01, rate 8 jusqu'au 2026-10-01) ; #1039 calcul 29 (INSTRUMENTIST_HOURLY 11 h × 65 € = 715 €) approuvé 05:46:22 et verrouillé 05:46:23, calcul 27 (0 €) SUPERSEDED."
         }
-      ]
+      ],
+      "prodEvidence": "v2026.10.29-prod (8b3a962), mark OFFICIAL ; contrôles API publique en lecture seule (annulées masquées, « Aucun encodage », verrous, aperçu de date d'effet sans écriture) ; tests manuels validés par l'utilisateur le 2026-10-29 ; régularisation Salve faite depuis l'interface (#1039 : 715 € verrouillé, docs/production.md)."
     }
   ]
 }
