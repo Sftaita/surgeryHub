@@ -221,7 +221,8 @@ export default function MissionsListPage() {
       {
         field: "status",
         headerName: "Statut",
-        width: 220,
+        // 220 px de contenu (maquette) + 2 × 10 px de marge interne de la cellule DataGrid.
+        width: 240,
         sortable: false,
         renderCell: ({ row }) => <MissionStatusCell status={missionDisplayStatus(row)} />,
       },
