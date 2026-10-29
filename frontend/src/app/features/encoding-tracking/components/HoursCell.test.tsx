@@ -34,14 +34,14 @@ describe("HoursCell", () => {
     const hours: EncodingTrackingHours = { plannedMinutes: 300, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "OVER_PLAN" };
     const { container } = render(<HoursCell hours={hours} />);
     expect(container.textContent).toContain("5 h planifiées · 5 h 12 effectives");
-    expect(screen.getByText("Heures prestées")).toBeInTheDocument();
+    expect(screen.getByText("Début et fin déclarés")).toBeInTheDocument();
     expect(screen.getByTestId("hours-effective")).toHaveStyle({ color: rgb(HOURS_COMPARISON_TONE.OVER_PLAN.fg) });
   });
 
-  it("ACTUAL_EXPLICIT : affiche la source « Heures explicites »", () => {
+  it("ACTUAL_EXPLICIT : la source dit qu’une durée seule a été déclarée (sans début ni fin)", () => {
     const hours: EncodingTrackingHours = { plannedMinutes: 120, effectiveMinutes: 145, effectiveSource: "ACTUAL_EXPLICIT", hasRealHours: true, comparison: "OVER_PLAN" };
     render(<HoursCell hours={hours} />);
-    expect(screen.getByText("Heures explicites")).toBeInTheDocument();
+    expect(screen.getByText("Durée déclarée (sans début ni fin)")).toBeInTheDocument();
   });
 
   it("la couleur suit hours.comparison du backend, jamais une comparaison recalculée ici", () => {

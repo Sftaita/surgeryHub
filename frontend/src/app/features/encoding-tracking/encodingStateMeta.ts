@@ -34,8 +34,8 @@ export const FINANCIAL_STATE_CONFIG: Record<EncodingFinancialState, StatusBadgeC
 
 export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
   PLANNED: "Planifié",
-  ACTUAL_TIMES: "Heures prestées",
-  ACTUAL_EXPLICIT: "Heures explicites",
+  ACTUAL_TIMES: "Début et fin déclarés",
+  ACTUAL_EXPLICIT: "Durée déclarée (sans début ni fin)",
 };
 
 /**

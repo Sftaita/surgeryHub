@@ -127,11 +127,22 @@ function HoursCard({ m, edit }: { m: MissionDrawerView; edit?: DrawerInlineActio
               {chip(h.rTotal.v, h.rTotal.bg, h.rTotal.fg, true)}
               {chip(h.rEnd.v, h.rEnd.bg, h.rEnd.fg)}
             </div>
-          ) : <div className="mdw-tl__empty">Pas encore d’heures déclarées</div>}
+          ) : <div className="mdw-tl__empty" data-testid="drawer-hours-none">Heures réelles non déclarées</div>}
         </div>
+        {h.note && (
+          <p className="mdw-tl__note" data-testid="drawer-hours-note">
+            {h.note}
+            {edit
+              ? ' Utilisez « Corriger les heures » pour renseigner les horaires.'
+              : m.hours.locked
+                ? " Les heures sont verrouillées avec l'encodage : une correction passe par sa réouverture."
+                : ''}
+          </p>
+        )}
         <div className="mdw-tl__legend">
           <span><i style={{ background: 'var(--green-500)' }} />conforme au planifié</span>
           <span><i style={{ background: 'var(--amber-500)' }} />début plus tôt · fin plus tard · total plus long</span>
+          <span><i style={{ background: 'var(--gray-200)' }} />non renseigné ou non comparable</span>
         </div>
       </div>
       {m.hours.disputes.length > 0 && (

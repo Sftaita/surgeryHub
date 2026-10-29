@@ -8,6 +8,7 @@ import { formatMinutes } from "../../encoding-tracking/encodingStateMeta";
 import { formatMissionType, formatPersonLabel, formatSchedulePrecision } from "../utils/missions.format";
 import { shortDateTime } from "./format";
 import { buildOperativeActivity } from "../components/OperativeActivityCard";
+import { realHoursOf } from "../utils/realHours";
 import type { DrawerEncodingReview, DrawerIntervention, DrawerStep, Finance, FinanceGroup, FinanceLine, FinanceLineDetail, HistoryEvent, MissionDrawerView } from "./types";
 
 /**
@@ -227,10 +228,9 @@ export function buildMissionDrawerView(input: {
     hours: without ? null : {
       planStart: mission.startAt,
       planEnd: mission.endAt,
-      real: execution?.hasExecutionRecord
-        ? { start: execution.actualStartAt, end: execution.actualEndAt, minutes: execution.effectiveDurationMinutes }
-        : null,
-      precision: formatSchedulePrecision(mission.schedulePrecision),
+      real: realHoursOf(execution),
+      precision: `Planning : ${formatSchedulePrecision(mission.schedulePrecision).toLowerCase()}`,
+      locked: (mission.encoding?.locks?.length ?? 0) > 0,
       openDisputes: execution?.disputes.filter((d) => d.status === "OPEN").length ?? 0,
       disputes: (execution?.disputes ?? []).map((d) => ({
         id: d.id,

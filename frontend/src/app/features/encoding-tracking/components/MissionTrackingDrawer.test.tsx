@@ -313,6 +313,58 @@ describe("MissionTrackingDrawer", () => {
     expect(within(screen.getByText("Réel").parentElement!).getByText("—")).toBeInTheDocument();
   });
 
+  // Heures réelles affichées telles que déclarées (GET .../execution), jamais complétées par le planning.
+  const realExecution = (overrides: object) => ({
+    hasExecutionRecord: true, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: "INSTRUMENTIST",
+    effectiveDurationMinutes: 240, effectiveDurationSource: "PLANNED", disputes: [], ...overrides,
+  });
+  const overPlan = { plannedMinutes: 240, effectiveMinutes: 510, effectiveSource: "ACTUAL_EXPLICIT" as const, hasRealHours: true, comparison: "OVER_PLAN" as const };
+
+  it("heures réelles 07:00–15:30 : les deux bornes et 8 h 30", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({
+      actualStartAt: "2026-09-10T07:00:00+02:00", actualEndAt: "2026-09-10T15:30:00+02:00", effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_TIMES",
+    }));
+    renderDrawer(makeItem({ hours: { ...overPlan, effectiveSource: "ACTUAL_TIMES" } }));
+    await screen.findByText("07:00 → 15:30");
+    expect(screen.getByText("Réel").parentElement!).toHaveTextContent("8 h 30");
+    expect(screen.getByTestId("drawer-hours-status")).toHaveTextContent("Dépasse le temps planifié");
+    expect(screen.queryByTestId("drawer-hours-note")).toBeNull();
+  });
+
+  it("durée seule : durée déclarée, début et fin « non renseignés », explication et correction proposée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view", "edit_hours"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ hours: overPlan }));
+    expect(await screen.findByText("Durée déclarée · début et fin non renseignés")).toBeInTheDocument();
+    expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent(
+      "Une durée réelle de 8h30 a été déclarée, mais les heures de début et de fin n'ont pas été renseignées. Utilisez « Corriger les heures » pour renseigner les horaires.",
+    );
+    // Aucune borne reconstruite depuis le planifié (08:00–12:00).
+    expect(within(screen.getByText("Réel").parentElement!).queryByText(/08:00|12:00|16:30/)).toBeNull();
+  });
+
+  it("début seul : « Déclaration incomplète », la fin reste non renseignée, aucune durée inventée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({ id: 42, status: "SUBMITTED", allowedActions: ["view"] });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualStartAt: "2026-09-10T07:00:00+02:00" }));
+    renderDrawer(makeItem({ hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } }));
+    expect(await screen.findByText("Début 07:00 · fin non renseignée")).toBeInTheDocument();
+    expect(screen.getByTestId("drawer-hours-status")).toHaveTextContent("Déclaration incomplète");
+    expect(screen.getAllByText("4 h")).toHaveLength(1);
+    expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Déclaration incomplète : l'heure de fin n'a pas été renseignée.");
+  });
+
+  it("verrouillée sans droit de correction : l'explication renvoie à la réouverture, aucune correction proposée", async () => {
+    fetchMissionByIdMock.mockResolvedValue({
+      id: 42, status: "VALIDATED", allowedActions: ["view"],
+      encoding: { locks: [{ level: "FINANCIAL_CALCULATION", label: "Calcul verrouillé", reason: "Calcul approuvé." }] },
+    });
+    getMissionExecutionMock.mockResolvedValue(realExecution({ actualDurationMinutes: 510, effectiveDurationMinutes: 510, effectiveDurationSource: "ACTUAL_EXPLICIT" }));
+    renderDrawer(makeItem({ missionStatus: "VALIDATED", hours: overPlan }));
+    await waitFor(() => expect(screen.getByTestId("drawer-hours-note")).toHaveTextContent("Les heures sont verrouillées avec l'encodage : une correction passe par sa réouverture."));
+    expect(screen.queryByTestId("drawer-edit-hours")).toBeNull();
+  });
+
   it("« Rappeler les heures » n'apparaît que si allowedActions contient remind_hours", async () => {
     const noRealHours = { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED" as const, hasRealHours: false, comparison: "NO_REAL_HOURS" as const };
     // Heures réelles manquantes mais backend ne l'autorise pas → jamais inventé côté frontend.
