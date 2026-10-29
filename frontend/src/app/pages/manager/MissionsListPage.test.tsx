@@ -193,10 +193,12 @@ describe("MissionsListPage — vue manager (D-147)", () => {
     expect(screen.getByPlaceholderText(/Chirurgien, instrumentiste/)).toHaveValue("nord");
   });
 
-  it("« À valider » : statut DECLARED imposé, toutes dates", async () => {
+  it("onglet « À approuver » : statut DECLARED imposé, toutes dates ; « À valider » reste réservé aux encodages soumis", async () => {
     renderPage("/app/m/missions/to-validate");
 
     await waitFor(() => expect(fetchMissions).toHaveBeenCalled());
+    expect(screen.getByRole("tab", { name: "À approuver" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("tab", { name: "À valider" })).toBeNull();
     expect(lastFilters()).toMatchObject({ status: "DECLARED", order: "desc" });
     expect(lastFilters()).not.toHaveProperty("from");
     expect(screen.queryByLabelText("Statut")).not.toBeInTheDocument();

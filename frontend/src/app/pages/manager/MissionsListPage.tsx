@@ -52,7 +52,7 @@ export default function MissionsListPage() {
 
   // D-147 — filtres dans l'URL (partageables, conservés au retour depuis une mission).
   // Période par défaut : « À venir » sur Toutes ; « Toutes les dates » quand la liste
-  // est un diagnostic (À valider, validées sans calcul) — rien ne doit en être masqué.
+  // est un diagnostic (À approuver, validées sans calcul) — rien ne doit en être masqué.
   const rawPeriod = searchParams.get("period");
   const defaultPeriod: MissionsPeriod = isToValidateView || validatedWithoutCalculation ? "all" : "upcoming";
   const filters: MissionsFiltersValue = {
@@ -255,7 +255,8 @@ export default function MissionsListPage() {
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider", minHeight: 40 }}
       >
         <Tab value="all" label="Toutes" sx={{ minHeight: 40 }} />
-        <Tab value="to-validate" label="À valider" sx={{ minHeight: 40 }} />
+        {/* D-174 — missions DECLARED à approuver ; « À valider » désigne un encodage SUBMITTED. */}
+        <Tab value="to-validate" label="À approuver" sx={{ minHeight: 40 }} />
         <Tab
           value="requests"
           sx={{ minHeight: 40 }}
