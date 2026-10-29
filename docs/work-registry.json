@@ -630,7 +630,7 @@
       "kind": "fix",
       "priority": "P1",
       "userImpact": "Les managers ne peuvent pas valider les missions encodées sans instrumentiste (#1079).",
-      "status": "teste",
+      "status": "valide-production",
       "refs": {
         "branches": [
           "feat/encodage-sans-instrumentiste"
@@ -646,14 +646,16 @@
           47
         ]
       },
-      "nextAction": "PR ouverte ; déploiement uniquement après accord final sur le rapport d'écart ; #1079 validée ensuite via l'interface.",
-      "lastReviewed": "2026-10-27",
+      "nextAction": "Validé en production (tests manuels, 2026-10-29). Reste : « Terminer et valider » de #1079 par un manager, puis calcul firme.",
+      "lastReviewed": "2026-10-29",
       "pendingOps": [
         {
           "type": "reprise-donnees",
-          "status": "en-attente",
+          "status": "fait",
           "description": "Migration additive Version20261027090000 (mission.encoding_validated_without_hours_at) à jouer au déploiement",
-          "validation": "accord final de déploiement"
+          "validation": "accord final de déploiement",
+          "confirmedAt": "2026-10-29",
+          "evidence": "deploy.sh migrate 2026-10-29 05:37:18 UTC : Version20261027090000 exécutée, 91/91, colonnes présentes (docs/production.md, v2026.10.29-prod)."
         },
         {
           "type": "validation",
@@ -670,7 +672,7 @@
       "kind": "fix",
       "priority": "P1",
       "userImpact": "Tarif de Salve inapplicable avant le 11/10 ; missions passées sans instrumentiste illisibles ; Validée/Verrouillée confondues ; listes encombrées d'annulées.",
-      "status": "pr-ouverte",
+      "status": "valide-production",
       "refs": {
         "branches": [
           "fix/tarifs-missions-encodage"
@@ -683,20 +685,16 @@
           48
         ]
       },
-      "nextAction": "PR #48 empilée sur #47 : fusionner #47 d'abord, vérifier la compatibilité avec main et relancer les tests, puis #48 ; aucun déploiement sans accord.",
-      "lastReviewed": "2026-10-28",
+      "nextAction": "Validé en production (tests manuels, 2026-10-29). Salve régularisée ; reste #1079 (suivi sous D-171).",
+      "lastReviewed": "2026-10-29",
       "pendingOps": [
         {
           "type": "validation",
-          "status": "en-attente",
+          "status": "fait",
           "description": "Après déploiement : fiche de Salve Decorte, « Modifier la date d'effet » du tarif 65 € au 01/10/2026 (vérifier l'aperçu), recalculer les prestations listées dont la mission #1039 depuis leur tiroir, contrôler les montants avant approbation (aucun script)",
-          "validation": "utilisateur"
-        },
-        {
-          "type": "validation",
-          "status": "en-attente",
-          "description": "Après déploiement : mission #1079 (Arnaud Deltour, 22/10/2026) — vérifier son état, « Terminer et valider » par un manager si nécessaire, puis vérifier que le calcul financier s'effectue normalement (aucun script)",
-          "validation": "utilisateur"
+          "validation": "utilisateur",
+          "confirmedAt": "2026-10-29",
+          "evidence": "Lecture seule 2026-10-29 : audit INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED 05:45:06 UTC (rate 12 depuis 2026-10-01, rate 8 jusqu'au 2026-10-01) ; #1039 calcul 29 (INSTRUMENTIST_HOURLY 11 h × 65 € = 715 €) approuvé 05:46:22 et verrouillé 05:46:23, calcul 27 (0 €) SUPERSEDED."
         }
       ]
     }
