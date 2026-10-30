@@ -377,24 +377,95 @@ final class PushReliabilityFunctionalTest extends WebTestCase
     // ── 8. changement volontaire de compte / 9. plusieurs appareils ─────────
 
     #[WithoutErrorHandler]
-    public function test_account_switch_reattaches_the_device_and_rotates_its_token(): void
+    public function test_an_endpoint_of_another_account_is_never_transferred_even_with_its_keys(): void
     {
         ['user' => $a, 'token' => $jwtA] = $this->login();
         ['user' => $b, 'token' => $jwtB] = $this->login();
         $endpoint = $this->endpoint();
         $tokenA = $this->sync($jwtA, $endpoint)['deviceToken'];
+        $before = $this->em->getConnection()->fetchAssociative('SELECT * FROM push_subscription WHERE endpoint = ?', [$endpoint]);
 
-        $res = $this->sync($jwtB, $endpoint, ['hasDeviceToken' => true]);
-        self::assertSame('REATTACHED', $res['state']);
+        $attempts = [
+            'wrong keys' => fn () => $this->post('/api/push/sync', ['endpoint' => $endpoint, 'keys' => ['p256dh' => 'attacker-p256dh', 'auth' => 'attacker-auth']], $jwtB),
+            'matching keys, no proof of possession' => fn () => $this->sync($jwtB, $endpoint, ['hasDeviceToken' => true]),
+            'matching keys and a replacement claim' => fn () => $this->sync($jwtB, $endpoint, ['replacesEndpoint' => $this->endpoint()]),
+            'legacy subscribe' => fn () => $this->post('/api/push/subscribe', ['endpoint' => $endpoint, 'keys' => ['p256dh' => self::SUBSCRIBER_P256DH, 'auth' => self::SUBSCRIBER_AUTH]], $jwtB),
+        ];
+        foreach ($attempts as $label => $attempt) {
+            $res = $attempt();
+            self::assertSame(409, $this->httpStatus(), $label);
+            self::assertSame('PUSH_SUBSCRIPTION_FOREIGN', $res['code'] ?? null, $label);
+            self::assertSame([], array_diff(array_keys($res), ['code', 'message', 'state', 'reason', 'autoRenew', 'deviceToken', 'device']), "$label: nothing about the owner");
+            self::assertNull($res['device'] ?? null, $label);
+            self::assertStringNotContainsString((string) $a->getEmail(), (string) $this->client->getResponse()->getContent(), $label);
+        }
+
+        $after = $this->em->getConnection()->fetchAssociative('SELECT * FROM push_subscription WHERE endpoint = ?', [$endpoint]);
+        self::assertSame($before, $after, "the other account's subscription is not modified in any way");
+        self::assertSame(0, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM push_subscription WHERE user_id = ?', [$b->getId()]));
+        self::assertNull($this->tracker()->findInvalidation($endpoint));
+
+        // Le jeton du propriétaire fonctionne toujours (rien n'a tourné chez lui).
+        $res = $this->post('/api/push/device/renew', ['deviceToken' => $tokenA, 'subscription' => ['endpoint' => $endpoint, 'keys' => ['p256dh' => self::SUBSCRIBER_P256DH, 'auth' => self::SUBSCRIBER_AUTH]]]);
+        self::assertSame(['OK', 200], [$res['state'] ?? null, $this->httpStatus()]);
+    }
+
+    /** Cas réel : manager #7 puis chirurgien #11 sur le même téléphone. */
+    #[WithoutErrorHandler]
+    public function test_account_switch_on_the_same_phone_after_a_clean_logout_reuses_the_endpoint(): void
+    {
+        ['user' => $manager, 'token' => $jwtManager] = $this->login();
+        ['user' => $surgeon, 'token' => $jwtSurgeon] = $this->login();
+        $endpoint = $this->endpoint();
+        $managerToken = $this->sync($jwtManager, $endpoint)['deviceToken'];
+
+        // Déconnexion volontaire : la page détache l'appareil côté serveur.
+        $this->client->request('DELETE', '/api/push/unsubscribe', server: ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer ' . $jwtManager], content: json_encode(['endpoint' => $endpoint]));
+        self::assertSame(204, $this->httpStatus());
+
+        $res = $this->sync($jwtSurgeon, $endpoint);
+        self::assertSame('REGISTERED', $res['state'], 'nothing to renew: the endpoint is free again');
+        self::assertSame($surgeon->getId(), $this->subscription($endpoint)?->getUser()?->getId());
+        self::assertSame(0, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM push_subscription WHERE user_id = ?', [$manager->getId()]), "the phone no longer receives the manager's notifications");
+
+        $this->post('/api/push/device/renew', ['deviceToken' => $managerToken, 'subscription' => ['endpoint' => $this->endpoint(), 'keys' => ['p256dh' => self::SUBSCRIBER_P256DH, 'auth' => self::SUBSCRIBER_AUTH]]]);
+        self::assertSame(401, $this->httpStatus(), "the previous account's device token is dead");
+
+        // Synchronisations répétées : aucun doublon.
+        $this->sync($jwtSurgeon, $endpoint, ['hasDeviceToken' => true]);
+        $this->sync($jwtSurgeon, $endpoint, ['hasDeviceToken' => true]);
+        self::assertSame(1, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM push_subscription WHERE endpoint = ?', [$endpoint]));
+    }
+
+    #[WithoutErrorHandler]
+    public function test_account_switch_after_an_interrupted_logout_creates_a_fresh_subscription_and_leaves_the_old_one_untouched(): void
+    {
+        ['user' => $manager, 'token' => $jwtManager] = $this->login();
+        ['user' => $surgeon, 'token' => $jwtSurgeon] = $this->login();
+        $old = $this->endpoint();
+        $this->sync($jwtManager, $old);
+
+        // Déconnexion interrompue : la ligne du manager est restée. Le serveur refuse le transfert…
+        self::assertSame('PUSH_SUBSCRIPTION_FOREIGN', $this->sync($jwtSurgeon, $old)['code'] ?? null);
+
+        // … le navigateur se réabonne (nouvel endpoint) et le signale.
+        $fresh = $this->endpoint();
+        $res = $this->sync($jwtSurgeon, $fresh, ['replacesEndpoint' => $old]);
+        self::assertSame('REGISTERED', $res['state']);
         self::assertIsString($res['deviceToken']);
-        self::assertNotSame($tokenA, $res['deviceToken']);
-        self::assertSame($b->getId(), $this->subscription($endpoint)?->getUser()?->getId());
-        self::assertSame(0, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM push_subscription WHERE user_id = ?', [$a->getId()]));
+        self::assertSame($surgeon->getId(), $this->subscription($fresh)?->getUser()?->getId());
 
-        // Le jeton émis pour le compte précédent ne sert plus à rien.
-        $this->post('/api/push/device/renew', ['deviceToken' => $tokenA, 'subscription' => ['endpoint' => $this->endpoint(), 'keys' => ['p256dh' => self::SUBSCRIBER_P256DH, 'auth' => self::SUBSCRIBER_AUTH]]]);
-        self::assertSame(401, $this->httpStatus());
-        self::assertSame($b->getId(), $this->subscription($endpoint)?->getUser()?->getId());
+        // L'ancien abonnement, encore connu du serveur, reste au manager, intact et non invalidé par
+        // le chirurgien : il disparaît au prochain envoi (le navigateur l'a révoqué → 410).
+        self::assertSame($manager->getId(), $this->subscription($old)?->getUser()?->getId());
+        self::assertNull($this->tracker()->findInvalidation($old));
+        $this->send($manager, new GuzzleResponse(410));
+        self::assertNull($this->subscription($old));
+        self::assertSame(PushEndpointInvalidation::REASON_PROVIDER_EXPIRED, $this->tracker()->findInvalidation($old)?->getReason());
+
+        // Le chirurgien n'est pas affecté ; pas de doublon.
+        self::assertSame('OK', $this->sync($jwtSurgeon, $fresh, ['hasDeviceToken' => true])['state']);
+        self::assertSame(1, (int) $this->em->getConnection()->fetchOne('SELECT COUNT(*) FROM push_subscription WHERE user_id = ?', [$surgeon->getId()]));
     }
 
     #[WithoutErrorHandler]

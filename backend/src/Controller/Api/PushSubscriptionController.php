@@ -46,9 +46,9 @@ class PushSubscriptionController extends AbstractController
      * Three distinct cases, each logged distinctly (Lot 1 / audit PWA-push 24-07-2026):
      *  - endpoint unknown            → create.
      *  - endpoint owned by $user     → refresh keys, no-op if identical (idempotent resubscribe).
-     *  - endpoint owned by another   → explicit, logged reassignment (never silent). Expected to
-     *    become rare now that logout() detaches server-side first (see AuthContext.tsx); this
-     *    remains the self-healing path for sessions that expired without an explicit logout.
+     *  - endpoint owned by another   → D-081 révisé (D-175) : 409 PUSH_SUBSCRIPTION_FOREIGN, aucune
+     *    écriture. Connaître un endpoint ne prouve pas qu'on détient le navigateur ; le navigateur
+     *    légitime se réabonne (POST /api/push/sync), il n'y a plus de transfert entre comptes.
      */
     #[Route('/subscribe', name: 'api_push_subscribe', methods: ['POST'])]
     public function subscribe(Request $request, #[CurrentUser] User $user): JsonResponse
@@ -88,12 +88,10 @@ class PushSubscriptionController extends AbstractController
             $existing->setPublicKey($p256dh)->setAuthToken($auth);
             $this->logger->info('push.subscription_updated', ['user_id' => $user->getId()]);
         } else {
-            $previousUserId = $existing->getUser()?->getId();
-            $existing->setUser($user)->setPublicKey($p256dh)->setAuthToken($auth);
-            $this->logger->warning('push.subscription_reassigned', [
-                'from_user_id' => $previousUserId,
-                'to_user_id'   => $user->getId(),
-            ]);
+            $this->logger->warning('push.subscription_transfer_refused', ['user_id' => $user->getId(), 'subscription_id' => $existing->getId(), 'via' => 'subscribe']);
+            $foreign = PushSubscriptionSyncService::foreign();
+
+            return $this->json(['code' => $foreign['code'], 'message' => $foreign['message']], Response::HTTP_CONFLICT);
         }
 
         $this->em->flush();
@@ -120,7 +118,9 @@ class PushSubscriptionController extends AbstractController
             return $this->json(['message' => $error], Response::HTTP_BAD_REQUEST);
         }
 
-        return $this->json($this->sync->sync($user, $body + ['keys' => $keys]));
+        $result = $this->sync->sync($user, $body + ['keys' => $keys]);
+
+        return $this->json($result, isset($result['code']) ? Response::HTTP_CONFLICT : Response::HTTP_OK);
     }
 
     /**

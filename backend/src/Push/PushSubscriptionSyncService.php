@@ -17,7 +17,10 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
  * Le navigateur décrit l'abonnement qu'il détient ; le serveur répond par un état :
  *  - OK                l'appareil est connu et rattaché à ce compte (clés rafraîchies) ;
  *  - REGISTERED        appareil inconnu : enregistré ;
- *  - REATTACHED        appareil d'un autre compte : rattaché à celui-ci (D-081, journalisé) ;
+ *  - FOREIGN (409)     l'endpoint appartient encore à un AUTRE compte : jamais transféré (D-081
+ *                      révisé, D-175). Rien n'est modifié chez l'autre compte, son identité n'est
+ *                      pas révélée ; le navigateur légitime se réabonne (nouvel endpoint), ce qui
+ *                      est la seule preuve de possession retenue ;
  *  - RENEWED           le navigateur vient de remplacer son abonnement (`replacesEndpoint`) :
  *                      même appareil, nouvel endpoint, l'ancien est mémorisé comme invalide ;
  *  - RENEW_REQUIRED    l'abonnement détenu ne peut pas servir : endpoint déclaré mort par le
@@ -92,6 +95,16 @@ class PushSubscriptionSyncService
         $row = $repo->findOneBy(['endpoint' => $endpoint]);
         $state = null;
 
+        // D-081 révisé : connaître un endpoint (et même ses clés p256dh/auth, que la base connaît
+        // aussi) ne prouve pas qu'on détient le navigateur. Un endpoint d'un autre compte n'est
+        // jamais transféré : vérifié AVANT toute écriture, aucune ligne de l'autre compte n'est
+        // modifiée. Seul un abonnement neuf, créé par le navigateur lui-même, est accepté.
+        if ($row !== null && $row->getUser()?->getId() !== $user->getId()) {
+            $this->logger->warning('push.subscription_transfer_refused', ['user_id' => $user->getId(), 'subscription_id' => $row->getId(), 'via' => 'sync']);
+
+            return self::foreign();
+        }
+
         if ($replaces !== null) {
             $previous = $repo->findOneBy(['endpoint' => $replaces, 'user' => $user]);
             // Seul un appareil de CE compte peut être déclaré remplacé : un endpoint inconnu ou
@@ -117,11 +130,6 @@ class PushSubscriptionSyncService
             $state = 'REGISTERED';
             $issueToken = true;
             $this->logger->info('push.subscription_created', ['user_id' => $user->getId(), 'via' => 'sync']);
-        } elseif ($row->getUser()?->getId() !== $user->getId()) {
-            $this->logger->warning('push.subscription_reassigned', ['from_user_id' => $row->getUser()?->getId(), 'to_user_id' => $user->getId()]);
-            $row->setUser($user);
-            $state = 'REATTACHED';
-            $issueToken = true;
         }
         $state ??= 'OK';
 
@@ -157,6 +165,26 @@ class PushSubscriptionSyncService
             'autoRenew' => $autoRenew,
             'deviceToken' => $deviceToken,
             'device' => $this->describe($row, $user),
+        ];
+    }
+
+    /**
+     * Réponse 409 (PushSubscriptionController) : le navigateur doit se réabonner. `autoRenew` toujours
+     * vrai : c'est le remplacement du rattachement automatique d'avant (changement de compte sur un
+     * même appareil), pas une réparation soumise aux drapeaux D-175. Aucune donnée sur le propriétaire.
+     *
+     * @return array<string, mixed>
+     */
+    public static function foreign(): array
+    {
+        return [
+            'code' => 'PUSH_SUBSCRIPTION_FOREIGN',
+            'message' => 'This push subscription cannot be attached to this account: renew it',
+            'state' => 'RENEW_REQUIRED',
+            'reason' => 'FOREIGN',
+            'autoRenew' => true,
+            'deviceToken' => null,
+            'device' => null,
         ];
     }
 

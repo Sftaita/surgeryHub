@@ -195,6 +195,72 @@ describe("reconcilePush — renouvellement (3. invalidé 410, 4. remplacé)", ()
   });
 });
 
+describe("reconcilePush — endpoint d'un autre compte (D-081 révisé)", () => {
+  const foreign = () => ({
+    response: { status: 409, data: { code: "PUSH_SUBSCRIPTION_FOREIGN", state: "RENEW_REQUIRED", reason: "FOREIGN", autoRenew: true, deviceToken: null, device: null } },
+  });
+
+  it("changement de compte sur le même appareil : refus serveur, abonnement neuf créé sans rien demander, jeton de l'autre compte jamais conservé", async () => {
+    const old = current!;
+    deviceState = { apiBase: "", deviceToken: "a".repeat(43), endpoint: old.endpoint, applicationServerKey: null };
+    apiPostMock.mockRejectedValueOnce(foreign());
+    serverSays({ state: "REGISTERED", deviceToken: "b".repeat(43), device: { id: 9 } });
+
+    const out = await reconcilePush({ trigger: "login", userId: 11 });
+
+    expect(old.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(pushManager.subscribe).toHaveBeenCalledTimes(1);
+    expect(syncCalls()).toHaveLength(2);
+    expect(syncCalls()[1].endpoint).not.toBe(old.endpoint);
+    expect(writeDeviceStateMock.mock.calls[0][0]).toMatchObject({ deviceToken: null });
+    expect(deviceState).toMatchObject({ deviceToken: "b".repeat(43), endpoint: syncCalls()[1].endpoint });
+    expect(out).toMatchObject({ kind: "synced", health: { state: "REGISTERED", renewed: true, renewalPending: null } });
+  });
+
+  it("n'attend pas la fenêtre de 24 h d'un renouvellement précédent (changement de compte légitime)", async () => {
+    let t = 1_000_000;
+    const now = () => t;
+    serverSays({ state: "RENEW_REQUIRED", reason: "INVALIDATED", autoRenew: true }, { state: "RENEWED" });
+    await reconcilePush({ trigger: "login", userId: 7, now });
+    expect(pushManager.subscribe).toHaveBeenCalledTimes(1);
+
+    t += 60_000;
+    apiPostMock.mockRejectedValueOnce(foreign());
+    serverSays({ state: "REGISTERED" });
+    const out = await reconcilePush({ trigger: "login", userId: 11, now });
+    expect(pushManager.subscribe).toHaveBeenCalledTimes(2);
+    expect(out).toMatchObject({ health: { renewed: true } });
+  });
+
+  it("aucune boucle : si le navigateur rend le même endpoint, un seul essai, puis plus rien aux réconciliations suivantes", async () => {
+    const same = current!.endpoint;
+    subscribeImpl = async () => fakeSub(same);
+    apiPostMock.mockRejectedValueOnce(foreign()).mockRejectedValueOnce(foreign());
+    const first = await reconcilePush({ trigger: "login", userId: 11 });
+    expect(first).toMatchObject({ health: { renewalPending: "failed", renewed: false } });
+    expect(pushManager.subscribe).toHaveBeenCalledTimes(1);
+
+    apiPostMock.mockRejectedValueOnce(foreign());
+    const second = await reconcilePush({ trigger: "login", userId: 11 });
+    expect(second).toMatchObject({ health: { renewalPending: "failed" } });
+    expect(pushManager.subscribe).toHaveBeenCalledTimes(1);
+    expect(syncCalls()).toHaveLength(3);
+  });
+
+  it("désactivées volontairement : même un endpoint d'un autre compte ne déclenche aucun réabonnement", async () => {
+    setPushOptedOut(true);
+    expect(await reconcilePush({ trigger: "login", userId: 11 })).toEqual({ kind: "skipped", why: "opted-out" });
+    expect(apiPostMock).not.toHaveBeenCalled();
+    expect(pushManager.subscribe).not.toHaveBeenCalled();
+  });
+
+  it("toute autre erreur serveur remonte sans toucher à l'abonnement local", async () => {
+    apiPostMock.mockRejectedValueOnce({ response: { status: 409, data: { code: "OTHER" } } });
+    await expect(reconcilePush({ trigger: "login", userId: 11 })).rejects.toBeTruthy();
+    expect(current!.unsubscribe).not.toHaveBeenCalled();
+  });
+});
+
 describe("reconcilePush — garde-fous", () => {
   it("désactivées volontairement (Mon profil) : aucune réconciliation automatique ne réabonne ; seul « Activer » lève le choix", async () => {
     setPushOptedOut(true);

@@ -22,7 +22,7 @@ import { isPushOptedOut, readDeviceState, readServiceWorkerVersion, setPushOpted
 
 export type ReconcileTrigger = "login" | "visibility" | "permission" | "activate" | "repair";
 
-export type PushSyncState = "OK" | "REGISTERED" | "REATTACHED" | "RENEWED" | "RENEW_REQUIRED";
+export type PushSyncState = "OK" | "REGISTERED" | "RENEWED" | "RENEW_REQUIRED";
 
 export type PushDeviceHealth = {
   id: number;
@@ -38,7 +38,7 @@ export type PushDeviceHealth = {
 
 export type PushHealth = {
   state: PushSyncState;
-  reason: "INVALIDATED" | "SUSPECTED" | null;
+  reason: "INVALIDATED" | "SUSPECTED" | "FOREIGN" | null;
   /** Renouvellement effectué automatiquement pendant cette réconciliation. */
   renewed: boolean;
   /** Renouvellement nécessaire mais non effectué : fenêtre anti-boucle, réparation coupée côté serveur, ou échec. */
@@ -53,7 +53,7 @@ export type ReconcileOutcome =
 
 type SyncResponse = {
   state: PushSyncState;
-  reason: "INVALIDATED" | "SUSPECTED" | null;
+  reason: "INVALIDATED" | "SUSPECTED" | "FOREIGN" | null;
   autoRenew: boolean;
   deviceToken: string | null;
   device: PushDeviceHealth | null;
@@ -67,6 +67,9 @@ const LAST_RENEWAL_KEY = "surgicalhub.push.lastRenewal";
 // Endpoint abandonné par un renouvellement interrompu (désabonné, nouveau non transmis) : envoyé
 // à la synchronisation suivante pour que le serveur déplace l'appareil au lieu d'en créer un second.
 const PENDING_REPLACES_KEY = "surgicalhub.push.pendingReplaces";
+// D-081 révisé : endpoint abandonné parce qu'il appartenait encore à un autre compte. Si le
+// navigateur le rendait de nouveau après réabonnement, on ne recommence pas (anti-boucle).
+const FOREIGN_ABANDONED_KEY = "surgicalhub.push.foreignAbandoned";
 
 function readString(key: string): string | null {
   try {
@@ -148,13 +151,22 @@ export function reconcilePush(opts: { trigger: ReconcileTrigger; userId: number;
 async function postSync(subscription: PushSubscription, extra: Record<string, unknown>): Promise<SyncResponse | null> {
   const json = subscription.toJSON();
   const swVersion = await readServiceWorkerVersion();
-  const res = await apiClient.post<SyncResponse>("/api/push/sync", {
-    endpoint: json.endpoint,
-    keys: { p256dh: json.keys?.p256dh, auth: json.keys?.auth },
-    swVersion,
-    receipts: swVersion !== null,
-    ...extra,
-  });
+  let res;
+  try {
+    res = await apiClient.post<SyncResponse>("/api/push/sync", {
+      endpoint: json.endpoint,
+      keys: { p256dh: json.keys?.p256dh, auth: json.keys?.auth },
+      swVersion,
+      receipts: swVersion !== null,
+      ...extra,
+    });
+  } catch (err) {
+    // 409 PUSH_SUBSCRIPTION_FOREIGN (D-081 révisé) : l'endpoint appartient encore à un autre compte,
+    // le serveur refuse de le transférer et demande un abonnement neuf. Toute autre erreur remonte.
+    const response = (err as { response?: { status?: number; data?: { code?: string } & SyncResponse } }).response;
+    if (response?.status === 409 && response.data?.code === "PUSH_SUBSCRIPTION_FOREIGN") return response.data;
+    throw err;
+  }
   return res?.data && typeof res.data === "object" && "state" in res.data ? res.data : null;
 }
 
@@ -195,7 +207,9 @@ async function reconcileOnce(trigger: ReconcileTrigger, userId: number, now: () 
     ...(pendingReplaces && pendingReplaces !== subscription.endpoint ? { replacesEndpoint: pendingReplaces } : {}),
   });
   writeString(PENDING_REPLACES_KEY, null);
-  await remember(subscription, response, stored);
+  const foreign = response?.reason === "FOREIGN";
+  // Le jeton éventuellement stocké pour cet endpoint est celui de l'autre compte : jamais conservé.
+  await remember(subscription, response, foreign ? null : stored);
   writeNumber(lastSyncKey(userId), now());
 
   let renewed = false;
@@ -208,10 +222,16 @@ async function reconcileOnce(trigger: ReconcileTrigger, userId: number, now: () 
     const lastRenewal = readNumber(LAST_RENEWAL_KEY);
     if (!response?.autoRenew && !manual) {
       renewalPending = "manual";
-    } else if (!manual && lastRenewal !== null && now() - lastRenewal < RENEWAL_COOLDOWN_MS) {
+    } else if (foreign && readString(FOREIGN_ABANDONED_KEY) === subscription.endpoint) {
+      // Déjà abandonné une fois et rendu par le navigateur : ne jamais boucler.
+      renewalPending = "failed";
+    } else if (!manual && !foreign && lastRenewal !== null && now() - lastRenewal < RENEWAL_COOLDOWN_MS) {
+      // La fenêtre de 24 h ne s'applique pas à FOREIGN : un changement de compte légitime doit
+      // aboutir tout de suite ; l'anti-boucle est la ligne précédente et « un seul par réconciliation ».
       renewalPending = "cooldown";
     } else {
       writeNumber(LAST_RENEWAL_KEY, now());
+      if (foreign) writeString(FOREIGN_ABANDONED_KEY, subscription.endpoint);
       try {
         const previousEndpoint = subscription.endpoint;
         // Clé obtenue AVANT le désabonnement : une coupure réseau ne doit pas laisser l'appareil sans abonnement.

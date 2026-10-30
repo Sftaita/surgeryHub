@@ -102,27 +102,37 @@ export async function unsubscribeFromPush(): Promise<void> {
  * storage may already be gone, so this bypasses apiClient's storage-reading interceptor
  * and sends the captured token explicitly. Never throws — logout must never be blocked
  * or delayed by this (see AuthContext.tsx::logout, docs/decisions.md D-081).
+ *
+ * D-175 (D-081 révisé) — when the server-side detach cannot happen (no token, network down,
+ * timeout, server error), the browser-level subscription is revoked locally instead: the
+ * device must stop receiving the previous account's notifications, and the server no longer
+ * transfers an endpoint between accounts. The next login recreates a fresh subscription
+ * silently if the permission is still granted (and the user did not opt out).
  */
 export async function detachCurrentPushSubscription(accessToken: string | null): Promise<void> {
-  if (!accessToken) {
-    await clearDeviceState();
-    return;
-  }
-
+  let subscription: PushSubscription | null = null;
+  let detached = false;
   try {
-    const subscription = await getCurrentSubscription();
-    if (!subscription) return;
+    subscription = await getCurrentSubscription();
+    if (!subscription || !accessToken) return;
 
     await axios.delete(`${import.meta.env.VITE_API_BASE_URL}/api/push/unsubscribe`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       data: { endpoint: subscription.endpoint },
       timeout: 5000,
     });
+    detached = true;
   } catch {
-    // Best-effort only. A stale/orphaned subscription self-heals on next login via the
-    // backend's logged reassignment path (PushSubscriptionController::subscribe).
+    // Best-effort only — see the local revocation below.
   } finally {
-    // D-175 — the service worker must not keep renewing a subscription for a session that ended.
+    if (subscription && !detached) {
+      try {
+        await subscription.unsubscribe();
+      } catch {
+        // Nothing more can be done locally; the server will drop the endpoint on its next 404/410.
+      }
+    }
+    // The service worker must not keep renewing a subscription for a session that ended.
     await clearDeviceState();
   }
 }

@@ -101,6 +101,25 @@ describe("D-175 — révocation du jeton d'appareil", () => {
     });
   }
 
+  it("déconnexion réussie côté serveur : l'abonnement du navigateur est conservé (le compte suivant le réenregistre)", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    withSubscription({ ...makeSubscription("https://push.example/xyz"), unsubscribe });
+    await detachCurrentPushSubscription("captured-token");
+    expect(unsubscribe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["réseau indisponible", "captured-token", () => axiosDeleteMock.mockRejectedValueOnce(new Error("network down"))],
+    ["aucune session à présenter", null, () => {}],
+  ] as const)("déconnexion interrompue (%s) : l'abonnement du navigateur est révoqué localement, l'ancien compte ne reçoit plus rien ici", async (_label, token, arrange) => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    withSubscription({ ...makeSubscription("https://push.example/xyz"), unsubscribe });
+    arrange();
+    await expect(detachCurrentPushSubscription(token)).resolves.toBeUndefined();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(clearDeviceStateMock).toHaveBeenCalledTimes(1);
+  });
+
   it("déconnexion : le jeton d'appareil est effacé, que le détachement serveur réussisse ou non", async () => {
     withSubscription(makeSubscription("https://push.example/xyz"));
     await detachCurrentPushSubscription("captured-token");
