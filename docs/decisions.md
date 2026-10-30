@@ -15755,3 +15755,121 @@ déclarée à valider » (aussi servi par le backend).
 **Tests.** `deriveStatus.test.ts` (12 scénarios maquette + verrous par niveau, chirurgien, mission
 commencée, dates absentes), `MissionsListPage.test.tsx` (une pastille, verrou financier, chirurgien,
 filtre Statut), `MissionsEncodingOverviewD172Test::test_started_is_served_with_the_same_clock_as_the_encoding_state`.
+
+## D-175 — Fiabilisation Web Push : réconciliation navigateur ↔ serveur, endpoints morts mémorisés, accusés de réception, pushsubscriptionchange (2026-10-30)
+
+**Constat (29/10/2026, compte #11, Android).** Test de 11:56 vers l'abonnement #27 : HTTP 201 Google,
+notification non affichée. Désactivation puis réactivation manuelle à 15:40 (nouvel abonnement #28),
+test de 15:43 : 201 et notification reçue. Reconstitution sans secret (empreintes) : l'abonnement du
+navigateur derrière #27 datait du 28/09 (31 jours), réutilisé par 5 lignes serveur (#12, #22, #24,
+#26, #27) et rattaché tour à tour aux comptes #7 et #11 à chaque connexion ; même format, mêmes
+longueurs de clés, même chiffrement, même service worker (`sw.js` inchangé depuis le 18/09), mêmes
+paramètres d'envoi que #28. La même session navigateur a rouvert l'application à 13:32 et 13:42 sans
+que la notification de 11:56 n'apparaisse.
+
+**Cause historique : NON DÉMONTRÉE** (décision utilisateur du 29/10 : pas de test sur l'ancien
+endpoint, qui ne prouverait pas la cause). Restent compatibles : abonnement mort côté navigateur alors
+que le fournisseur répond encore 201 (hypothèse la plus cohérente, non prouvée), défaut d'affichage
+Android (peu probable : même canal pour le test reçu), livraison retardée (peu probable : appareil
+actif après l'envoi).
+
+**Défaillances structurelles prouvées (code et données).**
+1. Le serveur n'a aucun moyen de savoir qu'un abonnement accepté (2xx) n'aboutit pas.
+2. Un abonnement de navigateur ne se renouvelle jamais : la déconnexion ne le détache que côté serveur
+   (D-081), la connexion suivante renvoie le même.
+3. Pas de `pushsubscriptionchange`, pas de réconciliation au démarrage ; un endpoint déclaré mort
+   (404/410) encore détenu par le navigateur était réenregistré à la connexion suivante.
+4. Mêmes TTL (4 semaines, défaut de la bibliothèque) et urgence (aucune) pour tous les types.
+5. Appareil partagé entre deux comptes : un seul reçoit (D-081, inchangé).
+
+**Décision.**
+
+- **Réconciliation** (`POST /api/push/sync`, `PushSubscriptionSyncService`, `pushReconcile.ts`) à
+  l'ouverture et au changement de compte, à l'activation, au changement de permission et au retour au
+  premier plan (au plus une fois par 6 h). États `OK` / `REGISTERED` / `REATTACHED` / `RENEWED` /
+  `RENEW_REQUIRED`. Remplace l'appel automatique à `POST /api/push/subscribe` (conservé pour
+  compatibilité). Aucune demande de permission, rien si la permission n'est pas accordée.
+- **Endpoints morts mémorisés** (`push_endpoint_invalidation`, empreinte SHA-256 seulement) : 404/410
+  (`PROVIDER_EXPIRED`) et endpoints remplacés (`RENEWED`, `REPLACED`). Un endpoint mémorisé n'est
+  jamais réenregistré (`sync` → `RENEW_REQUIRED`/`INVALIDATED`, `subscribe` → 409) : renvoyer le même
+  abonnement n'est pas une réparation. Renouvellement automatique sur cette preuve :
+  `PUSH_AUTO_RENEW_INVALIDATED` (défaut 0 = observation : réparation proposée dans Mon profil).
+- **Renouvellement** : désabonnement + réabonnement du navigateur avec la permission déjà accordée,
+  puis `sync` avec `replacesEndpoint` : même appareil (même ligne), nouvel endpoint, ancien mémorisé,
+  journal `PUSH_SUBSCRIPTION_RENEWED`. Jamais à cause de l'ancienneté. Anti-boucle : un renouvellement
+  au plus par endpoint/appareil et par 24 h côté serveur (`PUSH_RENEWAL_COOLDOWN_HOURS`) et côté
+  navigateur, jamais deux dans la même réconciliation ; une seule réconciliation à la fois (promesse
+  partagée + Web Locks entre onglets) ; un renouvellement interrompu est repris à la synchronisation
+  suivante (endpoint abandonné transmis). Seul un appareil du compte connecté peut être déclaré
+  remplacé.
+- **`pushsubscriptionchange`** (`POST /api/push/device/renew`, sans session) : authentifié par un
+  **jeton d'appareil dédié** (256 bits, remis par `sync` à la page authentifiée, stocké dans le Cache
+  Storage de l'origine pour le service worker, empreinte seule en base, rotation à chaque
+  remplacement). Les secrets Web Push (`auth`, `p256dh`) ne sont pas réutilisés : ce sont des clés de
+  chiffrement du contenu, pas une preuve d'identité. Portée minimale : remplacer l'endpoint de CET
+  appareil, jamais changer de compte ni lire une donnée. Un endpoint mort n'est jamais accepté comme
+  remplaçant. La réconciliation au démarrage couvre les navigateurs sans cet événement.
+- **Accusés de réception** (`push_delivery`, `POST /api/push/receipts`, sans session) : ENVOYÉ →
+  ACCEPTÉ PAR LE FOURNISSEUR (2xx, `accepted_at`) → REÇU PAR LE SERVICE WORKER → AFFICHAGE DEMANDÉ (ou
+  ÉCHEC D'AFFICHAGE) → OUVERT. Authentifiés par une clé aléatoire propre à chaque envoi, transportée
+  uniquement dans le contenu chiffré de bout en bout (empreinte seule en base) ; idempotents (premier
+  horodatage conservé) ; clé inconnue ignorée sans le dire (204) ; file hors ligne dans le service
+  worker (100 accusés, 7 jours). **« Affichage demandé » = `showNotification()` a résolu : ce n'est
+  pas la preuve qu'Android l'a montré.** Aucun patient, aucun endpoint, aucune clé dans les journaux.
+- **Suspicion d'échec silencieux** : au moins `PUSH_SUSPECT_MIN_UNACKNOWLEDGED` (3, plancher 2) envois
+  acceptés sans accusé depuis le dernier envoi accusé, le premier depuis au moins
+  `PUSH_SUSPECT_MIN_HOURS` (48 h), et uniquement des envois faits alors que l'appareil avait déclaré un
+  service worker capable d'accuser réception (sinon un appareil resté sur l'ancien service worker
+  serait suspect à tort). Journalisée (`PUSH_SUBSCRIPTION_SUSPECTED`), affichée dans Mon profil, levée
+  au premier accusé. **Renouvellement automatique sur suspicion désactivé** (`PUSH_AUTO_RENEW_SUSPECTED=0`,
+  décision utilisateur : seuils à fixer sur mesures réelles). Une absence d'accusé ne supprime jamais
+  un appareil ; seul un 404/410 du fournisseur le fait (inchangé).
+- **Mon profil** : état de l'appareil courant (renouvelé automatiquement, abonnement invalide, envois
+  non confirmés, dernière confirmation du navigateur, autres appareils) ; bouton « Réparer » seulement
+  quand c'est utile (renouvellement sans passer par Désactiver/Activer) ; marche à suivre si la
+  permission est refusée (inchangé).
+
+**Hors périmètre de ce lot (prévu).** Priorités d'envoi (Urgency/TTL par criticité et échéance réelle
+de l'événement, jamais `high` partout) ; option explicite future « E-mail de secours pour les alertes
+importantes » — en attendant, préférences de canal strictement inchangées, aucun e-mail supplémentaire.
+
+**Limites.** Un abonnement mort sans `pushsubscriptionchange` ne se répare qu'à la prochaine
+ouverture de l'application (sans push qui arrive, le service worker ne se réveille pas). Un appareil
+passe au nouveau service worker à sa prochaine ouverture ; avant, ni accusés ni suspicion.
+
+**Déploiement progressif.** (1) migration `Version20261030090000` (additive) + code, drapeaux à 0 :
+réconciliation, mémoire des endpoints morts, accusés et détection actifs, aucune réparation
+automatique ; (2) après mesure (taux d'accusés par fournisseur, endpoints invalidés revenus,
+suspicions), `PUSH_AUTO_RENEW_INVALIDATED=1` ; (3) seuils de suspicion décidés sur données, puis
+éventuellement `PUSH_AUTO_RENEW_SUSPECTED=1`. Retour arrière : drapeaux à 0 ; tables et colonnes
+additives sans dépendance métier.
+
+**Tests.** `PushReliabilityFunctionalTest` (13 : reconnu, absent du serveur, 410 mémorisé et refusé,
+renouvellement une fois par fenêtre, renouvellement page, endpoint d'autrui protégé, jeton d'appareil,
+changement de compte, plusieurs appareils, accusés idempotents, suspicion journalisée sans
+renouvellement, ancien service worker jamais suspect, sécurité des routes) ; `pushReconcile.test.ts`
+(14), `serviceWorker.test.ts` (11, vrai `public/sw.js` en contexte isolé), `PushPermissionCard.test.tsx`,
+`PushProvider.test.tsx`.
+
+**Revue avant mise en production (2026-10-30).** Corrigé dans la branche :
+- « Désactiver » n'était pas durable : la permission du navigateur reste « granted » (un site ne peut
+  pas la retirer) et la réconciliation suivante (connexion, premier plan) — comme avant D-175
+  l'abonnement automatique à la connexion — réabonnait l'appareil. Le choix est désormais mémorisé
+  sur l'appareil (`surgicalhub.push.optedOut`) dès que le serveur a détaché l'appareil ; seules
+  « Activer » (profil ou invitation) le lève ; l'invitation D-143 n'est plus proposée.
+- Jeton d'appareil effacé du Cache Storage à la déconnexion (que le détachement serveur réussisse ou
+  non) et à la désactivation : le service worker ne renouvelle plus rien pour une session terminée.
+  Côté serveur, le jeton meurt avec la ligne (désabonnement, 404/410) et tourne au rattachement à un
+  autre compte et à chaque remplacement.
+- `POST /api/push/device/renew` : ligne verrouillée (`SELECT … FOR UPDATE`) et jeton revérifié ; un
+  rejeu ou deux `pushsubscriptionchange` simultanés → le second reçoit 401.
+- Plafond de débit des routes sans session : en production (traefik → nginx → php, sans
+  `SYMFONY_TRUSTED_PROXIES`), l'adresse client vue par Symfony est celle du proxy ; le plafond « par
+  IP » était en fait global. Il est désormais explicitement global par route (600/min) ; les accusés
+  refusés restent en file dans le service worker.
+
+Risques acceptés : connaître l'endpoint d'un appareil permet toujours de le rattacher à son compte
+(`subscribe`/`sync`, D-081, inchangé — l'endpoint n'est jamais exposé par l'API ni journalisé) ;
+course rare page ↔ service worker sur un même nouvel endpoint (409 `PUSH_SUBSCRIPTION_TAKEN` ou
+contrainte d'unicité → la synchronisation suivante tranche) ; `push_delivery` croît d'une ligne par
+envoi et par appareil (purge à prévoir).

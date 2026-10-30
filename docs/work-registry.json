@@ -749,6 +749,39 @@
       "nextAction": "Déployé v2026.10.29-prod-2 (23cb707), terminologie « À approuver » (DECLARED) / « À valider » (SUBMITTED) incluse. Reste : validation fonctionnelle par l'utilisateur.",
       "lastReviewed": "2026-10-29",
       "prodEvidence": "v2026.10.29-prod-2 (23cb707) activé le 2026-10-29 10:10 UTC par deploy.sh, aucune migration (91/91), mark OFFICIAL ; contrôles API publique en lecture seule (comptes jetables supprimés) et session manager existante : voir docs/production.md. Une pastille par mission, verrous réels (21 calcul financier, 2 encodage), encoding.started sur 236/236 missions passées, onglet et tuile « À approuver »."
+    },
+    {
+      "id": "D-175",
+      "title": "Fiabilisation Web Push : réconciliation, endpoints morts, accusés de réception",
+      "description": "POST /api/push/sync à l'ouverture (reconnu / enregistré / rattaché / renouvelé / à renouveler), mémoire des endpoints 404/410 jamais réenregistrés, renouvellement anti-boucle, pushsubscriptionchange par jeton d'appareil dédié, accusés du service worker (reçu, affichage demandé, ouvert), détection journalisée des échecs silencieux sans renouvellement automatique, état de l'appareil dans Mon profil.",
+      "kind": "feature",
+      "priority": "P1",
+      "userImpact": "Un abonnement push mort côté navigateur pouvait rester accepté (201) sans aucune notification affichée ; seule une désactivation/réactivation manuelle le réparait (cas du 29/10, compte #11, cause historique non démontrée).",
+      "status": "teste",
+      "statusSince": "2026-10-30",
+      "refs": {
+        "branches": [
+          "feat/push-reliability"
+        ],
+        "decision": "D-175",
+        "worktrees": [
+          "SurgicalHub-push-reliability"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Test réel sur le téléphone Android du compte #11 uniquement : renouvellement automatique sans désactiver/réactiver, accusés reçus."
+        },
+        {
+          "type": "activation-configuration",
+          "status": "en-attente",
+          "description": "Après la phase d'observation : PUSH_AUTO_RENEW_INVALIDATED=1 ; seuils de suspicion à décider sur mesures avant tout PUSH_AUTO_RENEW_SUSPECTED=1."
+        }
+      ],
+      "nextAction": "Revue finale du 30/10 faite (désactivation durable, jeton effacé à la déconnexion, renouvellement verrouillé, plafond global) : feu vert utilisateur attendu pour commit/PR, puis déploiement drapeaux à 0 et validation sur compte/appareil dédié (jamais l'abonnement #28).",
+      "lastReviewed": "2026-10-30"
     }
   ]
 }
