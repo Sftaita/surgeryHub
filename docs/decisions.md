@@ -15786,8 +15786,8 @@ actif après l'envoi).
 
 - **Réconciliation** (`POST /api/push/sync`, `PushSubscriptionSyncService`, `pushReconcile.ts`) à
   l'ouverture et au changement de compte, à l'activation, au changement de permission et au retour au
-  premier plan (au plus une fois par 6 h). États `OK` / `REGISTERED` / `REATTACHED` / `RENEWED` /
-  `RENEW_REQUIRED`. Remplace l'appel automatique à `POST /api/push/subscribe` (conservé pour
+  premier plan (au plus une fois par 6 h). États `OK` / `REGISTERED` / `RENEWED` /
+  `RENEW_REQUIRED` (et 409 `PUSH_SUBSCRIPTION_FOREIGN`, voir « D-081 révisé » plus bas). Remplace l'appel automatique à `POST /api/push/subscribe` (conservé pour
   compatibilité). Aucune demande de permission, rien si la permission n'est pas accordée.
 - **Endpoints morts mémorisés** (`push_endpoint_invalidation`, empreinte SHA-256 seulement) : 404/410
   (`PROVIDER_EXPIRED`) et endpoints remplacés (`RENEWED`, `REPLACED`). Un endpoint mémorisé n'est
@@ -15873,3 +15873,40 @@ Risques acceptés : connaître l'endpoint d'un appareil permet toujours de le ra
 course rare page ↔ service worker sur un même nouvel endpoint (409 `PUSH_SUBSCRIPTION_TAKEN` ou
 contrainte d'unicité → la synchronisation suivante tranche) ; `push_delivery` croît d'une ligne par
 envoi et par appareil (purge à prévoir).
+
+**D-081 révisé (2026-10-30, validé par l'utilisateur avant fusion de la PR #55).** Le rattachement
+automatique d'un endpoint appartenant à un autre compte (D-081 : « réattribution journalisée ») est
+**supprimé**. Avec un JWT valide, connaître un endpoint — et même ses clés `p256dh`/`auth`, que la
+base connaît aussi — suffisait à détourner l'appareil d'un autre utilisateur (il ne recevait plus
+ses notifications, ou recevait celles de l'attaquant). La comparaison des clés n'est pas une preuve
+de possession ; la seule retenue est un **abonnement neuf, créé par le navigateur lui-même**.
+- `sync` et `subscribe` sur un endpoint d'un autre compte : **409 `PUSH_SUBSCRIPTION_FOREIGN`**,
+  vérifié avant toute écriture ; la ligne de l'autre compte n'est pas modifiée (ni utilisateur, ni
+  clés, ni jeton, ni invalidation) ; la réponse ne contient rien sur le propriétaire (journal
+  serveur `push.subscription_transfer_refused` : demandeur et n° de ligne seulement).
+- Le navigateur légitime se réabonne automatiquement si la permission est accordée et que
+  l'utilisateur n'a pas désactivé les notifications sur cet appareil (« Désactiver » reste
+  prioritaire). Anti-boucle : un seul essai par réconciliation, réconciliations sérialisées entre
+  onglets (Web Locks), jamais de nouvel essai si le navigateur rend l'endpoint déjà abandonné ; pas
+  de fenêtre de 24 h (un changement de compte légitime doit aboutir tout de suite).
+- Changement de compte sur un même téléphone (cas réel : manager #7 puis chirurgien #11) :
+  déconnexion normale → ligne supprimée → l'endpoint est enregistré pour #11 (aucun
+  renouvellement). Déconnexion interrompue (pas de session, réseau, erreur) → le navigateur révoque
+  son abonnement localement → #7 ne reçoit plus rien ici ; au login de #11, nouvel abonnement.
+  Session expirée sans déconnexion → 409 puis nouvel abonnement ; la ligne de #7 disparaît à son
+  prochain envoi (404/410). Plusieurs onglets partagent la même session (D-157) et une seule
+  réconciliation à la fois.
+- `PushDeviceRenewalService` refusait déjà un endpoint pris (409 `PUSH_SUBSCRIPTION_TAKEN`).
+- Limite assumée : une déconnexion fermée avant la fin du détachement (onglet tué) laisse l'appareil
+  recevoir les notifications de l'ancien compte jusqu'à la connexion suivante ou au prochain 404/410.
+
+**Proxys de confiance — correction future (hors PR #55).** Production : traefik (`172.18.0.3`,
+réseau `proxy` `172.18.0.0/16`) → nginx → php-fpm. L'entrée `websecure` de traefik n'a pas de
+`forwardedHeaders.trustedIPs` : il remplace tout `X-Forwarded-For` reçu d'Internet, l'en-tête qui
+atteint php est donc fiable. Symfony voit pour `REMOTE_ADDR` l'adresse de traefik ; aucun code ne
+dépend aujourd'hui de `getClientIp()` (vérifié). Correction prévue, dans un lot séparé :
+`framework.trusted_proxies: '%env(SYMFONY_TRUSTED_PROXIES)%'` avec l'adresse exacte de traefik (pas
+tout le sous-réseau, partagé avec d'autres projets) et `trusted_headers: ['x-forwarded-for']`
+seulement (ne pas faire confiance à proto/host/port sans besoin) ; adresse de traefik à figer dans
+son compose (sinon elle peut changer au redémarrage) ; puis plafond par IP (120/min) en gardant le
+plafond global comme garde-fou. Ne jamais faire confiance à `REMOTE_ADDR`/`PRIVATE_SUBNETS` en bloc.
