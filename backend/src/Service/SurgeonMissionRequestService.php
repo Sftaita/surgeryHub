@@ -5,11 +5,13 @@ namespace App\Service;
 use App\Dto\Request\MissionCreateRequest;
 use App\Entity\Hospital;
 use App\Entity\Mission;
+use App\Entity\ReleasedOperatingRoomSlot;
 use App\Entity\SurgeonMissionRequest;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionDispatchMode;
 use App\Enum\MissionType;
+use App\Exception\ReleasedRoomSlotConflictException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
 use App\Message\SurgeonMissionRequestCreatedMessage;
@@ -56,6 +58,9 @@ class SurgeonMissionRequestService
         private readonly UserRepository $userRepository,
         private readonly MessageBusInterface $bus,
         private readonly MissionDispatchService $dispatchService,
+        // D-177 — a request that designates a released room is accepted as a real take-over.
+        private readonly ?ReleasedRoomRequestMatcher $roomMatcher = null,
+        private readonly ?ReleasedRoomSlotTakeoverService $takeovers = null,
     ) {
     }
 
@@ -161,8 +166,21 @@ class SurgeonMissionRequestService
         ?string $reviewComment = null,
         ?MissionDispatchMode $dispatchMode = null,
         ?int $instrumentistId = null,
+        ?RoomSlotDecision $roomSlot = null,
     ): SurgeonMissionRequest {
         $reviewComment = self::normalizeComment($reviewComment);
+
+        // D-177 — the 4 Nov incident: a request and a released room describing the same slot
+        // must never live as two circuits. Re-read the match now; a certain match (or the
+        // manager's explicit choice) is accepted as a real take-over, never as a second mission.
+        $match = $this->roomMatcher?->matchRequest($request);
+        $takeoverSlotId = $match !== null ? $this->resolveRoomDecision($match, $roomSlot, $dispatchMode) : null;
+        if ($takeoverSlotId !== null) {
+            return $this->acceptAsTakeover($request, $manager, $reviewComment, $takeoverSlotId, $match);
+        }
+        $roomDecisionTrace = $match !== null && $match->status === ReleasedRoomRequestMatcher::AMBIGUOUS && $roomSlot !== null
+            ? ['decision' => RoomSlotDecision::NONE, 'justification' => $roomSlot->justification, 'candidateSlotIds' => $match->candidateIds()]
+            : null;
 
         if ($dispatchMode !== null) {
             $slot = (new Mission())
@@ -173,7 +191,7 @@ class SurgeonMissionRequestService
             $this->dispatchService->assertDispatchable($slot, $dispatchMode, $instrumentistId);
         }
 
-        $this->em->wrapInTransaction(function () use ($request, $manager, $reviewComment): void {
+        $this->em->wrapInTransaction(function () use ($request, $manager, $reviewComment, $roomDecisionTrace): void {
             $this->em->lock($request, LockMode::PESSIMISTIC_WRITE);
             $this->em->refresh($request);
 
@@ -220,7 +238,7 @@ class SurgeonMissionRequestService
                 'surgeonId'   => $surgeon->getId(),
                 'surgeonName' => self::displayName($surgeon),
                 'reviewComment' => $reviewComment,
-            ]);
+            ] + ($roomDecisionTrace !== null ? ['roomSlotDecision' => $roomDecisionTrace] : []));
 
             $this->em->flush();
         });
@@ -235,6 +253,137 @@ class SurgeonMissionRequestService
             surgeonId: $request->getSurgeon()->getId(),
             accepted: true,
             missionId: $mission?->getId(),
+            siteId: $request->getSite()->getId(),
+            siteName: (string) $request->getSite()->getName(),
+            startAt: $request->getStartAt()->format(\DateTimeInterface::ATOM),
+            reviewComment: null,
+        ));
+
+        return $request;
+    }
+
+    /**
+     * D-177 — which released room (if any) this acceptance takes over, from the fresh match and
+     * the manager's explicit decision. Null → ordinary acceptance. Never converts a mere
+     * overlap automatically: only a CERTAIN match without decision, or an explicit choice.
+     */
+    private function resolveRoomDecision(RoomRequestMatch $match, ?RoomSlotDecision $decision, ?MissionDispatchMode $dispatchMode): ?int
+    {
+        $extra = ['releasedRoomMatch' => $match->toArray()];
+
+        if ($match->status === ReleasedRoomRequestMatcher::ALREADY_TAKEN_OVER) {
+            throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::REQUEST_ALREADY_TAKEN_OVER,
+                'Ce chirurgien a déjà repris une salle libérée sur ce créneau : accepter la demande créerait une seconde mission.',
+                $extra,
+            );
+        }
+
+        if ($match->status === ReleasedRoomRequestMatcher::NONE) {
+            if ($decision?->decision === RoomSlotDecision::TAKE_OVER) {
+                throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_MATCHING, 'Cette salle n\'est plus disponible pour cette demande.', $extra);
+            }
+
+            return null;
+        }
+
+        $slotId = match (true) {
+            $decision === null && $match->status === ReleasedRoomRequestMatcher::CERTAIN => $match->certainSlotId,
+            $decision === null => throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::DECISION_REQUIRED,
+                'Plusieurs salles libérées correspondent partiellement à cette demande : choisissez la salle reprise, ou indiquez qu\'aucune ne correspond.',
+                $extra,
+            ),
+            $decision->decision === RoomSlotDecision::TAKE_OVER => $match->isCandidate((int) $decision->slotId)
+                ? $decision->slotId
+                : throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_MATCHING, 'Cette salle ne correspond pas (ou plus) à cette demande.', $extra),
+            $match->status === ReleasedRoomRequestMatcher::CERTAIN => throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::TAKEOVER_REQUIRED,
+                'Cette demande correspond exactement à une salle libérée : elle ne peut être acceptée que comme reprise de cette salle.',
+                $extra,
+            ),
+            $decision->justification === null => throw new UnprocessableEntityHttpException('Indiquez pourquoi aucune des salles libérées ne correspond à cette demande.'),
+            default => null,
+        };
+
+        if ($slotId !== null && $dispatchMode !== null) {
+            throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::DISPATCH_NOT_ALLOWED,
+                'Une reprise de salle est diffusée automatiquement (priorité de l\'instrumentiste habituelle, sinon pool) : aucun mode de diffusion ne se choisit.',
+                $extra,
+            );
+        }
+
+        return $slotId;
+    }
+
+    /**
+     * D-177 — accepts the request AS the take-over of released room $slotId, in ONE
+     * transaction: request locked and re-checked PENDING, then the take-over itself
+     * (ReleasedRoomSlotTakeoverService::takeOverInTransaction(): slot locked and re-checked
+     * AVAILABLE, one Mission created from the request's hours and type, slot CLAIMED, Mission
+     * published at once — priority or pool). A concurrent take-over of the same room makes
+     * this one fail with ROOM_SLOT_ALREADY_TAKEN — the request then stays PENDING.
+     */
+    private function acceptAsTakeover(SurgeonMissionRequest $request, User $manager, ?string $reviewComment, int $slotId, RoomRequestMatch $match): SurgeonMissionRequest
+    {
+        if ($this->takeovers === null) {
+            throw new \LogicException('ReleasedRoomSlotTakeoverService is required to accept a request as a take-over.');
+        }
+
+        $connection = $this->em->getConnection();
+        $connection->beginTransaction();
+        try {
+            $this->em->lock($request, LockMode::PESSIMISTIC_WRITE);
+            $this->em->refresh($request);
+
+            if ($request->getStatus() !== SurgeonMissionRequest::STATUS_PENDING) {
+                throw new SurgeonMissionRequestAlreadyReviewedException(sprintf(
+                    'SurgeonMissionRequest #%d is %s, not PENDING — cannot be accepted (again).',
+                    $request->getId(),
+                    $request->getStatus(),
+                ));
+            }
+
+            $slot = $this->em->find(ReleasedOperatingRoomSlot::class, $slotId);
+            if ($slot === null || $slot->getSite()?->getId() !== $request->getSite()->getId()) {
+                throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_MATCHING, 'Cette salle ne correspond pas à cette demande.');
+            }
+
+            $surgeon = $request->getSurgeon();
+            $result = $this->takeovers->takeOverInTransaction($slot, $surgeon, $manager, $request);
+            $mission = $result->mission;
+
+            $request->setStatus(SurgeonMissionRequest::STATUS_ACCEPTED);
+            $request->setCreatedMission($mission);
+            $request->setReviewedBy($manager);
+            $request->setReviewedAt(new \DateTimeImmutable());
+            $request->setReviewComment($reviewComment);
+
+            $this->auditService->record($mission, $manager, AuditEventType::SURGEON_MISSION_REQUEST_ACCEPTED, [
+                'surgeonMissionRequestId' => $request->getId(),
+                'surgeonId'          => $surgeon->getId(),
+                'surgeonName'        => self::displayName($surgeon),
+                'reviewComment'      => $reviewComment,
+                'acceptedAsTakeover' => true,
+                'roomSlotId'         => $slot->getId(),
+                'matchStatus'        => $match->status,
+            ]);
+
+            $this->em->flush();
+            $connection->commit();
+        } catch (\Throwable $e) {
+            $connection->rollBack();
+            throw $e;
+        }
+
+        $this->takeovers->afterTakeOver($result);
+
+        $this->bus->dispatch(new SurgeonMissionRequestDecidedMessage(
+            requestId: $request->getId(),
+            surgeonId: $request->getSurgeon()->getId(),
+            accepted: true,
+            missionId: $mission->getId(),
             siteId: $request->getSite()->getId(),
             siteName: (string) $request->getSite()->getName(),
             startAt: $request->getStartAt()->format(\DateTimeInterface::ATOM),

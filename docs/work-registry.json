@@ -782,6 +782,49 @@
       ],
       "nextAction": "Revue finale du 30/10 faite (désactivation durable, jeton effacé à la déconnexion, renouvellement verrouillé, plafond global) : feu vert utilisateur attendu pour commit/PR, puis déploiement drapeaux à 0 et validation sur compte/appareil dédié (jamais l'abonnement #28).",
       "lastReviewed": "2026-10-30"
+    },
+    {
+      "id": "D-177",
+      "title": "Reprise de salle : publication immédiate, priorité exclusive de 48 h, demande chirurgien = vraie reprise",
+      "description": "Mission de reprise publiée dans la transaction (priorité TARGETED avec échéance 48 h à l'instrumentiste habituelle, sinon pool avec motif), expiration automatique (message différé + commande de rattrapage), fin sur refus / absence / levée manager, historique par créneau, correspondance demande chirurgien ↔ salle libérée acceptée comme reprise, publication au pool idempotente, commande de régularisation administrative.",
+      "kind": "feature",
+      "priority": "P1",
+      "userImpact": "Incident du 4 novembre : une reprise faite par demande libre restait en brouillon 53 jours, les salles libérées du jour restaient reprenables (double occupation possible) et la publication au pool a notifié deux fois chaque instrumentiste.",
+      "status": "teste",
+      "statusSince": "2026-10-30",
+      "refs": {
+        "branches": [
+          "feat/room-takeover-priority"
+        ],
+        "decision": "D-177",
+        "worktrees": [
+          "SurgicalHub-room-priority"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Revue du rapport et décision utilisateur avant fusion et déploiement."
+        },
+        {
+          "type": "migration",
+          "status": "en-attente",
+          "description": "Version20261030150000 (additive : mission_publication.expires_at / closed_at / close_reason) à jouer au déploiement."
+        },
+        {
+          "type": "activation-configuration",
+          "status": "en-attente",
+          "description": "Entrée crontab app:room-takeover:expire-priorities toutes les 5 minutes (filet de sécurité du message différé), à installer sur accord."
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "description": "Régularisation du créneau du 4 novembre (salle à lier à la mission existante) : dry-run présenté, exécution en production uniquement sur accord explicite."
+        }
+      ],
+      "nextAction": "Validation utilisateur du rapport, puis PR.",
+      "lastReviewed": "2026-10-30"
     }
   ]
 }

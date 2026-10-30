@@ -382,3 +382,57 @@ describe("SurgeonMissionRequestsPanel — compteurs, optimisme, historique (D-14
     expect(fetchHistoryMock).toHaveBeenCalledWith(1);
   });
 });
+
+describe("SurgeonMissionRequestsPanel — D-177 demande correspondant à une salle libérée", () => {
+  const candidate = (slotId: number, coversRequest: boolean) => ({
+    slotId, status: "AVAILABLE" as const, occurrenceDate: "2026-09-10", period: "MATIN",
+    startTime: "08:00", endTime: "13:00", originalSurgeon: { id: 8, name: "Dr Alain Martin" }, coversRequest,
+  });
+
+  it("correspondance certaine : acceptée comme reprise, sans choix de diffusion", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest({ releasedRoomMatch: { status: "CERTAIN", certainSlotId: 14, candidates: [candidate(14, true)], takenOver: null } })], total: 1 });
+    acceptSurgeonMissionRequestMock.mockResolvedValue(makeRequest({ status: "ACCEPTED", createdMissionId: 1240 }));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByText("Accepter"));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByTestId("request-room-match-certain")).toHaveTextContent("Dr Alain Martin");
+    expect(within(dialog).queryByText("Mission créée")).not.toBeInTheDocument();
+    await user.click(within(dialog).getByText("Accepter comme reprise"));
+
+    await waitFor(() => expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledWith(1, undefined, undefined));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Demande acceptée comme reprise de salle. Mission publiée."));
+  });
+
+  it("correspondance ambiguë : choix explicite obligatoire, « aucune » exige une justification", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest({ releasedRoomMatch: { status: "AMBIGUOUS", certainSlotId: null, candidates: [candidate(14, false), candidate(15, false)], takenOver: null } })], total: 1 });
+    acceptSurgeonMissionRequestMock.mockResolvedValue(makeRequest({ status: "ACCEPTED", createdMissionId: 1241 }));
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByText("Accepter"));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Accepter et créer" })).toBeDisabled();
+
+    await user.click(within(dialog).getByLabelText("Aucune de ces salles"));
+    expect(within(dialog).getByRole("button", { name: "Accepter et créer" })).toBeDisabled();
+    await user.type(within(dialog).getByLabelText(/Pourquoi aucune ne correspond/), "Autre salle");
+    expect(within(dialog).getByRole("button", { name: "Accepter et créer" })).toBeEnabled();
+
+    await user.click(within(dialog).getAllByRole("radio")[1]);
+    await user.click(within(dialog).getByRole("button", { name: "Accepter comme reprise" }));
+    await waitFor(() => expect(acceptSurgeonMissionRequestMock).toHaveBeenCalledWith(1, undefined, undefined, { decision: "TAKE_OVER", slotId: 15 }));
+  });
+
+  it("salle déjà reprise par le même chirurgien : acceptation impossible", async () => {
+    getSurgeonMissionRequestsMock.mockResolvedValue({ items: [makeRequest({ releasedRoomMatch: { status: "ALREADY_TAKEN_OVER", certainSlotId: null, candidates: [], takenOver: { ...candidate(14, true), status: "CLAIMED" } } })], total: 1 });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByText("Accepter"));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByTestId("request-room-match-taken")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Accepter et créer" })).toBeDisabled();
+  });
+});

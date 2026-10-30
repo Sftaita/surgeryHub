@@ -202,6 +202,20 @@ class NotificationService
         ]);
     }
 
+    /**
+     * D-177 — exclusive priority of the usual instrumentist on a taken-over room: she must
+     * accept or decline before the deadline, after which the eligible pool is solicited.
+     */
+    public function roomTakeoverPriorityOfferEmail(Mission $mission, User $instrumentist, ?string $takenByName, ?string $originalSurgeonName, ?\DateTimeImmutable $expiresAt): EmailContent
+    {
+        return $this->missionDispatchEmail($mission, $instrumentist, 'SurgicalHub — Salle reprise : une mission vous est réservée',
+            'emails/room_takeover_priority_offer.html.twig', sprintf('%s/app/i/offers', $this->frontendUrl), [
+                'takenByName'         => $takenByName,
+                'originalSurgeonName' => $originalSurgeonName,
+                'deadlineLabel'       => $expiresAt?->setTimezone(new \DateTimeZone('Europe/Brussels'))->format('d/m/Y à H:i'),
+            ]);
+    }
+
     /** D-125 — nominative request: she must accept or decline. */
     public function missionOfferedEmail(Mission $mission, User $instrumentist): EmailContent
     {

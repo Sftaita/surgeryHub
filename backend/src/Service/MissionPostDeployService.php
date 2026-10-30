@@ -13,6 +13,7 @@ use App\Dto\EligibilityResult;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\MissionClaim;
+use App\Entity\MissionPublication;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\AuditEventType;
@@ -25,6 +26,7 @@ use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
+use App\Enum\PublicationChannel;
 use App\Enum\PublicationScope;
 use App\Enum\SchedulePrecision;
 use App\Exception\AssignmentRefusalException;
@@ -74,6 +76,8 @@ class MissionPostDeployService
         ?MissionAssignmentService $assignments = null,
         // D-152 — durable refusal ("refuser et bloquer"); always autowired.
         private readonly ?SurgeonInstrumentistIncompatibilityService $incompatibilities = null,
+        // D-177 — closes nominative requests / room take-over priorities on every answer.
+        private readonly ?RoomTakeoverPriorityService $priorities = null,
     ) {
         // Always autowired; a plain unit test that omits it still gets the real writer (built
         // on the same EntityManager), never a shortcut that would skip the history.
@@ -122,6 +126,7 @@ class MissionPostDeployService
             $mission->setStatus(MissionStatus::OPEN);
             $this->assignments->unassign($mission, MissionAssignmentEndReason::RELEASED, $actor);
             $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
+            $this->backToPoolPublication($mission, $actor);
             $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::RELEASED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
 
             $payload = [
@@ -197,6 +202,7 @@ class MissionPostDeployService
 
             $mission->setStatus(MissionStatus::OPEN);
             $this->assignments->unassign($mission, MissionAssignmentEndReason::REFUSED_BY_SURGEON, $surgeon);
+            $this->backToPoolPublication($mission, $surgeon);
             $current->recordRefusalScope($scope);
             $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
             $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::RELEASED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
@@ -438,6 +444,7 @@ class MissionPostDeployService
         $mission->setStatus(MissionStatus::CANCELLED);
         // A DRAFT has no affectation yet (D-150): unassign() then only clears the field.
         $this->assignments->unassign($mission, MissionAssignmentEndReason::CANCELLED, $actor);
+        $this->priorities?->closeActiveRequests($mission, $actor); // D-177 — MISSION_CLOSED
         $this->resetEscalationIfLeavingOpen($mission, $previousStatusEnum);
         $this->withdrawCommunication($mission, $fromInstrumentist, MissionCommunicationWithdrawal::CANCELLED, MissionCommunicationSpec::ROLE_INSTRUMENTIST);
         $this->withdrawCommunication($mission, $surgeon, MissionCommunicationWithdrawal::CANCELLED, MissionCommunicationSpec::ROLE_SURGEON);
@@ -592,6 +599,14 @@ class MissionPostDeployService
                     throw new ConflictHttpException('Mission already claimed');
                 }
 
+                // D-177 — exclusivity re-read from the database under the lock (the voter read
+                // the publications before it): an active room take-over priority reserves the
+                // mission for its recipient alone, whatever the pool rules would allow.
+                $reservedFor = $this->activePriorityTargets($mission);
+                if ($reservedFor !== [] && !in_array($actor->getId(), $reservedFor, true)) {
+                    throw new ConflictHttpException('Mission reserved for the priority of another instrumentist');
+                }
+
                 // D-152 — locking read of the (surgeon, instrumentist) incompatibility range:
                 // a block created concurrently is either seen here or waits for this claim and
                 // then raises it as a conflict — never a silent incompatible affectation.
@@ -630,6 +645,8 @@ class MissionPostDeployService
                 ];
 
                 $this->audit->record($mission, $actor, AuditEventType::MISSION_CLAIMED_FROM_POOL, $payload);
+                // D-177 — her request (priority or D-125) is answered: ACCEPTED.
+                $this->priorities?->closeActiveRequests($mission, $actor);
 
                 $this->em->flush();  // R-05: flush before dispatch
             });
@@ -747,6 +764,9 @@ class MissionPostDeployService
         ];
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_REASSIGNED_POST_DEPLOY, $payload);
+        // D-177 — a pending request/priority is answered by this assignment (ACCEPTED if it
+        // went to its recipient, SUPERSEDED otherwise).
+        $this->priorities?->closeActiveRequests($mission, $actor);
 
         $this->em->flush();  // R-05: flush before dispatch
 
@@ -822,6 +842,9 @@ class MissionPostDeployService
         ];
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_REASSIGNED_POST_DEPLOY, $payload);
+        // D-177 — a pending request/priority is answered by this assignment (ACCEPTED if it
+        // went to its recipient, SUPERSEDED otherwise).
+        $this->priorities?->closeActiveRequests($mission, $actor);
 
         $this->em->flush();  // R-05: flush before dispatch
 
@@ -1064,6 +1087,7 @@ class MissionPostDeployService
             ];
 
             $this->audit->record($mission, $actor, AuditEventType::MISSION_ASSIGNED_DIRECTLY, $payload);
+            $this->priorities?->closeActiveRequests($mission, $actor); // D-177
 
             $this->em->flush(); // R-05: flush before dispatch
         });
@@ -1164,6 +1188,53 @@ class MissionPostDeployService
         if (!empty($blocking)) {
             throw new InstrumentistIneligibleException($blocking);
         }
+    }
+
+    /**
+     * D-177 — instrumentists holding an active room take-over priority on this mission, read
+     * from the database (never the possibly stale in-memory collection).
+     *
+     * @return list<int>
+     */
+    private function activePriorityTargets(Mission $mission): array
+    {
+        return array_map('intval', $this->em->getConnection()->fetchFirstColumn(
+            'SELECT target_instrumentist_id FROM mission_publication
+              WHERE mission_id = ? AND scope = ? AND expires_at IS NOT NULL
+                AND declined_at IS NULL AND closed_at IS NULL AND target_instrumentist_id IS NOT NULL',
+            [$mission->getId(), PublicationScope::TARGETED->value],
+        ));
+    }
+
+    /**
+     * D-177 — ASSIGNED → OPEN "back to the pool" (release, surgeon refusal) on a mission that
+     * was put into play through publications: its answered requests stop granting anything,
+     * and an active POOL publication exists — otherwise a released mission whose only
+     * publication is a closed request would be reachable by nobody (MissionVoter: a mission
+     * WITH publications is only reachable through an active one). A mission without any
+     * publication (Planning V2 generation) keeps its rule: open to the eligible pool as is.
+     */
+    private function backToPoolPublication(Mission $mission, User $actor): void
+    {
+        if ($mission->getPublications()->isEmpty()) {
+            return;
+        }
+
+        $this->priorities?->closeActiveRequests($mission, $actor);
+
+        foreach ($mission->getPublications() as $publication) {
+            if ($publication->getScope() === PublicationScope::POOL && $publication->isActive()) {
+                return;
+            }
+        }
+
+        $publication = (new MissionPublication())
+            ->setMission($mission)
+            ->setScope(PublicationScope::POOL)
+            ->setChannel(PublicationChannel::IN_APP)
+            ->setPublishedAt(new \DateTimeImmutable());
+        $mission->addPublication($publication);
+        $this->em->persist($publication);
     }
 
     /**

@@ -67,6 +67,11 @@ final class MissionActionsService
                 default => ['view'],
             };
 
+            // D-177 — lever la priorité d'une reprise de salle : même règle que MissionVoter::LIFT_PRIORITY.
+            if (RoomTakeoverPriorityService::pendingPriority($mission) !== null) {
+                $actions[] = 'lift_priority';
+            }
+
             // D-165 — horaires prévus corrigeables depuis le planning (MissionPostDeployService::
             // updateSchedule()) : OPEN/ASSIGNED, et IN_PROGRESS pour ses seules heures du jour.
             if (in_array($mission->getStatus(), MissionPostDeployService::RESCHEDULABLE_STATUSES, true)) {
@@ -277,6 +282,13 @@ final class MissionActionsService
                     }
                 }
             }
+        }
+
+        // D-177 — same rule as MissionVoter: an active room take-over priority reserves the
+        // mission for its recipient alone.
+        $priority = RoomTakeoverPriorityService::pendingPriority($mission);
+        if ($priority !== null) {
+            return $priority->getTargetInstrumentist()?->getId() === $instrumentist->getId();
         }
 
         foreach ($mission->getPublications() as $pub) {

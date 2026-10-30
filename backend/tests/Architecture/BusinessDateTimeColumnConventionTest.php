@@ -103,6 +103,8 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\SurgeonInstrumentistIncompatibility::createdAt' => 'D-152 — instant of creation, from the Symfony clock',
         'App\Entity\SurgeonInstrumentistIncompatibility::liftedAt' => 'D-152 — instant it was lifted, from the Symfony clock',
         'App\Entity\MissionPublication::publishedAt' => 'set from new \DateTimeImmutable()',
+        'App\Entity\MissionPublication::expiresAt' => 'D-177 — publishedAt + 48 h, server clock only',
+        'App\Entity\MissionPublication::closedAt' => 'D-177 — server clock at the end of a priority/request',
         'App\Entity\MissionPublication::declinedAt' => 'set from new \DateTimeImmutable() at decline time (D-125), never client-submitted',
         'App\Entity\NotificationEvent::sentAt' => 'set from new \DateTimeImmutable()',
         'App\Entity\NotificationEvent::failedAt' => 'set from new \DateTimeImmutable()',

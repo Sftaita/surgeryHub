@@ -13,6 +13,7 @@ use App\Service\MissionEncodingCorrectionPolicy;
 use App\Service\EncodingReminderPolicy;
 use App\Service\MissionHoursReminderPolicy;
 use App\Service\ExecutedWithoutInstrumentistPolicy;
+use App\Service\RoomTakeoverPriorityService;
 use App\Service\SurgeonEncodingPolicy;
 use Symfony\Component\Clock\Clock;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
@@ -51,6 +52,8 @@ class MissionVoter extends Voter
 
     // D-125 — the target of a pending nominative request refuses it (accepting = CLAIM).
     public const DECLINE_OFFER = 'MISSION_DECLINE_OFFER';
+    // D-177 — a manager lifts the exclusive priority of a room take-over (urgency) and opens the pool.
+    public const LIFT_PRIORITY = 'MISSION_LIFT_PRIORITY';
 
     // Manager support (Batch 15D)
     public const VIEW_ELIGIBLE_INSTRUMENTISTS = 'MISSION_VIEW_ELIGIBLE_INSTRUMENTISTS';
@@ -107,6 +110,7 @@ class MissionVoter extends Voter
             self::PUBLISH,
             self::CLAIM,
             self::DECLINE_OFFER,
+            self::LIFT_PRIORITY,
             self::SUBMIT,
             self::EDIT,
             self::EDIT_ENCODING,
@@ -171,6 +175,7 @@ class MissionVoter extends Voter
         return match ($attribute) {
             self::VIEW             => $this->canView($mission, $user, $isManager),
             self::PUBLISH          => $isManager,
+            self::LIFT_PRIORITY    => $isManager && RoomTakeoverPriorityService::pendingPriority($mission) !== null,
             self::CLAIM            => $this->canClaim($mission, $user),
             self::DECLINE_OFFER    => in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true)
                 && MissionDispatchService::pendingOffer($mission)?->getTargetInstrumentist()?->getId() === $user->getId(),
@@ -476,6 +481,13 @@ class MissionVoter extends Voter
                     }
                 }
             }
+        }
+
+        // D-177 — an active room take-over priority reserves the mission for its recipient
+        // alone: no pool rule can open it to anyone else while it runs.
+        $priority = RoomTakeoverPriorityService::pendingPriority($mission);
+        if ($priority !== null) {
+            return $priority->getTargetInstrumentist()?->getId() === $instrumentist->getId();
         }
 
         foreach ($mission->getPublications() as $pub) {

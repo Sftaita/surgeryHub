@@ -54,6 +54,8 @@ class MissionDispatchService
         private readonly MissionEligibilityService $eligibility,
         private readonly AuditService $audit,
         private readonly MessageBusInterface $bus,
+        // D-177 — refusal of a room take-over priority opens the pool in the same transaction.
+        private readonly ?RoomTakeoverPriorityService $priorities = null,
     ) {}
 
     public function dispatch(Mission $mission, User $actor, MissionDispatchMode $mode, ?int $instrumentistId = null): void
@@ -93,8 +95,17 @@ class MissionDispatchService
 
     public function publishToPool(Mission $mission, User $actor): void
     {
-        $this->em->wrapInTransaction(function () use ($mission, $actor): void {
+        $published = false;
+        $this->em->wrapInTransaction(function () use ($mission, $actor, &$published): void {
             $previousStatus = $this->lockDispatchable($mission);
+
+            // D-177 — already in the pool (double click, replayed request — 4 Nov incident:
+            // two POOL publications 4 s apart, every instrumentist notified twice): nothing
+            // new to publish, nobody to solicit again.
+            if ($previousStatus === MissionStatus::OPEN && $this->hasActivePoolPublication($mission)) {
+                return;
+            }
+            $published = true;
 
             $mission->setStatus(MissionStatus::OPEN);
             $this->em->persist($this->newPublication($mission, PublicationScope::POOL, null));
@@ -108,6 +119,10 @@ class MissionDispatchService
 
             $this->em->flush();
         });
+
+        if (!$published) {
+            return;
+        }
 
         // H3 (D-129) — pool (OpenMissionPoolNotifier: eligible instrumentists only) + surgeon — after commit (R-07).
         $this->bus->dispatch(new MissionPublishedMessage(
@@ -163,17 +178,31 @@ class MissionDispatchService
     {
         $reason = $reason !== null && trim($reason) !== '' ? mb_substr(trim($reason), 0, 500) : null;
         $payload = [];
+        $priorityPayload = null;
 
-        $this->em->wrapInTransaction(function () use ($mission, $instrumentist, $reason, &$payload): void {
+        $this->em->wrapInTransaction(function () use ($mission, $instrumentist, $reason, &$payload, &$priorityPayload): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
             $this->em->refresh($mission);
 
             $offer = $this->pendingOfferFor($mission, $instrumentist);
+            if ($offer !== null) {
+                $this->em->refresh($offer); // expired / lifted concurrently?
+                $offer = $offer->isActive() ? $offer : null;
+            }
             if ($mission->getStatus() !== MissionStatus::OPEN || $mission->getInstrumentist() !== null || $offer === null) {
                 throw new ConflictHttpException('No pending request for you on this mission');
             }
 
             $offer->setDeclinedAt(new \DateTimeImmutable());
+
+            // D-177 — refusing a room take-over priority ends it at once: the SAME mission goes
+            // to the eligible pool in this transaction (no manager re-dispatch, no waiting for
+            // the 48 hours). The managers follow it in the room history, not by notification.
+            if ($offer->isPriority() && $this->priorities !== null) {
+                $priorityPayload = $this->priorities->onPriorityDeclined($mission, $offer, $instrumentist, $reason);
+                $this->em->flush();
+                return;
+            }
 
             // The manager who sent this request (its MISSION_OFFERED_TO_INSTRUMENTIST audit
             // actor) is the one to tell — never every manager of the platform by default.
@@ -198,6 +227,11 @@ class MissionDispatchService
 
             $this->em->flush();
         });
+
+        if ($priorityPayload !== null) {
+            $this->priorities?->afterDecline($mission, $instrumentist, $priorityPayload);
+            return;
+        }
 
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
@@ -229,7 +263,12 @@ class MissionDispatchService
         return $pending;
     }
 
-    /** Latest TARGETED request of an OPEN unassigned Mission that its target declined, if no request is pending. */
+    /**
+     * Latest TARGETED request of an OPEN unassigned Mission that its target declined, if no
+     * request is pending — "awaiting a new dispatch". D-177: never once the mission is in the
+     * pool (a declined room take-over priority opens it at once), and only a real refusal
+     * (declinedAt), never an expired / lifted / accepted request.
+     */
     public static function lastDeclinedOffer(Mission $mission): ?MissionPublication
     {
         if (self::pendingOffer($mission) !== null
@@ -240,7 +279,10 @@ class MissionDispatchService
 
         $declined = null;
         foreach ($mission->getPublications() as $publication) {
-            if ($publication->getScope() === PublicationScope::TARGETED && !$publication->isActive()) {
+            if ($publication->getScope() === PublicationScope::POOL && $publication->isActive()) {
+                return null;
+            }
+            if ($publication->getScope() === PublicationScope::TARGETED && $publication->getDeclinedAt() !== null) {
                 $declined = $publication;
             }
         }
@@ -270,6 +312,17 @@ class MissionDispatchService
         }
 
         throw new ConflictHttpException('Mission not publishable');
+    }
+
+    private function hasActivePoolPublication(Mission $mission): bool
+    {
+        foreach ($mission->getPublications() as $publication) {
+            if ($publication->getScope() === PublicationScope::POOL && $publication->isActive()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function guardOffer(Mission $mission, User $target): void

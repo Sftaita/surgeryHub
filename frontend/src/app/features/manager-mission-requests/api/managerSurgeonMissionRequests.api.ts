@@ -1,3 +1,4 @@
+import type { RoomSlotDecision } from "../../room-takeover/roomTakeover.types";
 import { apiClient } from "../../../api/apiClient";
 import type { ManagerSurgeonMissionRequest, SurgeonMissionRequestCounts } from "./managerSurgeonMissionRequests.types";
 import { toDispatchPayload, type MissionDispatchChoice } from "../../missions/dispatch/missionDispatch.api";
@@ -20,10 +21,13 @@ export async function acceptSurgeonMissionRequest(
   id: number,
   reviewComment?: string,
   dispatch?: MissionDispatchChoice,
+  roomSlot?: RoomSlotDecision,
 ): Promise<ManagerSurgeonMissionRequest> {
   const { data } = await apiClient.post(`/api/manager/surgeon-mission-requests/${id}/accept`, {
     reviewComment,
     ...(dispatch ? { dispatch: toDispatchPayload(dispatch) } : {}),
+    // D-177 — explicit choice when the request matches released room(s) ambiguously.
+    ...(roomSlot ? { roomSlot } : {}),
   });
   return data;
 }

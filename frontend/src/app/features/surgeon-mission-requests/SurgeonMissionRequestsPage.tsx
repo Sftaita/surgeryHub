@@ -81,6 +81,24 @@ function RequestCard({ request }: { request: SurgeonMissionRequest }) {
         <StatusPill variant={status.variant} label={status.label} />
       </Stack>
 
+      {/* D-177 — a released room matches this pending request: offer the existing take-over path. */}
+      {request.status === "PENDING" && request.releasedRoomMatch && ["CERTAIN", "AMBIGUOUS"].includes(request.releasedRoomMatch.status) && (
+        <Box sx={{ mt: 1.25, p: 1.25, borderRadius: "12px", background: "#EEF6F1" }} data-testid={`request-room-match-${request.id}`}>
+          <Typography sx={{ fontSize: 13, color: GRAY_900, fontWeight: 600 }}>
+            {request.releasedRoomMatch.candidates.length === 1
+              ? `La salle libérée par ${request.releasedRoomMatch.candidates[0].originalSurgeon?.name ?? "un confrère"} (${request.releasedRoomMatch.candidates[0].startTime}–${request.releasedRoomMatch.candidates[0].endTime}) correspond à cette demande.`
+              : `${request.releasedRoomMatch.candidates.length} salles libérées correspondent à ce créneau.`}
+          </Typography>
+          <Box
+            component="button" type="button"
+            onClick={() => navigate(`/app/s/planning/salles-disponibles?slot=${request.releasedRoomMatch!.certainSlotId ?? request.releasedRoomMatch!.candidates[0].slotId}`)}
+            sx={{ mt: 0.75, border: "none", background: "none", color: GREEN_800, fontFamily: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer", p: 0 }}
+          >
+            Reprendre la salle →
+          </Box>
+        </Box>
+      )}
+
       {request.status === "REJECTED" && request.reviewComment && (
         <Typography sx={{ fontSize: 13, color: GRAY_600, mt: 1, fontStyle: "italic" }}>
           « {request.reviewComment} »

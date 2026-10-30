@@ -336,6 +336,27 @@ enum AuditEventType: string
     case ROOM_SLOT_TAKEN_OVER     = 'ROOM_SLOT_TAKEN_OVER';
     case ROOM_SLOT_REOPENED       = 'ROOM_SLOT_REOPENED';
 
+    /**
+     * D-177 — priorité exclusive de 48 heures de l'instrumentiste habituelle sur la mission
+     * d'une reprise de salle. Toujours record() sur la Mission de reprise, noms snapshotés.
+     *
+     * - ROOM_TAKEOVER_PRIORITY_OFFERED : proposition nominative émise (publicationId,
+     *   destinataire, offeredAt, expiresAt, missionStartsBeforeExpiry).
+     * - ROOM_TAKEOVER_PRIORITY_BYPASSED : aucune priorité, publication directe au pool —
+     *   `reason` (RoomTakeoverPoolReason : habituelle introuvable / absente / inéligible).
+     * - ROOM_TAKEOVER_PRIORITY_ENDED : fin de la priorité — `endReason` (ACCEPTED, DECLINED,
+     *   EXPIRED, RECIPIENT_UNAVAILABLE, LIFTED_BY_MANAGER, SUPERSEDED, MISSION_CLOSED), avec
+     *   publicationId, destinataire, offeredAt, expiresAt (et justification / absenceId).
+     * - ROOM_SLOT_TAKEOVER_REGULARIZED / _REVERTED : régularisation administrative d'une
+     *   reprise antérieure (créneau lié à une Mission existante, sans notification ni
+     *   priorité) et son retour arrière — `app:released-rooms:regularize-takeover`.
+     */
+    case ROOM_TAKEOVER_PRIORITY_OFFERED  = 'ROOM_TAKEOVER_PRIORITY_OFFERED';
+    case ROOM_TAKEOVER_PRIORITY_BYPASSED = 'ROOM_TAKEOVER_PRIORITY_BYPASSED';
+    case ROOM_TAKEOVER_PRIORITY_ENDED    = 'ROOM_TAKEOVER_PRIORITY_ENDED';
+    case ROOM_SLOT_TAKEOVER_REGULARIZED          = 'ROOM_SLOT_TAKEOVER_REGULARIZED';
+    case ROOM_SLOT_TAKEOVER_REGULARIZATION_REVERTED = 'ROOM_SLOT_TAKEOVER_REGULARIZATION_REVERTED';
+
     // D-147 — journal d'activité manager : regroupement des événements par domaine, pour
     // filtrer le journal. Purement descriptif (aucune règle métier ne s'appuie dessus).
     public const CATEGORY_MISSION         = 'MISSION';
@@ -361,7 +382,8 @@ enum AuditEventType: string
         return match (true) {
             str_starts_with($v, 'SURGEON_MISSION_REQUEST_') => self::CATEGORY_SURGEON_REQUEST,
             str_starts_with($v, 'PLANNING_'),
-            str_starts_with($v, 'ROOM_SLOT_')               => self::CATEGORY_PLANNING,
+            str_starts_with($v, 'ROOM_SLOT_'),
+            str_starts_with($v, 'ROOM_TAKEOVER_')           => self::CATEGORY_PLANNING,
             str_starts_with($v, 'MISSION_DECLARED'),
             str_starts_with($v, 'MISSION_ENCODING_'),
             str_starts_with($v, 'MISSION_EXECUTION_'),

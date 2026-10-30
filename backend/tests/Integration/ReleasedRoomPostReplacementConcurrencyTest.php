@@ -63,7 +63,7 @@ final class ReleasedRoomPostReplacementConcurrencyTest extends KernelTestCase
         $missions = $ids($conn->fetchFirstColumn("SELECT id FROM mission WHERE site_id IN ($sites)"));
         $conn->executeStatement("DELETE FROM audit_event WHERE JSON_EXTRACT(payload, '$.siteId') IN ($sites)");
         $conn->executeStatement("DELETE FROM released_operating_room_slot WHERE site_id IN ($sites)");
-        foreach (['notification_event', 'planning_alert', 'audit_event', 'mission_claim', 'mission_assignment', 'mission_communication'] as $table) {
+        foreach (['notification_event', 'planning_alert', 'audit_event', 'mission_claim', 'mission_assignment', 'mission_communication', 'mission_publication'] as $table) {
             $conn->executeStatement("DELETE FROM $table WHERE mission_id IN ($missions)");
         }
         $conn->executeStatement("DELETE FROM mission WHERE id IN ($missions)");
