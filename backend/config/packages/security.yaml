@@ -51,6 +51,13 @@ security:
             pattern: ^/api/auth/(refresh|logout)$
             security: false
 
+        # D-175 — routes du service worker (accusés de réception, pushsubscriptionchange) : appelées
+        # sans session, chacune authentifiée par un jeton dédié (PushReceiptService,
+        # PushDeviceRenewalService) et plafonnée globalement (PushDeviceController). AUCUN authentificateur JWT ici.
+        push_device:
+            pattern: ^/api/push/(receipts|device/renew)$
+            security: false
+
         # API protégée par JWT
         api:
             pattern: ^/api
@@ -75,6 +82,7 @@ security:
         - { path: ^/api/auth/logout, roles: PUBLIC_ACCESS }
         - { path: ^/api/auth/google, roles: PUBLIC_ACCESS }
         - { path: ^/api/invitations, roles: PUBLIC_ACCESS }
+        - { path: ^/api/push/(receipts|device/renew)$, roles: PUBLIC_ACCESS }
 
         # D-140 — client machine MedVue uniquement
         - { path: ^/api/integrations/medvue/, roles: ROLE_MEDVUE_INTEGRATION }

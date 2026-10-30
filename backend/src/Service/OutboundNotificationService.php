@@ -33,6 +33,7 @@ class OutboundNotificationService
         private readonly WebPushService $webPushService,
         private readonly NotificationActivityRecorder $activity,
         private readonly \App\Notification\MissionCommunicationService $communications,
+        private readonly ?\App\Push\PushDeliveryTracker $deliveryTracker = null,
     ) {
     }
 
@@ -87,6 +88,11 @@ class OutboundNotificationService
         }
 
         $this->em->flush();
+
+        // D-175 — rattache le suivi par appareil (accusés de réception) à la notification journalisée.
+        if ($this->deliveryTracker !== null && $notification->getId() !== null) {
+            $this->deliveryTracker->linkToNotification(array_values(array_filter(array_column($attempts, 'deliveryId'), 'is_int')), $notification->getId());
+        }
 
         return $notification;
     }

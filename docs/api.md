@@ -7238,6 +7238,8 @@ voir D-081 pour le modèle complet et le détail de chaque décision résumée i
 **AuthZ (toutes routes) :** utilisateur authentifié (`#[CurrentUser]`), sans contrôle de
 rôle — chaque utilisateur ne gère jamais que ses propres abonnements. Non authentifié →
 `401`.
+Exceptions (D-175) : `POST /api/push/receipts` et `POST /api/push/device/renew`, appelées par le
+service worker sans session, chacune authentifiée par un jeton dédié (voir ci-dessous).
 
 ### `GET /api/push/vapid-public-key`
 
@@ -7294,15 +7296,123 @@ un autre utilisateur" — toujours idempotent et stable, jamais d'erreur qui fui
 l'existence d'un abonnement appartenant à quelqu'un d'autre).
 **Réponse — 400** si `endpoint` est absent ou vide du corps.
 
+### `POST /api/push/sync` (D-175)
+
+Réconciliation navigateur ↔ serveur, appelée par l'application (JWT) à l'ouverture, au changement de
+compte, à l'activation, au changement de permission et au retour au premier plan (au plus une fois
+par 6 h). Remplace l'appel automatique à `POST /api/push/subscribe`.
+
+```json
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/…",
+  "keys": { "p256dh": "…", "auth": "…" },
+  "swVersion": "2026.10.30-1",
+  "receipts": true,
+  "hasDeviceToken": true,
+  "replacesEndpoint": "https://fcm.googleapis.com/fcm/send/…ancien"
+}
+```
+
+Validation identique à `subscribe` (400) ; `swVersion` facultatif (`[A-Za-z0-9._-]{1,32}`, sinon
+ignoré) ; `receipts` n'est pris en compte qu'avec une `swVersion` ; `replacesEndpoint` facultatif
+(chaîne ≤ 500), envoyé seulement après un renouvellement.
+
+**Réponse — 200 :**
+```json
+{
+  "state": "OK",
+  "reason": null,
+  "autoRenew": false,
+  "deviceToken": null,
+  "device": {
+    "id": 28, "provider": "FCM", "registeredAt": "2026-10-29T14:40:28+00:00",
+    "lastAcceptedAt": "…", "lastReceiptAt": "…", "receiptsCapable": true,
+    "unacknowledged": 0, "suspected": false, "otherDevices": 0
+  }
+}
+```
+
+| `state` | Cas |
+|---|---|
+| `OK` | appareil connu, rattaché à ce compte (clés rafraîchies) |
+| `REGISTERED` | appareil inconnu : enregistré (log `push.subscription_created`, `via: sync`) |
+| `RENEWED` | `replacesEndpoint` appartient à ce compte : même appareil, nouvel endpoint, ancien mémorisé comme invalide (`PUSH_SUBSCRIPTION_RENEWED`) |
+| `RENEW_REQUIRED` | `reason: "INVALIDATED"` — endpoint déclaré mort (404/410) ou remplacé : **jamais réenregistré**, `device: null` ; `reason: "SUSPECTED"` — appareil suspect, seulement si `PUSH_AUTO_RENEW_SUSPECTED=1` |
+
+`autoRenew: true` = le navigateur doit se réabonner seul (permission déjà accordée), puis renvoyer
+`sync` avec `replacesEndpoint`. Au plus une demande par endpoint ou appareil et par
+`PUSH_RENEWAL_COOLDOWN_HOURS` (24) ; sinon `autoRenew: false` et la réparation reste proposée dans Mon
+profil. `deviceToken` (43 caractères base64url) n'est renvoyé qu'à la création, au rattachement ou si
+`hasDeviceToken` est faux : le serveur n'en garde que l'empreinte. Ni endpoint ni clé dans la réponse.
+
+**409 `PUSH_SUBSCRIPTION_FOREIGN`** (D-081 révisé) — l'endpoint appartient encore à un AUTRE compte :
+jamais transféré, quelles que soient les clés présentées, aucune écriture, rien sur le propriétaire.
+```json
+{ "code": "PUSH_SUBSCRIPTION_FOREIGN", "message": "…", "state": "RENEW_REQUIRED", "reason": "FOREIGN",
+  "autoRenew": true, "deviceToken": null, "device": null }
+```
+Le navigateur (permission accordée, notifications non désactivées volontairement) se réabonne : nouvel
+endpoint, puis `sync` avec `replacesEndpoint` → `REGISTERED`. Pas soumis à la fenêtre de 24 h ; au plus
+un essai par réconciliation, et jamais de nouvel essai si le navigateur rend l'endpoint déjà abandonné.
+L'ancienne ligne reste à l'autre compte, intacte, et disparaît au premier 404/410.
+
+`POST /api/push/subscribe` sur un endpoint mémorisé comme invalide → **409**
+`{ "code": "PUSH_SUBSCRIPTION_INVALIDATED" }`, aucune écriture ;
+sur un endpoint d'un autre compte → **409** `{ "code": "PUSH_SUBSCRIPTION_FOREIGN" }`, aucune écriture.
+
+### `POST /api/push/receipts` (D-175, service worker, sans session)
+
+Firewall `push_device` (aucun authentificateur JWT), plafond global de 600 requêtes/minute par route
+(429 au-delà ; le service worker garde alors ses accusés en file et les renvoie plus tard). Global et
+non par IP : sans proxys de confiance configurés, l'adresse client vue par Symfony est celle du proxy.
+
+```json
+{ "receipts": [ { "receipt": "clé de l'envoi (base64url)", "event": "RECEIVED", "at": 1761835200000 } ] }
+```
+
+`event` ∈ `RECEIVED`, `DISPLAY_REQUESTED`, `DISPLAY_FAILED`, `OPENED` (tout accusé implique
+`RECEIVED`) ; `at` facultatif (ms, accusé mis en file hors ligne), borné entre l'acceptation et
+maintenant ; 20 accusés au plus par requête. La clé est propre à un envoi et ne voyage que dans le
+contenu chiffré du push (`receipt`, à côté de `title`/`body`/`data`) : la connaître prouve avoir reçu
+cet envoi. **Réponse — 204** dans tous les cas (clé inconnue comprise : aucun oracle), **400** si
+`receipts` n'est pas une liste. Idempotent : premier horodatage conservé. `DISPLAY_REQUESTED` signifie
+que `showNotification()` a résolu, pas qu'Android a affiché la notification.
+
+### `POST /api/push/device/renew` (D-175, service worker, sans session)
+
+`pushsubscriptionchange` : le navigateur a remplacé l'abonnement alors qu'aucune session n'est
+disponible. Même firewall et même plafond que `receipts`.
+
+```json
+{ "deviceToken": "…", "subscription": { "endpoint": "…", "keys": { "p256dh": "…", "auth": "…" } }, "swVersion": "2026.10.30-1" }
+```
+
+| Réponse | Cas |
+|---|---|
+| `200 { "state": "RENEWED", "deviceToken": "…nouveau" }` | endpoint de cet appareil remplacé, ancien mémorisé (`REPLACED`), jeton renouvelé |
+| `200 { "state": "OK", "deviceToken": null }` | même endpoint : clés rafraîchies |
+| `401 { "code": "PUSH_DEVICE_UNKNOWN" }` | jeton absent, mal formé ou inconnu |
+| `409 { "code": "PUSH_SUBSCRIPTION_INVALIDATED" }` | le nouvel endpoint est mémorisé comme mort |
+| `409 { "code": "PUSH_SUBSCRIPTION_TAKEN" }` | le nouvel endpoint est déjà rattaché ailleurs (la page tranchera à la synchronisation suivante) |
+| `400` | abonnement invalide |
+
+Le jeton ne permet que de remplacer l'endpoint de CET appareil : jamais de changer de compte. Les
+secrets Web Push ne servent pas d'authentification.
+
 ### Comportement multi-utilisateur (logout / appareil partagé)
 
 `AuthContext::logout()` (frontend) appelle `DELETE .../unsubscribe` avec l'endpoint
 courant **avant** de nettoyer la session locale — best-effort, non bloquant (voir D-081).
-Au login suivant, `POST .../subscribe` rattache explicitement l'endpoint au nouvel
-utilisateur (réattribution journalisée ci-dessus si le détachement précédent n'a pas eu
-lieu, p. ex. session expirée sans logout explicite). Aucune notification destinée à
-l'ancien utilisateur n'est plus envoyée sur cet endpoint une fois la réattribution
-effectuée.
+Au login suivant, l'endpoint redevenu libre est simplement enregistré pour le nouveau compte
+(`sync` → `REGISTERED`).
+
+D-081 révisé (D-175) — **aucun transfert d'endpoint entre comptes**. Si le détachement n'a pas
+pu se faire (pas de session à présenter, réseau indisponible, erreur serveur), le navigateur
+révoque lui-même son abonnement à la déconnexion : l'ancien compte ne reçoit plus rien sur cet
+appareil (sa ligne disparaît au premier 404/410). Si une ligne d'un autre compte existe encore
+au login suivant (session expirée sans déconnexion), `sync` répond 409
+`PUSH_SUBSCRIPTION_FOREIGN` et le navigateur se réabonne (nouvel endpoint) sans rien demander.
+Le jeton d'appareil est effacé du navigateur à chaque déconnexion.
 
 ### Envoi (interne, jamais exposé en HTTP)
 

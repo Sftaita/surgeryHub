@@ -260,7 +260,7 @@ final class PushSubscriptionControllerTest extends WebTestCase
     }
 
     #[WithoutErrorHandler]
-    public function test_subscribe_explicitly_reassigns_an_endpoint_owned_by_another_user(): void
+    public function test_subscribe_never_transfers_an_endpoint_owned_by_another_user(): void
     {
         $client = static::createClient();
         $client->disableReboot();
@@ -271,24 +271,24 @@ final class PushSubscriptionControllerTest extends WebTestCase
         $client->request('POST', '/api/push/subscribe', server: $this->auth($tokenA, ['CONTENT_TYPE' => 'application/json']), content: json_encode($this->validSubscriptionPayload($endpoint)));
         self::assertSame(204, $client->getResponse()->getStatusCode());
 
-        // Shared-device scenario: a different user's browser reuses the same push
-        // endpoint (same physical browser subscription) without user A ever calling
-        // /unsubscribe first (e.g. session expiry rather than an explicit logout).
+        // D-081 révisé (D-175) : connaître l'endpoint — et même ses clés — ne suffit plus à le
+        // rattacher à un autre compte. Le navigateur légitime se réabonne (POST /api/push/sync).
         ['user' => $userB, 'token' => $tokenB] = $this->authenticate($client, 'ROLE_INSTRUMENTIST');
         $client->request('POST', '/api/push/subscribe', server: $this->auth($tokenB, ['CONTENT_TYPE' => 'application/json']), content: json_encode($this->validSubscriptionPayload($endpoint)));
-        self::assertSame(204, $client->getResponse()->getStatusCode());
+        self::assertSame(409, $client->getResponse()->getStatusCode());
+        self::assertSame('PUSH_SUBSCRIPTION_FOREIGN', json_decode((string) $client->getResponse()->getContent(), true)['code'] ?? null);
 
         $this->em->clear();
         $count = (int) $this->em->createQueryBuilder()
             ->select('COUNT(ps.id)')->from(PushSubscription::class, 'ps')
             ->where('ps.endpoint = :endpoint')->setParameter('endpoint', $endpoint)
             ->getQuery()->getSingleScalarResult();
-        self::assertSame(1, $count, 'Reassignment must reuse the same row, never duplicate it');
+        self::assertSame(1, $count, 'never duplicated');
 
         $sub = $this->findSubscription($endpoint);
         $this->createdIds['subscriptions'][] = $sub->getId();
-        self::assertSame($userB->getId(), $sub->getUser()->getId(), 'Endpoint must now belong to the reassigning user');
-        self::assertNotSame($userA->getId(), $sub->getUser()->getId());
+        self::assertSame($userA->getId(), $sub->getUser()->getId(), 'the endpoint stays with its owner');
+        self::assertNotSame($userB->getId(), $sub->getUser()->getId());
     }
 
     // ── unsubscribe ──────────────────────────────────────────────────────────

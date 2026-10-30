@@ -56,6 +56,12 @@ describe("PushInvitationBanner — invitation volontaire et non bloquante (D-143
     expect(denied).not.toHaveTextContent(/e-mail/);
   });
 
+  it("D-175 — désactivées volontairement sur cet appareil : l'invitation n'est plus jamais proposée", () => {
+    window.localStorage.setItem("surgicalhub.push.optedOut", "1");
+    render(<PushInvitationBanner scope="instrumentist" />);
+    expect(screen.queryByTestId("push-invitation")).not.toBeInTheDocument();
+  });
+
   it("instrumentiste : texte inchangé (rappels de mission)", () => {
     render(<PushInvitationBanner scope="instrumentist" />);
     expect(screen.getByText(/rappels de mission/)).toBeInTheDocument();
