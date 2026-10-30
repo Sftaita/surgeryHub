@@ -2,6 +2,7 @@ import * as React from "react";
 import { Box } from "@mui/material";
 import { usePushNotifications } from "./usePushNotifications";
 import { recordPushInvitationDismissal, shouldShowPushInvitation } from "./pushInvitationStorage";
+import { isPushOptedOut } from "./pushDeviceState";
 import { detectPlatform } from "../pwa-install/pwaInstallDetection";
 
 const GREEN_700 = "#2C7D5F";
@@ -62,7 +63,8 @@ export function PushInvitationBanner({ scope = "instrumentist" }: { scope?: "ins
     );
   }
 
-  if (!visible || status !== "permission-default") return null;
+  // D-175 — désactivées volontairement sur cet appareil : jamais réinvité (le profil reste l'entrée).
+  if (!visible || status !== "permission-default" || isPushOptedOut()) return null;
 
   function later() {
     recordPushInvitationDismissal();

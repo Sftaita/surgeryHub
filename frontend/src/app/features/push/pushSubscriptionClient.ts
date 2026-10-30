@@ -1,5 +1,6 @@
 import axios from "axios";
 import { apiClient } from "../../api/apiClient";
+import { clearDeviceState, setPushOptedOut } from "./pushDeviceState";
 
 /**
  * Plain (non-React) push subscription primitives — kept free of any React/context
@@ -18,6 +19,11 @@ export function isPushSupported(): boolean {
 async function getVapidPublicKey(): Promise<string> {
   const res = await apiClient.get<{ publicKey: string }>("/api/push/vapid-public-key");
   return res.data.publicKey;
+}
+
+/** D-175 — clé serveur au format attendu par `pushManager.subscribe()` (partagée avec pushReconcile.ts). */
+export async function getApplicationServerKey(): Promise<BufferSource> {
+  return urlBase64ToUint8Array(await getVapidPublicKey()) as unknown as BufferSource;
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
@@ -82,6 +88,10 @@ export async function unsubscribeFromPush(): Promise<void> {
   if (!subscription) return;
 
   await apiClient.delete("/api/push/unsubscribe", { data: { endpoint: subscription.endpoint } });
+  // D-175 — choix mémorisé dès que le serveur a détaché l'appareil, même si le désabonnement du
+  // navigateur échoue ensuite : aucune réconciliation automatique ne le réenregistrera.
+  setPushOptedOut(true);
+  await clearDeviceState();
   await subscription.unsubscribe();
 }
 
@@ -94,7 +104,10 @@ export async function unsubscribeFromPush(): Promise<void> {
  * or delayed by this (see AuthContext.tsx::logout, docs/decisions.md D-081).
  */
 export async function detachCurrentPushSubscription(accessToken: string | null): Promise<void> {
-  if (!accessToken) return;
+  if (!accessToken) {
+    await clearDeviceState();
+    return;
+  }
 
   try {
     const subscription = await getCurrentSubscription();
@@ -108,5 +121,8 @@ export async function detachCurrentPushSubscription(accessToken: string | null):
   } catch {
     // Best-effort only. A stale/orphaned subscription self-heals on next login via the
     // backend's logged reassignment path (PushSubscriptionController::subscribe).
+  } finally {
+    // D-175 — the service worker must not keep renewing a subscription for a session that ended.
+    await clearDeviceState();
   }
 }

@@ -1,13 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { detachCurrentPushSubscription } from "./pushSubscriptionClient";
+import { detachCurrentPushSubscription, unsubscribeFromPush } from "./pushSubscriptionClient";
+import { isPushOptedOut } from "./pushDeviceState";
 
 const axiosDeleteMock = vi.fn();
 vi.mock("axios", () => ({
   default: { delete: (...args: unknown[]) => axiosDeleteMock(...args) },
 }));
 
+const apiDeleteMock = vi.fn();
 vi.mock("../../api/apiClient", () => ({
-  apiClient: { get: vi.fn(), post: vi.fn(), delete: vi.fn() },
+  apiClient: { get: vi.fn(), post: vi.fn(), delete: (...args: unknown[]) => apiDeleteMock(...args) },
+}));
+
+const clearDeviceStateMock = vi.fn(async () => {});
+vi.mock("./pushDeviceState", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./pushDeviceState")>()),
+  clearDeviceState: () => clearDeviceStateMock(),
 }));
 
 function makeSubscription(endpoint: string) {
@@ -16,6 +24,9 @@ function makeSubscription(endpoint: string) {
 
 beforeEach(() => {
   axiosDeleteMock.mockReset().mockResolvedValue({});
+  apiDeleteMock.mockReset().mockResolvedValue({});
+  clearDeviceStateMock.mockClear();
+  localStorage.clear();
   Object.defineProperty(window, "Notification", { value: function () {}, configurable: true });
 });
 
@@ -78,5 +89,41 @@ describe("detachCurrentPushSubscription", () => {
     axiosDeleteMock.mockRejectedValueOnce(new Error("network down"));
 
     await expect(detachCurrentPushSubscription("captured-token")).resolves.toBeUndefined();
+  });
+});
+
+describe("D-175 — révocation du jeton d'appareil", () => {
+  function withSubscription(subscription: unknown) {
+    Object.defineProperty(window, "PushManager", { value: function () {}, configurable: true });
+    Object.defineProperty(navigator, "serviceWorker", {
+      value: { getRegistration: vi.fn().mockResolvedValue({ pushManager: { getSubscription: vi.fn().mockResolvedValue(subscription) } }) },
+      configurable: true,
+    });
+  }
+
+  it("déconnexion : le jeton d'appareil est effacé, que le détachement serveur réussisse ou non", async () => {
+    withSubscription(makeSubscription("https://push.example/xyz"));
+    await detachCurrentPushSubscription("captured-token");
+    axiosDeleteMock.mockRejectedValueOnce(new Error("network down"));
+    await detachCurrentPushSubscription("captured-token");
+    await detachCurrentPushSubscription(null);
+    expect(clearDeviceStateMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("désactivation volontaire : détache côté serveur, mémorise le choix, efface le jeton, puis désabonne le navigateur", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    withSubscription({ ...makeSubscription("https://push.example/xyz"), unsubscribe });
+    await unsubscribeFromPush();
+    expect(apiDeleteMock).toHaveBeenCalledWith("/api/push/unsubscribe", { data: { endpoint: "https://push.example/xyz" } });
+    expect(isPushOptedOut()).toBe(true);
+    expect(clearDeviceStateMock).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("désactivation refusée par le serveur : rien n'est mémorisé (l'appareil reste abonné et le dit)", async () => {
+    withSubscription({ ...makeSubscription("https://push.example/xyz"), unsubscribe: vi.fn() });
+    apiDeleteMock.mockRejectedValueOnce(new Error("500"));
+    await expect(unsubscribeFromPush()).rejects.toThrow();
+    expect(isPushOptedOut()).toBe(false);
   });
 });
