@@ -22,7 +22,13 @@ final class PushSubscriptionDescriber extends AbstractGovernedDescriber
 
     public function trackedFields(): array
     {
-        return ['user' => 'Utilisateur'];
+        return ['user' => 'Utilisateur', 'endpoint' => 'Abonnement'];
+    }
+
+    /** D-175 — l'endpoint n'est suivi que pour détecter un renouvellement : jamais sa valeur. */
+    public function redactedFields(): array
+    {
+        return ['endpoint'];
     }
 
     public function describe(GovernedChange $c): ?ActivityRecord
@@ -33,6 +39,18 @@ final class PushSubscriptionDescriber extends AbstractGovernedDescriber
         $provider = WebPushService::providerForEndpoint($s->getEndpoint());
         $name     = ActivityJournal::displayName($person) ?? '—';
 
+        // D-175 — même appareil, nouvel endpoint (renouvellement automatique, pushsubscriptionchange
+        // ou réparation demandée) : l'ancien endpoint est mémorisé comme invalide, l'appareil reste.
+        if ($c->action === GovernedChange::UPDATED && $c->changed('endpoint') && !$c->changed('user')) {
+            return $this->record(
+                ActivityEventType::PUSH_SUBSCRIPTION_RENEWED,
+                new GovernedChange($c->action, $c->entity, $c->entityId, [], [], $c->actor, $c->occurredAt),
+                'User', $name,
+                sprintf('Appareil push #%d de %s renouvelé (%s)', $c->entityId, $name, $provider),
+                ['userId' => $person?->getId(), 'userName' => $name, 'provider' => $provider, 'reason' => $s->getRenewalReason()],
+                userId: $person?->getId(),
+            );
+        }
         if ($c->action === GovernedChange::UPDATED && !$c->changed('user')) {
             return null;
         }

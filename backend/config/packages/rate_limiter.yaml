@@ -10,6 +10,8 @@ framework:
         pools:
             cache.medvue_rate_limiter:
                 adapter: cache.app
+            cache.push_rate_limiter:
+                adapter: cache.app
     rate_limiter:
         # Essais de saisie d'un code par l'utilisateur qui agit (soi-même ou administrateur).
         medvue_link_actor:
@@ -30,10 +32,22 @@ framework:
             policy: 'sliding_window'
             limit: 600
             interval: '1 minute'
+        # D-175 — routes publiques du service worker (accusés, renouvellement), plafond GLOBAL par
+        # route (pas d'adresse client fiable derrière traefik → nginx, voir PushDeviceController).
+        # Un appareil envoie 1 à 2 requêtes d'accusés par notification (20 accusés au plus chacune) :
+        # 600/min couvre une diffusion à tous les utilisateurs actifs avec une large marge. Au-delà,
+        # le service worker garde ses accusés en file et les renvoie plus tard (aucune perte).
+        push_device_api:
+            cache_pool: cache.push_rate_limiter
+            policy: 'sliding_window'
+            limit: 600
+            interval: '1 minute'
 
 when@test:
     framework:
         cache:
             pools:
                 cache.medvue_rate_limiter:
+                    adapter: cache.adapter.filesystem
+                cache.push_rate_limiter:
                     adapter: cache.adapter.filesystem

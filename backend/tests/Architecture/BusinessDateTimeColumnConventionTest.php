@@ -196,6 +196,21 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         // new \DateTimeImmutable() server-generated ("now"), never client input.
         'App\Entity\MissionConflictWaiver::authorizedAt' => 'set from new \DateTimeImmutable() in MissionConflictWaiverService::authorize(), never client input',
         'App\Entity\MissionConflictWaiver::invalidatedAt' => 'set from new \DateTimeImmutable() in MissionConflictWaiver::invalidate(), never client input',
+        // D-175 — fiabilisation Web Push : horodatages techniques, tous produits par le serveur.
+        'App\Entity\PushDelivery::acceptedAt' => 'server-generated (new \DateTimeImmutable() when the push provider accepts the send, PushDeliveryTracker), never client input',
+        'App\Entity\PushDelivery::receivedAt' => 'server time of the receipt, or a client epoch (no offset) clamped server-side between acceptedAt and now (PushReceiptService)',
+        'App\Entity\PushDelivery::displayRequestedAt' => 'same as receivedAt: server time or clamped client epoch (PushReceiptService)',
+        'App\Entity\PushDelivery::displayFailedAt' => 'same as receivedAt: server time or clamped client epoch (PushReceiptService)',
+        'App\Entity\PushDelivery::openedAt' => 'same as receivedAt: server time or clamped client epoch (PushReceiptService)',
+        'App\Entity\PushEndpointInvalidation::invalidatedAt' => 'server-generated (new \DateTimeImmutable() at 404/410 or renewal, PushDeliveryTracker), never client input',
+        'App\Entity\PushEndpointInvalidation::renewalRequestedAt' => 'server-generated (new \DateTimeImmutable() in PushSubscriptionSyncService), never client input',
+        'App\Entity\PushSubscription::lastSyncedAt' => 'server-generated (new \DateTimeImmutable() in PushSubscriptionSyncService), never client input',
+        'App\Entity\PushSubscription::receiptsCapableAt' => 'server-generated (new \DateTimeImmutable() in PushSubscriptionSyncService), never client input',
+        'App\Entity\PushSubscription::lastAcceptedAt' => 'server-generated (PushDeliveryTracker::recordAccepted), never client input',
+        'App\Entity\PushSubscription::lastReceiptAt' => 'derived server-side from push_delivery.received_at (PushDeliveryTracker::refreshReliability)',
+        'App\Entity\PushSubscription::firstUnacknowledgedAt' => 'derived server-side from push_delivery.accepted_at (PushDeliveryTracker::refreshReliability)',
+        'App\Entity\PushSubscription::suspectedAt' => 'server-generated (PushDeliveryTracker::refreshReliability), never client input',
+        'App\Entity\PushSubscription::renewalRequestedAt' => 'server-generated (new \DateTimeImmutable() in PushSubscriptionSyncService), never client input',
     ];
 
     /** Exempt by name, not by allowlist entry — the project-wide TimestampableTrait convention. */

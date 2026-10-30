@@ -72,6 +72,9 @@ final class ActivityCoverageTest extends TestCase
         'MedVueAccountLink'                   => 'UserAuditEvent MEDVUE_LINKED / MEDVUE_UNLINKED / MEDVUE_LINK_FAILED (D-140), mirrored by AuditEventMirrorListener',
         'MissionEncodingReminder'             => 'AuditEvent MISSION_ENCODING_AUTO_REMINDER_SENT (D-143) + the NotificationDispatch of each recipient — the row itself is the idempotence reservation',
         'GeneratedDocument'                   => 'evidence store referenced by the events that use it (generatedDocumentId + sha256 in *_SENT payloads)',
+        // D-175 — fiabilisation Web Push.
+        'PushEndpointInvalidation'            => 'written with the event of the same action: PUSH_SUBSCRIPTION_REMOVED (PROVIDER_EXPIRED, WebPushService) or PUSH_SUBSCRIPTION_RENEWED (governed PushSubscription endpoint change)',
+        'PushDelivery'                        => 'technical delivery telemetry of an OutboundNotification push attempt (provider acceptance + service-worker receipts); a silent-failure suspicion is journaled as PUSH_SUBSCRIPTION_SUSPECTED',
     ];
 
     /** entity short name => why it is deliberately not historised */

@@ -4,6 +4,8 @@ namespace App\Controller\Api;
 
 use App\Entity\PushSubscription;
 use App\Entity\User;
+use App\Push\PushDeliveryTracker;
+use App\Push\PushSubscriptionSyncService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -22,12 +24,9 @@ class PushSubscriptionController extends AbstractController
         private readonly string $vapidPublicKey,
         #[Autowire(service: 'monolog.logger.push')]
         private readonly LoggerInterface $logger,
+        private readonly PushSubscriptionSyncService $sync,
+        private readonly PushDeliveryTracker $tracker,
     ) {}
-
-    // DB column lengths (PushSubscription entity) — validated here too so a malformed
-    // payload fails fast with a clear 400 instead of a generic Doctrine/SQL error.
-    private const MAX_ENDPOINT_LENGTH = 500;
-    private const MAX_KEY_LENGTH      = 255;
 
     #[Route('/vapid-public-key', name: 'api_push_vapid_public_key', methods: ['GET'])]
     public function vapidPublicKey(): JsonResponse
@@ -60,9 +59,17 @@ class PushSubscriptionController extends AbstractController
         $p256dh   = is_array($keys) ? ($keys['p256dh'] ?? null) : null;
         $auth     = is_array($keys) ? ($keys['auth'] ?? null) : null;
 
-        $error = $this->validateSubscriptionPayload($endpoint, $p256dh, $auth);
+        $error = PushSubscriptionSyncService::validateSubscription($endpoint, $p256dh, $auth);
         if ($error !== null) {
             return $this->json(['message' => $error], Response::HTTP_BAD_REQUEST);
+        }
+
+        // D-175 — un endpoint que le fournisseur a déclaré mort (404/410) n'est jamais réenregistré :
+        // le renvoyer n'est pas une réparation. Le client doit se réabonner (POST /api/push/sync).
+        if ($this->tracker->findInvalidation($endpoint) !== null) {
+            $this->logger->info('push.subscribe_invalidated_endpoint', ['user_id' => $user->getId()]);
+
+            return $this->json(['code' => 'PUSH_SUBSCRIPTION_INVALIDATED', 'message' => 'This push subscription is no longer valid: renew it'], Response::HTTP_CONFLICT);
         }
 
         $repo     = $this->em->getRepository(PushSubscription::class);
@@ -95,6 +102,28 @@ class PushSubscriptionController extends AbstractController
     }
 
     /**
+     * D-175 — réconciliation navigateur ↔ serveur (voir PushSubscriptionSyncService et docs/api.md).
+     * Corps : {endpoint, keys: {p256dh, auth}, swVersion?, receipts?, hasDeviceToken?, replacesEndpoint?}.
+     */
+    #[Route('/sync', name: 'api_push_sync', methods: ['POST'])]
+    public function syncSubscription(Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $body = json_decode($request->getContent(), true);
+        $body = is_array($body) ? $body : [];
+        $keys = is_array($body['keys'] ?? null) ? $body['keys'] : [];
+
+        $error = PushSubscriptionSyncService::validateSubscription($body['endpoint'] ?? null, $keys['p256dh'] ?? null, $keys['auth'] ?? null);
+        if ($error === null && isset($body['replacesEndpoint']) && (!is_string($body['replacesEndpoint']) || strlen($body['replacesEndpoint']) > PushSubscriptionSyncService::MAX_ENDPOINT_LENGTH)) {
+            $error = 'Invalid subscription data: replacesEndpoint must be an endpoint';
+        }
+        if ($error !== null) {
+            return $this->json(['message' => $error], Response::HTTP_BAD_REQUEST);
+        }
+
+        return $this->json($this->sync->sync($user, $body + ['keys' => $keys]));
+    }
+
+    /**
      * Idempotent: succeeds whether or not the endpoint currently exists for this user.
      * Never deletes an endpoint belonging to another user (scoped by `user` in the query).
      */
@@ -120,23 +149,5 @@ class PushSubscriptionController extends AbstractController
         }
 
         return $this->json(null, Response::HTTP_NO_CONTENT);
-    }
-
-    private function validateSubscriptionPayload(mixed $endpoint, mixed $p256dh, mixed $auth): ?string
-    {
-        if (!is_string($endpoint) || $endpoint === '') {
-            return 'Invalid subscription data: endpoint is required';
-        }
-        if (strlen($endpoint) > self::MAX_ENDPOINT_LENGTH) {
-            return 'Invalid subscription data: endpoint is too long';
-        }
-        if (!is_string($p256dh) || $p256dh === '' || !is_string($auth) || $auth === '') {
-            return 'Invalid subscription data: keys.p256dh and keys.auth are required';
-        }
-        if (strlen($p256dh) > self::MAX_KEY_LENGTH || strlen($auth) > self::MAX_KEY_LENGTH) {
-            return 'Invalid subscription data: keys are too long';
-        }
-
-        return null;
     }
 }
