@@ -266,6 +266,8 @@ export type MissionEncodingResponse = {
     id: number;
     type: "BLOCK" | "CONSULTATION" | string;
     status: string;
+    /** D-178 — chirurgien réellement porté par la mission (clé des interventions récentes). */
+    surgeonId?: number | null;
     allowedActions: string[];
   };
   /**
@@ -428,4 +430,19 @@ export type MaterialItemRequestDto = {
   referenceCode?: string | null;
   comment?: string | null;
   status?: "PENDING" | "RESOLVED" | "IGNORED";
+};
+
+/**
+ * D-178 — raccourcis de saisie calculés par le backend sur les seules interventions réellement
+ * enregistrées (au plus deux). Jamais un type particulier : un raccourci se sélectionne
+ * exactement comme la même entrée de la liste complète.
+ */
+export type RecentFirmsResponse = {
+  firms: Array<{ id: number; name: string }>;
+};
+
+export type RecentInterventionTypesResponse = {
+  firmId: number;
+  surgeonId: number | null;
+  interventionTypes: CatalogInterventionType[];
 };

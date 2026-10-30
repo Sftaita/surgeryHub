@@ -678,6 +678,8 @@ MissionIntervention
 ├── representativePresent: bool|null (D-092 — donnée FACTUELLE encodée par
 │   l'instrumentiste, "un délégué de la firme principale était-il présent ?" ; null =
 │   jamais répondu ; jamais une donnée financière, jamais sur Mission globale)
+├── createdBy → User (nullable — D-178 : auteur de l'encodage, sert uniquement aux
+│   raccourcis « firmes récemment utilisées » ; null avant D-178)
 ├── MaterialLine[]
 └── MaterialItemRequest[]
 

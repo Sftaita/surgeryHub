@@ -69,6 +69,8 @@ type Props = {
   progress: MissionEncodingProgress;
   /** D-172 — écran de correction manager (présence du délégué « non renseignée » possible). */
   managerCorrection?: boolean;
+  /** D-178 — chirurgien de la mission (`mission.surgeonId` de GET …/encoding) : clé des interventions récentes. */
+  surgeonId?: number | null;
 };
 
 const GREEN_900 = "#144D38";
@@ -206,7 +208,7 @@ function WarnIcon() {
   );
 }
 
-export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress, managerCorrection = false }: Props) {
+export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress, managerCorrection = false, surgeonId = null }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -820,6 +822,8 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         onSubmit={(values) => createInterventionMutation.mutate(values)}
         onSubmitDraft={(values: DraftSubmitValues) => createDraftMutation.mutate(values)}
         managerCorrection={managerCorrection}
+        missionId={missionId}
+        surgeonId={surgeonId}
       />
 
       <EditInterventionDialog
@@ -834,6 +838,8 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
           patchInterventionMutation.mutate({ interventionId: editIntervention.id, body: values });
         }}
         managerCorrection={managerCorrection}
+        missionId={missionId}
+        surgeonId={surgeonId}
       />
 
       <ConfirmDeleteDialog

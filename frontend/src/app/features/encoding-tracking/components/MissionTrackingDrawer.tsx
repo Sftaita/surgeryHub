@@ -840,6 +840,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
               entries={encodingQuery.data.entries ?? []}
               legacyInterventions={encodingQuery.data.interventions ?? []}
               catalog={encodingQuery.data.catalog}
+              surgeonId={encodingQuery.data.mission.surgeonId}
               onSaved={() => void refreshAfterAction()}
               canSubmit={false}
               onValidate={() => undefined}

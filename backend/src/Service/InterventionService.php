@@ -52,7 +52,7 @@ class InterventionService
      * interventions réelles + drafts) — remplace l'absence totale d'allocation serveur
      * qui existait jusqu'ici (le client choisissait et envoyait sa propre position).
      */
-    public function create(Mission $mission, MissionInterventionCreateRequest $dto): MissionIntervention
+    public function create(Mission $mission, MissionInterventionCreateRequest $dto, ?User $createdBy = null): MissionIntervention
     {
         $type = $this->interventionTypeResolver->resolveActive((int) $dto->interventionTypeId);
         $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
@@ -68,7 +68,7 @@ class InterventionService
         $this->assertChoiceAnswered($firm, $type, $selectedChoiceOption);
 
         $intervention = null;
-        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm, $representativePresent, $selectedChoiceOption): void {
+        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm, $representativePresent, $selectedChoiceOption, $createdBy): void {
             $orderIndex = $this->orderAllocator->nextIndexForNewEntry($mission);
 
             $intervention = new MissionIntervention();
@@ -80,7 +80,8 @@ class InterventionService
                 ->setLabel($type->getLabel())
                 ->setOrderIndex($orderIndex)
                 ->setRepresentativePresent($representativePresent)
-                ->setSelectedChoiceOption($selectedChoiceOption);
+                ->setSelectedChoiceOption($selectedChoiceOption)
+                ->setCreatedBy($createdBy);
 
             $this->em->persist($intervention);
             $this->em->flush();

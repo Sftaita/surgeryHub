@@ -576,7 +576,7 @@ describe("InterventionsSection — création optimiste d'une intervention réell
   async function openAddInterventionAndPickCatalogType(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("button", { name: /nouvelle intervention/i }));
     await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("GEN01 — Réparation coiffe des rotateurs"));
@@ -639,7 +639,7 @@ describe("InterventionsSection — création optimiste d'un draft (intervention 
   async function openAddInterventionAndRequestDraft(user: ReturnType<typeof userEvent.setup>, label: string) {
     await user.click(screen.getByRole("button", { name: /nouvelle intervention/i }));
     await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("Intervention absente du catalogue"));
