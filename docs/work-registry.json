@@ -753,11 +753,11 @@
     {
       "id": "D-175",
       "title": "Fiabilisation Web Push : réconciliation, endpoints morts, accusés de réception",
-      "description": "POST /api/push/sync à l'ouverture (reconnu / enregistré / rattaché / renouvelé / à renouveler), mémoire des endpoints 404/410 jamais réenregistrés, renouvellement anti-boucle, pushsubscriptionchange par jeton d'appareil dédié, accusés du service worker (reçu, affichage demandé, ouvert), détection journalisée des échecs silencieux sans renouvellement automatique, état de l'appareil dans Mon profil.",
+      "description": "POST /api/push/sync à l'ouverture (reconnu / enregistré / renouvelé / à renouveler), mémoire des endpoints 404/410 jamais réenregistrés, renouvellement anti-boucle, pushsubscriptionchange par jeton d'appareil dédié, accusés du service worker (reçu, affichage demandé, ouvert), détection journalisée des échecs silencieux sans renouvellement automatique, état de l'appareil dans Mon profil ; D-081 révisé : aucun transfert d'abonnement entre comptes.",
       "kind": "feature",
       "priority": "P1",
       "userImpact": "Un abonnement push mort côté navigateur pouvait rester accepté (201) sans aucune notification affichée ; seule une désactivation/réactivation manuelle le réparait (cas du 29/10, compte #11, cause historique non démontrée).",
-      "status": "teste",
+      "status": "deploye",
       "statusSince": "2026-10-30",
       "refs": {
         "branches": [
@@ -766,22 +766,31 @@
         "decision": "D-175",
         "worktrees": [
           "SurgicalHub-push-reliability"
+        ],
+        "prs": [
+          55
+        ],
+        "commits": [
+          "5b5b914f15ab5b7b79cb0c57400168978a4866c8",
+          "45b87ee09ac27a8cb6729df88064e6daa1a1befe",
+          "e177fa1f54c8a9e17b19dae5cb950ffddbea745e"
         ]
       },
       "pendingOps": [
         {
           "type": "validation",
           "status": "en-attente",
-          "description": "Test réel sur le téléphone Android du compte #11 uniquement : renouvellement automatique sans désactiver/réactiver, accusés reçus."
+          "description": "Test réel sur un appareil et un compte de test dédiés (jamais l'abonnement Android #28) : réception, accusé RECEIVED, affichage demandé, ouverture, désactivation durable ; non réalisé au déploiement (aucun second appareil disponible pour l'agent)."
         },
         {
           "type": "activation-configuration",
           "status": "en-attente",
-          "description": "Après la phase d'observation : PUSH_AUTO_RENEW_INVALIDATED=1 ; seuils de suspicion à décider sur mesures avant tout PUSH_AUTO_RENEW_SUSPECTED=1."
+          "description": "Après la surveillance de 48 h (jusqu'au 2026-11-01 06:37 UTC) et sur décision de l'utilisateur : PUSH_AUTO_RENEW_INVALIDATED=1 ; seuils de suspicion à décider sur mesures avant tout PUSH_AUTO_RENEW_SUSPECTED=1."
         }
       ],
-      "nextAction": "Revue finale du 30/10 faite (désactivation durable, jeton effacé à la déconnexion, renouvellement verrouillé, plafond global) : feu vert utilisateur attendu pour commit/PR, puis déploiement drapeaux à 0 et validation sur compte/appareil dédié (jamais l'abonnement #28).",
-      "lastReviewed": "2026-10-30"
+      "nextAction": "Déployé v2026.10.30-prod (d32dbe7) en observation, drapeaux à 0 vérifiés dans les conteneurs. Reste : surveillance 48 h, test réel sur appareil dédié, puis décision séparée sur l'activation de la réparation automatique.",
+      "lastReviewed": "2026-10-30",
+      "prodEvidence": "v2026.10.30-prod (d32dbe7) activé le 2026-10-30 06:37 UTC par deploy.sh, migration Version20261030090000 (92/92), mark OFFICIAL ; 7 abonnements préexistants identiques ; API publique 24/24 avec comptes jetables supprimés : voir docs/production.md."
     },
     {
       "id": "D-177",
