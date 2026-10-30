@@ -189,6 +189,7 @@ export default function SurgeonEncodingPage() {
               entries={encoding.entries ?? []}
               legacyInterventions={encoding.interventions ?? []}
               catalog={encoding.catalog}
+              surgeonId={encoding.mission.surgeonId}
               canSubmit={canSubmit}
               onValidate={() => setSubmitOpen(true)}
               submitLabel="Soumettre l'encodage"

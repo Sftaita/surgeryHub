@@ -15910,3 +15910,43 @@ tout le sous-réseau, partagé avec d'autres projets) et `trusted_headers: ['x-f
 seulement (ne pas faire confiance à proto/host/port sans besoin) ; adresse de traefik à figer dans
 son compose (sinon elle peut changer au redémarrage) ; puis plafond par IP (120/min) en gardant le
 plafond global comme garde-fou. Ne jamais faire confiance à `REMOTE_ADDR`/`PRIVATE_SUBNETS` en bloc.
+
+## D-178 — Encodage : firmes et interventions récemment utilisées, recherche instantanée (2026-10-30)
+
+**Constat.** Ajouter ou corriger une intervention imposait de parcourir toute la liste des firmes
+puis une liste déroulante de types, alors que les mêmes firmes et interventions reviennent sans cesse.
+
+**Décision.**
+
+- **Firmes récemment utilisées** : les deux dernières firmes distinctes des interventions encodées
+  par l'utilisateur connecté (`GET /api/missions/{id}/encoding-suggestions/firms`).
+- **Interventions récemment utilisées avec cette firme et ce chirurgien** : les deux derniers types
+  distincts encodés avec la firme choisie sur les missions du chirurgien **porté par la mission**
+  (jamais déduit de l'utilisateur connecté), quel que soit l'instrumentiste
+  (`GET …/encoding-suggestions/intervention-types?firmId=`).
+- Calcul serveur, une requête agrégée (`GROUP BY` + `LIMIT 2`) par appel, ordre = date de création
+  de l'intervention la plus récente (puis id). Exclus : interventions des missions `CANCELLED` /
+  `REJECTED` (une intervention supprimée n'existe plus), firmes et types désactivés, type que la
+  firme ne propose pas (prestations actives de la firme quand elle en a, sinon catalogue actif —
+  même liste que la sélection complète). Réponses : identifiants, codes, libellés uniquement.
+- **Auteur de l'encodage** : nouvelle colonne nullable `mission_intervention.created_by_id`
+  (création directe : l'utilisateur ; draft converti par le manager : l'auteur du draft). Les
+  interventions antérieures gardent un auteur inconnu (aucune reprise de données) : elles ne
+  comptent jamais dans les firmes récentes d'un utilisateur, mais restent éligibles aux
+  interventions récentes firme × chirurgien, où l'auteur est sans objet.
+- **Un raccourci n'est jamais un type particulier** : côté interface (`SearchablePicker`), il
+  appelle exactement la même sélection que la liste complète (`pickFirm` / `pickType`) ; la création
+  passe par `POST …/interventions` inchangé. Matériel suggéré, choix obligatoire et exclusif
+  (RequiredChoiceGroup / ChoiceMaterialExclusivityService), présence du délégué, tarification :
+  inchangés et toujours prioritaires. Aucun matériel ni choix n'est repris de l'historique.
+- **Recherche instantanée** dès le premier caractère, insensible à la casse et aux accents, sur le
+  nom de firme, le code et le libellé du type (« ligament » trouve LCA) ; navigation clavier.
+- **Correction** (`EditInterventionDialog`) : la firme et le type enregistrés restent affichés ;
+  la liste (raccourcis + recherche) ne s'ouvre que sur « Changer » ; re-choisir la même valeur ne
+  réinitialise rien. Le PATCH et ses protections (confirmation avant retrait de matériel devenu
+  incompatible, verrous, versions D-154) sont inchangés.
+- Droits : `MissionVoter::EDIT_ENCODING` (aucune règle d'autorisation nouvelle).
+
+**Limites.** Les firmes récentes d'un utilisateur ne se remplissent qu'avec ses encodages
+postérieurs au déploiement. La date de référence est la création de l'intervention (une
+correction de firme ne la rafraîchit pas).

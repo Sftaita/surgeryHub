@@ -57,7 +57,7 @@ class InterventionController extends AbstractController
             $dto->representativePresent = null;
         }
 
-        $intervention = $this->encodingLock->run($mission, fn () => $this->service->create($mission, $dto));
+        $intervention = $this->encodingLock->run($mission, fn () => $this->service->create($mission, $dto, $user));
         $this->surgeonChanges->afterWrite($mission, $user);
 
         // orderIndex : l'index réellement alloué par le serveur (MissionEntryOrderAllocator),

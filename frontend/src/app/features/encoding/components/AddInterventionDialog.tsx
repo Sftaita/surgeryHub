@@ -2,11 +2,12 @@ import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Box } from "@mui/material";
 import { SheetModal } from "../../../ui/sheet/SheetModal";
-import { SelectField } from "../../../ui/sheet/SelectField";
 import { Field } from "../../../ui/sheet/Field";
 import type { CatalogFirm, CatalogInterventionType, CreateInterventionBody } from "../api/encoding.types";
 import { fetchFirmServiceOfferings, type FirmServiceOfferingSummary } from "../api/encoding.api";
+import { useRecentFirms, useRecentInterventionTypes } from "../api/useEncodingSuggestions";
 import RepresentativePresenceQuestion, { representativeAnswerBody, type RepresentativeAnswer } from "./RepresentativePresenceQuestion";
+import SearchablePicker, { type PickerItem } from "./SearchablePicker";
 
 const GREEN_500 = "#42A882";
 const GREEN_700 = "#2C7D5F";
@@ -14,12 +15,10 @@ const GREEN_800 = "#1F6B4F";
 const GRAY_100 = "#EFF2F5";
 const GRAY_200 = "#DDE2E8";
 const GRAY_300 = "#C2C9D1";
-const GRAY_400 = "#98A2AE";
 const GRAY_500 = "#727E8C";
 const GRAY_800 = "#243240";
 const RED_600 = "#E5484D";
 const BORDER_DEFAULT = GRAY_200;
-const FOCUS_RING = "0 0 0 3px rgba(66,168,130,.32)";
 
 /** Sentinel jamais atteignable par un vrai id de type (toujours positifs en base). */
 const NOT_IN_CATALOG = -1;
@@ -51,15 +50,12 @@ type Props = {
   onSubmitDraft: (values: DraftSubmitValues) => void;
   /** D-172 — correction manager : la présence du délégué peut être « non renseignée ». */
   managerCorrection?: boolean;
+  /** D-178 — raccourcis « récemment utilisés » (absents sans mission). */
+  missionId?: number;
+  /** D-178 — chirurgien réellement porté par la mission (clé des interventions récentes). */
+  surgeonId?: number | null;
 };
 
-function SearchIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={GRAY_400} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
-    </svg>
-  );
-}
 function ChevronRightIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={GRAY_300} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -68,13 +64,15 @@ function ChevronRightIcon() {
   );
 }
 
-function searchInputSx() {
-  return {
-    height: 46, border: "1.5px solid", borderColor: BORDER_DEFAULT, borderRadius: "12px",
-    padding: "0 14px 0 42px", fontSize: 15, color: "#16202B", background: "#fff", outline: "none", width: "100%",
-    fontFamily: "inherit",
-    "&:focus": { borderColor: GREEN_500, boxShadow: FOCUS_RING },
-  };
+export const RECENT_FIRMS_TITLE = "Firmes récemment utilisées";
+export const RECENT_TYPES_TITLE = "Interventions récemment utilisées avec cette firme et ce chirurgien";
+
+export function firmPickerItem(f: { id: number; name: string }): PickerItem {
+  return { id: f.id, primary: f.name };
+}
+
+export function typePickerItem(t: CatalogInterventionType): PickerItem {
+  return { id: t.id, primary: `${t.code} — ${t.label}` };
 }
 
 /**
@@ -82,11 +80,15 @@ function searchInputSx() {
  * 1. choix explicite d'une firme (recherche locale sur le référentiel déjà chargé, ou
  *    « Ma firme n'est pas dans la liste » + nom libre, qui force une demande au manager —
  *    D-146 bis : jamais « Aucune firme », jamais de création automatique de firme) ;
- * 2. type d'intervention, toujours un `select` (SelectField), filtré aux prestations de
- *    la firme choisie quand elle en a, sinon replié sur le catalogue complet ; une option
- *    explicite "Intervention absente du catalogue" reste toujours disponible et déclenche
- *    une demande provisoire (draft) au lieu d'une intervention réelle — jamais un champ
- *    texte libre avec autocomplete.
+ * 2. type d'intervention, choisi dans une liste fermée filtrée aux prestations de la firme
+ *    choisie quand elle en a, sinon repliée sur le catalogue complet ; une option explicite
+ *    "Intervention absente du catalogue" reste toujours disponible et déclenche une demande
+ *    provisoire (draft) au lieu d'une intervention réelle — jamais un texte libre.
+ *
+ * D-178 — chaque étape propose d'abord ses deux raccourcis « récemment utilisés » (firmes de
+ * l'utilisateur ; interventions de la firme × chirurgien de la mission) et une recherche
+ * instantanée (SearchablePicker). Un raccourci appelle exactement pickFirm / pickType, comme
+ * la liste complète : choix obligatoire, délégué et matériel suggéré suivent le même flux.
  *
  * Remplace l'ancien flux "type d'abord" + le lien séparé vers InterventionTypeRequestDialog
  * (Lot 5/D-068) : les deux se rejoignent maintenant dans un seul parcours cohérent avec ce
@@ -95,6 +97,7 @@ function searchInputSx() {
  */
 export default function AddInterventionDialog({
   open, loadingIntervention, loadingDraft, interventionTypes, firms, existingCount, onClose, onSubmit, onSubmitDraft, managerCorrection = false,
+  missionId, surgeonId,
 }: Props) {
   const [step, setStep] = React.useState<Step>(1);
   const [firmQuery, setFirmQuery] = React.useState("");
@@ -127,7 +130,6 @@ export default function AddInterventionDialog({
   }, [open]);
 
   const activeFirms = firms.filter((f) => f.active !== false);
-  const filteredFirms = activeFirms.filter((f) => f.name.toLowerCase().includes(firmQuery.toLowerCase()));
 
   const firmId = selectedFirm?.id ?? null;
   const firmName = selectedFirm?.name ?? proposedFirmName?.trim() ?? "";
@@ -145,6 +147,9 @@ export default function AddInterventionDialog({
     .filter((o) => o.active !== false)
     .map((o) => o.interventionType);
   const typesToShow = firmId != null && firmTypes.length > 0 ? firmTypes : interventionTypes;
+
+  const recentFirmsQuery = useRecentFirms(missionId, open);
+  const recentTypesQuery = useRecentInterventionTypes(missionId, firmId, surgeonId, open);
 
   function pickFirm(firm: CatalogFirm) {
     setSelectedFirm(firm);
@@ -215,10 +220,10 @@ export default function AddInterventionDialog({
     });
   }
 
-  const typeOptions = [
-    ...typesToShow.map((t) => ({ value: t.id, label: `${t.code} — ${t.label}` })),
-    { value: NOT_IN_CATALOG, label: "Intervention absente du catalogue" },
-  ];
+  const selectedType = typesToShow.find((t) => t.id === typeId);
+  const selectedTypeItem: PickerItem | null = typeId === NOT_IN_CATALOG
+    ? { id: NOT_IN_CATALOG, primary: "Intervention absente du catalogue" }
+    : selectedType ? typePickerItem(selectedType) : null;
 
   return (
     <SheetModal open={open} title="Ajouter une intervention" onClose={onClose} closeDisabled={loading} helpTopicId="mission-encoding">
@@ -226,44 +231,21 @@ export default function AddInterventionDialog({
         <Box sx={{ mt: "18px" }}>
           <Box sx={{ fontSize: 14.5, fontWeight: 700 }}>Étape 1/2 – {FIRM_QUESTION}</Box>
 
-          <Box sx={{ position: "relative", mt: "12px" }}>
-            <Box sx={{ position: "absolute", left: "14px", top: "14px", pointerEvents: "none", display: "flex" }}>
-              <SearchIcon />
-            </Box>
-            <Box
-              component="input"
-              value={firmQuery}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFirmQuery(e.target.value)}
-              placeholder="Rechercher une firme…"
-              aria-label="Rechercher une firme"
-              sx={searchInputSx()}
+          <Box sx={{ mt: "12px" }}>
+            <SearchablePicker
+              id="add-itv-firm"
+              searchLabel="Rechercher une firme"
+              searchPlaceholder="Rechercher une firme…"
+              items={activeFirms.map(firmPickerItem)}
+              recent={(recentFirmsQuery.data?.firms ?? []).map(firmPickerItem)}
+              recentTitle={RECENT_FIRMS_TITLE}
+              recentLoading={recentFirmsQuery.isLoading}
+              allTitle="Toutes les firmes"
+              emptyText="Aucune firme ne correspond."
+              onSelect={(id) => { const firm = activeFirms.find((f) => f.id === id); if (firm) pickFirm(firm); }}
+              onQueryChange={setFirmQuery}
+              disabled={loading}
             />
-          </Box>
-
-          <Box sx={{ mt: "14px" }}>
-            {filteredFirms.length === 0 && (
-              <Box sx={{ py: "16px", px: "4px", fontSize: 13.5, color: GRAY_400 }}>Aucune firme ne correspond.</Box>
-            )}
-            {filteredFirms.map((f) => (
-              <Box
-                key={f.id}
-                component="button"
-                type="button"
-                onClick={() => pickFirm(f)}
-                sx={{
-                  display: "flex", alignItems: "center", gap: "10px", height: 50, border: "none",
-                  borderBottom: "1px solid", borderColor: GRAY_100, background: "transparent",
-                  fontFamily: "inherit", fontSize: 14.5, fontWeight: 600, color: GRAY_800, cursor: "pointer",
-                  textAlign: "left", width: "100%", padding: "0 4px",
-                  "&:hover": { background: "#F5F7FA" },
-                  "&:active": { transform: "translateY(0.5px)" },
-                }}
-              >
-                <Box sx={{ flex: 1 }}>{f.name}</Box>
-                <ChevronRightIcon />
-              </Box>
-            ))}
-
             {proposedFirmName === null ? (
               <Box
                 component="button"
@@ -348,14 +330,39 @@ export default function AddInterventionDialog({
 
           {proposedFirmName === null && (
             <Box sx={{ mt: "16px" }}>
-              <SelectField
+              <SearchablePicker
                 id="add-itv-type"
                 label="Type d'intervention *"
-                placeholder="Sélectionner un type"
-                value={typeId}
-                options={typeOptions}
-                onChange={pickType}
+                searchLabel="Rechercher un type d'intervention"
+                searchPlaceholder="Code ou libellé (ex. LCA, ligament)…"
+                items={typesToShow.map(typePickerItem)}
+                recent={(recentTypesQuery.data?.interventionTypes ?? []).map(typePickerItem)}
+                recentTitle={RECENT_TYPES_TITLE}
+                recentLoading={recentTypesQuery.isLoading}
+                allTitle={firmTypes.length > 0 ? "Interventions de la firme" : "Toutes les interventions"}
+                emptyText="Aucune intervention ne correspond."
+                value={selectedTypeItem}
+                onSelect={pickType}
                 disabled={loading}
+                loading={offeringsQuery.isLoading}
+                loadingText="Chargement des interventions de la firme…"
+                footer={(
+                  <Box
+                    component="button"
+                    type="button"
+                    onClick={() => pickType(NOT_IN_CATALOG)}
+                    disabled={loading}
+                    sx={{
+                      display: "flex", alignItems: "center", gap: "10px", minHeight: 50, border: "none",
+                      background: "transparent", fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, color: GREEN_700,
+                      cursor: "pointer", textAlign: "left", width: "100%", padding: "0 4px",
+                      "&:hover": { background: "#F5F7FA" },
+                    }}
+                  >
+                    <Box sx={{ flex: 1 }}>Intervention absente du catalogue</Box>
+                    <ChevronRightIcon />
+                  </Box>
+                )}
               />
             </Box>
           )}

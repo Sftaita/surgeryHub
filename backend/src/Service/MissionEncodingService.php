@@ -124,6 +124,8 @@ final class MissionEncodingService
                 'id' => (int) $mission->getId(),
                 'type' => (string) $mission->getType()->value,
                 'status' => (string) $mission->getStatus()->value,
+                // D-178 — clé des raccourcis « interventions récentes » (firme × chirurgien de la mission).
+                'surgeonId' => $mission->getSurgeon()?->getId(),
                 'allowedActions' => $allowedActions,
             ],
             interventions: $interventions,
