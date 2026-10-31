@@ -810,7 +810,8 @@
           "SurgicalHub-room-priority"
         ],
         "prs": [
-          58
+          58,
+          61
         ],
         "migrations": [
           "Version20261030150000"
@@ -832,8 +833,11 @@
         },
         {
           "type": "validation",
-          "status": "en-attente",
-          "description": "Trois libellés d'interface d'avant D-177 à corriger (dialogue de reprise chirurgien, carte d'offre prioritaire, dialogue de refus) — non bloquant, sur décision."
+          "status": "fait",
+          "description": "Trois libellés d'interface d'avant D-177 à corriger (dialogue de reprise chirurgien, carte d'offre prioritaire, dialogue de refus) — non bloquant, sur décision.",
+          "validation": "accord utilisateur (PR #61 fusionnée, déploiement autorisé 2026-10-31)",
+          "confirmedAt": "2026-10-31",
+          "evidence": "PR #61 (ec14cb1, merge 9e922c7) déployée v2026.10.31-prod-2 (OFFICIAL) le 2026-10-31 16:15 UTC ; bundle servi index-4e06xFW8.js : nouveaux libellés présents, libellés des demandes nominatives ordinaires conservés, anciens libellés absents."
         },
         {
           "type": "validation",
@@ -844,7 +848,7 @@
           "evidence": "D-160 : organisation confirmée — aucun correctif nécessaire. Le mercredi, Delta compte deux salles physiques : #14 (journée, reprise par la mission #626) et une seconde salle découpée en #15 (matin) et #16 (après-midi) pour organiser les instrumentistes (une instrumentiste couvre les deux salles le matin, deux l'après-midi). #15/#16 restent reprenables selon les règles habituelles ; aucun mécanisme de suspension, aucune donnée de production modifiée."
         }
       ],
-      "nextAction": "Déployé v2026.10.31-prod (953ce9a) le 2026-10-31, cron */5 installé et vérifié, régularisation #14 ↔ #626 effectuée le 2026-10-31 (audit #1373). D-160 clos le 2026-10-31 : #15/#16 = seconde salle réelle, organisation confirmée, aucun correctif. Reste : trois libellés d'interface (PR #61).",
+      "nextAction": "Déployé v2026.10.31-prod (953ce9a) puis v2026.10.31-prod-2 (9e922c7, libellés) le 2026-10-31 ; cron */5 vérifié ; régularisation #14 ↔ #626 effectuée (audit #1373) ; D-160 clos (#15/#16 = seconde salle réelle). Aucune opération restante.",
       "lastReviewed": "2026-10-31",
       "prodEvidence": "v2026.10.31-prod (953ce9a) : migration pré-bascule Version20261030150000 (09:44 UTC, d32dbe7 en service), activate 11:00 UTC, migrate 93/93, mark OFFICIAL ; empreintes publications/missions/salles identiques, 0 notification créée ; cron room_takeover_expire_priorities.sh */5 (OK 11:15, 11:20) ; repli : branche rollback/d177 : voir docs/production.md."
     }
