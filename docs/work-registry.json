@@ -859,8 +859,8 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Encoder une intervention fréquente demandait de parcourir toute la liste des firmes puis une liste déroulante de types.",
-      "status": "teste",
-      "statusSince": "2026-10-30",
+      "status": "pr-ouverte",
+      "statusSince": "2026-10-31",
       "refs": {
         "branches": [
           "feat/encodage-suggestions-recherche"
