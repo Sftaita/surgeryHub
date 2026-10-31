@@ -19,6 +19,7 @@
     { "path": "/home/deploy/scripts/missions_start_due.sh", "sha256": "025171c9e0f0080773a104939581cfc15b541a0f6995762d9a4e277674b40f21", "note": "cron D-064, hors dépôt (décrit dans docs/production.md)", "item": "OPS-SERVER-SCRIPTS" },
     { "path": "/home/deploy/scripts/check_uncovered_escalations.sh", "sha256": "1ee52e46a13c6f7e7996b7db67787dfd82a05b4344814a4232052199e2ef4861", "note": "cron D-110, hors dépôt (décrit dans docs/production.md)", "item": "OPS-SERVER-SCRIPTS" },
     { "path": "/home/deploy/scripts/send_encoding_reminders.sh", "sha256": "bfdb1f72d090302502bae9aad28d6344d73377f5b3967b213ce69eee1e65ef4c", "note": "cron D-143/D-144, hors dépôt (décrit dans docs/production.md)", "item": "OPS-SERVER-SCRIPTS" },
+    { "path": "/home/deploy/scripts/room_takeover_expire_priorities.sh", "sha256": "ecf322132523be539d71f4fccb353f80c0161b0d89291cb0ecd2581abebf2894", "note": "cron D-177 (2026-10-31), source : branche rollback/d177 deploy/rollback/d177/ (hors main), décrit dans docs/production.md", "item": "D-177" },
     { "path": "/home/deploy/scripts/surgicalhub-backup/lib.sh", "source": "deploy/server/backup/lib.sh", "item": "D-164" },
     { "path": "/home/deploy/scripts/surgicalhub-backup/backup_mysql.sh", "source": "deploy/server/backup/backup_mysql.sh", "item": "D-164" },
     { "path": "/home/deploy/scripts/surgicalhub-backup/backup_volumes.sh", "source": "deploy/server/backup/backup_volumes.sh", "item": "D-164" },

@@ -48,3 +48,6 @@ CRON_TZ=UTC
 
 # MedVue — préparation des périodes : annonces et rappels programmés (docs/deployment.md §5 octies, D210)
 */10 * * * * cd /opt/stack/apps/medvue && flock -n /tmp/medvue-period-preparation.lock docker compose -f docker-compose.prod.yml exec -T backend php bin/console app:period-preparation:run >> /home/deploy/backups/medvue/period-preparation.log 2>&1
+
+# D-177 — expiration des priorités de reprise de salle (filet de sécurité, 2026-10-31)
+*/5 * * * * /home/deploy/scripts/room_takeover_expire_priorities.sh >> /home/deploy/logs/room-takeover-expire-priorities.log 2>&1
