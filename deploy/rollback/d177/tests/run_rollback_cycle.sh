@@ -7,7 +7,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; D="$HERE/.."
 : "${NEW:?}" "${OLD:?}" "${RB:?}" "${MYSQL:?}" "${DB_URL_BASE:?}"
-STAMP=$(date +%Y%m%d%H%M%S); DB=d177_rbcycle_$STAMP; W=$(mktemp -d)
+STAMP=$(date +%Y%m%d%H%M%S); DB=d177_rbcycle_$STAMP; DB0=$DB; DB1=${DB0}_b1; W=$(mktemp -d)
 export APP_ENV=prod APP_DEBUG=0 MESSENGER_TRANSPORT_DSN="doctrine://default?auto_setup=0" MAILER_DSN="null://null"
 export MAIL_SAFE_MODE=auto MEDVUE_API_BASE_URL= SENTRY_DSN= FRONTEND_URL="http://127.0.0.1:5181" DEFAULT_URI="http://127.0.0.1:8099"
 PASS=0; FAIL=0
@@ -70,12 +70,12 @@ worker "$NEW" 10
 check "retour en avant : aucune notification supplémentaire" [ "$(q "SELECT COUNT(*) FROM outbound_notification")" = "$BEFORE" ]
 
 echo "== 6. Contrôle : sans reprise, B1 reste valable"
-DB1=${DB}_b1; fresh_db "$DB1"
+fresh_db "$DB1"
 cycle "$NEW" seed-ordinary "$W/s3.json" >/dev/null; worker "$NEW"
 check "missions ordinaires seules → 00_decision.sql = B1" bash -c "$MYSQL -N $DB1 < '$D/00_decision.sql' 2>/dev/null | grep -q '^B1'"
 cycle "$OLD" check "$W/s3.json" > "$W/b1"
 check "d32dbe7 brut : lectures sans erreur" grep -q 'aucune erreur 500' "$W/b1"
 
 echo; echo "== $PASS ok, $FAIL échec(s)"
-if [ "$FAIL" = 0 ]; then $MYSQL -e "DROP DATABASE $DB; DROP DATABASE $DB1" 2>/dev/null; rm -rf "$W"; else echo "bases conservées : $DB $DB1 — traces : $W"; fi
+if [ "$FAIL" = 0 ]; then $MYSQL -e "DROP DATABASE $DB0; DROP DATABASE $DB1" 2>/dev/null; rm -rf "$W"; else echo "bases conservées : $DB0 $DB1 — traces : $W"; fi
 exit $((FAIL > 0))
