@@ -4,7 +4,9 @@ Branche `rollback/d177` (sur GitHub) : version de repli de D-177 + ces scripts +
 Copie sur le serveur : `/home/deploy/d177/`. Release de repli pré-construite sur le serveur.
 
 - `M` = `953ce9a7c83925a14ccecb0e56c97833439f54bd` (fusion de la PR #58, arbre = 69f1732 audité).
-- `RB` = commit de tête de cette branche (version de repli : code d'avant D-177 + les 5 valeurs
+- `RB` = `be3e4f194d4537ab0b30869dfe86007d4ae4fc74`, release construite sur le serveur (les commits
+  suivants de la branche ne touchent que `deploy/rollback/d177/` : procédure, scripts SQL, tests ;
+  le code applicatif est identique) (version de repli : code d'avant D-177 + les 5 valeurs
   d'audit D-177 + migration conservée + documentation + ce dossier).
 - Release active avant D-177 : `d32dbe78b3afdc7042ce62013f29de00c27c42f6` (v2026.10.30-prod).
 
@@ -44,15 +46,31 @@ commande de `deploy.sh migrations` sans `--dry-run` ; aucune modification de dep
 le code de repli les ignore). La release de repli `RB` est déjà construite sur le serveur ;
 le repli n'exige ni PR ni build pendant l'incident.
 
-Décision : `SELECT COUNT(*) FROM mission_publication WHERE expires_at IS NOT NULL OR closed_at IS NOT NULL;`
+### Décision B1 / B2 (toujours worker arrêté)
+1. Retirer la ligne crontab `room_takeover_expire_priorities.sh` ; `docker stop surgicalhub-worker`
+   (plus aucun message traité entre la décision et la bascule).
+2. `./run_sql.sh 00_decision.sql` → trois compteurs + verdict :
+   - `publications_d177` : publications avec `expires_at`, `closed_at` ou `close_reason` ;
+   - `audits_d177` : les 5 valeurs d'audit ajoutées par D-177 (`ROOM_TAKEOVER_PRIORITY_OFFERED`,
+     `_BYPASSED`, `_ENDED`, `ROOM_SLOT_TAKEOVER_REGULARIZED`, `_REGULARIZATION_REVERTED`) ;
+   - `messages_d177` : messages de la file (toutes files) que d32dbe7 ne sait pas décoder.
 
-### B1. Aucune publication D-177 (0)
-Retirer la ligne crontab ; `deploy/deploy.sh rollback d32dbe78b3afdc7042ce62013f29de00c27c42f6`.
+   **B1 uniquement si les trois sont à 0.** Le compteur de publications seul ne suffit pas : une
+   reprise publiée directement au pool (aucune instrumentiste habituelle éligible) ne crée aucune
+   priorité mais enregistre `ROOM_TAKEOVER_PRIORITY_BYPASSED`, que d32dbe7 ne sait pas lire —
+   historique de la mission **et journal manager entier** en erreur 500 (démontré, cf. §C).
+   En cas de doute : B2 (la version de repli est sûre dans tous les cas).
 
-### B2. Des priorités existent (> 0)
+### B1. Aucune trace D-177 (0 / 0 / 0)
+1. `deploy/deploy.sh rollback d32dbe78b3afdc7042ce62013f29de00c27c42f6` (redémarre php et worker).
+2. Re-vérification immédiate : `./run_sql.sh 00_decision.sql`. Le code D-177 a servi des requêtes
+   jusqu'à la bascule ; si une trace est apparue entre-temps (verdict B2), enchaîner B2 depuis
+   l'étape 1 (le worker d32dbe7 est alors arrêté avant 01_queue.sql).
+
+### B2. Traces D-177 présentes (au moins un compteur > 0)
 Le code d32dbe7 brut ne lit plus l'historique (audits D-177 → erreur 500) et verrait les
 priorités closes « en attente » : on active `RB`, après transition des données.
-1. Retirer la ligne crontab `room_takeover_expire_priorities.sh` ; `docker stop surgicalhub-worker`.
+1. Crontab D-177 retirée et worker arrêté (étape « Décision »).
 2. `./run_sql.sh 01_queue.sql` (messages D-177 indécodables : copiés puis retirés de la file).
 3. `./run_sql.sh 02_transition.sql` (instantané ; priorités closes au pool → refus technique journalisé).
 4. `./run_sql.sh 04_pending_report.sql` → **liste remise aux managers** (mission, début, instrumentiste, échéance).
@@ -81,4 +99,18 @@ priorités closes « en attente » : on active `RB`, après transition des donn�
 - `deploy/tests/d177-sequence.sh` (banc de deploy/tests, Linux) : migration pré-bascule sur l'image M
   pendant que A reste en service, puis activation ; repli refusé hors branche principale, accepté avec
   `DEPLOY_MAIN_REF=origin/rollback/d177`, construit sans impact, activable, retour en avant.
-- Cycle de données (bases isolées, code D-177 et code d32dbe7 alternés) : voir le rapport du 2026-10-31.
+- `tests/run_rollback_cycle.sh` (MySQL isolé, jamais la production ; trois backends prêts : D-177,
+  d32dbe7, RB) — 19 contrôles, rejoués le 2026-10-31 : 19/19.
+  1. Reprise publiée directement au pool par le code D-177 (HTTP réel) : 0 publication D-177,
+     audit `BYPASSED` présent → `00_decision.sql` = B2 (l'ancienne règle aurait dit B1).
+  2. d32dbe7 brut sur ces données : `/api/missions/{id}/audit` et `/api/manager/audit-events` en 500.
+  3. B2 (01 → 02 → 04, RB) : toutes les lectures en 200, empreinte missions / affectations /
+     publications identique, demande nominative ordinaire toujours en attente, aucune notification
+     supplémentaire (worker + 3 crons du serveur), mission de reprise prenable depuis le pool.
+  4. Repli avec les messages de la reprise encore en file : aucun message indécodable, file vidée
+     par le worker RB, sollicitation du pool envoyée une seule fois (même volume que sous D-177).
+  5. Retour en avant (05, code D-177) : lectures en 200, `expire-priorities --dry-run` 0 / 0, aucune
+     notification supplémentaire.
+  6. Missions ordinaires seules (sans reprise) : verdict B1, d32dbe7 brut lit tout sans erreur.
+- Cycle des priorités (expirées, en attente, échues, acceptées ; code D-177 et d32dbe7 alternés) :
+  rapport du 2026-10-31.
