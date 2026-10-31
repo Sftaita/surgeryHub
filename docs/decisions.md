@@ -16071,3 +16071,16 @@ puis une liste déroulante de types, alors que les mêmes firmes et intervention
 **Limites.** Les firmes récentes d'un utilisateur ne se remplissent qu'avec ses encodages
 postérieurs au déploiement. La date de référence est la création de l'intervention (une
 correction de firme ne la rafraîchit pas).
+
+**Audit avant fusion (2026-10-31).**
+- **Migration renumérotée `Version20261031180000`** (anciennement `Version20261030120000`) :
+  elle précédait `Version20261030150000` (D-177), déjà exécutée en production. Doctrine la jouait
+  bien (vérifié sur une copie de production : « New 1 »), mais l'affichait hors ordre (« Current »
+  = « Latest » alors qu'elle restait à jouer). Validée depuis une base neuve (94/94) et depuis une
+  copie de production à 93 migrations (1 nouvelle, colonne, index et clé étrangère identiques).
+- **Ordre de déploiement : migration AVANT la bascule.** Le nouveau code sur l'ancien schéma
+  répond 500 à `GET /api/missions/{id}/encoding` (colonne `created_by_id` inconnue), tous rôles ;
+  le code en production fonctionne sur le schéma migré (colonne nullable non mappée).
+- **Firmes récentes jamais conservées entre deux comptes** : le cache applicatif survit à une
+  déconnexion sans rechargement ; les requêtes de suggestions ont `gcTime: 0` (libérées dès que la
+  page d'encodage est démontée), sinon les firmes du compte précédent s'affichaient un instant.

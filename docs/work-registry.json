@@ -877,7 +877,7 @@
           "description": "Validation utilisateur du parcours (instrumentiste, manager, chirurgien) avant toute fusion."
         }
       ],
-      "nextAction": "Revue utilisateur ; pas de fusion ni de déploiement sans accord (migration Version20261030120000).",
+      "nextAction": "Revue utilisateur ; pas de fusion ni de déploiement sans accord (migration Version20261031180000).",
       "lastReviewed": "2026-10-30"
     }
   ]

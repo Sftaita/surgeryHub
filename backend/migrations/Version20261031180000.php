@@ -10,13 +10,17 @@ use Doctrine\Migrations\AbstractMigration;
 /**
  * D-178 — auteur de l'encodage d'une intervention (raccourcis « firmes récemment utilisées »).
  *
+ * Numérotée après Version20261030150000 (D-177, déjà exécutée en production) : une migration
+ * plus ancienne que la dernière exécutée serait bien jouée par Doctrine, mais affichée hors ordre
+ * (« Current » = « Latest » alors qu'elle reste à jouer). Anciennement Version20261030120000.
+ *
  * Purement additif : colonne nullable, aucune ligne existante modifiée (aucun auteur reconstruit
  * pour l'historique). ON DELETE SET NULL : la suppression d'un utilisateur ne touche jamais
  * l'intervention.
  *
  * Rollback : DROP de la clé étrangère, de l'index et de la colonne ; aucune donnée métier n'en dépend.
  */
-final class Version20261030120000 extends AbstractMigration
+final class Version20261031180000 extends AbstractMigration
 {
     public function getDescription(): string
     {
