@@ -16013,6 +16013,11 @@ reprendre reste possible (double salle du même site, D-119) ; savoir si elles r
 seconde salle réelle reste la question métier ouverte de D-160 (postes JOURNÉE + MATIN +
 APRÈS-MIDI du mercredi), indépendante de cette régularisation, qui ne fait que retirer une salle
 reprenable.
+**Clôture D-160 (2026-10-31) : organisation confirmée — aucun correctif nécessaire.** Le mercredi,
+Delta compte deux salles physiques : la salle JOURNÉE (#14) et une seconde salle découpée en MATIN
+(#15) et APRÈS-MIDI (#16) pour organiser les instrumentistes (une instrumentiste couvre les deux
+salles le matin, deux instrumentistes l'après-midi). Ces créneaux restent reprenables selon les
+règles habituelles ; aucun mécanisme de suspension n'est introduit.
 
 **Canaux de l'offre prioritaire (décision utilisateur 2026-10-31).** `ROOM_TAKEOVER_MISSION_OFFER`
 est envoyée par défaut **in-app + push + e-mail** (`EMAIL_ON_BY_DEFAULT` et `PUSH_ON_BY_DEFAULT`).
