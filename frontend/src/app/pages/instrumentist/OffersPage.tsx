@@ -210,7 +210,10 @@ function OfferCard({
       {isPersonalRequest && (
         <>
           <Typography sx={{ mt: "10px", fontSize: 12.5, color: GRAY_600, textAlign: "center" }}>
-            Le manager vous propose cette mission personnellement.
+            {/* D-177 — une priorité de reprise de salle n'est pas une demande du manager. */}
+            {mission.targetedOffer?.priority
+              ? "Reprise de salle : cette mission vous est proposée en priorité, comme instrumentiste habituel(le) de ce créneau."
+              : "Le manager vous propose cette mission personnellement."}
           </Typography>
           <Box
             component="button"
@@ -329,7 +332,11 @@ export default function OffersPage() {
     setDeclining(true);
     try {
       await declineMissionOffer(declineTarget.id);
-      toast.success("Demande refusée. Le manager est prévenu.");
+      toast.success(
+        declineTarget.targetedOffer?.priority
+          ? "Priorité refusée. La mission est proposée aux autres instrumentistes."
+          : "Demande refusée. Le manager est prévenu.",
+      );
       setDeclineTarget(null);
       queryClient.invalidateQueries({ queryKey: ["missions"] });
       requestMissionSync();
@@ -432,7 +439,10 @@ export default function OffersPage() {
         <DialogTitle sx={{ fontSize: 16, fontWeight: 700 }}>Refuser cette mission ?</DialogTitle>
         <DialogContent>
           <Typography sx={{ fontSize: 13.5, color: GRAY_600 }}>
-            Le manager sera prévenu et pourra la proposer à quelqu&apos;un d&apos;autre.
+            {/* D-177 — refuser une priorité ouvre le pool aussitôt (sans notification manager). */}
+            {declineTarget?.targetedOffer?.priority
+              ? "Votre priorité prend fin : la mission sera proposée immédiatement aux autres instrumentistes éligibles."
+              : "Le manager sera prévenu et pourra la proposer à quelqu'un d'autre."}
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2.5 }}>

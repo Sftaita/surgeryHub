@@ -66,7 +66,7 @@ export function ReleasedRoomCard({ slot }: { slot: ReleasedRoomSlotV2 }) {
   const takeOver = useMutation({
     mutationFn: () => takeOverReleasedRoom(slot.id),
     onSuccess: () => {
-      toast.success("Salle reprise — une mission est ouverte aux instrumentistes du site.");
+      toast.success("Salle reprise — la mission instrumentiste est créée.");
     },
     onError: (err) => {
       const e = apiErrorOf(err);
@@ -177,7 +177,12 @@ export function ReleasedRoomCard({ slot }: { slot: ReleasedRoomSlotV2 }) {
             </Typography>
           </Stack>
           <Typography sx={{ fontSize: 14 }}>
-            En confirmant, cette salle vous sera réservée et une mission sera ouverte aux instrumentistes du site.
+            En confirmant, cette salle vous sera réservée et une mission instrumentiste sera créée.
+          </Typography>
+          {/* D-177 — ordre de diffusion décidé par le backend à la reprise (priorité 48 h ou pool). */}
+          <Typography sx={{ fontSize: 14, mt: 1 }}>
+            Elle est d'abord proposée pendant 48 h à l'instrumentiste habituel(le) de ce créneau, s'il est disponible ;
+            sinon, ou si elle n'est pas acceptée dans ce délai, aux instrumentistes éligibles du site.
           </Typography>
         </DialogContent>
         <DialogActions>
