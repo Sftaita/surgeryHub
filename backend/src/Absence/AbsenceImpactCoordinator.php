@@ -15,7 +15,6 @@ use App\Service\AbsenceMissionReactionService;
 use App\Service\BlockManagementCommunicationService;
 use App\Service\InstrumentistAbsenceOccurrenceImpactService;
 use App\Service\ReleasedOperatingRoomSlotService;
-use App\Service\RoomTakeoverPriorityService;
 use App\Service\SurgeonAbsenceOccurrenceImpactService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -58,8 +57,6 @@ class AbsenceImpactCoordinator
         private readonly AbsenceImpactActivityRecorder $activity,
         private readonly MessageBusInterface $bus,
         private readonly LoggerInterface $logger,
-        // D-177 — an instrumentist's absence ends her room take-over priorities on missions it covers.
-        private readonly ?RoomTakeoverPriorityService $priorities = null,
     ) {
     }
 
@@ -137,14 +134,6 @@ class AbsenceImpactCoordinator
             ? $this->missionReaction->onAbsenceUpdated($absence, $actor)
             : $this->missionReaction->onAbsenceCreated($absence, $actor);
         $alerts       = $isUpdate ? $this->alerts->onAbsenceUpdated($absence) : $this->alerts->onAbsenceCreated($absence);
-        // D-177 (Cas C) — her pending room take-over priorities on covered missions end at once
-        // (RECIPIENT_UNAVAILABLE) and the pool opens; idempotent, the sweep command is the
-        // backstop if this fails.
-        try {
-            $this->priorities?->onAbsenceRecorded($absence);
-        } catch (\Throwable $e) {
-            $this->logger->error('AbsenceImpactCoordinator: room take-over priority re-evaluation failed', ['absenceId' => $absence->getId(), 'error' => $e->getMessage()]);
-        }
         $neutralized  = $this->surgeonOccurrences->neutralize($absence, $actor, $impacts);
         $instrumentist = $this->instrumentistOccurrences->record($absence, $actor, $newImpacts, $recovered);
         $reconciliation = $isUpdate

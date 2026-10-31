@@ -83,7 +83,6 @@ final class ReleasedRoomPostReplacementFunctionalTest extends WebTestCase
                 $conn->executeStatement("DELETE FROM mission_claim WHERE mission_id IN ($missionIds)");
                 $conn->executeStatement("DELETE FROM mission_assignment WHERE mission_id IN ($missionIds)");
                 $conn->executeStatement("DELETE FROM mission_communication WHERE mission_id IN ($missionIds)");
-                $conn->executeStatement("DELETE FROM mission_publication WHERE mission_id IN ($missionIds)");
                 $conn->executeStatement("DELETE FROM mission WHERE id IN ($missionIds)");
             }
             $posts = $ids($this->createdIds['posts']);

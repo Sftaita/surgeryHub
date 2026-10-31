@@ -18,7 +18,6 @@ import { useAuth } from "../../auth/AuthContext";
 import { isMobileRole } from "../../auth/roles";
 import { requestMissionSync } from "../../features/missions/sync/missionSyncBus";
 import { declineMissionOffer } from "../../features/missions/dispatch/missionDispatch.api";
-import { formatDeadline } from "../../features/room-takeover/roomTakeoverFormat";
 import { DateTile } from "../../ui/mobile/DateTile";
 import { StatusPill } from "../../ui/mobile/StatusPill";
 import { PersonAvatar } from "../../ui/avatar/PersonAvatar";
@@ -159,12 +158,6 @@ function OfferCard({
           </Typography>
           {dur && <Typography sx={{ fontSize: 13, color: GRAY_400, fontVariantNumeric: "tabular-nums" }}>· {dur}</Typography>}
         </Stack>
-        {/* D-177 — priorité de reprise de salle : réservée à moi seule jusqu'à l'échéance. */}
-        {isPersonalRequest && mission.targetedOffer?.priority && (
-          <Typography sx={{ fontSize: 13, fontWeight: 700, color: GREEN_700 }} data-testid="offer-priority-deadline">
-            Réservée pour vous jusqu'au {formatDeadline(mission.targetedOffer.expiresAt)} — ensuite proposée aux autres instrumentistes.
-          </Typography>
-        )}
         {surgeon && (
           <Stack direction="row" alignItems="center" spacing={1.375}>
             <PersonAvatar name={surgeon} photoUrl={resolveApiAssetUrl(mission.surgeon?.profilePicturePath)} size="sm" />

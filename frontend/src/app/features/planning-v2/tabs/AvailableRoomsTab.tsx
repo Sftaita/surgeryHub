@@ -1,6 +1,6 @@
 import * as React from "react";
 import {
-  Alert, Box, Button, CircularProgress, MenuItem, Select, Stack, Table, TableBody,
+  Alert, Box, CircularProgress, MenuItem, Select, Stack, Table, TableBody,
   TableCell, TableHead, TableRow, TablePagination, Typography,
 } from "@mui/material";
 
@@ -9,8 +9,6 @@ import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
 import type { SurgeonListItemDTO } from "../../manager-surgeons/api/surgeons.types";
 import { useQuery } from "@tanstack/react-query";
 import { planningV2Colors } from "../theme/tokens";
-import { LiftPriorityDialog, ReleasedRoomHistoryDrawer, RoomOperationalStatus } from "../../room-takeover/RoomTakeoverComponents";
-import type { ReleasedRoomSlotV2 } from "../api/planningV2.types";
 
 const PERIOD_LABELS: Record<string, string> = { MATIN: "Matin", APRES_MIDI: "Après-midi", JOURNEE: "Journée" };
 
@@ -19,18 +17,12 @@ const PERIOD_LABELS: Record<string, string> = { MATIN: "Matin", APRES_MIDI: "Apr
  * site n'existe pour ce rôle dans ce projet, même règle que partout ailleurs). Indépendante
  * des emails Room Release et du toggle `notifyColleaguesEnabled` : un créneau BLOCK réellement
  * libéré est listé ici même si les emails collègues sont désactivés pour le site concerné.
- *
- * D-177 — chaque salle reprise affiche son état opérationnel (proposition prioritaire avec
- * destinataire et échéance, pool ouvert, instrumentiste confirmé), l'alerte « intervention
- * avant l'échéance », la levée manager de la priorité et l'historique complet du créneau.
  */
 export function AvailableRoomsTab() {
   const [siteId, setSiteId] = React.useState<number | "">("");
   const [surgeonId, setSurgeonId] = React.useState<number | "">("");
   const [page, setPage] = React.useState(0);
   const [limit, setLimit] = React.useState(25);
-  const [historySlotId, setHistorySlotId] = React.useState<number | null>(null);
-  const [liftTarget, setLiftTarget] = React.useState<ReleasedRoomSlotV2 | null>(null);
 
   React.useEffect(() => { setPage(0); }, [siteId, surgeonId]);
 
@@ -103,7 +95,6 @@ export function AvailableRoomsTab() {
                 <TableCell>Libérée par</TableCell>
                 <TableCell>Statut</TableCell>
                 <TableCell>Publiée le</TableCell>
-                <TableCell />
               </TableRow>
             </TableHead>
             <TableBody>
@@ -119,21 +110,15 @@ export function AvailableRoomsTab() {
                     {slot.status === "CLAIMED" ? (
                       <>
                         Reprise par {slot.claimedBy?.name ?? "—"}
-                        {slot.operational && (
-                          <RoomOperationalStatus operational={slot.operational} instrumentistName={slot.takeoverMission?.instrumentist?.name} />
+                        {slot.takeoverMission && (
+                          <Typography component="span" sx={{ display: "block", fontSize: 12, color: planningV2Colors.textMuted }}>
+                            Instrumentiste : {slot.takeoverMission.instrumentist?.name ?? "à pourvoir"}
+                          </Typography>
                         )}
                       </>
                     ) : "Disponible"}
                   </TableCell>
                   <TableCell>{new Date(slot.createdAt).toLocaleString("fr-BE")}</TableCell>
-                  <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                    {slot.operational?.state === "PRIORITY_PENDING" && slot.takeoverMission && (
-                      <Button size="small" color="warning" onClick={() => setLiftTarget(slot)} data-testid={`lift-priority-${slot.id}`}>
-                        Lever la priorité
-                      </Button>
-                    )}
-                    <Button size="small" onClick={() => setHistorySlotId(slot.id)} data-testid={`room-history-${slot.id}`}>Historique</Button>
-                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -149,14 +134,6 @@ export function AvailableRoomsTab() {
           />
         </>
       )}
-
-      <ReleasedRoomHistoryDrawer slotId={historySlotId} onClose={() => setHistorySlotId(null)} />
-      <LiftPriorityDialog
-        open={liftTarget !== null}
-        missionId={liftTarget?.takeoverMission?.id ?? null}
-        recipientName={liftTarget?.operational?.priority?.instrumentist?.name}
-        onClose={() => setLiftTarget(null)}
-      />
     </Box>
   );
 }

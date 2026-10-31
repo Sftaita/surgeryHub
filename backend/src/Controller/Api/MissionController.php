@@ -22,7 +22,6 @@ use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
 use App\Service\MissionPostDeployService;
 use App\Service\MissionService;
-use App\Service\RoomTakeoverPriorityService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -50,7 +49,6 @@ class MissionController extends AbstractController
         private readonly MissionPostDeployService  $missionPostDeployService,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly MissionDispatchService    $dispatchService,
-        private readonly RoomTakeoverPriorityService $priorities,
     ) {}
 
     #[Route(name: 'api_missions_create', methods: ['POST'])]
@@ -176,26 +174,6 @@ class MissionController extends AbstractController
         $reason = isset($data['reason']) ? (string) $data['reason'] : null;
 
         $this->dispatchService->declineOffer($mission, $user, $reason);
-
-        return $this->json($this->mapper->toDetailDto($mission, $user));
-    }
-
-    /**
-     * D-177 — Cas D: a manager lifts the exclusive priority of a room take-over (imminent
-     * mission, urgency) and opens the eligible pool at once. Justification required (422),
-     * audited as ROOM_TAKEOVER_PRIORITY_ENDED (LIFTED_BY_MANAGER). 409 when no priority is
-     * pending any more (answered, expired, lifted concurrently).
-     */
-    #[Route(path: '/{id}/lift-priority', name: 'api_missions_lift_priority', methods: ['POST'], requirements: ['id' => '\d+'])]
-    public function liftPriority(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
-    {
-        $mission = $this->missionService->getOr404($id);
-        $this->denyAccessUnlessGranted(MissionVoter::LIFT_PRIORITY, $mission);
-
-        $data = json_decode($request->getContent(), true) ?? [];
-        $justification = isset($data['justification']) ? (string) $data['justification'] : null;
-
-        $this->priorities->liftByManager($mission, $user, $justification);
 
         return $this->json($this->mapper->toDetailDto($mission, $user));
     }

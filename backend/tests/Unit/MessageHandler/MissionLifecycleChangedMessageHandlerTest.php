@@ -101,9 +101,6 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         // H5a — the D-125 dispatch emails are content handed to the dispatcher.
         $notificationService->method('missionOfferedEmail')->willReturn(new \App\Notification\EmailContent('Proposée', 'emails/mission_offered.html.twig', []));
         $notificationService->method('missionOfferDeclinedEmail')->willReturn(new \App\Notification\EmailContent('Refusée', 'emails/mission_offer_declined.html.twig', []));
-        $notificationService->method('roomTakeoverPriorityOfferEmail')->willReturnCallback(
-            static fn ($m, $i, $taker, $original, ?\DateTimeImmutable $expiresAt) => new \App\Notification\EmailContent('Prioritaire', 'emails/room_takeover_priority_offer.html.twig', ['expiresAt' => $expiresAt]),
-        );
 
         return new MissionLifecycleChangedMessageHandler(
             $this->em,
@@ -489,19 +486,13 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
 
     // ── ROOM_TAKEN_OVER → personal offer + pool (never both to the same person) ──
 
-    public function test_room_taken_over_with_a_pending_priority_offers_it_to_its_recipient_only_and_waits_for_the_pool(): void
+    public function test_room_taken_over_excludes_the_offered_instrumentist_from_the_pool_episode(): void
     {
         $initial = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
         $mission = $this->makeMission($this->makeUser('taker@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
-        // D-177 — the take-over transaction published an exclusive priority (TARGETED + deadline).
-        $mission->addPublication((new \App\Entity\MissionPublication())
-            ->setScope(\App\Enum\PublicationScope::TARGETED)
-            ->setChannel(\App\Enum\PublicationChannel::IN_APP)
-            ->setTargetInstrumentist($initial)
-            ->setPublishedAt(new \DateTimeImmutable('2026-10-30 09:00:00'))
-            ->setExpiresAt(new \DateTimeImmutable('2026-11-01 09:00:00')));
         $this->stubFind($mission, [$initial->getId() => $initial]);
         $this->capturePersisted();
+        $this->eligibilityService->method('evaluate')->willReturn(new \App\Dto\EligibilityResult($initial, []));
 
         $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::ROOM_TAKEN_OVER, ['initialInstrumentistId' => $initial->getId(), 'roomSlotId' => 5]));
 
@@ -509,46 +500,25 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         $offers = array_values(array_filter($this->dispatched, static fn ($i) => $i->type === NotificationType::ROOM_TAKEOVER_MISSION_OFFER));
         self::assertCount(1, $offers);
         self::assertSame($initial, $offers[0]->recipient);
-        // D-177 — email alongside in-app and push (WHEN_ENABLED, never a push fallback), with
-        // the deadline of the publication itself.
-        self::assertSame('emails/room_takeover_priority_offer.html.twig', $offers[0]->email?->htmlTemplate);
-        self::assertEquals(new \DateTimeImmutable('2026-11-01 09:00:00'), $offers[0]->email->context['expiresAt']);
-        self::assertSame(\App\Enum\NotificationEmailPolicy::WHEN_ENABLED, $offers[0]->emailPolicy);
-        self::assertSame('Salle reprise — vous êtes prioritaire', $offers[0]->push->title);
-        self::assertStringContainsString('01/11', $offers[0]->push->body, 'the deadline is announced');
-        self::assertNotNull($offers[0]->inAppPayload['expiresAt']);
-        self::assertSame([], $this->episodes, 'the pool is not solicited while the priority runs');
+        self::assertNull($offers[0]->email, 'no email content for this offer');
+        self::assertSame('Salle reprise — mission disponible', $offers[0]->push->title);
+        self::assertCount(1, $this->episodes);
+        self::assertSame(OpenEpisodeCause::ROOM_TAKEN_OVER, $this->episodes[0]->cause);
+        self::assertSame([$initial->getId() => OpenPoolExclusionReason::PERSONAL_OFFER_SENT], $this->episodes[0]->excluded);
     }
 
-    public function test_room_taken_over_published_to_the_pool_solicits_the_pool_without_any_offer(): void
+    public function test_room_taken_over_with_an_ineligible_initial_instrumentist_excludes_nobody(): void
     {
         $initial = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
         $mission = $this->makeMission($this->makeUser('taker@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
-        $mission->addPublication((new \App\Entity\MissionPublication())
-            ->setScope(\App\Enum\PublicationScope::POOL)
-            ->setChannel(\App\Enum\PublicationChannel::IN_APP)
-            ->setPublishedAt(new \DateTimeImmutable('2026-10-30 09:00:00')));
         $this->stubFind($mission, [$initial->getId() => $initial]);
         $this->capturePersisted();
+        $this->eligibilityService->method('evaluate')->willReturn(new \App\Dto\EligibilityResult($initial, [\App\Enum\EligibilityReason::ABSENT]));
 
         $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::ROOM_TAKEN_OVER, ['initialInstrumentistId' => $initial->getId()]));
 
         self::assertCount(0, $this->eventsOfType(NotificationType::ROOM_TAKEOVER_MISSION_OFFER));
-        self::assertCount(1, $this->episodes);
-        self::assertSame(OpenEpisodeCause::ROOM_TAKEN_OVER, $this->episodes[0]->cause);
         self::assertSame([], $this->episodes[0]->excluded);
-    }
-
-    public function test_priority_ended_solicits_the_pool_without_the_person_who_declined(): void
-    {
-        $mission = $this->makeMission($this->makeUser('taker@test.com', ['ROLE_SURGEON']), MissionStatus::OPEN);
-        $this->stubFind($mission, []);
-
-        $this->makeHandler()->__invoke($this->makeMessage($mission, MissionChangeType::PRIORITY_ENDED, ['endReason' => 'DECLINED', 'excludedInstrumentistId' => 42]));
-
-        self::assertCount(1, $this->episodes);
-        self::assertSame(OpenEpisodeCause::ROOM_TAKEOVER_PRIORITY_ENDED, $this->episodes[0]->cause);
-        self::assertSame([42 => OpenPoolExclusionReason::PRIORITY_DECLINED], $this->episodes[0]->excluded);
     }
 
     // ── REASSIGNED ────────────────────────────────────────────────────────────

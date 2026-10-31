@@ -71,7 +71,6 @@ final class RoomTakeoverConcurrencyTest extends KernelTestCase
             $conn->executeStatement('DELETE FROM notification_event WHERE mission_id = ?', [$mid]);
             $conn->executeStatement('DELETE FROM audit_event WHERE mission_id = ?', [$mid]);
             $conn->executeStatement('DELETE FROM mission_claim WHERE mission_id = ?', [$mid]);
-            $conn->executeStatement('DELETE FROM mission_publication WHERE mission_id = ?', [$mid]);
             $conn->executeStatement('UPDATE released_operating_room_slot SET takeover_mission_id = NULL, original_mission_id = NULL WHERE takeover_mission_id = ? OR original_mission_id = ?', [$mid, $mid]);
             $conn->executeStatement('DELETE FROM mission_assignment WHERE mission_id = ?', [$mid]);
             $conn->executeStatement('DELETE FROM mission WHERE id = ?', [$mid]);

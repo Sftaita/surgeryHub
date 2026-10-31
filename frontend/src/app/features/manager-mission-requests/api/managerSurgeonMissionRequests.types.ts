@@ -1,4 +1,3 @@
-import type { ReleasedRoomMatch } from "../../room-takeover/roomTakeover.types";
 import type { MissionType } from "../../missions/api/missions.types";
 
 /**
@@ -21,8 +20,6 @@ export interface ManagerSurgeonMissionRequest {
   createdMissionId: number | null;
   /** D-125 — status of the created Mission (DRAFT/OPEN/ASSIGNED…), computed backend. */
   createdMissionStatus?: string | null;
-  /** D-177 — released room(s) this PENDING request designates (null once reviewed). */
-  releasedRoomMatch?: ReleasedRoomMatch | null;
 }
 
 /** D-147 — GET /api/manager/surgeon-mission-requests/counts (tous les statuts, 0 inclus). */

@@ -27,8 +27,7 @@ final class MissionListDto
         /**
          * D-125 — nominative request state, computed server-side (MissionDispatchService::
          * pendingOffer()/lastDeclinedOffer()), never re-derived client-side:
-         * {status: 'PENDING'|'DECLINED', instrumentist: {id, name}, offeredAt, declinedAt,
-         * priority, expiresAt, startsBeforeExpiry} (D-177: room take-over priority and its deadline).
+         * {status: 'PENDING'|'DECLINED', instrumentist: {id, name}, offeredAt, declinedAt}.
          * PENDING = OPEN, not covered, awaiting that instrumentist's answer. Null otherwise.
          *
          * @var array<string,mixed>|null

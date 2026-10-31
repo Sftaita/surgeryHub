@@ -46,7 +46,6 @@ framework:
             App\Message\PlanningModificationAppliedMessage:  async
             App\Message\SurgeonEncodingChangedMessage:       async
             App\Message\ReleasedRoomSlotsCreatedMessage:     async
-            App\Message\RoomTakeoverPriorityExpiryMessage:   async
 
 when@test:
     framework:

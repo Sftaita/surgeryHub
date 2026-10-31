@@ -30,8 +30,6 @@ export type AllowedAction =
   // instrumentiste : refuser une demande nominative ('claim' = accepter)
   | "dispatch"
   | "decline_offer"
-  // D-177 — manager : lever la priorité de reprise de salle et ouvrir le pool (Cas D).
-  | "lift_priority"
   // D-151 — chirurgien de la mission : refuser l'instrumentiste qui l'a acceptée (dans le
   // délai), sinon demander l'intervention du manager. Décidé par le backend uniquement.
   | "refuse_assignment"
@@ -319,12 +317,6 @@ export type TargetedOffer = {
   instrumentist: { id: number; name: string } | null;
   offeredAt: string | null;
   declinedAt: string | null;
-  /** D-177 — priorité exclusive d'une reprise de salle (false : demande D-125 ordinaire). */
-  priority?: boolean;
-  /** D-177 — échéance de la priorité (48 h réelles après son émission). */
-  expiresAt?: string | null;
-  /** D-177 (Cas D) — la mission commence avant l'échéance : alerte manager. */
-  startsBeforeExpiry?: boolean;
 };
 
 /**

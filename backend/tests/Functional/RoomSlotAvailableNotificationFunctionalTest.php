@@ -94,7 +94,6 @@ final class RoomSlotAvailableNotificationFunctionalTest extends WebTestCase
                 $conn->executeStatement('UPDATE released_operating_room_slot SET takeover_mission_id = NULL WHERE site_id = ?', [$siteId]);
                 $conn->executeStatement('DELETE FROM mission_communication WHERE mission_id IN (SELECT id FROM mission WHERE site_id = ?)', [$siteId]);
                 $conn->executeStatement('DELETE FROM audit_event WHERE mission_id IN (SELECT id FROM mission WHERE site_id = ?)', [$siteId]);
-                $conn->executeStatement('DELETE FROM mission_publication WHERE mission_id IN (SELECT id FROM mission WHERE site_id = ?)', [$siteId]);
                 $conn->executeStatement('DELETE FROM mission WHERE site_id = ?', [$siteId]);
                 $conn->executeStatement('DELETE FROM released_operating_room_slot WHERE site_id = ?', [$siteId]);
                 $conn->executeStatement('DELETE FROM shift_period_config WHERE site_id = ?', [$siteId]);

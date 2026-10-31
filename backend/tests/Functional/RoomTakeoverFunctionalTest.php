@@ -80,7 +80,7 @@ final class RoomTakeoverFunctionalTest extends WebTestCase
             }
         }
         foreach (array_keys($missionIds) as $mid) {
-            foreach (['notification_event', 'outbound_notification', 'audit_event', 'mission_claim', 'planning_alert', 'mission_publication'] as $table) {
+            foreach (['notification_event', 'audit_event', 'mission_claim', 'planning_alert'] as $table) {
                 $sql("DELETE FROM {$table} WHERE mission_id = ?", [$mid]);
             }
             $sql('DELETE FROM mission_assignment WHERE mission_id = ?', [$mid]);
@@ -422,10 +422,10 @@ final class RoomTakeoverFunctionalTest extends WebTestCase
         self::assertSame('Dr Bruno Test', $mgr['items'][0]['claimedBy']['name']);
     }
 
-    // ── 2. Notifications : instrumentiste initiale éligible = priorité exclusive (D-177) ──
+    // ── 2. Notifications : instrumentiste initiale éligible + pool + claim ──────
 
     #[WithoutErrorHandler]
-    public function test_eligible_initial_instrumentist_gets_an_exclusive_priority_and_the_pool_waits(): void
+    public function test_eligible_initial_instrumentist_gets_the_contextual_offer_pool_gets_the_normal_one_and_first_claim_wins(): void
     {
         $s = $this->sceneWithRealAbsence();
         $slot = $this->slotOf($s['site']);
@@ -438,23 +438,20 @@ final class RoomTakeoverFunctionalTest extends WebTestCase
         $this->em->clear();
 
         $offer = $this->notificationsFor($s['marie'], NotificationType::ROOM_TAKEOVER_MISSION_OFFER, $missionId);
-        self::assertCount(1, $offer, 'initial instrumentist gets the priority offer');
+        self::assertCount(1, $offer, 'initial instrumentist gets the contextual notice');
         $payload = $offer[0]->getPayload();
         self::assertSame('Dr Bruno Test', $payload['takenByName']);
         self::assertSame('Dr Alain Test', $payload['originalSurgeonName']);
         self::assertSame('08:00', $payload['startTime']);
-        self::assertNotNull($payload['expiresAt'], 'the offer carries its deadline');
         self::assertArrayNotHasKey('patient', $payload);
         self::assertCount(0, $this->notificationsFor($s['marie'], NotificationType::OPEN_MISSION_AVAILABLE, $missionId), 'never both notices');
 
-        // D-177 — the pool is NOT solicited while the priority runs, and cannot reach the mission.
-        self::assertCount(0, $this->notificationsFor($s['paul'], NotificationType::OPEN_MISSION_AVAILABLE, $missionId), 'pool waits for the end of the priority');
+        self::assertCount(1, $this->notificationsFor($s['paul'], NotificationType::OPEN_MISSION_AVAILABLE, $missionId), 'the rest of the eligible pool is notified simultaneously');
         self::assertCount(0, $this->notificationsFor($s['paul'], NotificationType::ROOM_TAKEOVER_MISSION_OFFER));
         self::assertCount(0, $this->notificationsFor($s['zoe'], NotificationType::OPEN_MISSION_AVAILABLE), 'non-affiliated instrumentist is never targeted');
-        self::assertSame(403, $this->request('POST', "/api/missions/{$missionId}/claim", $s['paulToken'])->getStatusCode(), 'reserved for the priority recipient, even by direct API call');
 
-        // Marie accepts (= claim).
-        $res = $this->request('POST', "/api/missions/{$missionId}/claim", $s['marieToken']);
+        // The mission is genuinely OPEN for everyone — Paul (not the initial one) claims first.
+        $res = $this->request('POST', "/api/missions/{$missionId}/claim", $s['paulToken']);
         self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
         // Existing CLAIMED pipeline → the surgeon who took over the room is told. Drained right
         // away: the in-memory transport is a resettable service, emptied by the next request.
@@ -462,23 +459,19 @@ final class RoomTakeoverFunctionalTest extends WebTestCase
         $this->em->clear();
         self::assertCount(1, $this->notificationsFor($s['b'], NotificationType::SURGEON_POST_COVERED, $missionId));
 
-        $late = $this->request('POST', "/api/missions/{$missionId}/claim", $s['paulToken']);
-        self::assertContains($late->getStatusCode(), [403, 409], 'nobody can claim an ASSIGNED mission');
+        $late = $this->request('POST', "/api/missions/{$missionId}/claim", $s['marieToken']);
+        self::assertContains($late->getStatusCode(), [403, 409], 'a stale offer can never claim an ASSIGNED mission');
 
         $this->em->clear();
         $mission = $this->em->find(Mission::class, $missionId);
         self::assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
-        self::assertSame($s['marie']->getId(), $mission->getInstrumentist()->getId());
-        $ended = $this->auditEvents(AuditEventType::ROOM_TAKEOVER_PRIORITY_ENDED, $missionId);
-        self::assertCount(1, $ended);
-        self::assertSame('ACCEPTED', $ended[0]->getPayload()['endReason']);
-        self::assertCount(0, array_filter($this->auditEvents(AuditEventType::MISSION_PUBLISHED_TO_POOL, $missionId)), 'never published to the pool');
+        self::assertSame($s['paul']->getId(), $mission->getInstrumentist()->getId());
 
         // B's view now shows the assigned instrumentist.
         $list = $this->json($this->request('GET', '/api/me/available-rooms', $s['bToken']));
         $row = current(array_filter($list['items'], fn ($i) => $i['id'] === $slot->getId()));
         self::assertSame('ASSIGNED', $row['takeoverMission']['status']);
-        self::assertSame('Marie Test', $row['takeoverMission']['instrumentist']['name']);
+        self::assertSame('Paul Test', $row['takeoverMission']['instrumentist']['name']);
     }
 
     // ── 3. Instrumentiste initiale absente / en conflit → aucune invitation ────
@@ -497,14 +490,6 @@ final class RoomTakeoverFunctionalTest extends WebTestCase
         self::assertCount(0, $this->notificationsFor($s['marie'], NotificationType::ROOM_TAKEOVER_MISSION_OFFER));
         self::assertCount(0, $this->notificationsFor($s['marie'], NotificationType::OPEN_MISSION_AVAILABLE), 'no generic invitation either');
         self::assertCount(1, $this->notificationsFor($s['paul'], NotificationType::OPEN_MISSION_AVAILABLE));
-
-        // D-177 (Cas B) — no priority, pool at once, the bypass reason recorded.
-        $missionId = $this->missionsOf($s['b'])[0]->getId();
-        $bypassed = $this->auditEvents(AuditEventType::ROOM_TAKEOVER_PRIORITY_BYPASSED, $missionId);
-        self::assertCount(1, $bypassed);
-        self::assertSame('USUAL_INSTRUMENTIST_ABSENT', $bypassed[0]->getPayload()['reason']);
-        self::assertSame($s['marie']->getId(), $bypassed[0]->getPayload()['usualInstrumentistId']);
-        self::assertCount(0, $this->auditEvents(AuditEventType::ROOM_TAKEOVER_PRIORITY_OFFERED, $missionId));
     }
 
     #[WithoutErrorHandler]
@@ -578,7 +563,7 @@ final class RoomTakeoverFunctionalTest extends WebTestCase
         $this->request('POST', "/api/available-rooms/{$slot->getId()}/take-over", $s['bToken']);
         $this->em->clear();
         $missionId = $this->missionsOf($s['b'])[0]->getId();
-        self::assertSame(200, $this->request('POST', "/api/missions/{$missionId}/claim", $s['marieToken'])->getStatusCode());
+        self::assertSame(200, $this->request('POST', "/api/missions/{$missionId}/claim", $s['paulToken'])->getStatusCode());
         $this->transport->reset();
 
         // A manager may also release it (same endpoint, same voter).
@@ -592,7 +577,7 @@ final class RoomTakeoverFunctionalTest extends WebTestCase
 
         self::assertSame(1, $this->runLifecycleHandler(MissionChangeType::CANCELLED));
         $this->em->clear();
-        self::assertCount(1, $this->notificationsFor($s['marie'], NotificationType::PLANNING_MISSION_CANCELLED, $missionId), 'disengaged instrumentist is told');
+        self::assertCount(1, $this->notificationsFor($s['paul'], NotificationType::PLANNING_MISSION_CANCELLED, $missionId), 'disengaged instrumentist is told');
         self::assertCount(1, $this->notificationsFor($s['b'], NotificationType::PLANNING_MISSION_CANCELLED, $missionId), 'surgeon told when someone else released it');
     }
 

@@ -57,9 +57,6 @@ use Doctrine\ORM\EntityManagerInterface;
  *                                           as CATALOGUE_REQUEST_CREATED — not urgent)
  *   - ROOM_SLOT_AVAILABLE (D-161):         inApp=true, email=false, push=true — push by default,
  *                                           email only when the surgeon opts in.
- *   - ROOM_TAKEOVER_MISSION_OFFER (D-177): inApp=true, email=true, push=true — exclusive 48 h
- *                                           priority of the usual instrumentist: every channel by
- *                                           default (email alongside push, not as a fallback).
  *   - All others (pool, coverage, updates): inApp=true, email=false (informational)
  *
  *   - ENCODING_REMINDER_D1 (H5a):          inApp=true (no in-app item exists), email=true, push=true —
@@ -131,9 +128,6 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         // manager decision: same urgency as MISSION_OFFER_DECLINED (D-125).
         NotificationType::ASSIGNMENT_REFUSED_BY_SURGEON,
         NotificationType::ASSIGNMENT_REVIEW_REQUESTED,
-        // D-177 — exclusive 48 h priority on a taken-over room: the deadline runs from the
-        // offer's creation, so it must not go unnoticed for want of opening the app.
-        NotificationType::ROOM_TAKEOVER_MISSION_OFFER,
     ];
 
     /**
@@ -154,9 +148,6 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         // D-161 — a room that just became available: push is the standard channel; the email
         // stays off unless the surgeon turns it on (never an automatic fallback).
         NotificationType::ROOM_SLOT_AVAILABLE,
-        // D-177 — the exclusive 48 h priority offer: pushed whenever a device is subscribed,
-        // in addition to the email.
-        NotificationType::ROOM_TAKEOVER_MISSION_OFFER,
     ];
 
     public function __construct(

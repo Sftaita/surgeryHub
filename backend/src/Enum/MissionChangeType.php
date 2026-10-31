@@ -47,9 +47,4 @@ enum MissionChangeType: string
     // D-151 — the mission's surgeon asks the managers to intervene on the current affectation
     // (refusal window over, mission imminent, or affectation not refusable). No state change.
     case ASSIGNMENT_REVIEW_REQUESTED = 'ASSIGNMENT_REVIEW_REQUESTED';
-
-    // D-177 — the exclusive priority of a room take-over ended (declined, expired, recipient
-    // absent, lifted by a manager): the SAME mission is now open to the eligible pool. Handled:
-    // pool solicitation (OpenMissionPoolNotifier), the decliner excluded.
-    case PRIORITY_ENDED = 'PRIORITY_ENDED';
 }

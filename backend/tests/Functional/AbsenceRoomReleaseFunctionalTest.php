@@ -91,7 +91,6 @@ final class AbsenceRoomReleaseFunctionalTest extends WebTestCase
                 $conn->executeStatement("DELETE FROM mission_intervention WHERE mission_id IN ($missions)");
                 $conn->executeStatement("DELETE FROM mission_assignment WHERE mission_id IN ($missions)");
                 $conn->executeStatement("DELETE FROM mission_communication WHERE mission_id IN ($missions)");
-                $conn->executeStatement("DELETE FROM mission_publication WHERE mission_id IN ($missions)");
                 $conn->executeStatement("DELETE FROM mission WHERE id IN ($missions)");
             }
             $posts = $ids($this->createdIds['posts']);

@@ -505,8 +505,7 @@ class MissionService
                     $qb->expr()->andX(
                         'p.scope = :scopeTargeted',
                         'p.targetInstrumentist = :me',
-                        'p.declinedAt IS NULL', // D-125 — a declined request is no longer an offer
-                        'p.closedAt IS NULL'     // D-177 — nor an accepted / expired / lifted one
+                        'p.declinedAt IS NULL' // D-125 — a declined request is no longer an offer
                     ),
                     // V1 POOL: freelancer always eligible; employee needs site membership
                     $qb->expr()->andX(
