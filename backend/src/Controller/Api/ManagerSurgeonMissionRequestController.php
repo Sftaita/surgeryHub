@@ -8,6 +8,8 @@ use App\Enum\AuditEventType;
 use App\Enum\MissionDispatchMode;
 use App\Security\Voter\SurgeonMissionRequestVoter;
 use App\Service\AuditJournalService;
+use App\Service\ReleasedRoomRequestMatcher;
+use App\Service\RoomSlotDecision;
 use App\Service\SurgeonMissionRequestService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -29,6 +31,7 @@ final class ManagerSurgeonMissionRequestController extends AbstractController
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly SurgeonMissionRequestService $service,
+        private readonly ReleasedRoomRequestMatcher $roomMatcher,
     ) {
     }
 
@@ -123,7 +126,11 @@ final class ManagerSurgeonMissionRequestController extends AbstractController
         }
         $instrumentistId = isset($dispatch['instrumentistId']) ? (int) $dispatch['instrumentistId'] : null;
 
-        $accepted = $this->service->accept($surgeonMissionRequest, $manager, $reviewComment, $mode, $instrumentistId);
+        // D-177 — optional `roomSlot: {decision: TAKE_OVER|NONE, slotId?, justification?}`: the
+        // manager's explicit choice when the request designates released room(s).
+        $roomSlot = RoomSlotDecision::fromArray(is_array($data['roomSlot'] ?? null) ? $data['roomSlot'] : null);
+
+        $accepted = $this->service->accept($surgeonMissionRequest, $manager, $reviewComment, $mode, $instrumentistId, $roomSlot);
 
         return $this->json($this->serialize($accepted));
     }
@@ -176,6 +183,11 @@ final class ManagerSurgeonMissionRequestController extends AbstractController
             'reviewComment' => $r->getReviewComment(),
             'createdMissionId' => $r->getCreatedMission()?->getId(),
             'createdMissionStatus' => $r->getCreatedMission()?->getStatus()?->value,
+            // D-177 — released room(s) this pending request designates (initial surgeon, hours,
+            // room status), re-read on every load; drives the acceptance form.
+            'releasedRoomMatch' => $r->getStatus() === SurgeonMissionRequest::STATUS_PENDING
+                ? $this->roomMatcher->matchRequest($r)->toArray()
+                : null,
         ];
     }
 }

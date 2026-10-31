@@ -2261,6 +2261,43 @@ Invariants respectés : `SurgeonSchedulePost` et Mission d'origine jamais modifi
 mutation de Mission hors `MissionPostDeployService` ; notifications uniquement via le pipeline
 `MissionLifecycleChangedMessage` + `NotificationPreferenceResolver`.
 
+
+### Priorité de reprise et demande = reprise (D-177)
+
+Révise le flux ci-dessus (D-124) : la mission de reprise est **publiée dans la transaction de
+reprise**, et l'instrumentiste habituelle a une **priorité exclusive de 48 h**.
+
+```
+takeOverInTransaction(slot, surgeon, actor, ?request)   ← take-over (chirurgien) OU acceptation
+  … gardes D-124 …                                        d'une demande (manager : demande puis
+  createPostDeploy(OPEN) · slot CLAIMED · ROOM_SLOT_TAKEN_OVER   salle verrouillées)
+  RoomTakeoverPriorityService::publishTakeoverMission()
+    habituelle éligible (evaluateForOffer) → TARGETED + expires_at (+48 h) · PRIORITY_OFFERED
+    sinon → POOL · PRIORITY_BYPASSED (absente / inéligible / introuvable) · PUBLISHED_TO_POOL
+  commit ─────────────────────────────────────────────────────────────
+afterTakeOver() : RoomTakeoverPriorityExpiryMessage (DelayStamp = échéance) + ROOM_TAKEN_OVER
+  handler : priorité en attente → ROOM_TAKEOVER_MISSION_OFFER (échéance) à elle seule
+            sinon → OpenMissionPoolNotifier
+
+Fin de priorité (une seule gagne : verrou mission + relecture) :
+  claim() par elle ……………………… ACCEPTED (closeActiveRequests) — pas de pool
+  decline-offer ……………………………… DECLINED → POOL même transaction → PRIORITY_ENDED (elle exclue)
+  échéance (message / cron) ………… EXPIRED → POOL → PRIORITY_ENDED
+  absence confirmée (coordinator / cron) RECIPIENT_UNAVAILABLE → POOL → PRIORITY_ENDED
+  lift-priority (manager) ………… LIFTED_BY_MANAGER → POOL → PRIORITY_ENDED
+  assign / assignDirectly ………… SUPERSEDED (ou ACCEPTED) — pas de pool
+  cancel / release salle ………… MISSION_CLOSED — pas de pool
+  retour à OPEN (release, refus chirurgien, restauration, alerte) → reopenToPool() : POOL
+  (missions de reprise uniquement ; une demande D-125 ordinaire n'est jamais close ni rouverte)
+```
+
+Exclusivité : `MissionVoter` / `MissionActionsService` (priorité en attente → sa seule
+destinataire), listes `eligibleToMe` et synchronisation (`closedAt IS NULL`), `claim()` relit en
+base les priorités actives sous le verrou. Correspondance demande ↔ salle :
+`ReleasedRoomRequestMatcher` (NONE / CERTAIN / AMBIGUOUS / ALREADY_TAKEN_OVER), lu à la création
+de la demande, dans les listes et à l'acceptation. Historique : `ReleasedRoomSlotHistoryService`
+(lecture seule : absence, `ROOM_SLOT_*`, audit des missions rattachées, demande, livraisons).
+
 ### Éditeur unifié Génération / Modification (Batch 15K)
 
 Planning V2 s'appuie sur **un seul composant éditeur** (`GeneratePlanningTab.tsx`) pour les
@@ -3959,7 +3996,8 @@ pool (garde-fou : `tests/Architecture/OpenMissionPoolSingleEntryTest`).
 
 | Publication POOL (D-125) | `MissionPublishedMessage` | `PUBLISHED_TO_POOL` | isolé |
 
-| Reprise de salle (D-124) | `MissionLifecycleChangedMessage(ROOM_TAKEN_OVER)` | `ROOM_TAKEN_OVER` (exclusion `PERSONAL_OFFER_SENT`) | isolé |
+| Reprise de salle sans priorité (D-124, D-177) | `MissionLifecycleChangedMessage(ROOM_TAKEN_OVER)` | `ROOM_TAKEN_OVER` | isolé |
+| Fin d'une priorité de reprise sans acceptation (D-177) | `MissionLifecycleChangedMessage(PRIORITY_ENDED)` | `ROOM_TAKEOVER_PRIORITY_ENDED` (exclusion `PRIORITY_DECLINED` de celle qui a refusé) | isolé |
 
 | Lot du mode Modification | `PlanningModificationAppliedMessage` (après commit) | `PLANNING_MODIFICATION`, clé = `correlationId` du lot | lot |
 

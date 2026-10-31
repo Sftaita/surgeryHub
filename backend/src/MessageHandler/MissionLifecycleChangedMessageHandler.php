@@ -5,6 +5,7 @@ namespace App\MessageHandler;
 use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\MissionAssignment;
+use App\Entity\MissionPublication;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionChangeType;
@@ -28,6 +29,7 @@ use App\Service\MissionAssignmentRefusalPolicy;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionPostDeployService;
 use App\Service\NotificationTargetResolver;
+use App\Service\RoomTakeoverPriorityService;
 use App\Repository\UserRepository;
 use App\Service\NotificationService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -74,12 +76,15 @@ use Symfony\Component\Clock\Clock;
  * richer ABSENCE_INSTRUMENTIST_REASSIGNED instead. The SURGEON_POST_COVERED branch is
  * unaffected and fires exactly as it would for any other OPEN→ASSIGNED reassignment.
  *
- * D-124 (room take-over, ReleasedRoomSlotTakeoverService):
- *   ROOM_TAKEN_OVER → ROOM_TAKEOVER_MISSION_OFFER to the instrumentist initially planned on the
- *                     released room, ONLY if MissionEligibilityService::evaluate() finds her
- *                     eligible for the new OPEN mission right now; OPEN_MISSION_AVAILABLE to
- *                     every other eligible pool instrumentist (she is excluded from that fan-out
- *                     so she never gets both). Never an assignment, never an exclusivity.
+ * D-124 (room take-over, ReleasedRoomSlotTakeoverService), revised by D-177:
+ *   ROOM_TAKEN_OVER → the mission was published in the take-over transaction. Pending exclusive
+ *                     priority (RoomTakeoverPriorityService) → ROOM_TAKEOVER_MISSION_OFFER to its
+ *                     recipient ONLY, with the deadline — the pool is NOT solicited. Published to
+ *                     the pool (usual instrumentist unknown / absent / ineligible) →
+ *                     OPEN_MISSION_AVAILABLE to the eligible pool. Never an assignment.
+ *   PRIORITY_ENDED  → the priority was declined / expired / ended by an absence / lifted by a
+ *                     manager and the SAME mission is now in the pool: OPEN_MISSION_AVAILABLE
+ *                     to the eligible pool (the person who declined excluded).
  *   CANCELLED with payload['roomSlotId'] (taker released the room) → the instrumentist who
  *                     was assigned (payload['fromInstrumentistId'], cancel() already cleared
  *                     the FK) is told via PLANNING_MISSION_CANCELLED; the surgeon is not
@@ -142,6 +147,7 @@ final class MissionLifecycleChangedMessageHandler
             MissionChangeType::REASSIGNED => $this->handleReassigned($message),
             MissionChangeType::CANCELLED  => $this->handleCancelled($message),
             MissionChangeType::ROOM_TAKEN_OVER => $this->handleRoomTakenOver($message),
+            MissionChangeType::PRIORITY_ENDED  => $this->handlePriorityEnded($message),
             MissionChangeType::ENCODING_COMPLETED => $this->handleEncodingCompleted($message),
             MissionChangeType::ENCODING_REJECTED,
             MissionChangeType::ENCODING_REOPENED => $this->handleEncodingCorrectionRequested($message),
@@ -635,14 +641,15 @@ final class MissionLifecycleChangedMessageHandler
             $message->occurredAt->format('Y-m-d\TH:i:s.uP'), $role);
     }
 
-    // ── ROOM_TAKEN_OVER → contextual offer + pool (D-124) ────────────────────
+    // ── ROOM_TAKEN_OVER → priority offer, or pool (D-124, D-177) ─────────────
 
     /**
-     * A surgeon took over a room released by a colleague's absence; the new Mission is OPEN.
-     * Eligibility is evaluated HERE, at send time, with the single source of truth
-     * (MissionEligibilityService::evaluate() — the same check claim() runs): absence, site
-     * affiliation, inactive account, schedule conflict, and the mission still being OPEN and
-     * unassigned. An ineligible initial instrumentist gets nothing — never a claim invitation.
+     * A surgeon took over a room released by a colleague's absence; the new Mission is OPEN
+     * and already published (D-177, same transaction as the take-over). Read fresh here:
+     *  - a pending exclusive priority → its recipient alone is told, with the deadline; the
+     *    pool is solicited only when the priority ends (PRIORITY_ENDED);
+     *  - otherwise (published to the pool) → the eligible pool, through the single entry point.
+     * Nothing is sent for a mission no longer OPEN (accepted, cancelled meanwhile).
      */
     private function handleRoomTakenOver(MissionLifecycleChangedMessage $message): void
     {
@@ -659,50 +666,54 @@ final class MissionLifecycleChangedMessageHandler
             return;
         }
 
-        $excluded = [];
-        $initialId = $message->payload['initialInstrumentistId'] ?? null;
-        $initial = $initialId !== null ? $this->em->find(User::class, (int) $initialId) : null;
-
-        if ($initial !== null) {
-            $eligibility = $this->eligibilityService->evaluate($mission, $initial);
-
-            if ($eligibility->eligible) {
-                $this->sendRoomTakeoverOffer($mission, $initial, $message);
-                // Never both the contextual offer and the generic one. (Ineligible: no offer
-                // and no exclusion needed — the pool's eligibility rules her out anyway.)
-                $excluded[] = $initial->getId();
-            } else {
-                $this->logger->info('MissionLifecycleChanged::ROOM_TAKEN_OVER: initial instrumentist ineligible — no offer', [
-                    'missionId'       => $mission->getId(),
-                    'instrumentistId' => $initial->getId(),
-                    'reasons'         => array_map(static fn ($r) => $r->value, $eligibility->reasons),
-                ]);
-            }
+        $priority = RoomTakeoverPriorityService::pendingPriority($mission);
+        $target = $priority?->getTargetInstrumentist();
+        if ($priority !== null && $target !== null) {
+            $this->sendRoomTakeoverOffer($mission, $target, $message, $priority);
+            return;
         }
 
-        // H3 (D-129) — same pool pipeline as every other opening; the initial instrumentist
-        // who received the contextual offer is excluded from the generic one (never both).
+        // H3 (D-129) — same pool pipeline as every other opening.
         $this->solicitPool(OpenEpisode::forTransition(
             $mission->getId(),
             OpenEpisodeCause::ROOM_TAKEN_OVER,
             $message->occurredAt,
-            array_fill_keys($excluded, OpenPoolExclusionReason::PERSONAL_OFFER_SENT),
+            [],
             $message->actorId,
         ), 'ROOM_TAKEN_OVER');
     }
 
     /**
-     * D-124 offer to the initially planned instrumentist. H5b (D-132) — through
-     * NotificationDispatcher (in-app + push per preferences, no email content), every channel
-     * traced, idempotent per takeover: formerly an in-app row and a raw push, both untraced.
-     * The business rule of the offer itself is unchanged.
+     * D-177 — the priority ended without acceptance and the mission is in the pool: solicit
+     * the eligible pool (never the person who just declined). Idempotent per transition
+     * (episodeRef from occurredAt); nothing for a mission no longer OPEN.
      */
-    private function sendRoomTakeoverOffer(Mission $mission, User $instrumentist, MissionLifecycleChangedMessage $message): void
+    private function handlePriorityEnded(MissionLifecycleChangedMessage $message): void
+    {
+        $excludedId = $message->payload['excludedInstrumentistId'] ?? null;
+
+        $this->solicitPool(OpenEpisode::forTransition(
+            $message->missionId,
+            OpenEpisodeCause::ROOM_TAKEOVER_PRIORITY_ENDED,
+            $message->occurredAt,
+            $excludedId !== null ? [(int) $excludedId => OpenPoolExclusionReason::PRIORITY_DECLINED] : [],
+            $message->actorId,
+        ), 'PRIORITY_ENDED');
+    }
+
+    /**
+     * D-177 — exclusive priority offer to the usual instrumentist, with its deadline (accept =
+     * claim, refuse = decline-offer, from her offers). H5b (D-132) — through
+     * NotificationDispatcher (in-app + push per preferences, no email content), every channel
+     * traced, idempotent per take-over.
+     */
+    private function sendRoomTakeoverOffer(Mission $mission, User $instrumentist, MissionLifecycleChangedMessage $message, MissionPublication $priority): void
     {
         $siteName = $mission->getSite()?->getName() ?? '';
         $takenBy  = $message->payload['takenByName'] ?? null;
         $original = $message->payload['originalSurgeonName'] ?? null;
         $type     = NotificationType::ROOM_TAKEOVER_MISSION_OFFER;
+        $deadline = $priority->getExpiresAt()?->setTimezone(new \DateTimeZone('Europe/Brussels'));
 
         try {
             $this->dispatcher->dispatch(new NotificationIntent(
@@ -719,11 +730,20 @@ final class MissionLifecycleChangedMessageHandler
                     'periodLabel'         => $this->periodLabel($mission),
                     'takenByName'         => $takenBy,
                     'originalSurgeonName' => $original,
+                    'publicationId'       => $priority->getId(),
+                    'expiresAt'           => $priority->getExpiresAt()?->format(\DateTimeInterface::ATOM),
                 ],
                 mission: $mission,
+                // D-177 — email alongside in-app and push (not a fallback): a 48 h window must
+                // not be missed for want of a push device. Her preferences still apply.
+                email: $this->notificationService->roomTakeoverPriorityOfferEmail($mission, $instrumentist, $takenBy, $original, $priority->getExpiresAt()),
                 push: new PushContent(
-                    'Salle reprise — mission disponible',
-                    sprintf('%s reprend la salle de %s le %s à %s. Une mission est disponible.', $takenBy ?? 'Un chirurgien', $original ?? 'un confrère', $mission->getStartAt()?->format('d/m') ?? '', $siteName),
+                    'Salle reprise — vous êtes prioritaire',
+                    sprintf(
+                        '%s reprend la salle de %s le %s à %s. Cette mission vous est réservée jusqu\'au %s : acceptez-la ou refusez-la depuis vos offres.',
+                        $takenBy ?? 'Un chirurgien', $original ?? 'un confrère', $mission->getStartAt()?->format('d/m') ?? '', $siteName,
+                        $deadline?->format('d/m à H:i') ?? '',
+                    ),
                     ['type' => $type->value, 'missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve($type, $mission, $instrumentist)],
                 ),
                 episodeRef: sprintf('room_takeover:%d:%s', (int) $mission->getId(), (string) ($message->payload['roomSlotId'] ?? $message->occurredAt->format('Y-m-d\TH:i:s'))),

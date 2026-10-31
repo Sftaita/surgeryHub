@@ -9,6 +9,7 @@ use App\Entity\AuditEvent;
 use App\Entity\Mission;
 use App\Entity\ReleasedOperatingRoomSlot;
 use App\Entity\ShiftPeriodConfig;
+use App\Entity\SurgeonMissionRequest;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
 use App\Enum\AuditEventType;
@@ -23,6 +24,7 @@ use App\Security\Voter\ReleasedRoomSlotVoter;
 use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Psr\Log\NullLogger;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
 
@@ -70,8 +72,13 @@ class ReleasedRoomSlotTakeoverService
         private readonly ?AuthorizationCheckerInterface $authorization = null,
         // D-159 — optional only so the hand-wired concurrency tests can build the service; always autowired.
         private readonly ?ReleasedRoomCapacityMatcher $capacity = null,
+        // D-177 — always autowired; built on the same collaborators when hand-wired in tests.
+        ?RoomTakeoverPriorityService $priorities = null,
     ) {
+        $this->priorities = $priorities ?? new RoomTakeoverPriorityService($em, $eligibility, $audit, $bus, new NullLogger());
     }
+
+    private readonly RoomTakeoverPriorityService $priorities;
 
     /**
      * Actions exposed to the current viewer (`allowedActions` of the API payload) — the only
@@ -104,123 +111,172 @@ class ReleasedRoomSlotTakeoverService
         $connection->beginTransaction();
 
         try {
-            $this->em->lock($slot, LockMode::PESSIMISTIC_WRITE);
-            $this->em->refresh($slot);
-
-            if ($slot->getStatus() !== ReleasedRoomSlotStatus::AVAILABLE) {
-                $takenBy = $slot->getClaimedBy();
-                throw new ReleasedRoomSlotConflictException(
-                    ReleasedRoomSlotConflictException::ALREADY_TAKEN,
-                    $takenBy !== null
-                        ? sprintf('Cette salle vient d\'être reprise par %s.', $takenBy->getDrName())
-                        : 'Cette salle vient d\'être reprise.',
-                    ['takenBy' => $takenBy !== null ? ['id' => $takenBy->getId(), 'name' => $takenBy->getDrName()] : null],
-                );
-            }
-
-            $site = $slot->getSite();
-            if ($site === null || $slot->getOccurrenceDate() < new \DateTimeImmutable('today')) {
-                throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_AVAILABLE, 'Cette salle n\'est plus disponible.');
-            }
-
-            // Lot D ne retire jamais un créneau déjà publié (non-rétractation) : si l'absence du
-            // chirurgien libérant a été supprimée/réduite depuis, sa Mission a pu être restaurée
-            // (D-104) — la salle n'est alors plus réellement libre, jamais une double occupation.
-            $sourceSurgeon = $slot->getSurgeon();
-            if ($sourceSurgeon !== null && $this->eligibility->findBlockingAbsence($sourceSurgeon, $slot->getOccurrenceDate()) === null) {
-                throw new ReleasedRoomSlotConflictException(
-                    ReleasedRoomSlotConflictException::NOT_AVAILABLE,
-                    sprintf('%s n\'est plus absent ce jour-là : la salle n\'est plus disponible.', $sourceSurgeon->getDrName()),
-                );
-            }
-
-            // D-158 — la Mission du chirurgien absent est restée active (déjà commencée ou
-            // encodée : jamais annulée à l'aveugle) : la salle est toujours occupée.
-            if ($sourceSurgeon !== null && $this->findActiveOccurrenceMission($sourceSurgeon, $site, $slot->getOccurrenceDate(), $slot->getPeriod()) !== null) {
-                throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_AVAILABLE, 'Cette salle n\'est plus disponible.');
-            }
-
-            $originalMission = $slot->getOriginalMission() ?? $this->findOriginalMission($slot);
-            $schedule = $this->resolveSchedule($slot, $originalMission);
-            if ($schedule === null) {
-                throw new ReleasedRoomSlotConflictException(
-                    ReleasedRoomSlotConflictException::SCHEDULE_UNKNOWN,
-                    'Aucun horaire n\'est configuré pour ce créneau : contactez le gestionnaire du planning.',
-                );
-            }
-            [$startAt, $endAt] = $schedule;
-
-            if ($this->eligibility->findBlockingAbsence($surgeon, $startAt) !== null) {
-                throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::SURGEON_ABSENT, 'Vous êtes absent ce jour-là.');
-            }
-
-            // D-119 : deux salles du MÊME site en parallèle restent une « double salle »
-            // légitime, jamais un conflit — même moteur que le reste du planning.
-            $conflict = $this->conflicts->findConflict($surgeon, $startAt, $endAt, null, $site);
-            if ($conflict !== null) {
-                throw new ReleasedRoomSlotConflictException(
-                    ReleasedRoomSlotConflictException::SURGEON_CONFLICT,
-                    sprintf('Vous avez déjà une mission à %s sur ce créneau.', $conflict->getSite()?->getName() ?? 'un autre site'),
-                    ['conflictMissionId' => $conflict->getId()],
-                );
-            }
-
-            // D-159 — créneau publié sur un poste depuis remplacé : le poste qui porte aujourd'hui
-            // cette capacité donne l'instrumentiste et le type, jamais l'ancien poste.
-            $post = $this->capacity?->effectivePost($slot) ?? $slot->getSchedulePost();
-            $initialInstrumentist = $this->resolveInitialInstrumentist($slot, $originalMission, $post);
-            $type = $post?->getType() ?? $originalMission?->getType() ?? MissionType::BLOCK;
-
-            $mission = $this->postDeploy->createPostDeploy(
-                planningVersion: $originalMission?->getPlanningVersion(),
-                actor: $surgeon,
-                site: $site,
-                surgeon: $surgeon,
-                instrumentist: null,
-                type: $type,
-                startAt: $startAt,
-                endAt: $endAt,
-                notify: false, // dispatched below as ROOM_TAKEN_OVER, after commit
-            );
-
-            $now = new \DateTimeImmutable();
-            $slot->setOriginalMission($originalMission);
-            $slot->markClaimed($surgeon, $mission, $now);
-
-            $payload = array_merge($this->slotSnapshot($slot), [
-                'takenById'                => $surgeon->getId(),
-                'takenByName'              => $surgeon->getDrName(),
-                'takenAt'                  => $now->format(\DateTimeInterface::ATOM),
-                'originalMissionId'        => $originalMission?->getId(),
-                'initialInstrumentistId'   => $initialInstrumentist?->getId(),
-                'initialInstrumentistName' => $initialInstrumentist !== null ? self::displayName($initialInstrumentist) : null,
-                'actorId'                  => $surgeon->getId(),
-                'actorName'                => $surgeon->getDrName(),
-            ]);
-            $this->audit->record($mission, $surgeon, AuditEventType::ROOM_SLOT_TAKEN_OVER, $payload);
-
-            $this->em->flush();
+            $result = $this->takeOverInTransaction($slot, $surgeon, $surgeon);
             $connection->commit();
         } catch (\Throwable $e) {
             $connection->rollBack();
             throw $e;
         }
 
+        $this->afterTakeOver($result);
+
+        return $slot;
+    }
+
+    /**
+     * The take-over itself, inside the CALLER's open transaction (takeOver(), or
+     * SurgeonMissionRequestService::accept() when a surgeon's request designates this room —
+     * D-177): slot locked and re-read, every precondition re-checked, ONE Mission created,
+     * slot CLAIMED, and the Mission published at once (exclusive 48-hour priority of the usual
+     * instrumentist, or the eligible pool with the reason) — all or nothing. Never dispatches:
+     * the caller commits, then calls afterTakeOver().
+     *
+     * $request — the accepted surgeon request: its hours and type become the Mission's (the
+     * surgeon's own data, never lost), and its id is traced on ROOM_SLOT_TAKEN_OVER.
+     * $actor — who performs it: the surgeon himself, or the manager accepting his request.
+     */
+    public function takeOverInTransaction(ReleasedOperatingRoomSlot $slot, User $surgeon, User $actor, ?SurgeonMissionRequest $request = null): TakeoverResult
+    {
+        $this->em->lock($slot, LockMode::PESSIMISTIC_WRITE);
+        $this->em->refresh($slot);
+
+        if ($slot->getStatus() !== ReleasedRoomSlotStatus::AVAILABLE) {
+            $takenBy = $slot->getClaimedBy();
+            throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::ALREADY_TAKEN,
+                $takenBy !== null
+                    ? sprintf('Cette salle vient d\'être reprise par %s.', $takenBy->getDrName())
+                    : 'Cette salle vient d\'être reprise.',
+                ['takenBy' => $takenBy !== null ? ['id' => $takenBy->getId(), 'name' => $takenBy->getDrName()] : null],
+            );
+        }
+
+        $site = $slot->getSite();
+        if ($site === null || $slot->getOccurrenceDate() < new \DateTimeImmutable('today')) {
+            throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_AVAILABLE, 'Cette salle n\'est plus disponible.');
+        }
+
+        // Lot D ne retire jamais un créneau déjà publié (non-rétractation) : si l'absence du
+        // chirurgien libérant a été supprimée/réduite depuis, sa Mission a pu être restaurée
+        // (D-104) — la salle n'est alors plus réellement libre, jamais une double occupation.
+        $sourceSurgeon = $slot->getSurgeon();
+        if ($sourceSurgeon !== null && $this->eligibility->findBlockingAbsence($sourceSurgeon, $slot->getOccurrenceDate()) === null) {
+            throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::NOT_AVAILABLE,
+                sprintf('%s n\'est plus absent ce jour-là : la salle n\'est plus disponible.', $sourceSurgeon->getDrName()),
+            );
+        }
+
+        // D-158 — la Mission du chirurgien absent est restée active (déjà commencée ou
+        // encodée : jamais annulée à l'aveugle) : la salle est toujours occupée.
+        if ($sourceSurgeon !== null && $this->findActiveOccurrenceMission($sourceSurgeon, $site, $slot->getOccurrenceDate(), $slot->getPeriod()) !== null) {
+            throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_AVAILABLE, 'Cette salle n\'est plus disponible.');
+        }
+
+        if ($slot->getSurgeon()?->getId() === $surgeon->getId()) {
+            throw new ReleasedRoomSlotConflictException(ReleasedRoomSlotConflictException::NOT_AVAILABLE, 'Le chirurgien absent ne reprend pas sa propre salle : son absence doit être retirée.');
+        }
+
+        $originalMission = $slot->getOriginalMission() ?? $this->findOriginalMission($slot);
+        $schedule = $request?->getStartAt() !== null && $request->getEndAt() !== null
+            ? [$request->getStartAt(), $request->getEndAt()]
+            : $this->resolveSchedule($slot, $originalMission);
+        if ($schedule === null) {
+            throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::SCHEDULE_UNKNOWN,
+                'Aucun horaire n\'est configuré pour ce créneau : contactez le gestionnaire du planning.',
+            );
+        }
+        [$startAt, $endAt] = $schedule;
+
+        if ($this->eligibility->findBlockingAbsence($surgeon, $startAt) !== null) {
+            throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::SURGEON_ABSENT,
+                $actor === $surgeon ? 'Vous êtes absent ce jour-là.' : sprintf('%s est absent ce jour-là.', $surgeon->getDrName()),
+            );
+        }
+
+        // D-119 : deux salles du MÊME site en parallèle restent une « double salle »
+        // légitime, jamais un conflit — même moteur que le reste du planning.
+        $conflict = $this->conflicts->findConflict($surgeon, $startAt, $endAt, null, $site);
+        if ($conflict !== null) {
+            throw new ReleasedRoomSlotConflictException(
+                ReleasedRoomSlotConflictException::SURGEON_CONFLICT,
+                sprintf('Vous avez déjà une mission à %s sur ce créneau.', $conflict->getSite()?->getName() ?? 'un autre site'),
+                ['conflictMissionId' => $conflict->getId()],
+            );
+        }
+
+        // D-159 — créneau publié sur un poste depuis remplacé : le poste qui porte aujourd'hui
+        // cette capacité donne l'instrumentiste et le type, jamais l'ancien poste.
+        $post = $this->capacity?->effectivePost($slot) ?? $slot->getSchedulePost();
+        $initialInstrumentist = $this->resolveInitialInstrumentist($slot, $originalMission, $post);
+        $type = $request?->getType() ?? $post?->getType() ?? $originalMission?->getType() ?? MissionType::BLOCK;
+
+        $mission = $this->postDeploy->createPostDeploy(
+            planningVersion: $originalMission?->getPlanningVersion(),
+            actor: $actor,
+            site: $site,
+            surgeon: $surgeon,
+            instrumentist: null,
+            type: $type,
+            startAt: $startAt,
+            endAt: $endAt,
+            notify: false, // dispatched as ROOM_TAKEN_OVER by afterTakeOver(), after commit
+        );
+
+        $now = new \DateTimeImmutable();
+        $slot->setOriginalMission($originalMission);
+        $slot->markClaimed($surgeon, $mission, $now);
+
+        $payload = array_merge($this->slotSnapshot($slot), [
+            'takenById'                => $surgeon->getId(),
+            'takenByName'              => $surgeon->getDrName(),
+            'takenAt'                  => $now->format(\DateTimeInterface::ATOM),
+            'originalMissionId'        => $originalMission?->getId(),
+            'initialInstrumentistId'   => $initialInstrumentist?->getId(),
+            'initialInstrumentistName' => $initialInstrumentist !== null ? self::displayName($initialInstrumentist) : null,
+            'surgeonMissionRequestId'  => $request?->getId(),
+            'actorId'                  => $actor->getId(),
+            'actorName'                => $actor === $surgeon ? $surgeon->getDrName() : self::displayName($actor),
+        ]);
+        $this->audit->record($mission, $actor, AuditEventType::ROOM_SLOT_TAKEN_OVER, $payload);
+
+        // D-177 — published in the same transaction: there is no instant where this OPEN
+        // Mission exists without its publication (priority recorded before anyone can
+        // reach it through the pool).
+        $publication = $this->priorities->publishTakeoverMission($mission, $initialInstrumentist, $actor, [
+            'roomSlotId'              => $slot->getId(),
+            'surgeonMissionRequestId' => $request?->getId(),
+        ]);
+
+        $this->em->flush();
+
+        return new TakeoverResult($slot, $mission, $publication, $payload, $actor);
+    }
+
+    /**
+     * After the take-over transaction committed (R-07): schedules the priority expiry and
+     * dispatches ROOM_TAKEN_OVER (priority offer to the usual instrumentist, or the pool).
+     */
+    public function afterTakeOver(TakeoverResult $result): void
+    {
+        $this->priorities->afterCommit($result->publication);
+
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
-            missionId: $mission->getId(),
+            missionId: $result->mission->getId(),
             changeType: MissionChangeType::ROOM_TAKEN_OVER,
-            actorId: $surgeon->getId(),
+            actorId: $result->actor->getId(),
             payload: [
-                'roomSlotId'               => $slot->getId(),
-                'originalSurgeonName'      => $payload['originalSurgeonName'],
-                'takenByName'              => $surgeon->getDrName(),
-                'initialInstrumentistId'   => $payload['initialInstrumentistId'],
-                'initialInstrumentistName' => $payload['initialInstrumentistName'],
+                'roomSlotId'               => $result->slot->getId(),
+                'originalSurgeonName'      => $result->payload['originalSurgeonName'],
+                'takenByName'              => $result->payload['takenByName'],
+                'initialInstrumentistId'   => $result->payload['initialInstrumentistId'],
+                'initialInstrumentistName' => $result->payload['initialInstrumentistName'],
+                'publication'              => $result->publication->toArray(),
             ],
             occurredAt: new \DateTimeImmutable(),
         ));
-
-        return $slot;
     }
 
     /**
@@ -393,6 +449,18 @@ class ReleasedRoomSlotTakeoverService
             ->setParameter('claimed', ReleasedRoomSlotStatus::CLAIMED)
             ->getQuery()
             ->getSingleScalarResult() > 0;
+    }
+
+    /**
+     * D-177 — the room's real interval, resolved exactly as takeOver() does (slot snapshot,
+     * then the absent surgeon's original Mission, then the site's ShiftPeriodConfig). Read by
+     * ReleasedRoomRequestMatcher to compare a surgeon request with the released rooms.
+     *
+     * @return array{0: \DateTimeImmutable, 1: \DateTimeImmutable}|null
+     */
+    public function slotInterval(ReleasedOperatingRoomSlot $slot): ?array
+    {
+        return $this->resolveSchedule($slot, $slot->getOriginalMission() ?? $this->findOriginalMission($slot));
     }
 
     // ── Internals ────────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+import type { RoomOperationalState } from "../../room-takeover/roomTakeover.types";
 // Planning V2 — types frozen per docs/planning-v2-architecture-freeze.md §B.
 // Parallel to V1's planning.api.ts types — V1 is untouched, these are net-new.
 
@@ -622,6 +623,8 @@ export interface ReleasedRoomSlotV2 {
   takeoverMission: ReleasedRoomTakeoverMission | null;
   /** D-124 — seule source des CTA : jamais déduit côté client. */
   allowedActions: { takeOver: boolean; release: boolean };
+  /** D-177 — état opérationnel décidé par le backend (vue manager). */
+  operational?: RoomOperationalState;
 }
 
 /** D-124 — AVAILABLE ⇄ CLAIMED (« Reprendre une salle libérée »). */

@@ -15910,3 +15910,119 @@ tout le sous-réseau, partagé avec d'autres projets) et `trusted_headers: ['x-f
 seulement (ne pas faire confiance à proto/host/port sans besoin) ; adresse de traefik à figer dans
 son compose (sinon elle peut changer au redémarrage) ; puis plafond par IP (120/min) en gardant le
 plafond global comme garde-fou. Ne jamais faire confiance à `REMOTE_ADDR`/`PRIVATE_SUBNETS` en bloc.
+
+## D-177 — Reprise de salle : publication immédiate, priorité exclusive de 48 h de l'instrumentiste habituelle, demande chirurgien = vraie reprise (2026-10-30)
+
+**Incident de référence (mercredi 4 novembre 2026, audit lecture seule de la production le
+2026-10-30).** La « reprise » de la salle du chirurgien absent (#8) par un confrère (#15) n'est
+jamais passée par D-124 (déployé le 29/09) : c'était une **demande de mission libre** (#1, 06/09
+09:27, commentaire libre annonçant la reprise et nommant l'instrumentiste habituelle),
+déposée avant l'absence #64 (06/09 15:20). Acceptée le 07/09 sans diffusion (comportement d'avant
+D-125) → mission #626 **DRAFT pendant 53 jours**, hors planning publié (`planning_version_id`
+NULL), invisible des instrumentistes. Les salles libérées du jour (#14 JOURNÉE, #15 MATIN, #16
+APRÈS-MIDI, créées le 07/09) n'ont jamais été liées à la demande : **toujours `AVAILABLE`**, donc
+reprenables une seconde fois. Le 29/10 21:11, publication au pool **deux fois en 4 s** (publications
+#22/#23, chaque instrumentiste notifiée deux fois), puis affectation directe d'une instrumentiste (#19) à
+21:13. L'instrumentiste nommée habituelle n'a jamais été sollicitée en premier.
+
+**Défauts confirmés.** (1) Demande acceptée sans diffusion → DRAFT (l'API l'accepte toujours ;
+l'interface envoie un mode depuis D-125). (2) `publishToPool` non idempotent sur OPEN → OPEN.
+(3) Demande et salle libérée désignant le même créneau = deux circuits indépendants (double
+occupation possible). (4) D-124 : la mission de reprise était OPEN **sans publication**, donc
+ouverte à tout le pool (règle « V2 OPEN ») ; l'offre à l'instrumentiste initiale n'était
+qu'informative.
+
+**Décision.**
+
+1. **Publication dans la transaction de reprise.** `ReleasedRoomSlotTakeoverService::
+   takeOverInTransaction()` crée UNE mission OPEN et la publie avant le commit
+   (`RoomTakeoverPriorityService::publishTakeoverMission()`) — aucun instant où la mission OPEN
+   existe sans publication (le voter ne laisse atteindre une mission publiée que par une
+   publication active). Publication ≠ ouverture au pool : la mission est visible dans le planning
+   opérationnel du manager et du repreneur, avec ou sans `PlanningVersion`.
+2. **Cas A — instrumentiste habituelle éligible** (règles existantes : Mission d'origine annulée,
+   sinon binôme du poste effectif D-159 ; éligibilité `evaluateForOffer()` : absence, compte, site,
+   conflit, incompatibilité) → publication **TARGETED** existante (D-125) avec une échéance
+   `expires_at` = émission + **48 heures réelles**. Exclusive : voter, actions, listes (`eligibleToMe`,
+   synchronisation) et `claim()` (relecture en base sous verrou) la réservent à sa destinataire,
+   même par appel API direct ; une publication POOL ne peut pas être créée tant qu'elle court
+   (409). Acceptation = `claim()` existant → ASSIGNED, priorité close `ACCEPTED`, jamais de pool.
+   Refus = `decline-offer` existant → priorité terminée (`declined_at`), **la même mission** passe
+   au pool dans la même transaction (pas de notification managers : l'historique le montre).
+   Sans réponse → expiration automatique → pool. Jamais d'attribution implicite.
+3. **Cas B — habituelle absente, inéligible ou introuvable** → aucune priorité, POOL immédiat,
+   `ROOM_TAKEOVER_PRIORITY_BYPASSED.reason` = `USUAL_INSTRUMENTIST_ABSENT` |
+   `USUAL_INSTRUMENTIST_INELIGIBLE` (raisons d'éligibilité jointes) | `NO_USUAL_INSTRUMENTIST`.
+4. **Cas C — congé déclaré pendant la priorité** : `AbsenceImpactCoordinator` appelle
+   `onAbsenceRecorded()` ; la priorité n'est close (`RECIPIENT_UNAVAILABLE`, `absenceId`) que si
+   une absence couvrant la mission est confirmée en base à cet instant ; pool ensuite. Idempotent.
+5. **Cas D — intervention imminente** : aucune réduction automatique des 48 h. `startsBeforeExpiry`
+   (API) → alerte manager ; `POST /api/missions/{id}/lift-priority` (`MissionVoter::LIFT_PRIORITY`,
+   justification obligatoire) → `LIFTED_BY_MANAGER` + pool.
+6. **Expiration** : message `RoomTakeoverPriorityExpiryMessage` différé (DelayStamp, transport
+   Doctrine — survit aux redémarrages) programmé après commit + commande de rattrapage
+   `app:room-takeover:expire-priorities` (cron 5 min prévu, à installer au déploiement) qui traite
+   aussi les priorités dont la destinataire est absente. Toute fin de priorité : verrou de la
+   mission, relecture mission + publication, garde, `closed_at`/`close_reason` (jamais
+   `declined_at` pour une expiration), au plus une publication POOL active, pool sollicité après
+   commit seulement (`PRIORITY_ENDED` → `OpenMissionPoolNotifier`, épisode idempotent ; la personne
+   qui a refusé est exclue). Un message arrivé avant l'échéance est reprogrammé.
+7. **Demande chirurgien = vraie reprise.** `ReleasedRoomRequestMatcher` compare chaque demande en
+   attente aux salles `AVAILABLE` du même site et du même jour (horaires réels de la salle) :
+   `NONE` | `CERTAIN` (une seule salle, demande incluse dans ses horaires) | `AMBIGUOUS` (plusieurs
+   salles ou chevauchement partiel) | `ALREADY_TAKEN_OVER` (le demandeur tient déjà une reprise
+   chevauchante). Le chirurgien est prévenu dès la création (réponse + « Mes demandes », lien vers
+   la reprise existante) ; le manager voit la correspondance. À l'acceptation : `CERTAIN` → reprise
+   via le service existant (salle `CLAIMED`, mission aux horaires et type de la demande, priorité ou
+   pool), dans la transaction qui verrouille la demande puis la salle ; `AMBIGUOUS` → choix
+   explicite obligatoire (`roomSlot: TAKE_OVER slotId`, ou `NONE` + justification tracée) ;
+   `ALREADY_TAKEN_OVER` → refus ; un mode de diffusion est refusé pour une reprise. Sans salle
+   correspondante, la demande garde son fonctionnement normal.
+8. **Statuts** : aucun nouveau statut. Mission OPEN/ASSIGNED ; « proposition prioritaire en
+   attente » = OPEN + publication TARGETED active avec échéance ; « pool ouvert » = OPEN + POOL ;
+   « instrumentiste confirmé » = ASSIGNED. `MissionPublication.isActive()` = ni refusée ni close.
+   **Périmètre strict (audit de non-régression de la PR #58, 2026-10-31)** : seules les priorités
+   de reprise (`expiresAt` renseigné) sont closes (`closeActiveRequests()`) ou rouvertes au pool
+   (`RoomTakeoverPriorityService::reopenToPool()` : release, refus du chirurgien, restauration
+   après annulation, « ouvrir au pool » d'une alerte). Une demande D-125 ordinaire n'est jamais
+   close ni complétée d'une publication POOL, et `lastDeclinedOffer()` ignore seulement les
+   priorités : le comportement des missions ordinaires est celui d'avant D-177, démontré par
+   `OrdinaryMissionDispatchNonRegressionTest` exécuté à l'identique sur `main` et sur la branche.
+   La première version de la branche fermait aussi les demandes D-125 ordinaires : une mission
+   restaurée après annulation pouvait rester OPEN sans publication active, inatteignable.
+9. **Historique** : `GET /api/planning/available-rooms/{id}/history` reconstruit la chaîne depuis
+   l'absence source, les événements du créneau (`roomSlotId`), toutes les missions qui lui ont été
+   rattachées (même annulées, même après une nouvelle reprise), la demande d'origine et la
+   distribution des notifications (offre prioritaire par canal, sollicitations du pool) ; état
+   courant et prochaine action automatique. Aucun second journal.
+10. **Idempotence de `publishToPool`** : déjà OPEN avec une publication POOL active → rien
+    (ni publication, ni audit, ni notification).
+
+**Régularisation du 4 novembre** : `app:released-rooms:regularize-takeover --slot --mission
+[--request] [--execute]` (dry-run sans `--execute`) ; retour arrière `--rollback` (dry-run) puis
+`--rollback --execute`. Elle lie une salle à une mission vivante existante (salle
+`CLAIMED`, `ROOM_SLOT_TAKEOVER_REGULARIZED`), sans toucher la mission, sans priorité ni
+notification ; une mission ne se lie qu'à une salle. Exécution en production : **uniquement sur
+accord explicite** de l'utilisateur (rapport, dry-run et retour arrière présentés).
+Décision utilisateur (2026-10-31) : **seule la salle JOURNÉE (#14)** est liée à la mission. C'est
+la seule des trois salles du jour qui englobe à la fois les heures de la demande (07:45–13:30) et
+celles de la mission après modification par le manager (07:45–17:00) ; la salle MATIN s'arrête à
+13:00, la salle APRÈS-MIDI commence à 13:00. Les salles MATIN et APRÈS-MIDI restent `AVAILABLE` :
+aucune mission, demande, reprise ni audit de salle ne les rattache au chirurgien repreneur. Les
+reprendre reste possible (double salle du même site, D-119) ; savoir si elles représentent une
+seconde salle réelle reste la question métier ouverte de D-160 (postes JOURNÉE + MATIN +
+APRÈS-MIDI du mercredi), indépendante de cette régularisation, qui ne fait que retirer une salle
+reprenable.
+
+**Canaux de l'offre prioritaire (décision utilisateur 2026-10-31).** `ROOM_TAKEOVER_MISSION_OFFER`
+est envoyée par défaut **in-app + push + e-mail** (`EMAIL_ON_BY_DEFAULT` et `PUSH_ON_BY_DEFAULT`).
+L'e-mail part en complément du push (`NotificationEmailPolicy::WHEN_ENABLED`), jamais comme simple
+repli, et reste désactivable dans les préférences (type configurable). Seule l'instrumentiste
+habituelle éligible la reçoit ; l'échéance de 48 h court depuis la création de la publication
+`TARGETED`, quels que soient la réception ou la lecture. Chaque canal est tracé
+(`notification_dispatch` + `outbound_notification`) et idempotent par
+(type, destinataire, mission, épisode) : un message rejoué ne renvoie ni e-mail ni push.
+
+**Limites assumées.** La correspondance « certaine » est volontairement stricte (une seule salle
+englobant la demande) : les postes simultanés d'un même chirurgien (ex. JOURNÉE + MATIN + APRÈS-MIDI)
+donnent `AMBIGUOUS` et un choix manager. La migration `Version20261030150000` est additive.

@@ -24,4 +24,6 @@ enum OpenEpisodeCause: string
     case RESTORED_AFTER_ABSENCE = 'RESTORED_AFTER_ABSENCE';
     /** A manager chose « ouvrir au pool » on a planning alert for an already-OPEN mission. */
     case OPENED_FROM_ALERT = 'OPENED_FROM_ALERT';
+    /** D-177 — the room take-over priority ended without acceptance: the pool takes over. */
+    case ROOM_TAKEOVER_PRIORITY_ENDED = 'ROOM_TAKEOVER_PRIORITY_ENDED';
 }

@@ -2,8 +2,8 @@ import * as React from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
-  DialogTitle, Link, Stack, Tab, TextField, Table, TableBody, TableCell, TableContainer,
-  TableHead, TableRow, Tabs, Typography,
+  DialogTitle, FormControlLabel, Link, Radio, RadioGroup, Stack, Tab, TextField, Table, TableBody,
+  TableCell, TableContainer, TableHead, TableRow, Tabs, Typography,
 } from "@mui/material";
 import HourglassEmptyOutlinedIcon from "@mui/icons-material/HourglassEmptyOutlined";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
@@ -37,6 +37,7 @@ import {
   isDispatchChoiceComplete,
   type MissionDispatchChoice,
 } from "../missions/dispatch/missionDispatch.api";
+import type { ReleasedRoomMatchCandidate, RoomSlotDecision } from "../room-takeover/roomTakeover.types";
 
 type StatusValue = "PENDING" | "ACCEPTED" | "REJECTED";
 type TabValue = StatusValue | "HISTORY";
@@ -68,22 +69,45 @@ function AcceptDialog({
   open: boolean;
   request: ManagerSurgeonMissionRequest | null;
   onClose: () => void;
-  onAccept: (reviewComment: string | undefined, dispatch: MissionDispatchChoice) => void;
+  onAccept: (reviewComment: string | undefined, dispatch: MissionDispatchChoice | null, roomSlot: RoomSlotDecision | null) => void;
   accepting: boolean;
   /** Refus du serveur : affiché dans la fenêtre, la saisie reste en place pour réessayer. */
   error: string | null;
 }) {
   const [comment, setComment] = React.useState("");
   const [dispatch, setDispatch] = React.useState<MissionDispatchChoice>(DEFAULT_DISPATCH_CHOICE);
+  // D-177 — choix explicite quand la demande correspond partiellement / à plusieurs salles libérées.
+  const [roomChoice, setRoomChoice] = React.useState<string>("");
+  const [noneJustification, setNoneJustification] = React.useState("");
 
   React.useEffect(() => {
     if (open) {
       setComment("");
       setDispatch(DEFAULT_DISPATCH_CHOICE);
+      setRoomChoice("");
+      setNoneJustification("");
     }
   }, [open]);
 
   if (!request) return null;
+
+  // D-177 — la correspondance avec les salles libérées est relue par le serveur à chaque
+  // chargement ; une correspondance certaine est acceptée comme vraie reprise (diffusion
+  // automatique), jamais comme une seconde mission.
+  const match = request.releasedRoomMatch ?? null;
+  const certain = match?.status === "CERTAIN";
+  const ambiguous = match?.status === "AMBIGUOUS";
+  const alreadyTakenOver = match?.status === "ALREADY_TAKEN_OVER";
+  const takeOver = certain || (ambiguous && roomChoice !== "" && roomChoice !== "NONE");
+  const roomSlot: RoomSlotDecision | null = ambiguous
+    ? roomChoice === "NONE"
+      ? { decision: "NONE", justification: noneJustification.trim() }
+      : roomChoice !== "" ? { decision: "TAKE_OVER", slotId: Number(roomChoice) } : null
+    : null;
+  const roomChoiceComplete = !ambiguous || (roomChoice !== "" && (roomChoice !== "NONE" || noneJustification.trim() !== ""));
+  const canAccept = !alreadyTakenOver && roomChoiceComplete && (takeOver || isDispatchChoiceComplete(dispatch));
+  const roomLabel = (c: ReleasedRoomMatchCandidate) =>
+    `Salle libérée par ${c.originalSurgeon?.name ?? "—"} · ${c.startTime}–${c.endTime}${c.coversRequest ? "" : " (correspondance partielle)"}`;
 
   return (
     <Dialog open={open} onClose={accepting ? undefined : onClose} fullWidth maxWidth="sm">
@@ -97,6 +121,38 @@ function AcceptDialog({
           {request.comment && (
             <Typography variant="body2" color="text.secondary">« {request.comment} »</Typography>
           )}
+          {certain && match && (
+            <Alert severity="info" data-testid="request-room-match-certain">
+              Cette demande correspond à la salle libérée par <strong>{match.candidates[0]?.originalSurgeon?.name ?? "—"}</strong>{" "}
+              ({match.candidates[0]?.startTime}–{match.candidates[0]?.endTime}). Elle sera acceptée comme <strong>reprise de cette salle</strong> :
+              mission publiée immédiatement, proposée en priorité 48 h à l'instrumentiste habituelle (sinon au pool).
+            </Alert>
+          )}
+          {alreadyTakenOver && match?.takenOver && (
+            <Alert severity="warning" data-testid="request-room-match-taken">
+              Ce chirurgien a déjà repris la salle libérée par {match.takenOver.originalSurgeon?.name ?? "—"} sur ce créneau
+              ({match.takenOver.startTime}–{match.takenOver.endTime}) : accepter créerait une seconde mission. Refusez la demande.
+            </Alert>
+          )}
+          {ambiguous && match && (
+            <Box data-testid="request-room-match-ambiguous">
+              <Alert severity="warning" sx={{ mb: 1 }}>
+                Des salles libérées correspondent partiellement à ce créneau : choisissez la salle reprise, ou indiquez qu'aucune ne correspond.
+              </Alert>
+              <RadioGroup value={roomChoice} onChange={(e) => setRoomChoice(e.target.value)}>
+                {match.candidates.map((c) => (
+                  <FormControlLabel key={c.slotId} value={String(c.slotId)} control={<Radio size="small" />} label={roomLabel(c)} disabled={accepting} />
+                ))}
+                <FormControlLabel value="NONE" control={<Radio size="small" />} label="Aucune de ces salles" disabled={accepting} />
+              </RadioGroup>
+              {roomChoice === "NONE" && (
+                <TextField
+                  label="Pourquoi aucune ne correspond" size="small" fullWidth required multiline minRows={2}
+                  value={noneJustification} onChange={(e) => setNoneJustification(e.target.value)} disabled={accepting}
+                />
+              )}
+            </Box>
+          )}
           <TextField
             label="Commentaire (optionnel)"
             size="small"
@@ -106,24 +162,28 @@ function AcceptDialog({
             onChange={(e) => setComment(e.target.value)}
             disabled={accepting}
           />
-          {/* D-125 — même choix que pour une mission créée manuellement. */}
-          <Typography variant="subtitle2">Mission créée</Typography>
-          <MissionDispatchFields
-            value={dispatch}
-            onChange={setDispatch}
-            slot={request.site ? { siteId: request.site.id, startAt: request.startAt, endAt: request.endAt } : null}
-            disabled={accepting}
-          />
+          {/* D-125 — même choix que pour une mission créée manuellement (jamais pour une reprise : D-177). */}
+          {!takeOver && !alreadyTakenOver && (
+            <>
+              <Typography variant="subtitle2">Mission créée</Typography>
+              <MissionDispatchFields
+                value={dispatch}
+                onChange={setDispatch}
+                slot={request.site ? { siteId: request.site.id, startAt: request.startAt, endAt: request.endAt } : null}
+                disabled={accepting}
+              />
+            </>
+          )}
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={accepting}>Annuler</Button>
         <Button
           variant="contained"
-          disabled={accepting || !isDispatchChoiceComplete(dispatch)}
-          onClick={() => onAccept(comment.trim() || undefined, dispatch)}
+          disabled={accepting || !canAccept}
+          onClick={() => onAccept(comment.trim() || undefined, takeOver ? null : dispatch, roomSlot)}
         >
-          {accepting ? <CircularProgress size={18} aria-label="Enregistrement en cours" /> : "Accepter et créer"}
+          {accepting ? <CircularProgress size={18} aria-label="Enregistrement en cours" /> : takeOver ? "Accepter comme reprise" : "Accepter et créer"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -226,19 +286,24 @@ export default function SurgeonMissionRequestsPanel() {
   // requestReviewOptimistic.ts). Un verrou synchrone écarte le double clic.
   const reviewInFlight = React.useRef(false);
   const acceptMutation = useMutation({
-    mutationFn: ({ request, reviewComment, dispatch }: { request: ManagerSurgeonMissionRequest; reviewComment?: string; dispatch: MissionDispatchChoice }) =>
-      acceptSurgeonMissionRequest(request.id, reviewComment, dispatch),
+    mutationFn: ({ request, reviewComment, dispatch, roomSlot }: { request: ManagerSurgeonMissionRequest; reviewComment?: string; dispatch: MissionDispatchChoice | null; roomSlot: RoomSlotDecision | null }) =>
+      roomSlot
+        ? acceptSurgeonMissionRequest(request.id, reviewComment, dispatch ?? undefined, roomSlot)
+        : acceptSurgeonMissionRequest(request.id, reviewComment, dispatch ?? undefined),
     onSuccess: async (accepted, { request, dispatch }) => {
       setAcceptTarget(null);
       await applyConfirmedReview(queryClient, request, "ACCEPTED");
       // D-125 — the created mission is immediately part of the operational planning.
       invalidateOperationalPlanning(queryClient, accepted.createdMissionId);
+      queryClient.invalidateQueries({ queryKey: ["planning-v2", "available-rooms"] });
       toast.success(
-        dispatch.mode === "DIRECT"
-          ? "Demande acceptée. Mission créée et attribuée."
-          : dispatch.mode === "TARGETED"
-            ? "Demande acceptée. Mission créée — demande envoyée à l'instrumentiste."
-            : "Demande acceptée. Mission créée et proposée au pool.",
+        dispatch === null
+          ? "Demande acceptée comme reprise de salle. Mission publiée."
+          : dispatch.mode === "DIRECT"
+            ? "Demande acceptée. Mission créée et attribuée."
+            : dispatch.mode === "TARGETED"
+              ? "Demande acceptée. Mission créée — demande envoyée à l'instrumentiste."
+              : "Demande acceptée. Mission créée et proposée au pool.",
       );
     },
     onError: (err: any) => {
@@ -409,10 +474,10 @@ export default function SurgeonMissionRequestsPanel() {
         onClose={() => setAcceptTarget(null)}
         accepting={acceptMutation.isPending}
         error={acceptError}
-        onAccept={(reviewComment, dispatch) => {
+        onAccept={(reviewComment, dispatch, roomSlot) => {
           if (!acceptTarget || reviewInFlight.current) return;
           reviewInFlight.current = true;
-          acceptMutation.mutate({ request: acceptTarget, reviewComment, dispatch });
+          acceptMutation.mutate({ request: acceptTarget, reviewComment, dispatch, roomSlot });
         }}
       />
       <RejectDialog

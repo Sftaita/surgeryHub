@@ -48,6 +48,8 @@ class PlanningAlertActionService
         ?MissionAssignmentService $assignments = null,
         // D-152 — optional only so plain unit tests can build the service; always autowired.
         private readonly ?MissionEligibilityService $eligibility = null,
+        // D-177 — a room take-over mission reopened here stays reachable (active POOL).
+        private readonly ?RoomTakeoverPriorityService $priorities = null,
     ) {
         // D-150 — always autowired; a plain unit test that omits it still gets the real writer.
         $this->assignments = $assignments ?? new MissionAssignmentService($em);
@@ -125,6 +127,7 @@ class PlanningAlertActionService
             $this->assignments->inLockedChange($mission, function () use ($mission, $actor): void {
                 $this->assignments->unassign($mission, MissionAssignmentEndReason::RELEASED, $actor);
                 $mission->setStatus(MissionStatus::OPEN);
+                $this->priorities?->reopenToPool($mission, $actor); // D-177 — room take-over missions only
                 $this->em->flush();
             });
         }

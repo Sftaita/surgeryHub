@@ -218,6 +218,11 @@ final class MissionMapper
             'instrumentist' => $target !== null ? ['id' => $target->getId(), 'name' => $name !== '' ? $name : $target->getEmail()] : null,
             'offeredAt'     => $publication->getPublishedAt()?->format(\DateTimeInterface::ATOM),
             'declinedAt'    => $publication->getDeclinedAt()?->format(\DateTimeInterface::ATOM),
+            // D-177 — exclusive room take-over priority: deadline, and whether the mission
+            // starts before it (manager alert, Cas D). Null / false for a plain D-125 request.
+            'priority'           => $publication->isPriority(),
+            'expiresAt'          => $publication->getExpiresAt()?->format(\DateTimeInterface::ATOM),
+            'startsBeforeExpiry' => RoomTakeoverPriorityService::startsBeforeExpiry($m, $publication),
         ];
     }
 

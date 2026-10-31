@@ -13,6 +13,8 @@ import { MissionEncodingOverviewNotice } from "../components/MissionEncodingOver
 import { encodingActorLabel } from "../components/MissionEncodingBadge";
 import { MissionDrawer, financeLabel, type DrawerFooterAction } from "./MissionDrawer";
 import { buildMissionDrawerView, FINANCE_STATUSES, NO_ENCODING_STATUSES } from "./missionDrawerModel";
+import { LiftPriorityDialog } from "../../room-takeover/RoomTakeoverComponents";
+import { formatDeadline } from "../../room-takeover/roomTakeoverFormat";
 
 interface Props {
   /** null = tiroir fermé. */
@@ -74,6 +76,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
   const finance = useMissionFinancialCalculation(id ?? NaN, { enabled: enabled && financeApplicable });
 
   const { actions, corrections, dialogs, dialogOpen } = useMissionManagerActions(id ?? NaN, mission, { onLeave: onClose });
+  const [liftOpen, setLiftOpen] = React.useState(false);
 
   // Échap ferme le tiroir et lui seul — sauf pendant une fenêtre de confirmation, qu'elle seule
   // concerne. Capturé sur window avant tout autre gestionnaire : où que soit le focus (il peut
@@ -173,9 +176,26 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
   const notices = mission ? (
     <>
       {/* D-125 — demande nominative : jamais présentée comme une mission couverte. */}
-      {mission.targetedOffer?.status === "PENDING" && (
+      {mission.targetedOffer?.status === "PENDING" && !mission.targetedOffer.priority && (
         <p className="mdw-notice mdw-notice--info">
           En attente de la réponse de <strong>{mission.targetedOffer.instrumentist?.name ?? "l'instrumentiste"}</strong> — la mission n'est pas encore attribuée.
+        </p>
+      )}
+      {/* D-177 — priorité exclusive de reprise de salle : destinataire, échéance, alerte, levée. */}
+      {mission.targetedOffer?.status === "PENDING" && mission.targetedOffer.priority && (
+        <p className={`mdw-notice ${mission.targetedOffer.startsBeforeExpiry ? "mdw-notice--warn" : "mdw-notice--info"}`} data-testid="drawer-room-priority">
+          <span className="mdw-notice__title">Proposition prioritaire en attente</span>
+          Réservée à <strong>{mission.targetedOffer.instrumentist?.name ?? "l'instrumentiste habituelle"}</strong> jusqu'au{" "}
+          {formatDeadline(mission.targetedOffer.expiresAt)} ; sans réponse, la mission sera ouverte automatiquement au pool.
+          {mission.targetedOffer.startsBeforeExpiry && <> L'intervention commence avant cette échéance.</>}
+          {(mission.allowedActions ?? []).includes("lift_priority") && (
+            <>
+              {" "}
+              <button type="button" className="mdw-link" onClick={() => setLiftOpen(true)} data-testid="drawer-lift-priority">
+                Lever la priorité
+              </button>
+            </>
+          )}
         </p>
       )}
       {mission.targetedOffer?.status === "DECLINED" && (
@@ -232,6 +252,13 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
         onClose={onClose}
       />
       {dialogs}
+      <LiftPriorityDialog
+        open={liftOpen}
+        missionId={mission?.id ?? null}
+        recipientName={mission?.targetedOffer?.instrumentist?.name}
+        onClose={() => setLiftOpen(false)}
+        onLifted={() => missionQuery.refetch()}
+      />
     </>
   );
 }

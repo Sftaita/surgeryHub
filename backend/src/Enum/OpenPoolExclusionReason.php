@@ -14,4 +14,6 @@ enum OpenPoolExclusionReason: string
     case REMOVED_BY_MANAGER = 'REMOVED_BY_MANAGER';
     /** She already received a personal offer for it (D-124 room take-over offer). */
     case PERSONAL_OFFER_SENT = 'PERSONAL_OFFER_SENT';
+    /** D-177 — she just declined her room take-over priority on this very mission. */
+    case PRIORITY_DECLINED = 'PRIORITY_DECLINED';
 }

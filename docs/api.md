@@ -3711,14 +3711,127 @@ créneau `CLAIMED → AVAILABLE` ; audit `ROOM_SLOT_REOPENED` (`reason: TAKER_RE
 **Réponse — 200 :** l'élément de liste (état `AVAILABLE`). **409 `ROOM_SLOT_NOT_RELEASABLE`** si
 le créneau n'est plus repris, est passé, ou si sa Mission a déjà démarré.
 
-**Notification `ROOM_TAKEOVER_MISSION_OFFER`** (in-app + push selon préférences, email=false par
-défaut) : envoyée à l'instrumentiste initialement prévue **seulement si**
+**Notification `ROOM_TAKEOVER_MISSION_OFFER`** (D-177 : in-app + push + e-mail par défaut, selon
+préférences ; e-mail `WHEN_ENABLED`, en complément du push, gabarit
+`emails/room_takeover_priority_offer.html.twig` avec l'échéance) : envoyée à l'instrumentiste initialement prévue **seulement si**
 `MissionEligibilityService::evaluate()` la juge éligible au moment de l'envoi. Payload :
 `{ missionId, roomSlotId, dayLabel, missionDate, startTime, endTime, siteName, periodLabel,
 takenByName, originalSurgeonName }` — aucune donnée patient. Deep link : `/app/i/offers`
 (claim existant). Les autres instrumentistes éligibles reçoivent `OPEN_MISSION_AVAILABLE` via
 `OpenMissionPoolNotifier` (H3, D-129) ; celle qui a reçu l'offre contextuelle en est exclue pour
 cet épisode (`PERSONAL_OFFER_SENT`, tracé) — jamais les deux offres à la même personne.
+
+### 26.3a-F Priorité de reprise, historique, demande = reprise (D-177)
+
+Voir `docs/decisions.md` D-177. **Changement de comportement de `take-over`** : la mission de
+reprise est publiée dans la même transaction — soit une proposition **exclusive de 48 h** à
+l'instrumentiste habituelle (publication `TARGETED` avec `expiresAt`), soit le pool éligible
+(publication `POOL`, motif tracé). Le pool n'est plus sollicité immédiatement quand une priorité
+court. Audit supplémentaire : `ROOM_TAKEOVER_PRIORITY_OFFERED` ou `ROOM_TAKEOVER_PRIORITY_BYPASSED`
+(+ `MISSION_PUBLISHED_TO_POOL.poolOpenedReason`).
+
+**Champ ajouté à chaque élément de `GET /api/planning/available-rooms`** (manager) :
+
+```jsonc
+"operational": {
+  "state": "PRIORITY_PENDING",          // AVAILABLE | PRIORITY_PENDING | POOL_OPEN | INSTRUMENTIST_CONFIRMED | IN_PROGRESS_OR_DONE | MISSION_CANCELLED | DRAFT
+  "priority": {                          // null hors PRIORITY_PENDING
+    "publicationId": 99,
+    "instrumentist": { "id": 18, "name": "Marie Dupont" },
+    "offeredAt": "2026-10-30T09:00:00+00:00",
+    "expiresAt": "2026-11-01T09:00:00+00:00",
+    "startsBeforeExpiry": false          // Cas D : la mission commence avant l'échéance
+  },
+  "nextAutomaticAction": { "type": "PRIORITY_EXPIRY", "at": "2026-11-01T09:00:00+00:00" }
+}
+```
+
+**`targetedOffer` (`MissionListDto` / `MissionDetailDto`)** gagne `priority` (bool), `expiresAt`,
+`startsBeforeExpiry`. `allowedActions` manager gagne `lift_priority` quand une priorité court.
+Une priorité refusée n'apparaît plus comme `DECLINED` (« à rediffuser ») : la mission est au pool.
+
+#### `GET /api/planning/available-rooms/{id}/history` — nouveau
+
+**AuthZ :** `PlanningVoter::PLANNING_MANAGE` (managers). **Réponse — 200 :**
+
+```jsonc
+{ "slotId": 14,
+  "current": { /* même forme que operational */ },
+  "events": [
+    { "key": "absence-64", "at": "…", "type": "ABSENCE_DECLARED", "actor": { "id": 8, "name": "…", "system": false }, "missionId": null, "details": { … } },
+    { "key": "audit-1345", "at": "…", "type": "ROOM_TAKEOVER_PRIORITY_OFFERED", "actor": { … }, "missionId": 1300, "details": { /* payload d'audit */ } },
+    { "key": "notif-offer-1300-18", "at": "…", "type": "PRIORITY_OFFER_DELIVERY", "details": { "recipientName": "…", "channels": [{ "channel": "PUSH", "status": "SKIPPED", "skipReason": "NO_PUSH_SUBSCRIPTION" }] } },
+    { "key": "notif-pool-…", "type": "POOL_SOLICITED", "details": { "recipientCount": 6, "recipients": ["…"] } }
+  ] }
+```
+
+Chronologique, permanent : absence source, `ROOM_SLOT_*` du créneau, toutes les missions qui lui
+ont été rattachées (même annulées / après une nouvelle reprise) et leurs événements (hors
+encodage/finance), demande chirurgien d'origine, distribution des notifications. `actor.system`
+= action automatique.
+
+#### `POST /api/missions/{id}/lift-priority` — nouveau (Cas D)
+
+**AuthZ :** `MissionVoter::LIFT_PRIORITY` — manager/admin, une priorité de reprise en attente
+(sinon 403). Corps `{ "justification": "…" }` obligatoire (≤ 500, sinon **422**). Effet :
+priorité close `LIFTED_BY_MANAGER` (`ROOM_TAKEOVER_PRIORITY_ENDED`, justification, auteur),
+publication POOL, pool sollicité après commit. **200** : `MissionDetailDto`. **409** si la priorité
+vient de prendre fin.
+
+#### `POST /api/missions/{id}/decline-offer` — priorité de reprise
+
+Si la demande refusée est une priorité de reprise : `ROOM_TAKEOVER_PRIORITY_ENDED`
+(`endReason: DECLINED`, motif) + **publication POOL immédiate de la même mission**, pool sollicité
+sans la personne qui a refusé ; aucune notification aux managers. Demande D-125 ordinaire :
+inchangé. `POST /api/missions/{id}/claim` par une autre instrumentiste pendant une priorité :
+403 (voter) / 409 (relecture sous verrou).
+
+#### `POST /api/missions/{id}/publish` (POOL) — idempotent
+
+Mission déjà OPEN avec une publication POOL active : **204 sans effet** (aucune publication,
+aucun audit, aucune notification). Pendant une priorité de reprise : 409.
+
+#### Demandes chirurgien — `releasedRoomMatch`
+
+Ajouté (demandes `PENDING`, sinon `null`) à `POST/GET /api/surgeon/mission-requests` et
+`GET /api/manager/surgeon-mission-requests` :
+
+```jsonc
+"releasedRoomMatch": {
+  "status": "CERTAIN",                  // NONE | CERTAIN | AMBIGUOUS | ALREADY_TAKEN_OVER
+  "certainSlotId": 14,
+  "candidates": [{ "slotId": 14, "status": "AVAILABLE", "occurrenceDate": "2026-11-04", "period": "JOURNEE",
+                   "startTime": "07:45", "endTime": "18:00", "originalSurgeon": { "id": 8, "name": "Dr Alain Martin" },
+                   "coversRequest": true }],
+  "takenOver": null                      // la salle déjà reprise par ce chirurgien (ALREADY_TAKEN_OVER)
+}
+```
+
+#### `POST /api/manager/surgeon-mission-requests/{id}/accept` — `roomSlot`
+
+Corps : `roomSlot` optionnel `{ "decision": "TAKE_OVER", "slotId": 14 }` ou `{ "decision": "NONE",
+"justification": "…" }`. La correspondance est relue à l'acceptation :
+
+| Correspondance | Sans `roomSlot` | `TAKE_OVER` | `NONE` |
+|---|---|---|---|
+| `NONE` | acceptation normale | 409 `ROOM_SLOT_NOT_MATCHING` | acceptation normale |
+| `CERTAIN` | **reprise** de la salle certaine | reprise de la salle choisie (candidate) | 409 `ROOM_SLOT_TAKEOVER_REQUIRED` |
+| `AMBIGUOUS` | 409 `ROOM_SLOT_DECISION_REQUIRED` | reprise de la salle choisie (candidate) | acceptation normale, justification obligatoire (422), tracée (`roomSlotDecision`) |
+| `ALREADY_TAKEN_OVER` | 409 `ROOM_SLOT_REQUEST_ALREADY_TAKEN_OVER` | idem | idem |
+
+Une reprise refuse `dispatch` (409 `ROOM_SLOT_DISPATCH_NOT_ALLOWED`). Reprise : une transaction
+(demande puis salle verrouillées) — salle `CLAIMED`, mission aux horaires/type de la demande,
+publiée (priorité ou pool), demande `ACCEPTED` + `createdMissionId`,
+`SURGEON_MISSION_REQUEST_ACCEPTED.acceptedAsTakeover = true`, `ROOM_SLOT_TAKEN_OVER.surgeonMissionRequestId`.
+Course perdue contre une autre reprise : 409 `ROOM_SLOT_ALREADY_TAKEN`, demande toujours `PENDING`.
+`extra.releasedRoomMatch` accompagne les 409 de correspondance.
+
+#### Commandes (D-177)
+
+- `app:room-takeover:expire-priorities [--dry-run]` — priorités échues → `EXPIRED` + pool ;
+  priorités dont la destinataire est absente → `RECIPIENT_UNAVAILABLE` + pool. Idempotente (cron).
+- `app:released-rooms:regularize-takeover --slot=ID --mission=ID [--request=ID] [--execute]` (dry-run sans `--execute`) ; retour arrière : `--rollback` (dry-run) puis `--rollback --execute`
+  — régularisation administrative d'une reprise antérieure (dry-run par défaut).
 
 ---
 
