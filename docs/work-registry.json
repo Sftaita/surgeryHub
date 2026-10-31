@@ -824,16 +824,27 @@
       "pendingOps": [
         {
           "type": "reprise-donnees",
-          "status": "en-attente",
-          "description": "Régularisation salle #14 ↔ mission #626 uniquement (#15/#16 non touchées) : sauvegarde ciblée, nouveau dry-run, exécution sur accord distinct de l'utilisateur."
+          "status": "fait",
+          "description": "Régularisation salle #14 ↔ mission #626 uniquement (#15/#16 non touchées) : sauvegarde ciblée, nouveau dry-run, exécution sur accord distinct de l'utilisateur.",
+          "validation": "accord utilisateur (2026-10-31), rapport avant/après validé",
+          "confirmedAt": "2026-10-31",
+          "evidence": "app:released-rooms:regularize-takeover --slot=14 --mission=626 --request=1 : dry-run 11/11 OK puis --execute 2026-10-31 14:20:41 UTC (une seule fois) ; salle #14 CLAIMED (claimed_by #15, takeover_mission #626), audit #1373 ROOM_SLOT_TAKEOVER_REGULARIZED ; #626 inchangée (ASSIGNED #19, 07:45–17:00), #15/#16 et les 38 autres salles inchangées, missions/affectations/publications identiques, 0 notification, 0 priorité ; sauvegarde regularisation-14-626_20261031_142018.sql.gz, traces /home/deploy/d177/runs/regul14_20261031_142018."
         },
         {
           "type": "validation",
           "status": "en-attente",
           "description": "Trois libellés d'interface d'avant D-177 à corriger (dialogue de reprise chirurgien, carte d'offre prioritaire, dialogue de refus) — non bloquant, sur décision."
+        },
+        {
+          "type": "validation",
+          "status": "fait",
+          "description": "Salles libérées #15 (matin) et #16 (après-midi) du 04/11, même absence #64 que #14 : ne pas supposer une seconde salle indépendante ; disponibilité physique réelle à confirmer avec le bloc avant le 04/11. Aucune modification de données de production pour #15/#16 sans accord explicite.",
+          "validation": "confirmation utilisateur après vérification auprès du bloc (2026-10-31)",
+          "confirmedAt": "2026-10-31",
+          "evidence": "D-160 : organisation confirmée — aucun correctif nécessaire. Le mercredi, Delta compte deux salles physiques : #14 (journée, reprise par la mission #626) et une seconde salle découpée en #15 (matin) et #16 (après-midi) pour organiser les instrumentistes (une instrumentiste couvre les deux salles le matin, deux l'après-midi). #15/#16 restent reprenables selon les règles habituelles ; aucun mécanisme de suspension, aucune donnée de production modifiée."
         }
       ],
-      "nextAction": "Déployé v2026.10.31-prod (953ce9a) le 2026-10-31, cron */5 installé et vérifié. Reste : régularisation #14 ↔ #626 sur accord distinct.",
+      "nextAction": "Déployé v2026.10.31-prod (953ce9a) le 2026-10-31, cron */5 installé et vérifié, régularisation #14 ↔ #626 effectuée le 2026-10-31 (audit #1373). D-160 clos le 2026-10-31 : #15/#16 = seconde salle réelle, organisation confirmée, aucun correctif. Reste : trois libellés d'interface (PR #61).",
       "lastReviewed": "2026-10-31",
       "prodEvidence": "v2026.10.31-prod (953ce9a) : migration pré-bascule Version20261030150000 (09:44 UTC, d32dbe7 en service), activate 11:00 UTC, migrate 93/93, mark OFFICIAL ; empreintes publications/missions/salles identiques, 0 notification créée ; cron room_takeover_expire_priorities.sh */5 (OK 11:15, 11:20) ; repli : branche rollback/d177 : voir docs/production.md."
     }
