@@ -2287,6 +2287,8 @@ Fin de priorité (une seule gagne : verrou mission + relecture) :
   lift-priority (manager) ………… LIFTED_BY_MANAGER → POOL → PRIORITY_ENDED
   assign / assignDirectly ………… SUPERSEDED (ou ACCEPTED) — pas de pool
   cancel / release salle ………… MISSION_CLOSED — pas de pool
+  retour à OPEN (release, refus chirurgien, restauration, alerte) → reopenToPool() : POOL
+  (missions de reprise uniquement ; une demande D-125 ordinaire n'est jamais close ni rouverte)
 ```
 
 Exclusivité : `MissionVoter` / `MissionActionsService` (priorité en attente → sa seule

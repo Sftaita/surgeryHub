@@ -315,17 +315,17 @@ class RoomTakeoverPriorityService
     }
 
     /**
-     * Closes the active TARGETED request(s) of a mission that just got an instrumentist or
-     * left OPEN, inside the caller's transaction (claim, assign, direct assignment, cancel).
-     * A priority additionally gets its ROOM_TAKEOVER_PRIORITY_ENDED; a plain D-125 request is
-     * closed silently (its own events already tell the story). Without this, a mission
-     * accepted from a request and later released would show the request as pending again.
+     * Closes the active room take-over priority of a mission that just got an instrumentist
+     * or left OPEN, inside the caller's transaction (claim, assign, direct assignment, cancel),
+     * with its ROOM_TAKEOVER_PRIORITY_ENDED. Room take-over priorities ONLY: an ordinary D-125
+     * request (no expiresAt) is never touched here — its behaviour is exactly the one before
+     * D-177 (non-regression audit of PR #58).
      */
     public function closeActiveRequests(Mission $mission, User $actor): void
     {
         $now = Clock::get()->now();
         foreach ($mission->getPublications() as $publication) {
-            if ($publication->getScope() !== PublicationScope::TARGETED) {
+            if ($publication->getScope() !== PublicationScope::TARGETED || !$publication->isPriority()) {
                 continue;
             }
             if ($publication->getId() !== null) {
@@ -334,13 +334,38 @@ class RoomTakeoverPriorityService
             if (!$publication->isActive()) {
                 continue;
             }
-            $reason = self::closeReasonForAnswered($mission, $publication);
+            $this->closePriority($mission, $publication, self::closeReasonForAnswered($mission, $publication), $actor, $now);
+        }
+    }
+
+    /**
+     * A room take-over mission (one that carried a priority) going back to OPEN without an
+     * instrumentist — release, surgeon refusal, restoration after cancellation, "ouvrir au
+     * pool" from a planning alert: its priority is over, so the mission must stay reachable
+     * through an active POOL publication (MissionVoter: a mission WITH publications is only
+     * reachable through an active one). Inside the caller's transaction and lock. Any other
+     * mission is left exactly as before D-177.
+     */
+    public function reopenToPool(Mission $mission, ?User $actor): void
+    {
+        if (!self::hasPriorityPublication($mission)) {
+            return;
+        }
+
+        $this->closeActiveRequests($mission, $actor ?? $this->systemActor());
+        $this->ensurePoolPublication($mission, Clock::get()->now());
+    }
+
+    /** Was this mission published with a room take-over priority (D-177), whatever its state? */
+    public static function hasPriorityPublication(Mission $mission): bool
+    {
+        foreach ($mission->getPublications() as $publication) {
             if ($publication->isPriority()) {
-                $this->closePriority($mission, $publication, $reason, $actor, $now);
-            } else {
-                $publication->close($reason, $now);
+                return true;
             }
         }
+
+        return false;
     }
 
     // ── Internals ─────────────────────────────────────────────────────────────

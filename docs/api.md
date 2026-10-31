@@ -3830,7 +3830,7 @@ Course perdue contre une autre reprise : 409 `ROOM_SLOT_ALREADY_TAKEN`, demande 
 
 - `app:room-takeover:expire-priorities [--dry-run]` — priorités échues → `EXPIRED` + pool ;
   priorités dont la destinataire est absente → `RECIPIENT_UNAVAILABLE` + pool. Idempotente (cron).
-- `app:released-rooms:regularize-takeover --slot=ID --mission=ID [--request=ID] [--execute|--rollback]`
+- `app:released-rooms:regularize-takeover --slot=ID --mission=ID [--request=ID] [--execute]` (dry-run sans `--execute`) ; retour arrière : `--rollback` (dry-run) puis `--rollback --execute`
   — régularisation administrative d'une reprise antérieure (dry-run par défaut).
 
 ---

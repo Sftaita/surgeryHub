@@ -265,9 +265,8 @@ class MissionDispatchService
 
     /**
      * Latest TARGETED request of an OPEN unassigned Mission that its target declined, if no
-     * request is pending — "awaiting a new dispatch". D-177: never once the mission is in the
-     * pool (a declined room take-over priority opens it at once), and only a real refusal
-     * (declinedAt), never an expired / lifted / accepted request.
+     * request is pending. D-177: a room take-over priority is never one of them (its refusal
+     * opens the pool at once — nothing awaits a new dispatch); ordinary requests unchanged.
      */
     public static function lastDeclinedOffer(Mission $mission): ?MissionPublication
     {
@@ -279,10 +278,7 @@ class MissionDispatchService
 
         $declined = null;
         foreach ($mission->getPublications() as $publication) {
-            if ($publication->getScope() === PublicationScope::POOL && $publication->isActive()) {
-                return null;
-            }
-            if ($publication->getScope() === PublicationScope::TARGETED && $publication->getDeclinedAt() !== null) {
+            if ($publication->getScope() === PublicationScope::TARGETED && !$publication->isActive() && !$publication->isPriority()) {
                 $declined = $publication;
             }
         }

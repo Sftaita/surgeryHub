@@ -399,10 +399,24 @@ final class RoomTakeoverPriorityFunctionalTest extends WebTestCase
 
         // Notification: only Marie (offer with deadline), never the pool. Drained right away: the
         // in-memory transport is a resettable service, emptied by the next request.
+        $takenOver = $this->sentLifecycle(MissionChangeType::ROOM_TAKEN_OVER);
         self::assertSame(1, $this->runLifecycleHandler(MissionChangeType::ROOM_TAKEN_OVER));
         $this->em->clear();
         self::assertCount(1, $this->notificationsFor($s['marie'], NotificationType::ROOM_TAKEOVER_MISSION_OFFER, $missionId));
         self::assertCount(0, $this->notificationsFor($s['paul'], NotificationType::OPEN_MISSION_AVAILABLE, $missionId));
+
+        // Channels (D-177): in-app + email by default, traced per channel; the email goes to her
+        // only. A Messenger redelivery of the same message sends nothing more.
+        $channels = fn (User $u) => $this->em->getConnection()->fetchAllKeyValue(
+            "SELECT channel, COUNT(*) FROM outbound_notification WHERE recipient_user_id = ? AND mission_id = ? AND notification_type = 'ROOM_TAKEOVER_MISSION_OFFER' GROUP BY channel",
+            [$u->getId(), $missionId],
+        );
+        $before = $channels($s['marie']);
+        self::assertSame(1, (int) ($before['EMAIL'] ?? 0), 'one email for the priority offer');
+        self::assertSame(1, (int) ($before['IN_APP'] ?? 0));
+        self::assertSame([], $channels($s['paul']), 'nothing to the pool');
+        static::getContainer()->get(MissionLifecycleChangedMessageHandler::class)($takenOver[0]);
+        self::assertSame($before, $channels($s['marie']), 'replayed message: no duplicate on any channel');
 
         $offered = $this->auditEvents(AuditEventType::ROOM_TAKEOVER_PRIORITY_OFFERED, $missionId);
         self::assertCount(1, $offered);
@@ -681,6 +695,66 @@ final class RoomTakeoverPriorityFunctionalTest extends WebTestCase
         self::assertContains('ROOM_SLOT_REOPENED', array_column($history['events'], 'type'));
         self::assertContains($missionId, array_column($history['events'], 'missionId'), 'the cancelled mission stays in the follow-up');
         self::assertSame('PRIORITY_PENDING', $history['current']['state']);
+    }
+
+    // ── 9b. Mission de reprise rouverte : toujours atteignable (audit PR #58) ───────────
+
+    public function test_accepted_priority_released_by_a_manager_goes_back_to_the_pool(): void
+    {
+        $s = $this->scene();
+        [, $missionId] = $this->takeOverByB($s);
+        self::assertSame(200, $this->request('POST', "/api/missions/{$missionId}/claim", $s['marieToken'])->getStatusCode());
+        self::assertSame(PublicationCloseReason::ACCEPTED, $this->publications($missionId)[0]->getCloseReason());
+
+        self::assertSame(200, $this->request('POST', "/api/missions/{$missionId}/release", $s['managerToken'])->getStatusCode());
+        $pubs = $this->publications($missionId);
+        self::assertCount(2, $pubs, 'one POOL publication added, nothing else');
+        self::assertSame(PublicationScope::POOL, $pubs[1]->getScope());
+        self::assertSame(200, $this->request('POST', "/api/missions/{$missionId}/claim", $s['paulToken'])->getStatusCode());
+        self::assertCount(1, $this->missionsOf($s['b']), 'never a second mission');
+    }
+
+    public function test_cancelled_then_restored_take_over_mission_is_reachable_through_the_pool(): void
+    {
+        $s = $this->scene();
+        [, $missionId] = $this->takeOverByB($s);
+
+        $service = static::getContainer()->get(\App\Service\MissionPostDeployService::class);
+        $service->cancel($this->em->find(Mission::class, $missionId), $this->ref($s['manager']), 'Bloc fermé', false);
+        self::assertSame(PublicationCloseReason::MISSION_CLOSED, $this->publications($missionId)[0]->getCloseReason());
+        $service->restoreAfterCancellation($this->em->find(Mission::class, $missionId), $this->ref($s['manager']), null, 0);
+
+        $pubs = $this->publications($missionId);
+        self::assertCount(2, $pubs);
+        self::assertSame(PublicationScope::POOL, $pubs[1]->getScope());
+        self::assertTrue($pubs[1]->isActive());
+        self::assertSame(200, $this->request('POST', "/api/missions/{$missionId}/claim", $s['paulToken'])->getStatusCode());
+    }
+
+    public function test_opening_a_started_take_over_mission_from_an_alert_keeps_it_reachable(): void
+    {
+        $s = $this->scene();
+        [, $missionId] = $this->takeOverByB($s);
+        self::assertSame(200, $this->request('POST', "/api/missions/{$missionId}/claim", $s['marieToken'])->getStatusCode());
+        // Started (D-064 start-due), then a planning alert asks to put it back in the pool.
+        $this->em->getConnection()->executeStatement("UPDATE mission SET status = 'IN_PROGRESS' WHERE id = ?", [$missionId]);
+        $this->em->clear();
+
+        $alert = new \App\Entity\PlanningAlert();
+        $alert->setMission($this->em->find(Mission::class, $missionId));
+        $alert->setType(\App\Enum\PlanningAlertType::REASSIGNMENT_REQUIRED);
+        $alert->setSnapshotJson(['test' => true]);
+        $this->em->persist($alert);
+        $this->em->flush();
+
+        static::getContainer()->get(\App\Service\PlanningAlertActionService::class)
+            ->openAsAvailable($alert, $this->ref($s['manager']), null);
+
+        $pubs = $this->publications($missionId);
+        self::assertSame('OPEN', $this->em->find(Mission::class, $missionId)->getStatus()->value);
+        self::assertCount(2, $pubs);
+        self::assertSame(PublicationScope::POOL, $pubs[1]->getScope());
+        self::assertSame(200, $this->request('POST', "/api/missions/{$missionId}/claim", $s['paulToken'])->getStatusCode());
     }
 
     // ── 10. Publication au pool idempotente (double clic du 29/10) ──────────────────────

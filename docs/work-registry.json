@@ -786,7 +786,7 @@
     {
       "id": "D-177",
       "title": "Reprise de salle : publication immédiate, priorité exclusive de 48 h, demande chirurgien = vraie reprise",
-      "description": "Mission de reprise publiée dans la transaction (priorité TARGETED avec échéance 48 h à l'instrumentiste habituelle, sinon pool avec motif), expiration automatique (message différé + commande de rattrapage), fin sur refus / absence / levée manager, historique par créneau, correspondance demande chirurgien ↔ salle libérée acceptée comme reprise, publication au pool idempotente, commande de régularisation administrative.",
+      "description": "Mission de reprise publiée dans la transaction (priorité TARGETED avec échéance 48 h à l'instrumentiste habituelle, sinon pool avec motif), expiration automatique (message différé + commande de rattrapage), fin sur refus / absence / levée manager, historique par créneau, correspondance demande chirurgien ↔ salle libérée acceptée comme reprise, publication au pool idempotente, commande de régularisation administrative. Périmètre strict : seules les priorités de reprise sont closes ou rouvertes au pool ; les demandes D-125 ordinaires gardent le comportement d'avant (audit de non-régression du 2026-10-31).",
       "kind": "feature",
       "priority": "P1",
       "userImpact": "Incident du 4 novembre : une reprise faite par demande libre restait en brouillon 53 jours, les salles libérées du jour restaient reprenables (double occupation possible) et la publication au pool a notifié deux fois chaque instrumentiste.",
@@ -799,32 +799,33 @@
         "decision": "D-177",
         "worktrees": [
           "SurgicalHub-room-priority"
+        ],
+        "prs": [
+          58
+        ],
+        "migrations": [
+          "Version20261030150000"
         ]
       },
       "pendingOps": [
         {
           "type": "validation",
           "status": "en-attente",
-          "description": "Revue du rapport et décision utilisateur avant fusion et déploiement."
-        },
-        {
-          "type": "migration",
-          "status": "en-attente",
-          "description": "Version20261030150000 (additive : mission_publication.expires_at / closed_at / close_reason) à jouer au déploiement."
+          "description": "Autorisation de fusion de la PR #58 (audit GO/NO-GO remis le 2026-10-31)."
         },
         {
           "type": "activation-configuration",
           "status": "en-attente",
-          "description": "Entrée crontab app:room-takeover:expire-priorities toutes les 5 minutes (filet de sécurité du message différé), à installer sur accord."
+          "description": "Au déploiement (sur accord) : migration additive Version20261030150000 (référencée dans refs.migrations), puis script room_takeover_expire_priorities.sh (modèle missions_start_due.sh) + crontab */5."
         },
         {
           "type": "reprise-donnees",
           "status": "en-attente",
-          "description": "Régularisation du créneau du 4 novembre (salle à lier à la mission existante) : dry-run présenté, exécution en production uniquement sur accord explicite."
+          "description": "Régularisation salle #14 ↔ mission #626 uniquement (#15/#16 non touchées) : sauvegarde ciblée, dry-run, exécution sur autorisation explicite après déploiement."
         }
       ],
-      "nextAction": "Validation utilisateur du rapport, puis PR.",
-      "lastReviewed": "2026-10-30"
+      "nextAction": "PR #58 ouverte : audit de non-régression et recette sur copie assainie faits le 2026-10-31 ; fusion, déploiement et régularisation sur autorisations séparées.",
+      "lastReviewed": "2026-10-31"
     }
   ]
 }

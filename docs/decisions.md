@@ -15981,9 +15981,15 @@ qu'informative.
 8. **Statuts** : aucun nouveau statut. Mission OPEN/ASSIGNED ; « proposition prioritaire en
    attente » = OPEN + publication TARGETED active avec échéance ; « pool ouvert » = OPEN + POOL ;
    « instrumentiste confirmé » = ASSIGNED. `MissionPublication.isActive()` = ni refusée ni close.
-   Effet de bord voulu : une demande D-125 acceptée est désormais close (`ACCEPTED`) — auparavant,
-   après un désengagement, elle redevenait « en attente » ; le désengagement (release, refus du
-   chirurgien) recrée une publication POOL si la mission était publiée.
+   **Périmètre strict (audit de non-régression de la PR #58, 2026-10-31)** : seules les priorités
+   de reprise (`expiresAt` renseigné) sont closes (`closeActiveRequests()`) ou rouvertes au pool
+   (`RoomTakeoverPriorityService::reopenToPool()` : release, refus du chirurgien, restauration
+   après annulation, « ouvrir au pool » d'une alerte). Une demande D-125 ordinaire n'est jamais
+   close ni complétée d'une publication POOL, et `lastDeclinedOffer()` ignore seulement les
+   priorités : le comportement des missions ordinaires est celui d'avant D-177, démontré par
+   `OrdinaryMissionDispatchNonRegressionTest` exécuté à l'identique sur `main` et sur la branche.
+   La première version de la branche fermait aussi les demandes D-125 ordinaires : une mission
+   restaurée après annulation pouvait rester OPEN sans publication active, inatteignable.
 9. **Historique** : `GET /api/planning/available-rooms/{id}/history` reconstruit la chaîne depuis
    l'absence source, les événements du créneau (`roomSlotId`), toutes les missions qui lui ont été
    rattachées (même annulées, même après une nouvelle reprise), la demande d'origine et la
@@ -15993,7 +15999,8 @@ qu'informative.
     (ni publication, ni audit, ni notification).
 
 **Régularisation du 4 novembre** : `app:released-rooms:regularize-takeover --slot --mission
-[--request] [--execute|--rollback]` lie une salle à une mission vivante existante (salle
+[--request] [--execute]` (dry-run sans `--execute`) ; retour arrière `--rollback` (dry-run) puis
+`--rollback --execute`. Elle lie une salle à une mission vivante existante (salle
 `CLAIMED`, `ROOM_SLOT_TAKEOVER_REGULARIZED`), sans toucher la mission, sans priorité ni
 notification ; une mission ne se lie qu'à une salle. Exécution en production : **uniquement sur
 accord explicite** de l'utilisateur (rapport, dry-run et retour arrière présentés).

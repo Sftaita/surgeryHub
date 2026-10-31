@@ -226,7 +226,7 @@ class ReleasedRoomSlotHistoryService
             'missionId' => (int) $n['mission_id'],
             'details'   => [
                 'recipientId'   => (int) $n['recipient_user_id'],
-                'recipientName' => trim(($n['firstname'] ?? '') . ' ' . ($n['lastname'] ?? '')),
+                'recipientName' => trim(($n['firstname'] ?? '') . ' ' . ($n['lastname'] ?? '')) ?: sprintf('Utilisateur #%d', (int) $n['recipient_user_id']), // same fallback as ActivityJournal::displayName()
                 'channel'       => $n['channel'],
                 'status'        => $n['status'],
                 'skipReason'    => $n['skip_reason'],
