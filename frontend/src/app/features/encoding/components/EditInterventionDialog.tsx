@@ -2,10 +2,12 @@ import * as React from "react";
 import { Box } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { SheetModal } from "../../../ui/sheet/SheetModal";
-import { SelectField } from "../../../ui/sheet/SelectField";
 import type { CatalogFirm, CatalogInterventionType, MissionEncodingInterventionEntry, PatchInterventionBody } from "../api/encoding.types";
 import { fetchFirmServiceOfferings } from "../api/encoding.api";
+import { useRecentFirms, useRecentInterventionTypes } from "../api/useEncodingSuggestions";
 import RepresentativePresenceQuestion, { representativeAnswerBody, type RepresentativeAnswer } from "./RepresentativePresenceQuestion";
+import SearchablePicker from "./SearchablePicker";
+import { RECENT_FIRMS_TITLE, RECENT_TYPES_TITLE, firmPickerItem, typePickerItem } from "./AddInterventionDialog";
 
 const GREEN_500 = "#42A882";
 const GREEN_800 = "#1F6B4F";
@@ -26,11 +28,18 @@ type Props = {
   onSubmit: (values: PatchInterventionBody) => void;
   /** D-172 — correction manager : la présence du délégué peut être « non renseignée ». */
   managerCorrection?: boolean;
+  /** D-178 — raccourcis « récemment utilisés » (absents sans mission). */
+  missionId?: number;
+  surgeonId?: number | null;
 };
 
 /**
  * Lot 5 (D-068) : le code/libellé ne sont plus édités directement (instantané dérivé du
  * référentiel) — seul le type et la firme principale sont modifiables ici.
+ *
+ * D-178 — même sélection que l'ajout (SearchablePicker : raccourcis récents + recherche) ; la
+ * firme et le type déjà enregistrés restent affichés et ne changent que sur un choix explicite.
+ * Le PATCH envoyé est inchangé (règles de choix obligatoire / matériel incompatible côté serveur).
  */
 export default function EditInterventionDialog({
   open,
@@ -41,6 +50,8 @@ export default function EditInterventionDialog({
   onClose,
   onSubmit,
   managerCorrection = false,
+  missionId,
+  surgeonId,
 }: Props) {
   const [typeId, setTypeId] = React.useState<number | null>(null);
   const [firmId, setFirmId] = React.useState<number>(NO_FIRM);
@@ -89,32 +100,51 @@ export default function EditInterventionDialog({
     });
   };
 
-  const typeOptions = interventionTypes.map((t) => ({ value: t.id, label: `${t.code} — ${t.label}` }));
-  const firmOptions = [
-    { value: NO_FIRM, label: "— Aucune" },
-    ...firms.map((f) => ({ value: f.id, label: f.name })),
-  ];
+  const recentFirmsQuery = useRecentFirms(missionId, open);
+  const recentTypesQuery = useRecentInterventionTypes(missionId, firmId === NO_FIRM ? null : firmId, surgeonId, open);
+
+  // Sélection existante toujours affichée, même si la firme / le type a été désactivé depuis.
+  const currentFirm = intervention?.firm ?? null;
+  const firmItems = firms.filter((f) => f.active !== false).map(firmPickerItem);
+  const firmValue = firmId === NO_FIRM ? null
+    : firmItems.find((f) => f.id === firmId) ?? (currentFirm?.id === firmId ? firmPickerItem(currentFirm) : null);
+  const currentType = intervention?.interventionType ?? null;
+  const typeItems = interventionTypes.map(typePickerItem);
+  const typeValue = typeId == null ? null
+    : typeItems.find((t) => t.id === typeId) ?? (currentType?.id === typeId ? typePickerItem(currentType) : null);
 
   return (
     <SheetModal open={open} title="Modifier l'intervention" onClose={onClose} closeDisabled={loading} helpTopicId="mission-encoding">
       <Box sx={{ mt: "18px", display: "flex", flexDirection: "column", gap: "16px" }}>
-        <SelectField
-          id="edit-itv-type"
-          label="Type d'intervention *"
-          placeholder="Sélectionner un type"
-          value={typeId}
-          options={typeOptions}
-          onChange={(v) => { setTypeId(v); setRepresentativePresent(null); setSelectedChoiceOptionId(null); }}
+        <SearchablePicker
+          id="edit-itv-firm"
+          label="Firme principale"
+          searchLabel="Rechercher une firme"
+          searchPlaceholder="Rechercher une firme…"
+          items={firmItems}
+          recent={(recentFirmsQuery.data?.firms ?? []).map(firmPickerItem)}
+          recentTitle={RECENT_FIRMS_TITLE}
+          recentLoading={recentFirmsQuery.isLoading}
+          allTitle="Toutes les firmes"
+          emptyText="Aucune firme ne correspond."
+          value={firmValue}
+          onSelect={(v) => { if (v === firmId) return; setFirmId(v); setRepresentativePresent(null); setSelectedChoiceOptionId(null); }}
           disabled={loading}
         />
 
-        <SelectField
-          id="edit-itv-firm"
-          label="Firme principale (optionnel)"
-          placeholder="Sélectionner une firme"
-          value={firmId}
-          options={firmOptions}
-          onChange={(v) => { setFirmId(v); setRepresentativePresent(null); setSelectedChoiceOptionId(null); }}
+        <SearchablePicker
+          id="edit-itv-type"
+          label="Type d'intervention *"
+          searchLabel="Rechercher un type d'intervention"
+          searchPlaceholder="Code ou libellé (ex. LCA, ligament)…"
+          items={typeItems}
+          recent={(recentTypesQuery.data?.interventionTypes ?? []).map(typePickerItem)}
+          recentTitle={RECENT_TYPES_TITLE}
+          recentLoading={recentTypesQuery.isLoading}
+          allTitle="Toutes les interventions"
+          emptyText="Aucune intervention ne correspond."
+          value={typeValue}
+          onSelect={(v) => { if (v === typeId) return; setTypeId(v); setRepresentativePresent(null); setSelectedChoiceOptionId(null); }}
           disabled={loading}
         />
 

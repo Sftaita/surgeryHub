@@ -109,6 +109,16 @@ class MissionIntervention implements MaterialAttachmentTarget
     private ?ChoiceOption $selectedChoiceOption = null;
 
     /**
+     * D-178 — auteur de l'encodage de cette intervention (création directe, ou auteur du
+     * draft converti par le manager). Sert uniquement aux raccourcis « firmes récemment
+     * utilisées » (EncodingSuggestionService) — jamais une règle métier ni une autorisation.
+     * `null` pour les lignes antérieures à D-178 (aucun auteur reconstruit).
+     */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'created_by_id', nullable: true, onDelete: 'SET NULL')]
+    private ?User $createdBy = null;
+
+    /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MaterialLine::class)]
@@ -222,6 +232,17 @@ class MissionIntervention implements MaterialAttachmentTarget
     public function setSelectedChoiceOption(?ChoiceOption $selectedChoiceOption): static
     {
         $this->selectedChoiceOption = $selectedChoiceOption;
+        return $this;
+    }
+
+    public function getCreatedBy(): ?User
+    {
+        return $this->createdBy;
+    }
+
+    public function setCreatedBy(?User $createdBy): static
+    {
+        $this->createdBy = $createdBy;
         return $this;
     }
 

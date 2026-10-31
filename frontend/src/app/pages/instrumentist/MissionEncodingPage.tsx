@@ -251,6 +251,7 @@ export default function MissionEncodingPage() {
           entries={encoding.entries ?? []}
           legacyInterventions={encoding.interventions ?? []}
           catalog={encoding.catalog}
+          surgeonId={encoding.mission.surgeonId}
           onSaved={() => setLastSavedAt(new Date())}
           canSubmit={canSubmit}
           onValidate={() => setOpenSubmit(true)}

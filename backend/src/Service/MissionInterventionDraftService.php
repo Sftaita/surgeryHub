@@ -304,7 +304,9 @@ final class MissionInterventionDraftService
                 ->setLabel($interventionType->getLabel())
                 ->setOrderIndex($draft->getOrderIndex())
                 ->setRepresentativePresent($representativePresent)
-                ->setSelectedChoiceOption($selectedChoiceOption);
+                ->setSelectedChoiceOption($selectedChoiceOption)
+                // D-178 — l'encodage reste celui de l'auteur du draft, pas du manager qui le résout.
+                ->setCreatedBy($draft->getCreatedBy());
 
             $this->em->persist($intervention);
             // Flush intermédiaire : la MissionIntervention doit avoir un id avant que le

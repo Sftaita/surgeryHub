@@ -782,6 +782,34 @@
       ],
       "nextAction": "Revue finale du 30/10 faite (désactivation durable, jeton effacé à la déconnexion, renouvellement verrouillé, plafond global) : feu vert utilisateur attendu pour commit/PR, puis déploiement drapeaux à 0 et validation sur compte/appareil dédié (jamais l'abonnement #28).",
       "lastReviewed": "2026-10-30"
+    },
+    {
+      "id": "D-178",
+      "title": "Encodage : firmes et interventions récemment utilisées, recherche instantanée",
+      "description": "Raccourcis « Firmes récemment utilisées » (utilisateur connecté) et « Interventions récemment utilisées avec cette firme et ce chirurgien » (chirurgien de la mission) dans l'ajout et la correction d'une intervention, recherche instantanée sans casse ni accents, navigation clavier ; colonne mission_intervention.created_by_id ; flux métier (matériel, choix obligatoire/exclusif, délégué) inchangé.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Encoder une intervention fréquente demandait de parcourir toute la liste des firmes puis une liste déroulante de types.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-10-31",
+      "refs": {
+        "branches": [
+          "feat/encodage-suggestions-recherche"
+        ],
+        "decision": "D-178",
+        "worktrees": [
+          "SurgicalHub-encodage-suggestions"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Validation utilisateur du parcours (instrumentiste, manager, chirurgien) avant toute fusion."
+        }
+      ],
+      "nextAction": "Revue utilisateur ; pas de fusion ni de déploiement sans accord (migration Version20261030120000).",
+      "lastReviewed": "2026-10-30"
     }
   ]
 }

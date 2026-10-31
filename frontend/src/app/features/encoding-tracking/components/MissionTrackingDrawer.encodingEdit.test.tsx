@@ -178,7 +178,7 @@ describe("D-166 — fenêtres d'ajout depuis « Corriger l'encodage » (manager)
     const sheet = await screen.findByRole("dialog", { name: "Ajouter une intervention" });
     await expectTopMost(sheet);
 
-    await user.click(within(sheet).getByRole("button", { name: "Arthrex" }));
+    await user.click(within(sheet).getByRole("option", { name: "Arthrex" }));
     await within(sheet).findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(within(sheet).getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("GEN01 — Réparation coiffe des rotateurs"));
@@ -204,7 +204,7 @@ describe("D-166 — fenêtres d'ajout depuis « Corriger l'encodage » (manager)
     await user.click(opener);
     const sheet = await screen.findByRole("dialog", { name: "Ajouter une intervention" });
     await expectTopMost(sheet);
-    await user.click(within(sheet).getByRole("button", { name: "Arthrex" }));
+    await user.click(within(sheet).getByRole("option", { name: "Arthrex" }));
     // Le bouton cliqué disparaît avec l'étape (focus sur <body>, que le piège à focus MUI corrige
     // en navigateur toutes les 50 ms — inactif sous jsdom) : un clic dans la fenêtre y remet le focus.
     await user.click(await within(sheet).findByText("Étape 2/2 – Choisir le type d'intervention"));
