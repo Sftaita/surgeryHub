@@ -244,6 +244,48 @@ describe("AddInterventionDialog — firmes récemment utilisées (D-178)", () =>
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Éthicon"]);
   });
 
+  it("relues à chaque ouverture : une firme encodée entre-temps apparaît dès la réouverture", async () => {
+    const qc = client();
+    const ui = (open: boolean) => (
+      <QueryClientProvider client={qc}>
+        <AddInterventionDialog open={open} loadingIntervention={false} loadingDraft={false} interventionTypes={TYPES} firms={FIRMS}
+          existingCount={1} onClose={vi.fn()} onSubmit={vi.fn()} onSubmitDraft={vi.fn()} missionId={42} surgeonId={7} />
+      </QueryClientProvider>
+    );
+    const r = render(ui(true));
+    await waitFor(() => expect(suggestionCalls("firms")).toHaveLength(1));
+    expect(screen.queryByRole("group", { name: RECENT_FIRMS_TITLE })).not.toBeInTheDocument();
+
+    r.rerender(ui(false));
+    route({ recentFirms: [{ id: 10, name: "Arthrex" }] }); // intervention enregistrée avec Arthrex
+    r.rerender(ui(true));
+    await screen.findByRole("group", { name: RECENT_FIRMS_TITLE });
+    expect(within(recentGroup(RECENT_FIRMS_TITLE)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Arthrex"]);
+    expect(suggestionCalls("firms")).toHaveLength(2);
+  });
+
+  it("changement de compte : les firmes récentes du compte précédent ne sont jamais réaffichées", async () => {
+    const qc = client(); // même cache applicatif, comme dans l'application (déconnexion sans rechargement)
+    const ui = (
+      <QueryClientProvider client={qc}>
+        <AddInterventionDialog open loadingIntervention={false} loadingDraft={false} interventionTypes={TYPES} firms={FIRMS}
+          existingCount={1} onClose={vi.fn()} onSubmit={vi.fn()} onSubmitDraft={vi.fn()} missionId={42} surgeonId={7} />
+      </QueryClientProvider>
+    );
+    route({ recentFirms: [{ id: 12, name: "Stryker" }] }); // compte A
+    const first = render(ui);
+    await screen.findByRole("group", { name: RECENT_FIRMS_TITLE });
+    first.unmount(); // déconnexion : la page d'encodage est démontée
+    await new Promise((r) => setTimeout(r, 0)); // le formulaire de connexion du compte B : au moins un tour de boucle
+
+    // Compte B : sa réponse n'est pas encore arrivée.
+    apiGetMock.mockImplementation((url: string) => (String(url).endsWith("/encoding-suggestions/firms") ? new Promise(() => {}) : Promise.resolve({ data: [] })));
+    render(ui);
+    await waitFor(() => expect(suggestionCalls("firms")).toHaveLength(2));
+    expect(screen.queryByRole("group", { name: RECENT_FIRMS_TITLE })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Arthrex", "Medacta", "Stryker", "Éthicon"]);
+  });
+
   it("sans mission (aucun contexte), aucune suggestion n'est demandée", async () => {
     renderAdd({ missionId: undefined });
     await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
