@@ -283,6 +283,13 @@ présentes que dans `down()`, jamais dans `up()`, sauf si le ticket l'exige
 explicitement et que c'est documenté. **Ne jamais exécuter une migration non
 relue.**
 
+**La prévisualisation est strictement non exécutante** (incident du 2026-11-01,
+`docs/production.md` § « Historique des incidents ») : relire le SQL uniquement par
+`--dry-run` (`deploy/deploy.sh migrations <SHA>`) ou dans le fichier de migration.
+**Jamais `--write-sql` sans `--dry-run`** : cette option exécute la migration. La
+migration réelle (`deploy/deploy.sh migrate <SHA>`) est une étape distincte, lancée
+seulement après l'autorisation explicite de la migration relue.
+
 ### 4.3 Archive, transfert, release, build, activation — `deploy/deploy.sh` (D-163)
 
 Depuis D-163, le déploiement passe **exclusivement** par `deploy/deploy.sh` (commandes

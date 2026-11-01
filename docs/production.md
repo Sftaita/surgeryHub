@@ -16,12 +16,14 @@ Voir aussi : [`docs/backup-and-restore.md`](backup-and-restore.md) · [`docs/pro
 ## Version actuelle de production
 
 **Dernier tag déployé : `v2026.11.01-prod` → commit `304d607`** (D-178, par `deploy/deploy.sh` : release `releases/304d607…`, lien `current`). La version exécutée est aussi visible en bas de « Mon profil », par `app:release:show` (D-162) et par `deploy/deploy.sh status`.
-Vérifié le 2026-10-19 par requêtes HTTP réelles sur le domaine public (pas
-seulement par le tag — voir [`docs/deployment-versioning.md`](deployment-versioning.md)
-§2.2) : `/api/health` `200`, login JWT réel d'un compte jetable
-`@surgicalhub.internal` (supprimé ensuite) + `/api/me` rôle MANAGER, code
-exécuté identique au commit — voir historique ci-dessous pour
-le détail. Relances d'encodage automatiques **activées** le 2026-10-11 (cron, voir
+**Contrôle de la version actuelle (`v2026.11.01-prod`), le 2026-11-01**, par requêtes HTTP
+réelles sur le domaine public (pas seulement par le tag — voir
+[`docs/deployment-versioning.md`](deployment-versioning.md) §2.2) : front `200`, login `{}`
+`400`, `.env` `404` ; php, worker et bundle exécutent `304d607` ; API manager en lecture seule
+`200` (jeton console, aucun compte créé ni donnée écrite) ; 0 réponse 5xx — détail dans
+l'historique ci-dessous. *Contrôle plus ancien, distinct, du 2026-10-19 (version
+`v2026.10.19-prod`)* : `/api/health` `200`, login JWT réel d'un compte jetable
+`@surgicalhub.internal` (supprimé ensuite) + `/api/me` rôle MANAGER. Relances d'encodage automatiques **activées** le 2026-10-11 (cron, voir
 § « Tâche planifiée — relance progressive d'encodage »), premier envoi le 2026-10-12. Pour confirmer à tout
 moment :
 
@@ -233,6 +235,13 @@ service.
 
 Relire le SQL du dry-run (`deployment-versioning.md` §4.2) avant toute activation.
 
+> **Prévisualisation strictement non exécutante (incident du 2026-11-01).** Le SQL se relit
+> uniquement par `deploy/deploy.sh migrations "$SHA"` (`doctrine:migrations:migrate --dry-run`)
+> ou dans `backend/migrations/Version*.php`. **Ne jamais utiliser `--write-sql` sans
+> `--dry-run`** : `doctrine:migrations:migrate --write-sql` **exécute** la migration en plus
+> d'écrire le fichier SQL. La migration réelle (§5) est une étape distincte, lancée seulement
+> après l'autorisation explicite de la migration relue.
+
 ### 4. Activer
 
 ```bash
@@ -251,7 +260,10 @@ deploy/deploy.sh activate "$SHA"
 `activate` ne déclare **jamais** la version officielle (D-162) : elle reste
 `PENDING_VALIDATION` jusqu'au §7.1 de `deployment-versioning.md`.
 
-### 5. Migrations (seulement s'il y en a, après relecture du dry-run)
+### 5. Migrations (seulement s'il y en a, après relecture du dry-run et autorisation explicite)
+
+Étape distincte de la relecture : aucune commande de prévisualisation ne la remplace ni ne
+l'anticipe (voir l'encadré du §3).
 
 ```bash
 deploy/deploy.sh migrate "$SHA"   # migrate réel, cache:clear, redémarrages, status
@@ -1325,3 +1337,34 @@ modifié.
 | Portainer | `portainer.surgicalhub.be` |
 | phpMyAdmin | `pma.surgicalhub.be` |
 | Sauvegardes | `/home/deploy/backups/` + Google Drive (quotidien 03h00) |
+
+### 2026-11-01 — Migration D-178 exécutée par la commande de relecture (`--write-sql`)
+
+**Version déployée** : passage de `v2026.10.31-prod-2` (`9e922c7`) à `v2026.11.01-prod`
+(`304d607`).
+
+**Description** : pour relire le SQL exact de `Version20261031180000` avant la migration, la
+commande `doctrine:migrations:migrate --write-sql` a été lancée depuis l'image `304d607`
+(10:25:38 UTC). Cette option **exécute** la migration en plus d'écrire le fichier SQL : la
+relecture et l'exécution ont eu lieu dans la même commande, sans étape distincte d'autorisation
+entre les deux.
+
+**Cause racine** : mauvaise hypothèse sur l'option. Dans Doctrine Migrations, seul
+`--dry-run` est non exécutant ; `--write-sql` seul ne l'est pas.
+
+**Impact** : aucun. Toutes les conditions préalables étaient remplies : sauvegardes vérifiées
+(`gzip -t`) et instantané de référence pris juste avant, ancien code `9e922c7` en service,
+migration lancée depuis l'image `304d607` comme prévu. Le SQL exécuté est identique au SQL
+validé (6 instructions additives) ; 94/94 ; instantanés financiers, interventions, demandes,
+publications D-177 et 8 interventions historiques identiques avant et après. Aucune condition
+d'arrêt atteinte ; déploiement accepté par l'utilisateur le 2026-11-01.
+
+**Actions correctives** : aucune donnée à corriger. Incident documenté (ici, historique des
+versions et rapport de production).
+
+**Actions préventives** : la prévisualisation du SQL est strictement non exécutante —
+uniquement `deploy/deploy.sh migrations <SHA>` (`--dry-run`) ou la lecture de
+`backend/migrations/Version*.php` ; `--write-sql` sans `--dry-run` est interdit. La
+migration réelle (`deploy/deploy.sh migrate <SHA>`) reste une étape distincte, précédée d'une
+autorisation explicite de la migration relue (§3 et §5 de la procédure ci-dessus,
+`deployment-versioning.md` §4.2).
