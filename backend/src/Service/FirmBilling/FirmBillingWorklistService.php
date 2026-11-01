@@ -549,7 +549,11 @@ final class FirmBillingWorklistService
         }
 
         if ($outcome['kind'] !== MissionFinancialEvaluation::LINE) {
-            $reason = $outcome['kind'] === MissionFinancialEvaluation::FEE_NOT_APPLICABLE ? FirmBillingReason::FEE_NOT_APPLICABLE : FirmBillingReason::MATERIAL_NOT_BILLABLE;
+            $reason = match ($outcome['kind']) {
+                MissionFinancialEvaluation::FEE_NOT_APPLICABLE => FirmBillingReason::FEE_NOT_APPLICABLE,
+                MissionFinancialEvaluation::WITHOUT_FIRM => FirmBillingReason::WITHOUT_FIRM,
+                default => FirmBillingReason::MATERIAL_NOT_BILLABLE,
+            };
             return $this->state($reason, ($exclusion[1] ?? $reason->defaultDetail()) . $wasFlagged);
         }
 
@@ -583,6 +587,10 @@ final class FirmBillingWorklistService
     {
         $firm = $itv->getPrimaryFirm();
         $type = $itv->getInterventionType();
+        // D-178 — « Aucune firme » enregistré : exclusion normale, jamais « firme non renseignée ».
+        if ($firm === null && $itv->isWithoutFirm()) {
+            return [FirmBillingReason::WITHOUT_FIRM, FirmBillingReason::WITHOUT_FIRM->defaultDetail()];
+        }
         if ($firm === null || $type === null) {
             return null;
         }

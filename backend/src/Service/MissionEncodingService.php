@@ -124,6 +124,8 @@ final class MissionEncodingService
                 'id' => (int) $mission->getId(),
                 'type' => (string) $mission->getType()->value,
                 'status' => (string) $mission->getStatus()->value,
+                // D-178 — clé des raccourcis « interventions récentes » (firme × chirurgien de la mission).
+                'surgeonId' => $mission->getSurgeon()?->getId(),
                 'allowedActions' => $allowedActions,
             ],
             interventions: $interventions,
@@ -178,7 +180,7 @@ final class MissionEncodingService
             if (!empty($i->coherence->materialLineIdsFromOtherFirm)) {
                 $hasMaterialFromOtherFirm = true;
             }
-            if ($i->primaryFirm === null) {
+            if ($i->primaryFirm === null && !$i->withoutFirm) {
                 $hasMissingPrimaryFirm = true;
             }
         }
@@ -240,6 +242,7 @@ final class MissionEncodingService
                 id: (int) $t->getId(),
                 code: (string) $t->getCode(),
                 label: (string) $t->getLabel(),
+                allowedWithoutFirm: $t->isAllowedWithoutFirm(),
             );
         }
 
@@ -427,6 +430,7 @@ final class MissionEncodingService
             representativePresent: $i->getRepresentativePresent(),
             selectedChoiceOptionId: $i->getSelectedChoiceOption()?->getId(),
             selectedChoiceOptionLabel: $i->getSelectedChoiceOption()?->getLabel(),
+            withoutFirm: $i->isWithoutFirm(),
         );
     }
 
@@ -456,6 +460,7 @@ final class MissionEncodingService
             selectedChoiceOptionId: $dto->selectedChoiceOptionId,
             selectedChoiceOptionLabel: $dto->selectedChoiceOptionLabel,
             version: $i->getVersion(),
+            withoutFirm: $dto->withoutFirm,
         );
     }
 
@@ -517,6 +522,7 @@ final class MissionEncodingService
             readOnly: !$draft->acceptsNewMaterial(),
             materialLines: $lines,
             materialItemRequests: $requests,
+            withoutFirm: $draft->isWithoutFirm(),
         );
     }
 

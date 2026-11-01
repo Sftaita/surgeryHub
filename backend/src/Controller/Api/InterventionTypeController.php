@@ -236,6 +236,12 @@ final class InterventionTypeController extends AbstractController
             $type->setActive((bool) $data['active']);
         }
 
+        // D-178 — « Autorisé sans firme » : s'applique aux nouveaux encodages seulement (une
+        // intervention déjà enregistrée sans firme garde sa validité si l'autorisation est retirée).
+        if (array_key_exists('allowedWithoutFirm', $data)) {
+            $type->setAllowedWithoutFirm((bool) $data['allowedWithoutFirm']);
+        }
+
         $this->em->flush();
 
         return $this->json($this->serialize($type, null));
@@ -342,6 +348,7 @@ final class InterventionTypeController extends AbstractController
             'label' => $t->getLabel(),
             'specialty' => $t->getSpecialty(),
             'active' => $t->isActive(),
+            'allowedWithoutFirm' => $t->isAllowedWithoutFirm(),
             'mergedIntoId' => $t->getMergedInto()?->getId(),
         ];
 

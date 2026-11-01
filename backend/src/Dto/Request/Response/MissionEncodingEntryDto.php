@@ -63,5 +63,7 @@ final class MissionEncodingEntryDto
         public readonly ?string $proposedFirmName = null,
         /** D-154 — version optimiste (If-Match) d'une intervention réelle ; null pour kind=DRAFT. */
         public readonly ?int $version = null,
+        /** D-178 — « Aucune firme » : intervention enregistrée sans firme, ou demande faite sans firme. */
+        public readonly bool $withoutFirm = false,
     ) {}
 }

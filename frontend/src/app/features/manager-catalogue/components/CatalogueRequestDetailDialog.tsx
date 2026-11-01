@@ -134,7 +134,7 @@ export function CatalogueRequestDetailDialog({ row, onClose, onResolve, onIgnore
           <DetailRow term={isMaterial ? "Firme fabricante indiquée" : "Firme indiquée"}>
             {(row.kind === "material"
               ? row.request.proposedFirm?.name ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (absente du catalogue)` : null)
-              : row.request.requestedFirm?.name ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (absente du catalogue)` : row.request.requestedFirmNameSnapshot ?? null)
+              : row.request.withoutFirm ? "Aucune firme" : row.request.requestedFirm?.name ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (absente du catalogue)` : row.request.requestedFirmNameSnapshot ?? null)
             ) || <Missing />}
           </DetailRow>
           {row.kind === "material" ? (

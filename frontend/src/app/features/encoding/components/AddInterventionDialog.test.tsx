@@ -67,20 +67,20 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     const user = userEvent.setup();
     renderDialog();
 
-    expect(screen.getByRole("button", { name: "Arthrex" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Medacta" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Arthrex" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Medacta" })).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Rechercher une firme"), "arth");
 
-    expect(screen.getByRole("button", { name: "Arthrex" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Medacta" })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Arthrex" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Medacta" })).not.toBeInTheDocument();
   });
 
   it("choisir une firme passe à l'étape 2 avec un select de type d'intervention", async () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
 
     expect(await screen.findByText("Étape 2/2 – Choisir le type d'intervention")).toBeInTheDocument();
     expect(screen.getByText("Arthrex")).toBeInTheDocument();
@@ -92,7 +92,7 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     const user = userEvent.setup();
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
 
     await user.click(screen.getByLabelText(/type d'intervention/i));
@@ -103,10 +103,10 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, orderIndex: 2 });
   });
 
-  it("D-146 bis — aucune option « Aucune firme » : chaque intervention a une firme", async () => {
+  it("D-178 — « Aucune firme » est un choix explicite à l'étape 1, à côté de « Ma firme n'est pas dans la liste »", async () => {
     renderDialog();
 
-    expect(screen.queryByText(/Aucune firme/)).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /^Aucune firme/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Ma firme n'est pas dans la liste" })).toBeInTheDocument();
   });
 
@@ -144,13 +144,13 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
 
     await user.click(screen.getByRole("button", { name: "Changer" }));
     await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
 
-    await user.click(screen.getByRole("button", { name: "Medacta" }));
+    await user.click(screen.getByRole("option", { name: "Medacta" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     expect(screen.getByText("Medacta")).toBeInTheDocument();
   });
@@ -159,7 +159,7 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
 
     expect(screen.getByRole("button", { name: "Ajouter" })).toBeDisabled();
@@ -175,7 +175,7 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     });
     renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith("/api/firms/10/service-offerings"));
 
@@ -191,7 +191,7 @@ describe("AddInterventionDialog — intervention absente du catalogue (draft)", 
     const user = userEvent.setup();
     const { onSubmitDraft, onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
 
     await user.click(screen.getByLabelText(/type d'intervention/i));
@@ -215,7 +215,7 @@ describe("AddInterventionDialog — intervention absente du catalogue (draft)", 
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("Intervention absente du catalogue"));
@@ -227,7 +227,7 @@ describe("AddInterventionDialog — intervention absente du catalogue (draft)", 
     const user = userEvent.setup();
     renderDialog({ interventionTypes: [] });
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
 
     expect(screen.getByText("Le catalogue est vide pour le moment.")).toBeInTheDocument();
@@ -248,7 +248,7 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -268,7 +268,7 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -293,7 +293,7 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -319,7 +319,7 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -351,7 +351,7 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -378,7 +378,7 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -387,7 +387,7 @@ describe("AddInterventionDialog — présence d'un délégué (D-092)", () => {
 
     await user.click(screen.getByRole("button", { name: "Changer" }));
     await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
-    await user.click(screen.getByRole("button", { name: "Medacta" }));
+    await user.click(screen.getByRole("option", { name: "Medacta" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -421,7 +421,7 @@ describe("AddInterventionDialog — tarification firme conditionnée à un choix
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -441,7 +441,7 @@ describe("AddInterventionDialog — tarification firme conditionnée à un choix
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));
@@ -474,7 +474,7 @@ describe("AddInterventionDialog — tarification firme conditionnée à un choix
     });
     const { onSubmit } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("LCA — Ligamentoplastie croisé antérieur"));

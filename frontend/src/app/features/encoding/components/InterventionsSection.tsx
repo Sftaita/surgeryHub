@@ -69,6 +69,8 @@ type Props = {
   progress: MissionEncodingProgress;
   /** D-172 — écran de correction manager (présence du délégué « non renseignée » possible). */
   managerCorrection?: boolean;
+  /** D-178 — chirurgien de la mission (`mission.surgeonId` de GET …/encoding) : clé des interventions récentes. */
+  surgeonId?: number | null;
 };
 
 const GREEN_900 = "#144D38";
@@ -206,7 +208,7 @@ function WarnIcon() {
   );
 }
 
-export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress, managerCorrection = false }: Props) {
+export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress, managerCorrection = false, surgeonId = null }: Props) {
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -325,6 +327,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         materialLines: [],
         materialItemRequests: [],
         representativePresent: body.representativePresent ?? null,
+        withoutFirm: body.withoutFirm === true,
       };
       setEncodingCache((current) => ({ ...current, entries: [...(current.entries ?? []), optimistic] }));
       return { previous, tempId };
@@ -397,6 +400,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
             firm: firm ? { id: firm.id, name: firm.name } : null,
             requestedFirmNameSnapshot: firm?.name ?? null,
             proposedFirmName: body.proposedFirmName ?? null,
+            withoutFirm: body.withoutFirm === true,
             status: "OPEN",
             readOnly: false,
             materialLines: [],
@@ -820,6 +824,8 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         onSubmit={(values) => createInterventionMutation.mutate(values)}
         onSubmitDraft={(values: DraftSubmitValues) => createDraftMutation.mutate(values)}
         managerCorrection={managerCorrection}
+        missionId={missionId}
+        surgeonId={surgeonId}
       />
 
       <EditInterventionDialog
@@ -834,6 +840,8 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
           patchInterventionMutation.mutate({ interventionId: editIntervention.id, body: values });
         }}
         managerCorrection={managerCorrection}
+        missionId={missionId}
+        surgeonId={surgeonId}
       />
 
       <ConfirmDeleteDialog
@@ -984,7 +992,7 @@ function EntryCard({
     ? `${plural(lines.length, "matériel", "matériels")} · ${plural(Math.round(units), "unité", "unités")}`
     : "Aucun matériel encodé";
   const badge = draftBadge(entry);
-  const firmName = entry.kind === "DRAFT" ? (entry.firm?.name ?? entry.requestedFirmNameSnapshot ?? entry.proposedFirmName ?? null) : null;
+  const firmName = entry.kind === "DRAFT" ? (entry.withoutFirm ? "Aucune firme" : entry.firm?.name ?? entry.requestedFirmNameSnapshot ?? entry.proposedFirmName ?? null) : null;
 
   const bodyRef = React.useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = React.useState(0);

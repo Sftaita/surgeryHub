@@ -28,6 +28,8 @@ enum FirmBillingReason: string
     case FEE_NOT_APPLICABLE = 'FEE_NOT_APPLICABLE';
     /** MaterialItem.billingStatus = NOT_BILLABLE : décision catalogue explicite. */
     case MATERIAL_NOT_BILLABLE = 'MATERIAL_NOT_BILLABLE';
+    /** D-178 — intervention enregistrée « Aucune firme » (type autorisé sans firme) : aucune prestation de firme. */
+    case WITHOUT_FIRM = 'WITHOUT_FIRM';
     /** Tarif actif mais montant nul (prix unitaire 0 ou quantité 0). */
     case ZERO_AMOUNT = 'ZERO_AMOUNT';
 
@@ -103,7 +105,7 @@ enum FirmBillingReason: string
         return match ($this) {
             self::BILLABLE, self::IN_DRAFT => FirmBillingStatus::BILLABLE,
             self::INVOICED => FirmBillingStatus::INVOICED,
-            self::REPRESENTATIVE_PRESENT, self::FEE_NOT_APPLICABLE, self::MATERIAL_NOT_BILLABLE, self::ZERO_AMOUNT => FirmBillingStatus::NOT_BILLABLE,
+            self::REPRESENTATIVE_PRESENT, self::FEE_NOT_APPLICABLE, self::MATERIAL_NOT_BILLABLE, self::WITHOUT_FIRM, self::ZERO_AMOUNT => FirmBillingStatus::NOT_BILLABLE,
             default => FirmBillingStatus::TO_REVIEW,
         };
     }
@@ -146,6 +148,7 @@ enum FirmBillingReason: string
             self::REPRESENTATIVE_PRESENT => 'Délégué présent',
             self::FEE_NOT_APPLICABLE => 'Aucun forfait prévu',
             self::MATERIAL_NOT_BILLABLE => 'Matériel non facturable',
+            self::WITHOUT_FIRM => 'Réalisée sans firme',
             self::ZERO_AMOUNT => 'Tarif à 0 €',
             self::CALCULATION_REQUIRED => 'Calcul financier à effectuer',
             self::CALCULATION_PENDING_APPROVAL => 'Calcul à approuver',
@@ -180,6 +183,7 @@ enum FirmBillingReason: string
             self::REPRESENTATIVE_PRESENT => "Cette prestation n'est pas facturée par SurgicalHub : le délégué de la firme était présent.",
             self::FEE_NOT_APPLICABLE => "La firme ne prévoit aucun forfait pour cette prestation (décision commerciale) : rien n'est facturé.",
             self::MATERIAL_NOT_BILLABLE => 'Ce matériel est marqué « non facturable » dans le catalogue de la firme.',
+            self::WITHOUT_FIRM => "L'intervention a été réalisée sans firme (type autorisé sans firme) : aucune prestation de firme, rien à facturer pour elle.",
             self::ZERO_AMOUNT => 'Le tarif applicable donne un montant nul : rien à facturer.',
             self::CALCULATION_REQUIRED => "La mission est validée mais n'a pas encore été valorisée.",
             self::CALCULATION_PENDING_APPROVAL => 'Les montants sont calculés mais doivent être approuvés avant facturation.',

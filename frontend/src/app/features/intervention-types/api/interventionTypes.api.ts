@@ -6,6 +6,8 @@ export interface InterventionType {
   label: string;
   specialty: string | null;
   active: boolean;
+  /** D-178 — encodable « Aucune firme » (nouveaux encodages seulement). */
+  allowedWithoutFirm?: boolean;
   mergedIntoId?: number | null;
   /** Présent uniquement sur GET (liste) — nombre de firmes ayant une prestation sur ce type. */
   firmsCount?: number;
@@ -70,7 +72,7 @@ export async function createInterventionType(body: {
 
 export async function updateInterventionType(
   id: number,
-  body: { label?: string; specialty?: string | null; active?: boolean },
+  body: { label?: string; specialty?: string | null; active?: boolean; allowedWithoutFirm?: boolean },
 ): Promise<InterventionType> {
   const res = await apiClient.patch(`/api/intervention-types/${id}`, body);
   return res.data;

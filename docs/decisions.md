@@ -16031,3 +16031,89 @@ habituelle éligible la reçoit ; l'échéance de 48 h court depuis la création
 **Limites assumées.** La correspondance « certaine » est volontairement stricte (une seule salle
 englobant la demande) : les postes simultanés d'un même chirurgien (ex. JOURNÉE + MATIN + APRÈS-MIDI)
 donnent `AMBIGUOUS` et un choix manager. La migration `Version20261030150000` est additive.
+
+## D-178 — Encodage : firmes et interventions récemment utilisées, recherche instantanée (2026-10-30)
+
+**Constat.** Ajouter ou corriger une intervention imposait de parcourir toute la liste des firmes
+puis une liste déroulante de types, alors que les mêmes firmes et interventions reviennent sans cesse.
+
+**Décision.**
+
+- **Firmes récemment utilisées** : les deux dernières firmes distinctes des interventions encodées
+  par l'utilisateur connecté (`GET /api/missions/{id}/encoding-suggestions/firms`).
+- **Interventions récemment utilisées avec cette firme et ce chirurgien** : les deux derniers types
+  distincts encodés avec la firme choisie sur les missions du chirurgien **porté par la mission**
+  (jamais déduit de l'utilisateur connecté), quel que soit l'instrumentiste
+  (`GET …/encoding-suggestions/intervention-types?firmId=`).
+- Calcul serveur, une requête agrégée (`GROUP BY` + `LIMIT 2`) par appel, ordre = date de création
+  de l'intervention la plus récente (puis id). Exclus : interventions des missions `CANCELLED` /
+  `REJECTED` (une intervention supprimée n'existe plus), firmes et types désactivés, type que la
+  firme ne propose pas (prestations actives de la firme quand elle en a, sinon catalogue actif —
+  même liste que la sélection complète). Réponses : identifiants, codes, libellés uniquement.
+- **Auteur de l'encodage** : nouvelle colonne nullable `mission_intervention.created_by_id`
+  (création directe : l'utilisateur ; draft converti par le manager : l'auteur du draft). Les
+  interventions antérieures gardent un auteur inconnu (aucune reprise de données) : elles ne
+  comptent jamais dans les firmes récentes d'un utilisateur, mais restent éligibles aux
+  interventions récentes firme × chirurgien, où l'auteur est sans objet.
+- **Un raccourci n'est jamais un type particulier** : côté interface (`SearchablePicker`), il
+  appelle exactement la même sélection que la liste complète (`pickFirm` / `pickType`) ; la création
+  passe par `POST …/interventions` inchangé. Matériel suggéré, choix obligatoire et exclusif
+  (RequiredChoiceGroup / ChoiceMaterialExclusivityService), présence du délégué, tarification :
+  inchangés et toujours prioritaires. Aucun matériel ni choix n'est repris de l'historique.
+- **Recherche instantanée** dès le premier caractère, insensible à la casse et aux accents, sur le
+  nom de firme, le code et le libellé du type (« ligament » trouve LCA) ; navigation clavier.
+- **Correction** (`EditInterventionDialog`) : la firme et le type enregistrés restent affichés ;
+  la liste (raccourcis + recherche) ne s'ouvre que sur « Changer » ; re-choisir la même valeur ne
+  réinitialise rien. Le PATCH et ses protections (confirmation avant retrait de matériel devenu
+  incompatible, verrous, versions D-154) sont inchangés.
+- Droits : `MissionVoter::EDIT_ENCODING` (aucune règle d'autorisation nouvelle).
+
+**Limites.** Les firmes récentes d'un utilisateur ne se remplissent qu'avec ses encodages
+postérieurs au déploiement. La date de référence est la création de l'intervention (une
+correction de firme ne la rafraîchit pas).
+
+**Audit avant fusion (2026-10-31).**
+- **Migration renumérotée `Version20261031180000`** (anciennement `Version20261030120000`) :
+  elle précédait `Version20261030150000` (D-177), déjà exécutée en production. Doctrine la jouait
+  bien (vérifié sur une copie de production : « New 1 »), mais l'affichait hors ordre (« Current »
+  = « Latest » alors qu'elle restait à jouer). Validée depuis une base neuve (94/94) et depuis une
+  copie de production à 93 migrations (1 nouvelle, colonne, index et clé étrangère identiques).
+- **Ordre de déploiement : migration AVANT la bascule.** Le nouveau code sur l'ancien schéma
+  répond 500 à `GET /api/missions/{id}/encoding` (colonne `created_by_id` inconnue), tous rôles ;
+  le code en production fonctionne sur le schéma migré (colonne nullable non mappée).
+- **Firmes récentes jamais conservées entre deux comptes** : le cache applicatif survit à une
+  déconnexion sans rechargement ; les requêtes de suggestions ont `gcTime: 0` (libérées dès que la
+  page d'encodage est démontée), sinon les firmes du compte précédent s'affichaient un instant.
+
+**Interventions sans firme (décision utilisateur 2026-11-01, amende D-146 bis).** Certaines
+interventions se réalisent réellement sans firme. Le parcours reste celui d'une firme :
+1. Étape 1 : une firme, « Ma firme n'est pas dans la liste » ou **« Aucune firme »**.
+2. « Aucune firme » n'affiche que les types que le manager autorise sans firme
+   (`intervention_type.allowed_without_firm`, Catalogue › Interventions) — jamais tout le catalogue.
+3. Type présent : intervention enregistrée sans firme, **marquée** `mission_intervention.without_firm`.
+4. Type absent : la demande d'intervention existante, marquée `mission_intervention_draft.without_firm`
+   (aucun nouveau système de demandes) ; à la résolution, l'information est conservée (une firme est
+   refusée) et les contrôles sont ceux d'un encodage direct : type autorisé sans firme, ou nouveau type
+   créé avec autorisation explicite.
+
+Règles (InterventionRequirementsService::assertFirmChoice(), partagé par création, correction et
+résolution — aucun contournement par l'API) : une firme OU « Aucune firme », jamais les deux ; une
+firme simplement absente reste refusée (D-146 bis) ; « Aucune firme » exige un type autorisé **au
+moment de l'encodage**. Sans firme principale, aucune prestation de firme : ni réponse délégué, ni
+choix obligatoire, ni forfait ; le matériel éventuel garde sa propre firme fabricante.
+
+**Validité historique.** Seul le marqueur de l'intervention compte pour la complétude
+(`missingFor()`), le calcul financier (pas d'anomalie `MISSING_PRIMARY_FIRM`, évaluation
+`WITHOUT_FIRM`) et la facturation firmes (motif `WITHOUT_FIRM`, non facturable). Retirer ensuite
+l'autorisation d'un type ne rend jamais invalide une intervention déjà marquée ; seuls les nouveaux
+encodages (création, nouvelle réponse à la question de la firme, nouveau type) sont refusés.
+
+**Interventions historiques sans firme.** Les 8 interventions de production sans firme (toutes
+antérieures à D-146 bis, aucune calculée ni facturée) restent `without_firm = false` : aucune
+validation rétroactive automatique. Une régularisation ciblée (marquer celles reconnues légitimes,
+ou leur attribuer la firme perdue à la résolution) relève d'une décision utilisateur distincte.
+En correction, une intervention dont la firme manque reste modifiable sans réponse inventée (la
+fenêtre n'envoie pas la firme tant qu'elle n'est pas choisie).
+
+Premier type candidat : `SUT-PLAS-TEND-QUAD` « Plastie/Suture du tendon quadricipital » (id 58),
+activé par le manager depuis le catalogue après déploiement — jamais par une écriture directe.

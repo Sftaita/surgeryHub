@@ -52,12 +52,16 @@ class InterventionService
      * interventions réelles + drafts) — remplace l'absence totale d'allocation serveur
      * qui existait jusqu'ici (le client choisissait et envoyait sa propre position).
      */
-    public function create(Mission $mission, MissionInterventionCreateRequest $dto): MissionIntervention
+    public function create(Mission $mission, MissionInterventionCreateRequest $dto, ?User $createdBy = null): MissionIntervention
     {
         $type = $this->interventionTypeResolver->resolveActive((int) $dto->interventionTypeId);
         $firm = $dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null;
-        $this->requirements->assertFirmProvided($firm);
-        $representativePresent = $dto->representativePresent;
+        // D-178 — une firme, ou « Aucune firme » sur un type autorisé sans firme.
+        $this->requirements->assertFirmChoice($firm, $dto->withoutFirm, $type);
+        $withoutFirm = $dto->withoutFirm;
+        // Sans firme, aucune prestation : ni réponse délégué ni choix (un choix fourni est
+        // refusé par resolveChoiceOption(), jamais ignoré silencieusement).
+        $representativePresent = $withoutFirm ? null : $dto->representativePresent;
         $selectedChoiceOption = $dto->selectedChoiceOptionId !== null
             ? $this->resolveChoiceOption($dto->selectedChoiceOptionId, $firm, $type)
             : null;
@@ -68,7 +72,7 @@ class InterventionService
         $this->assertChoiceAnswered($firm, $type, $selectedChoiceOption);
 
         $intervention = null;
-        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm, $representativePresent, $selectedChoiceOption): void {
+        $this->em->wrapInTransaction(function () use (&$intervention, $mission, $type, $firm, $withoutFirm, $representativePresent, $selectedChoiceOption, $createdBy): void {
             $orderIndex = $this->orderAllocator->nextIndexForNewEntry($mission);
 
             $intervention = new MissionIntervention();
@@ -76,11 +80,13 @@ class InterventionService
                 ->setMission($mission)
                 ->setInterventionType($type)
                 ->setPrimaryFirm($firm)
+                ->setWithoutFirm($withoutFirm)
                 ->setCode($type->getCode())
                 ->setLabel($type->getLabel())
                 ->setOrderIndex($orderIndex)
                 ->setRepresentativePresent($representativePresent)
-                ->setSelectedChoiceOption($selectedChoiceOption);
+                ->setSelectedChoiceOption($selectedChoiceOption)
+                ->setCreatedBy($createdBy);
 
             $this->em->persist($intervention);
             $this->em->flush();
@@ -105,10 +111,28 @@ class InterventionService
             ? ($dto->primaryFirmId !== null ? $this->firmResolver->resolveActive($dto->primaryFirmId) : null)
             : $intervention->getPrimaryFirm();
 
-        // D-146 bis — la firme ne peut plus être retirée explicitement (une ancienne
-        // intervention déjà sans firme reste modifiable tant qu'on ne touche pas ce champ).
-        if ($dto->primaryFirmIdProvided) {
-            $this->requirements->assertFirmProvided($firm);
+        // D-178 — état « Aucune firme » visé : explicite (withoutFirm), sinon une firme fournie
+        // le lève, sinon inchangé. « Aucune firme » implique l'absence de firme.
+        $withoutFirm = $intervention->isWithoutFirm();
+        if ($dto->withoutFirmProvided) {
+            $withoutFirm = $dto->withoutFirm;
+            if ($withoutFirm && !$dto->primaryFirmIdProvided) {
+                $firm = null;
+            }
+        } elseif ($dto->primaryFirmIdProvided && $dto->primaryFirmId !== null) {
+            $withoutFirm = false;
+        }
+        $firmChoiceTouched = $dto->primaryFirmIdProvided || $dto->withoutFirmProvided;
+
+        // D-146 bis — la firme ne peut pas être retirée sans « Aucune firme » explicite (une
+        // ancienne intervention déjà sans firme reste modifiable tant qu'on ne touche pas ce
+        // champ). D-178 — toute nouvelle réponse à la question de la firme, et tout nouveau type
+        // sur une intervention sans firme, sont contrôlés contre le catalogue ACTUEL ; une
+        // intervention sans firme dont on ne change ni la firme ni le type garde sa validité.
+        if ($firmChoiceTouched) {
+            $this->requirements->assertFirmChoice($firm, $withoutFirm, $type);
+        } elseif ($withoutFirm && $dto->interventionTypeId !== null && $dto->interventionTypeId !== $intervention->getInterventionType()?->getId()) {
+            $this->requirements->assertFirmChoice(null, true, $type);
         }
 
         $representativePresent = $dto->representativePresentProvided
@@ -118,6 +142,13 @@ class InterventionService
         $selectedChoiceOption = $dto->selectedChoiceOptionIdProvided
             ? ($dto->selectedChoiceOptionId !== null ? $this->resolveChoiceOption($dto->selectedChoiceOptionId, $firm, $type) : null)
             : $intervention->getSelectedChoiceOption();
+
+        // Sans firme, aucune prestation : réponse délégué et choix d'une éventuelle ancienne
+        // firme sont effacés, jamais laissés orphelins.
+        if ($withoutFirm) {
+            $representativePresent = null;
+            $selectedChoiceOption = null;
+        }
 
         // Refonte Catalogue/Prestations (D-092) — la validation ne se déclenche que si la
         // requête touche réellement un champ métier (type/firme/réponse délégué/choix
@@ -150,15 +181,20 @@ class InterventionService
             }
         }
 
-        $this->em->wrapInTransaction(function () use ($intervention, $dto, $type, $firm, $selectedChoiceOption, $choiceChanged, $linesToRemove): void {
+        $this->em->wrapInTransaction(function () use ($intervention, $dto, $type, $firm, $withoutFirm, $firmChoiceTouched, $selectedChoiceOption, $choiceChanged, $linesToRemove): void {
             if ($dto->interventionTypeId !== null) {
                 $intervention->setInterventionType($type);
                 $intervention->setCode($type->getCode());
                 $intervention->setLabel($type->getLabel());
             }
 
-            if ($dto->primaryFirmIdProvided) {
+            if ($firmChoiceTouched) {
                 $intervention->setPrimaryFirm($firm);
+                $intervention->setWithoutFirm($withoutFirm);
+                if ($withoutFirm) {
+                    $intervention->setRepresentativePresent(null);
+                    $intervention->setSelectedChoiceOption(null);
+                }
             }
 
             if ($dto->orderIndex !== null) {
@@ -166,7 +202,7 @@ class InterventionService
             }
 
             if ($dto->representativePresentProvided) {
-                $intervention->setRepresentativePresent($dto->representativePresent);
+                $intervention->setRepresentativePresent($withoutFirm ? null : $dto->representativePresent);
             }
 
             if ($choiceChanged) {

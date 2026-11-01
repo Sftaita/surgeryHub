@@ -851,6 +851,57 @@
       "nextAction": "Déployé v2026.10.31-prod (953ce9a) puis v2026.10.31-prod-2 (9e922c7, libellés) le 2026-10-31 ; cron */5 vérifié ; régularisation #14 ↔ #626 effectuée (audit #1373) ; D-160 clos (#15/#16 = seconde salle réelle). Aucune opération restante.",
       "lastReviewed": "2026-10-31",
       "prodEvidence": "v2026.10.31-prod (953ce9a) : migration pré-bascule Version20261030150000 (09:44 UTC, d32dbe7 en service), activate 11:00 UTC, migrate 93/93, mark OFFICIAL ; empreintes publications/missions/salles identiques, 0 notification créée ; cron room_takeover_expire_priorities.sh */5 (OK 11:15, 11:20) ; repli : branche rollback/d177 : voir docs/production.md."
+    },
+    {
+      "id": "D-178",
+      "title": "Encodage : firmes et interventions récemment utilisées, recherche instantanée, interventions sans firme",
+      "description": "Raccourcis « Firmes récemment utilisées » (utilisateur connecté) et « Interventions récemment utilisées avec cette firme et ce chirurgien » (chirurgien de la mission) dans l'ajout et la correction d'une intervention, recherche instantanée sans casse ni accents, navigation clavier ; colonne mission_intervention.created_by_id ; flux métier (matériel, choix obligatoire/exclusif, délégué) inchangé. Interventions sans firme (décision 2026-11-01, amende D-146 bis) : « Aucune firme » à l'étape 1, types autorisés par le manager (intervention_type.allowed_without_firm), choix enregistré sur l'intervention (mission_intervention.without_firm) et la demande (mission_intervention_draft.without_firm) ; complétude, calcul financier (pas d'anomalie MISSING_PRIMARY_FIRM) et facturation alignés ; validité historique conservée si l'autorisation est retirée.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Encoder une intervention fréquente demandait de parcourir toute la liste des firmes puis une liste déroulante de types.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-10-31",
+      "refs": {
+        "branches": [
+          "feat/encodage-suggestions-recherche"
+        ],
+        "decision": "D-178",
+        "worktrees": [
+          "SurgicalHub-d178"
+        ],
+        "prs": [
+          57
+        ],
+        "migrations": [
+          "Version20261031180000"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Validation utilisateur du parcours (instrumentiste, manager, chirurgien), y compris « Aucune firme », avant toute fusion."
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "description": "Migration additive Version20261031180000 à jouer AVANT la bascule (le nouveau code sur l'ancien schéma répond 500 à la lecture de l'encodage)."
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "description": "Après déploiement, le manager autorise « Plastie/Suture du tendon quadricipital » (SUT-PLAS-TEND-QUAD, id 58) sans firme depuis Catalogue › Interventions — jamais par écriture directe en base.",
+          "validation": "utilisateur"
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "description": "Interventions historiques sans firme (8 en production : #15, #16, #73, #74, #75, #76, #95, #99) : régularisation ciblée éventuelle (marquer « sans firme » ou rattacher la firme perdue), sur décision utilisateur distincte ; aucune validation rétroactive automatique.",
+          "validation": "accord explicite"
+        }
+      ],
+      "nextAction": "Revue utilisateur du rapport D-178 (y compris interventions sans firme) ; pas de fusion ni de déploiement sans accord.",
+      "lastReviewed": "2026-11-01"
     }
   ]
 }

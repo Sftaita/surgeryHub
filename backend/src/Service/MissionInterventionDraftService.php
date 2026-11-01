@@ -66,10 +66,11 @@ final class MissionInterventionDraftService
         ?Firm $requestedFirm,
         User $actor,
         ?string $proposedFirmName = null,
+        bool $withoutFirm = false,
     ): MissionInterventionDraft {
         $draft = null;
 
-        $this->em->wrapInTransaction(function () use (&$draft, $request, $requestedFirm, $actor, $proposedFirmName): void {
+        $this->em->wrapInTransaction(function () use (&$draft, $request, $requestedFirm, $actor, $proposedFirmName, $withoutFirm): void {
             $mission = $request->getMission();
             if ($mission === null) {
                 throw new \LogicException('InterventionTypeRequest must belong to a Mission before a draft can be created for it.');
@@ -93,6 +94,8 @@ final class MissionInterventionDraftService
                 ->setRequestedFirmNameSnapshot($requestedFirm?->getName())
                 // D-146 bis — firme absente du catalogue proposée en texte libre (jamais créée).
                 ->setProposedFirmName($requestedFirm === null && $proposedFirmName !== null && $proposedFirmName !== '' ? $proposedFirmName : null)
+                // D-178 — « Aucune firme » choisi explicitement, conservé jusqu'à la résolution.
+                ->setWithoutFirm($withoutFirm && $requestedFirm === null)
                 ->setOrderIndex($orderIndex)
                 ->setStatus(MissionInterventionDraft::STATUS_OPEN)
                 ->setCreatedBy($actor);
@@ -114,6 +117,7 @@ final class MissionInterventionDraftService
                 'requestedFirmId' => $requestedFirm?->getId(),
                 'requestedFirmNameSnapshot' => $draft->getRequestedFirmNameSnapshot(),
                 'proposedFirmName' => $draft->getProposedFirmName(),
+                'withoutFirm' => $draft->isWithoutFirm(),
                 'orderIndex' => $draft->getOrderIndex(),
             ]);
             $this->em->flush();
@@ -164,6 +168,11 @@ final class MissionInterventionDraftService
                 $type = $this->interventionTypeResolver->resolveActive((int) $typeId);
             } elseif ($newType !== null) {
                 $type = $this->catalogue->createInterventionType((string) ($newType['code'] ?? ''), (string) ($newType['label'] ?? ''));
+                // D-178 — demande sans firme : le manager peut autoriser explicitement le type
+                // qu'il crée à être encodé sans firme (jamais implicitement).
+                if ($draft->isWithoutFirm() && ($newType['allowedWithoutFirm'] ?? false) === true) {
+                    $type->setAllowedWithoutFirm(true);
+                }
                 $createdType = true;
             } else {
                 throw new CatalogueRequestException(422, CatalogueRequestException::INTERVENTION_TYPE_REQUIRED, 'Choisissez l\'intervention existante correspondante ou créez la nouvelle intervention.');
@@ -172,6 +181,33 @@ final class MissionInterventionDraftService
             $createdFirm = false;
             $firmId = $input['firmId'] ?? null;
             $newFirmName = CatalogueFactory::normalizeName((string) ($input['newFirmName'] ?? ''));
+
+            // D-178 — demande faite « Aucune firme » : l'information est conservée telle quelle,
+            // l'intervention est créée sans firme avec les mêmes contrôles qu'un encodage direct
+            // (type autorisé sans firme, InterventionRequirementsService::assertFirmChoice()).
+            if ($draft->isWithoutFirm()) {
+                if ($firmId !== null || $newFirmName !== '') {
+                    throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Cette demande a été faite sans firme et se résout donc sans firme. Ignorez-la si l\'intervention a en réalité été réalisée avec une firme.');
+                }
+                $this->em->flush();
+                $intervention = $this->resolve($draft, $type, null, $actor, null, null, [
+                    'createdFirm' => false,
+                    'createdInterventionType' => $createdType,
+                    'createdOffering' => false,
+                    'offeringDecision' => null,
+                    'withoutFirm' => true,
+                ]);
+                $result = [
+                    'intervention' => $intervention,
+                    'createdFirm' => false,
+                    'createdInterventionType' => $createdType,
+                    'createdOffering' => false,
+                    'offeringDecision' => null,
+                ];
+
+                return;
+            }
+
             if ($firmId !== null && $newFirmName !== '') {
                 throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Choisissez une firme existante OU créez une nouvelle firme, pas les deux.');
             }
@@ -287,7 +323,10 @@ final class MissionInterventionDraftService
             $mission = $draft->getMission();
 
             $this->resolutionGuard->assertResolutionAllowed($mission);
-            $this->requirements->assertFirmProvided($firm);
+            // D-178 — même contrôle qu'un encodage direct : une firme, ou (demande faite
+            // « Aucune firme ») un type que le catalogue autorise actuellement sans firme.
+            $withoutFirm = $draft->isWithoutFirm();
+            $this->requirements->assertFirmChoice($firm, $withoutFirm, $interventionType);
             if ($selectedChoiceOption !== null) {
                 // Revalide l'appartenance de l'option à la prestation (firme × type) effective.
                 $selectedChoiceOption = $this->requirements->resolveChoiceOption((int) $selectedChoiceOption->getId(), $firm, $interventionType);
@@ -300,11 +339,14 @@ final class MissionInterventionDraftService
                 ->setMission($mission)
                 ->setInterventionType($interventionType)
                 ->setPrimaryFirm($firm)
+                ->setWithoutFirm($withoutFirm)
                 ->setCode($interventionType->getCode())
                 ->setLabel($interventionType->getLabel())
                 ->setOrderIndex($draft->getOrderIndex())
                 ->setRepresentativePresent($representativePresent)
-                ->setSelectedChoiceOption($selectedChoiceOption);
+                ->setSelectedChoiceOption($selectedChoiceOption)
+                // D-178 — l'encodage reste celui de l'auteur du draft, pas du manager qui le résout.
+                ->setCreatedBy($draft->getCreatedBy());
 
             $this->em->persist($intervention);
             // Flush intermédiaire : la MissionIntervention doit avoir un id avant que le

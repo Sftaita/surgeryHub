@@ -14,6 +14,8 @@ import type {
   InterventionTypeEncodingContext,
   CatalogInterventionType,
   ChoiceGroupSummary,
+  RecentFirmsResponse,
+  RecentInterventionTypesResponse,
 } from "./encoding.types";
 
 export async function fetchMissionEncoding(
@@ -192,6 +194,24 @@ export type FirmServiceOfferingSummary = {
    */
   choiceGroup: ChoiceGroupSummary | null;
 };
+
+/** D-178 — les deux dernières firmes distinctes encodées par l'utilisateur connecté. */
+export async function fetchRecentFirms(missionId: number): Promise<RecentFirmsResponse> {
+  const { data } = await apiClient.get<RecentFirmsResponse>(`/api/missions/${missionId}/encoding-suggestions/firms`);
+  return data;
+}
+
+/**
+ * D-178 — les deux derniers types distincts encodés avec cette firme pour le chirurgien de la
+ * mission ; `"none"` = encodés « Aucune firme » (types actuellement autorisés sans firme).
+ */
+export async function fetchRecentInterventionTypes(missionId: number, firmId: number | "none"): Promise<RecentInterventionTypesResponse> {
+  const { data } = await apiClient.get<RecentInterventionTypesResponse>(
+    `/api/missions/${missionId}/encoding-suggestions/intervention-types`,
+    { params: { firmId } },
+  );
+  return data;
+}
 
 export async function fetchFirmServiceOfferings(firmId: number): Promise<FirmServiceOfferingSummary[]> {
   const { data } = await apiClient.get<FirmServiceOfferingSummary[]>(`/api/firms/${firmId}/service-offerings`);

@@ -285,3 +285,34 @@ describe("InterventionTypesManager — Task 11 : référentiel canonique", () =>
     expect(toastSuccess).toHaveBeenCalledWith("Types fusionnés");
   });
 });
+
+describe("InterventionTypesManager — autorisé sans firme (D-178)", () => {
+  it("le manager autorise un type sans firme ; le message rappelle la portée (nouveaux encodages)", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockResolvedValue({
+      data: [{ id: 58, code: "SUT-PLAS-TEND-QUAD", label: "Plastie/Suture du tendon quadricipital", specialty: null, active: true, allowedWithoutFirm: false }],
+    });
+    apiPatchMock.mockResolvedValue({ data: { id: 58, code: "SUT-PLAS-TEND-QUAD", label: "Plastie/Suture du tendon quadricipital", specialty: null, active: true, allowedWithoutFirm: true } });
+    renderManager();
+
+    const toggle = await screen.findByLabelText("Autoriser « Plastie/Suture du tendon quadricipital » sans firme");
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledWith("/api/intervention-types/58", { allowedWithoutFirm: true }));
+    expect(toastSuccess).toHaveBeenCalledWith("« Plastie/Suture du tendon quadricipital » peut désormais être encodée sans firme.");
+  });
+
+  it("retirer l'autorisation précise que les interventions déjà enregistrées restent valides", async () => {
+    const user = userEvent.setup();
+    apiGetMock.mockResolvedValue({
+      data: [{ id: 58, code: "SUT-PLAS-TEND-QUAD", label: "Plastie/Suture du tendon quadricipital", specialty: null, active: true, allowedWithoutFirm: true }],
+    });
+    apiPatchMock.mockResolvedValue({ data: { id: 58, code: "SUT-PLAS-TEND-QUAD", label: "Plastie/Suture du tendon quadricipital", specialty: null, active: true, allowedWithoutFirm: false } });
+    renderManager();
+
+    await user.click(await screen.findByLabelText("Autoriser « Plastie/Suture du tendon quadricipital » sans firme"));
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledWith("/api/intervention-types/58", { allowedWithoutFirm: false }));
+    expect(toastSuccess).toHaveBeenCalledWith("« Plastie/Suture du tendon quadricipital » ne peut plus être encodée sans firme (les interventions déjà enregistrées restent valides).");
+  });
+});
