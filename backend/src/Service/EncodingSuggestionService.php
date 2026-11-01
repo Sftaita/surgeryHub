@@ -96,4 +96,38 @@ class EncodingSuggestionService
 
         return array_map(static fn (array $r) => ['id' => (int) $r['id'], 'code' => (string) $r['code'], 'label' => (string) $r['label']], $rows);
     }
+
+    /**
+     * D-178 — pendant de recentInterventionTypesFor() pour « Aucune firme » : les deux derniers
+     * types encodés sans firme (marqueur explicite) sur les missions du chirurgien `$surgeon`,
+     * limités aux types ACTUELLEMENT actifs et autorisés sans firme — même liste que la
+     * sélection complète sous « Aucune firme ». Une firme simplement absente (historique) ne
+     * compte jamais.
+     *
+     * @return list<array{id: int, code: string, label: string}>
+     */
+    public function recentInterventionTypesWithoutFirmFor(User $surgeon): array
+    {
+        $rows = $this->em->createQueryBuilder()
+            ->select('it.id AS id', 'it.code AS code', 'it.label AS label', 'MAX(mi.createdAt) AS HIDDEN lastUsedAt', 'MAX(mi.id) AS HIDDEN lastId')
+            ->from(MissionIntervention::class, 'mi')
+            ->innerJoin('mi.interventionType', 'it')
+            ->innerJoin('mi.mission', 'm')
+            ->andWhere('mi.withoutFirm = true')
+            ->andWhere('mi.primaryFirm IS NULL')
+            ->andWhere('m.surgeon = :surgeon')
+            ->andWhere('it.active = true')
+            ->andWhere('it.allowedWithoutFirm = true')
+            ->andWhere('m.status NOT IN (:excluded)')
+            ->setParameter('surgeon', $surgeon)
+            ->setParameter('excluded', array_map(static fn (MissionStatus $s) => $s->value, self::EXCLUDED_MISSION_STATUSES))
+            ->groupBy('it.id, it.code, it.label')
+            ->orderBy('lastUsedAt', 'DESC')
+            ->addOrderBy('lastId', 'DESC')
+            ->setMaxResults(self::LIMIT)
+            ->getQuery()
+            ->getArrayResult();
+
+        return array_map(static fn (array $r) => ['id' => (int) $r['id'], 'code' => (string) $r['code'], 'label' => (string) $r['label']], $rows);
+    }
 }

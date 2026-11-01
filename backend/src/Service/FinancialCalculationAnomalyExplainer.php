@@ -406,6 +406,7 @@ final class FinancialCalculationAnomalyExplainer
             ),
             MissionFinancialEvaluation::FEE_NOT_APPLICABLE => 'Aucun forfait prévu pour cette prestation (« Pas de forfait ») : rien ne sera facturé.',
             MissionFinancialEvaluation::MATERIAL_NOT_BILLABLE => 'Matériel marqué « non facturable » : rien ne sera facturé.',
+            MissionFinancialEvaluation::WITHOUT_FIRM => 'Intervention réalisée sans firme : aucune prestation de firme, rien à facturer pour elle.',
             default => 'Toujours bloquant : ' . implode(', ', array_map(
                 static fn (string $code) => mb_strtolower(FirmBillingReason::fromEngineCode($code)->label()),
                 $outcome['anomalyCodes'],

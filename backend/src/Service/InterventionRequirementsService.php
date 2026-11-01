@@ -49,6 +49,31 @@ final class InterventionRequirementsService
     }
 
     /**
+     * D-178 — réponse à « Avec quelle firme cette intervention a-t-elle été réalisée ? » pour
+     * un NOUVEL encodage (création, correction de la firme ou du type, résolution d'une
+     * demande) : une firme, OU « Aucune firme » explicitement choisi sur un type que le
+     * catalogue autorise ACTUELLEMENT sans firme (InterventionType::$allowedWithoutFirm).
+     * Jamais les deux, jamais une firme simplement absente (D-146 bis inchangé).
+     */
+    public function assertFirmChoice(?Firm $firm, bool $withoutFirm, ?InterventionType $type): void
+    {
+        if (!$withoutFirm) {
+            $this->assertFirmProvided($firm);
+
+            return;
+        }
+        if ($firm !== null) {
+            throw new UnprocessableEntityHttpException('Choisissez une firme OU « Aucune firme », pas les deux.');
+        }
+        if ($type === null || !$type->isAllowedWithoutFirm()) {
+            throw new UnprocessableEntityHttpException(sprintf(
+                '« %s » ne peut pas être encodée sans firme. Choisissez la firme avec laquelle elle a été réalisée, ou demandez au manager d\'autoriser ce type sans firme.',
+                $type?->getLabel() ?? 'Cette intervention',
+            ));
+        }
+    }
+
+    /**
      * Refonte Catalogue/Prestations (D-092) — défense serveur (jamais uniquement le
      * frontend) : si la prestation (firme × type) effective exige la réponse délégué,
      * elle doit être fournie (true/false), jamais null.
@@ -107,7 +132,9 @@ final class InterventionRequirementsService
         $type = $intervention->getInterventionType();
         $missing = [];
 
-        if ($firm === null) {
+        // D-178 — « Aucune firme » enregistré reste valide même si le manager retire ensuite
+        // l'autorisation du type : seul le marqueur de l'intervention compte ici.
+        if ($firm === null && !$intervention->isWithoutFirm()) {
             $missing[] = self::MISSING_FIRM;
         }
         if ($this->representativeAnswerMissing($firm, $type, $intervention->getRepresentativePresent())) {

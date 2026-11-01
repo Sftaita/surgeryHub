@@ -8,6 +8,8 @@ import SearchablePicker, { type PickerItem } from "./SearchablePicker";
 import type { MissionEncodingInterventionEntry } from "../api/encoding.types";
 
 const apiGetMock = vi.fn();
+/** D-178 — entrée fixe « Aucune firme » en tête de la liste des firmes (libellé + précision). */
+const NO_FIRM_OPTION = "Aucune firmeInterventions autorisées sans firme";
 
 vi.mock("../../../api/apiClient", () => ({
   apiClient: {
@@ -38,18 +40,18 @@ const CHOICE_GROUP = {
 
 type Routes = {
   recentFirms?: Array<{ id: number; name: string }>;
-  /** firmId → types récents renvoyés par le backend. */
-  recentTypes?: Record<number, typeof TYPES>;
+  /** firmId (ou "none" = « Aucune firme ») → types récents renvoyés par le backend. */
+  recentTypes?: Record<number | string, typeof TYPES>;
   /** firmId → prestations de la firme. */
   offerings?: Record<number, unknown[]>;
 };
 
 function route(routes: Routes) {
-  apiGetMock.mockImplementation((url: string, config?: { params?: { firmId?: number } }) => {
+  apiGetMock.mockImplementation((url: string, config?: { params?: { firmId?: number | string } }) => {
     if (url.endsWith("/encoding-suggestions/firms")) return Promise.resolve({ data: { firms: routes.recentFirms ?? [] } });
     if (url.endsWith("/encoding-suggestions/intervention-types")) {
-      const firmId = config?.params?.firmId as number;
-      return Promise.resolve({ data: { firmId, surgeonId: 7, interventionTypes: routes.recentTypes?.[firmId] ?? [] } });
+      const firmId = config?.params?.firmId as number | string;
+      return Promise.resolve({ data: { firmId: firmId === "none" ? null : firmId, surgeonId: 7, interventionTypes: routes.recentTypes?.[firmId] ?? [] } });
     }
     const m = url.match(/\/api\/firms\/(\d+)\/service-offerings/);
     if (m) return Promise.resolve({ data: routes.offerings?.[Number(m[1])] ?? [] });
@@ -219,7 +221,7 @@ describe("AddInterventionDialog — firmes récemment utilisées (D-178)", () =>
 
     await screen.findByRole("group", { name: RECENT_FIRMS_TITLE });
     expect(within(recentGroup(RECENT_FIRMS_TITLE)).getAllByRole("option").map((o) => o.textContent)).toEqual(["Stryker", "Arthrex"]);
-    expect(within(recentGroup("Toutes les firmes")).getAllByRole("option").map((o) => o.textContent)).toEqual(["Medacta", "Éthicon"]);
+    expect(within(recentGroup("Toutes les firmes")).getAllByRole("option").map((o) => o.textContent)).toEqual([NO_FIRM_OPTION, "Medacta", "Éthicon"]);
     expect(suggestionCalls("firms")[0][0]).toBe("/api/missions/42/encoding-suggestions/firms");
   });
 
@@ -227,7 +229,7 @@ describe("AddInterventionDialog — firmes récemment utilisées (D-178)", () =>
     renderAdd();
     await waitFor(() => expect(suggestionCalls("firms")).toHaveLength(1));
     expect(screen.queryByRole("group", { name: RECENT_FIRMS_TITLE })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option")).toHaveLength(4);
+    expect(screen.getAllByRole("option")).toHaveLength(5); // « Aucune firme » + 4 firmes
   });
 
   it("une firme récente désactivée côté catalogue n'est pas proposée", async () => {
@@ -283,7 +285,7 @@ describe("AddInterventionDialog — firmes récemment utilisées (D-178)", () =>
     render(ui);
     await waitFor(() => expect(suggestionCalls("firms")).toHaveLength(2));
     expect(screen.queryByRole("group", { name: RECENT_FIRMS_TITLE })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["Arthrex", "Medacta", "Stryker", "Éthicon"]);
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([NO_FIRM_OPTION, "Arthrex", "Medacta", "Stryker", "Éthicon"]);
   });
 
   it("sans mission (aucun contexte), aucune suggestion n'est demandée", async () => {
@@ -501,5 +503,144 @@ describe("EditInterventionDialog — correction avec raccourcis (D-178)", () => 
     await user.click(await screen.findByRole("button", { name: "Enregistrer" }));
 
     expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 1, primaryFirmId: 10, representativePresent: null, selectedChoiceOptionId: 1 });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// D-178 — « Aucune firme »
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Types 3 et 4 autorisés sans firme par le manager (Catalogue › Interventions). */
+const TYPES_WITH_NO_FIRM = TYPES.map((t) => (t.id === 3 || t.id === 4 ? { ...t, allowedWithoutFirm: true } : t));
+
+describe("AddInterventionDialog — « Aucune firme » (D-178)", () => {
+  async function pickNoFirm(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("option", { name: /^Aucune firme/ }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+  }
+
+  it("n'affiche que les types autorisés sans firme, jamais tout le catalogue, et demande les récents « sans firme »", async () => {
+    const user = userEvent.setup();
+    route({ recentTypes: { none: [TYPES_WITH_NO_FIRM[3]] } });
+    renderAdd({ interventionTypes: TYPES_WITH_NO_FIRM });
+    await pickNoFirm(user);
+
+    await screen.findByRole("group", { name: RECENT_TYPES_TITLE });
+    expect(within(recentGroup(RECENT_TYPES_TITLE)).getAllByRole("option").map((o) => o.textContent)).toEqual(["LATARJET — Butée coracoïdienne"]);
+    expect(within(recentGroup("Interventions autorisées sans firme")).getAllByRole("option").map((o) => o.textContent)).toEqual(["OSTÉOTOMIE — Ostéotomie tibiale"]);
+    expect(screen.queryByRole("option", { name: /^LCA/ })).not.toBeInTheDocument();
+    expect(suggestionCalls("intervention-types")[0]).toEqual(["/api/missions/42/encoding-suggestions/intervention-types", { params: { firmId: "none" } }]);
+    expect(apiGetMock.mock.calls.some(([url]) => String(url).includes("/service-offerings"))).toBe(false);
+  });
+
+  it("encode sans firme : withoutFirm explicite, jamais de firme ni de question délégué", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderAdd({ interventionTypes: TYPES_WITH_NO_FIRM });
+    await pickNoFirm(user);
+    await user.click(screen.getByRole("option", { name: "OSTÉOTOMIE — Ostéotomie tibiale" }));
+    expect(screen.queryByText(/délégué/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 3, withoutFirm: true, orderIndex: 1 });
+  });
+
+  it("aucun type autorisé : rien n'est proposé et la demande au manager reste la seule voie", async () => {
+    const user = userEvent.setup();
+    const onSubmitDraft = vi.fn();
+    renderAdd({ interventionTypes: TYPES, onSubmitDraft });
+    await pickNoFirm(user);
+    expect(screen.getByText("Aucune intervention autorisée sans firme ne correspond.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Intervention absente du catalogue" }));
+    await user.type(screen.getByLabelText(/Type d'intervention souhaité/), "Plastie du quadriceps");
+    await user.click(screen.getByRole("button", { name: "Envoyer la demande" }));
+    expect(onSubmitDraft).toHaveBeenCalledWith(expect.objectContaining({ label: "Plastie du quadriceps", withoutFirm: true }));
+    expect(onSubmitDraft.mock.calls[0][0]).not.toHaveProperty("requestedFirmId");
+    expect(onSubmitDraft.mock.calls[0][0]).not.toHaveProperty("proposedFirmName");
+  });
+
+  it("revenir à une firme lève « Aucune firme »", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderAdd({ interventionTypes: TYPES_WITH_NO_FIRM });
+    await pickNoFirm(user);
+    await user.click(screen.getByRole("button", { name: "Changer" }));
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
+    await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
+    await user.click(await screen.findByRole("option", { name: /^LCA/ }));
+    await user.click(screen.getByRole("button", { name: "Ajouter" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ interventionTypeId: 1, primaryFirmId: 10 }));
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("withoutFirm");
+  });
+});
+
+describe("EditInterventionDialog — « Aucune firme » (D-178)", () => {
+  function entry(overrides: Partial<MissionEncodingInterventionEntry> = {}): MissionEncodingInterventionEntry {
+    return {
+      kind: "INTERVENTION", id: 5, requestId: null, orderIndex: 0, label: "OSTÉOTOMIE",
+      interventionType: TYPES_WITH_NO_FIRM[2], firm: { id: 10, name: "Arthrex" }, requestedFirmNameSnapshot: null,
+      status: "CATALOGUED", readOnly: false, materialLines: [], materialItemRequests: [],
+      representativePresent: null, selectedChoiceOptionId: null,
+      ...overrides,
+    } as MissionEncodingInterventionEntry;
+  }
+
+  function renderEditWith(e: MissionEncodingInterventionEntry, types = TYPES_WITH_NO_FIRM) {
+    const onSubmit = vi.fn();
+    render(
+      <QueryClientProvider client={client()}>
+        <EditInterventionDialog open loading={false} intervention={e} interventionTypes={types} firms={FIRMS}
+          onClose={vi.fn()} onSubmit={onSubmit} missionId={42} surgeonId={7} />
+      </QueryClientProvider>,
+    );
+    return { onSubmit };
+  }
+
+  it("passer à « Aucune firme » : réponse explicite envoyée, type conservé s'il est autorisé", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderEditWith(entry());
+    await user.click(screen.getByRole("button", { name: "Changer — Firme principale" }));
+    await user.click(screen.getByRole("option", { name: /^Aucune firme/ }));
+    expect(screen.getByTestId("edit-itv-firm-selected")).toHaveTextContent("Aucune firme");
+
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ interventionTypeId: 3, primaryFirmId: null, withoutFirm: true }));
+  });
+
+  it("passer à « Aucune firme » avec un type non autorisé : le type doit être re-choisi parmi les types autorisés", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderEditWith(entry({ interventionType: TYPES[0], label: "LCA" }));
+    await user.click(screen.getByRole("button", { name: "Changer — Firme principale" }));
+    await user.click(screen.getByRole("option", { name: /^Aucune firme/ }));
+
+    expect(screen.getByRole("button", { name: "Enregistrer" })).toBeDisabled();
+    const allowedGroup = recentGroup("Interventions autorisées sans firme");
+    expect(within(allowedGroup).getAllByRole("option").map((o) => o.textContent)).toEqual(["OSTÉOTOMIE — Ostéotomie tibiale", "LATARJET — Butée coracoïdienne"]);
+    await user.click(within(allowedGroup).getByRole("option", { name: "LATARJET — Butée coracoïdienne" }));
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ interventionTypeId: 4, primaryFirmId: null, withoutFirm: true }));
+  });
+
+  it("intervention déjà « Aucune firme » : enregistrer sans toucher la firme n'envoie aucune réponse (validité historique)", async () => {
+    const user = userEvent.setup();
+    // Autorisation retirée depuis par le manager : le type n'est plus autorisé dans le catalogue.
+    const { onSubmit } = renderEditWith(entry({ firm: null, withoutFirm: true }), TYPES);
+    expect(screen.getByTestId("edit-itv-firm-selected")).toHaveTextContent("Aucune firme");
+    expect(screen.getByTestId("edit-itv-type-selected")).toHaveTextContent("OSTÉOTOMIE — Ostéotomie tibiale");
+
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    const body = onSubmit.mock.calls[0][0];
+    expect(body.interventionTypeId).toBe(3);
+    expect(body).not.toHaveProperty("primaryFirmId");
+    expect(body).not.toHaveProperty("withoutFirm");
+  });
+
+  it("ancienne intervention dont la firme manque : corrigeable sans firme inventée, jamais marquée « Aucune firme »", async () => {
+    const user = userEvent.setup();
+    const { onSubmit } = renderEditWith(entry({ firm: null, withoutFirm: false, interventionType: TYPES[0], label: "LCA" }), TYPES);
+    await user.click(screen.getByRole("button", { name: "Enregistrer" }));
+    const body = onSubmit.mock.calls[0][0];
+    expect(body.interventionTypeId).toBe(1);
+    expect(body).not.toHaveProperty("primaryFirmId");
+    expect(body).not.toHaveProperty("withoutFirm");
   });
 });

@@ -201,8 +201,11 @@ export async function fetchRecentFirms(missionId: number): Promise<RecentFirmsRe
   return data;
 }
 
-/** D-178 — les deux derniers types distincts encodés avec cette firme pour le chirurgien de la mission. */
-export async function fetchRecentInterventionTypes(missionId: number, firmId: number): Promise<RecentInterventionTypesResponse> {
+/**
+ * D-178 — les deux derniers types distincts encodés avec cette firme pour le chirurgien de la
+ * mission ; `"none"` = encodés « Aucune firme » (types actuellement autorisés sans firme).
+ */
+export async function fetchRecentInterventionTypes(missionId: number, firmId: number | "none"): Promise<RecentInterventionTypesResponse> {
   const { data } = await apiClient.get<RecentInterventionTypesResponse>(
     `/api/missions/${missionId}/encoding-suggestions/intervention-types`,
     { params: { firmId } },

@@ -16084,3 +16084,36 @@ correction de firme ne la rafraîchit pas).
 - **Firmes récentes jamais conservées entre deux comptes** : le cache applicatif survit à une
   déconnexion sans rechargement ; les requêtes de suggestions ont `gcTime: 0` (libérées dès que la
   page d'encodage est démontée), sinon les firmes du compte précédent s'affichaient un instant.
+
+**Interventions sans firme (décision utilisateur 2026-11-01, amende D-146 bis).** Certaines
+interventions se réalisent réellement sans firme. Le parcours reste celui d'une firme :
+1. Étape 1 : une firme, « Ma firme n'est pas dans la liste » ou **« Aucune firme »**.
+2. « Aucune firme » n'affiche que les types que le manager autorise sans firme
+   (`intervention_type.allowed_without_firm`, Catalogue › Interventions) — jamais tout le catalogue.
+3. Type présent : intervention enregistrée sans firme, **marquée** `mission_intervention.without_firm`.
+4. Type absent : la demande d'intervention existante, marquée `mission_intervention_draft.without_firm`
+   (aucun nouveau système de demandes) ; à la résolution, l'information est conservée (une firme est
+   refusée) et les contrôles sont ceux d'un encodage direct : type autorisé sans firme, ou nouveau type
+   créé avec autorisation explicite.
+
+Règles (InterventionRequirementsService::assertFirmChoice(), partagé par création, correction et
+résolution — aucun contournement par l'API) : une firme OU « Aucune firme », jamais les deux ; une
+firme simplement absente reste refusée (D-146 bis) ; « Aucune firme » exige un type autorisé **au
+moment de l'encodage**. Sans firme principale, aucune prestation de firme : ni réponse délégué, ni
+choix obligatoire, ni forfait ; le matériel éventuel garde sa propre firme fabricante.
+
+**Validité historique.** Seul le marqueur de l'intervention compte pour la complétude
+(`missingFor()`), le calcul financier (pas d'anomalie `MISSING_PRIMARY_FIRM`, évaluation
+`WITHOUT_FIRM`) et la facturation firmes (motif `WITHOUT_FIRM`, non facturable). Retirer ensuite
+l'autorisation d'un type ne rend jamais invalide une intervention déjà marquée ; seuls les nouveaux
+encodages (création, nouvelle réponse à la question de la firme, nouveau type) sont refusés.
+
+**Interventions historiques sans firme.** Les 8 interventions de production sans firme (toutes
+antérieures à D-146 bis, aucune calculée ni facturée) restent `without_firm = false` : aucune
+validation rétroactive automatique. Une régularisation ciblée (marquer celles reconnues légitimes,
+ou leur attribuer la firme perdue à la résolution) relève d'une décision utilisateur distincte.
+En correction, une intervention dont la firme manque reste modifiable sans réponse inventée (la
+fenêtre n'envoie pas la firme tant qu'elle n'est pas choisie).
+
+Premier type candidat : `SUT-PLAS-TEND-QUAD` « Plastie/Suture du tendon quadricipital » (id 58),
+activé par le manager depuis le catalogue après déploiement — jamais par une écriture directe.

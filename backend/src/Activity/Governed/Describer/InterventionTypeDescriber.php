@@ -20,7 +20,7 @@ final class InterventionTypeDescriber extends AbstractGovernedDescriber
 
     public function trackedFields(): array
     {
-        return ['code' => 'Code', 'label' => 'Libellé', 'specialty' => 'Spécialité', 'active' => 'Actif', 'mergedInto' => 'Fusionné dans'];
+        return ['code' => 'Code', 'label' => 'Libellé', 'specialty' => 'Spécialité', 'active' => 'Actif', 'allowedWithoutFirm' => 'Autorisé sans firme', 'mergedInto' => 'Fusionné dans'];
     }
 
     public function describe(GovernedChange $c): ?ActivityRecord

@@ -91,7 +91,11 @@ class InterventionTypeRequestController extends AbstractController
         if ($dto->requestedFirmId !== null && $proposedFirmName !== '') {
             throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Choisissez une firme existante OU proposez une nouvelle firme, pas les deux.');
         }
-        if ($dto->requestedFirmId === null && $proposedFirmName === '') {
+        // D-178 — « Aucune firme » : exclusif d'une firme existante ou proposée.
+        if ($dto->withoutFirm && ($dto->requestedFirmId !== null || $proposedFirmName !== '')) {
+            throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Choisissez une firme OU « Aucune firme », pas les deux.');
+        }
+        if (!$dto->withoutFirm && $dto->requestedFirmId === null && $proposedFirmName === '') {
             throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_REQUIRED, 'Avec quelle firme cette intervention a-t-elle été réalisée ? Choisissez une firme ou indiquez « Ma firme n\'est pas dans la liste ».');
         }
 
@@ -109,7 +113,7 @@ class InterventionTypeRequestController extends AbstractController
             ->setComment($dto->comment)
             ->setCreatedBy($user);
 
-        $draft = $this->encodingLock->run($mission, fn () => $this->draftService->createForRequest($req, $requestedFirm, $user, $requestedFirm === null ? $proposedFirmName : null));
+        $draft = $this->encodingLock->run($mission, fn () => $this->draftService->createForRequest($req, $requestedFirm, $user, $requestedFirm === null ? $proposedFirmName : null, $dto->withoutFirm));
 
         // Follow-up D-093 — prévient les managers/admins (jamais bloquant, voir handler
         // async). Toujours après le flush transactionnel ci-dessus : la demande doit
@@ -139,6 +143,7 @@ class InterventionTypeRequestController extends AbstractController
                 name: (string) $requestedFirm->getName(),
             ) : null,
             'proposedFirmName' => $draft->getProposedFirmName(),
+            'withoutFirm' => $draft->isWithoutFirm(),
         ], Response::HTTP_CREATED);
     }
 }

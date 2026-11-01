@@ -9031,8 +9031,35 @@ sans chirurgien : liste vide. `firmId` absent/invalide → 400 `FIRM_ID_REQUIRED
 }
 ```
 
+`firmId=none` (« Aucune firme ») : derniers types encodés **sans firme** (`withoutFirm`) sur les
+missions du chirurgien, limités aux types actuellement actifs et autorisés sans firme ; une firme
+simplement absente (historique) n'y figure jamais. Réponse identique avec `"firmId": null`.
+
 Sélectionner une suggestion = envoyer son `id` à `POST /api/missions/{id}/interventions` (§8),
 inchangé : choix obligatoire, présence du délégué, firme obligatoire s'appliquent à l'identique.
 
 `GET /api/missions/{id}/encoding` expose en complément `mission.surgeonId` (clé de rafraîchissement
 des suggestions côté interface).
+
+## 48. Interventions sans firme (D-178)
+
+Le manager autorise un type d'intervention à être encodé « Aucune firme ». Seul ce choix explicite,
+enregistré sur l'intervention (`withoutFirm: true`), rend une intervention légitimement sans firme ;
+une firme simplement absente reste une donnée manquante (D-146 bis). Le paramétrage s'applique aux
+**nouveaux encodages** : une intervention déjà enregistrée sans firme garde sa validité si
+l'autorisation est retirée. Aucune règle n'est contournable par l'API.
+
+| Endpoint | Champ | Règle |
+|---|---|---|
+| `PATCH /api/intervention-types/{id}` (`BillingVoter::MANAGE`) | `allowedWithoutFirm: bool` | Autorise / retire. `GET /api/intervention-types` et le catalogue de `GET /api/missions/{id}/encoding` (`catalog.interventionTypes[].allowedWithoutFirm`) l'exposent. |
+| `POST /api/missions/{id}/interventions` | `withoutFirm: true` | Exclusif de `primaryFirmId` (422 si les deux). Refusé (422) si le type n'est pas autorisé sans firme. Sans firme : ni réponse délégué ni choix obligatoire (un choix fourni est refusé). Sans `primaryFirmId` ni `withoutFirm` : 422 (D-146 bis). |
+| `PATCH /api/missions/{id}/interventions/{iid}` | `withoutFirm: true` + `primaryFirmId: null` | Passage à « Aucune firme », contrôlé contre le catalogue actuel ; réponse délégué et choix effacés. `primaryFirmId: <id>` lève le marqueur. `primaryFirmId: null` seul : 422. Changer le type d'une intervention sans firme : nouveau type autorisé obligatoire. Une correction qui ne touche ni la firme ni le type ne revérifie rien. |
+| `POST /api/missions/{id}/intervention-type-requests` | `withoutFirm: true` | Troisième réponse à la question de la firme, exclusive de `requestedFirmId` / `proposedFirmName` (422 `FIRM_AMBIGUOUS`). Réponse et liste manager (`GET /api/intervention-type-requests`) : `withoutFirm`. |
+| `POST /api/intervention-type-requests/{id}/resolve` | — | Demande sans firme : `firmId` / `newFirmName` refusés (422) ; type existant autorisé sans firme, ou `newInterventionType: { code, label, allowedWithoutFirm: true }` (autorisation explicite, sinon 422 et transaction annulée). L'intervention créée est `withoutFirm: true`, auteur = auteur de la demande. |
+
+Lecture : `GET /api/missions/{id}/encoding` → `entries[].withoutFirm` (intervention ou demande).
+Complétude (soumission/validation) : une intervention `withoutFirm` est complète sans firme. Calcul
+financier : aucune ligne firme et jamais l'anomalie `MISSING_PRIMARY_FIRM` pour elle (évaluation
+`WITHOUT_FIRM`) ; son matériel garde sa propre firme. Facturation firmes : motif `WITHOUT_FIRM`
+« Réalisée sans firme » (non facturable).
+

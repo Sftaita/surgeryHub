@@ -119,6 +119,17 @@ class MissionIntervention implements MaterialAttachmentTarget
     private ?User $createdBy = null;
 
     /**
+     * D-178 — « Aucune firme » choisi explicitement, sur un type alors autorisé sans firme
+     * (InterventionType::$allowedWithoutFirm). Seule une intervention marquée ainsi est
+     * légitimement sans firme (complétude, calcul financier) ; une firme manquante sans ce
+     * marqueur reste une donnée manquante (D-146 bis). Exclusif de $primaryFirm. Jamais
+     * reconstruit pour l'historique : les lignes antérieures restent à false.
+     */
+    #[ORM\Column(options: ['default' => false])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private bool $withoutFirm = false;
+
+    /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MaterialLine::class)]
@@ -232,6 +243,17 @@ class MissionIntervention implements MaterialAttachmentTarget
     public function setSelectedChoiceOption(?ChoiceOption $selectedChoiceOption): static
     {
         $this->selectedChoiceOption = $selectedChoiceOption;
+        return $this;
+    }
+
+    public function isWithoutFirm(): bool
+    {
+        return $this->withoutFirm;
+    }
+
+    public function setWithoutFirm(bool $withoutFirm): static
+    {
+        $this->withoutFirm = $withoutFirm;
         return $this;
     }
 

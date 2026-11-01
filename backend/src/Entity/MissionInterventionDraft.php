@@ -95,6 +95,15 @@ class MissionInterventionDraft implements MaterialAttachmentTarget
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?string $proposedFirmName = null;
 
+    /**
+     * D-178 — demande faite après le choix explicite « Aucune firme » : exclusif de
+     * $requestedFirm et de $proposedFirmName. Conservé tel quel jusqu'à la résolution, qui
+     * crée l'intervention sans firme avec les mêmes contrôles qu'un encodage direct.
+     */
+    #[ORM\Column(options: ['default' => false])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private bool $withoutFirm = false;
+
     /** Figé à la création par MissionEntryOrderAllocator (pas encore introduit). */
     #[ORM\Column(type: 'smallint')]
     #[Groups(['mission:read', 'mission:read_manager'])]
@@ -207,6 +216,17 @@ class MissionInterventionDraft implements MaterialAttachmentTarget
     public function setProposedFirmName(?string $proposedFirmName): static
     {
         $this->proposedFirmName = $proposedFirmName;
+        return $this;
+    }
+
+    public function isWithoutFirm(): bool
+    {
+        return $this->withoutFirm;
+    }
+
+    public function setWithoutFirm(bool $withoutFirm): static
+    {
+        $this->withoutFirm = $withoutFirm;
         return $this;
     }
 

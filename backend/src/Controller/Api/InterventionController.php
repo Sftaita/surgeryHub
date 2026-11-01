@@ -105,6 +105,11 @@ class InterventionController extends AbstractController
             $dto->primaryFirmId = $body['primaryFirmId'] !== null ? (int) $body['primaryFirmId'] : null;
         }
 
+        if (array_key_exists('withoutFirm', $body) && $body['withoutFirm'] !== null) {
+            $dto->withoutFirmProvided = true;
+            $dto->withoutFirm = (bool) $body['withoutFirm'];
+        }
+
         if (array_key_exists('orderIndex', $body) && $body['orderIndex'] !== null) {
             $dto->orderIndex = (int) $body['orderIndex'];
         }

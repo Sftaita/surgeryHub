@@ -2,7 +2,7 @@ import * as React from "react";
 import {
   Autocomplete, Box, Button, Chip, CircularProgress, Dialog, DialogActions,
   DialogContent, DialogContentText, DialogTitle, Divider, IconButton, Paper, Stack,
-  Table, TableBody, TableCell, TableContainer, TableHead,
+  Switch, Table, TableBody, TableCell, TableContainer, TableHead,
   TableRow, TextField, Tooltip, Typography,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
@@ -89,6 +89,18 @@ export function InterventionTypesManager({ showHeader = true, onOpenDetail }: In
   const toggleActiveMutation = useMutation({
     mutationFn: ({ id, active }: { id: number; active: boolean }) => updateInterventionType(id, { active }),
     onSuccess: invalidate,
+    onError: (e) => toast.error(extractError(e)),
+  });
+  // D-178 — « Autorisé sans firme » : s'applique aux nouveaux encodages ; une intervention déjà
+  // enregistrée sans firme garde sa validité si l'autorisation est retirée.
+  const toggleWithoutFirmMutation = useMutation({
+    mutationFn: ({ id, allowedWithoutFirm }: { id: number; allowedWithoutFirm: boolean }) => updateInterventionType(id, { allowedWithoutFirm }),
+    onSuccess: (t) => {
+      toast.success(t.allowedWithoutFirm
+        ? `« ${t.label} » peut désormais être encodée sans firme.`
+        : `« ${t.label} » ne peut plus être encodée sans firme (les interventions déjà enregistrées restent valides).`);
+      invalidate();
+    },
     onError: (e) => toast.error(extractError(e)),
   });
   const deleteMutation = useMutation({
@@ -188,6 +200,11 @@ export function InterventionTypesManager({ showHeader = true, onOpenDetail }: In
                 <TableCell>Spécialité</TableCell>
                 <TableCell align="right">Firmes</TableCell>
                 <TableCell>Statut</TableCell>
+                <TableCell>
+                  <Tooltip title="Proposé sous « Aucune firme » lors de l'encodage (nouveaux encodages seulement)">
+                    <span>Sans firme</span>
+                  </Tooltip>
+                </TableCell>
                 <TableCell align="right" sx={{ width: 130 }}>Actions</TableCell>
               </TableRow>
             </TableHead>
@@ -222,6 +239,15 @@ export function InterventionTypesManager({ showHeader = true, onOpenDetail }: In
                     <ActiveBadge
                       active={t.active}
                       onClick={() => toggleActiveMutation.mutate({ id: t.id, active: !t.active })}
+                    />
+                  </TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <Switch
+                      size="small"
+                      checked={t.allowedWithoutFirm === true}
+                      disabled={!!t.mergedIntoId || toggleWithoutFirmMutation.isPending}
+                      onChange={(e) => toggleWithoutFirmMutation.mutate({ id: t.id, allowedWithoutFirm: e.target.checked })}
+                      slotProps={{ input: { "aria-label": `Autoriser « ${t.label} » sans firme` } }}
                     />
                   </TableCell>
                   <TableCell align="right">

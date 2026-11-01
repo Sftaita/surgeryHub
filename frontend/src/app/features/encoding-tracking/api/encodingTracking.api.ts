@@ -233,7 +233,7 @@ export interface FinancialAnomaly {
 }
 
 export interface FinancialCurrentResolution {
-  kind: "LINE" | "FEE_NOT_APPLICABLE" | "MATERIAL_NOT_BILLABLE" | "ANOMALY" | "ELEMENT_REMOVED" | "RESOLVED" | null;
+  kind: "LINE" | "FEE_NOT_APPLICABLE" | "MATERIAL_NOT_BILLABLE" | "WITHOUT_FIRM" | "ANOMALY" | "ELEMENT_REMOVED" | "RESOLVED" | null;
   /** Libellé français fourni par le backend. */
   label: string | null;
   rule: FinancialTargetRule | null;

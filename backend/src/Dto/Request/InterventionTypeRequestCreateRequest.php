@@ -35,4 +35,11 @@ class InterventionTypeRequestCreateRequest
     #[Assert\Type('string')]
     #[Assert\Length(max: 150)]
     public ?string $proposedFirmName = null;
+
+    /**
+     * D-178 — « Aucune firme » choisi explicitement : troisième réponse possible, exclusive
+     * des deux autres. L'intervention sera créée sans firme à la résolution, avec les mêmes
+     * contrôles qu'un encodage direct (type autorisé sans firme).
+     */
+    public bool $withoutFirm = false;
 }

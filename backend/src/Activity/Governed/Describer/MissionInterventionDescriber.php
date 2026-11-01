@@ -22,7 +22,7 @@ final class MissionInterventionDescriber extends AbstractGovernedDescriber
     public function trackedFields(): array
     {
         return [
-            'interventionType' => 'Type d\'intervention', 'code' => 'Code', 'label' => 'Libellé', 'primaryFirm' => 'Firme',
+            'interventionType' => 'Type d\'intervention', 'code' => 'Code', 'label' => 'Libellé', 'primaryFirm' => 'Firme', 'withoutFirm' => 'Sans firme',
             'representativePresent' => 'Délégué de la firme présent', 'selectedChoiceOption' => 'Choix obligatoire',
         ];
     }

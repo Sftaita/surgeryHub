@@ -103,10 +103,10 @@ describe("AddInterventionDialog — parcours firme puis intervention", () => {
     expect(onSubmit).toHaveBeenCalledWith({ interventionTypeId: 2, primaryFirmId: 10, orderIndex: 2 });
   });
 
-  it("D-146 bis — aucune option « Aucune firme » : chaque intervention a une firme", async () => {
+  it("D-178 — « Aucune firme » est un choix explicite à l'étape 1, à côté de « Ma firme n'est pas dans la liste »", async () => {
     renderDialog();
 
-    expect(screen.queryByText(/Aucune firme/)).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /^Aucune firme/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Ma firme n'est pas dans la liste" })).toBeInTheDocument();
   });
 

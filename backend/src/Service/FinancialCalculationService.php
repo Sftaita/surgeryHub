@@ -443,7 +443,8 @@ final class FinancialCalculationService
             if ($spec !== null) {
                 $lineSpecs[] = $spec;
             }
-            $outcomes['MISSION_INTERVENTION:' . $intervention->getId()] = $this->outcome($spec, array_slice($anomalies, $before), MissionFinancialEvaluation::FEE_NOT_APPLICABLE);
+            $outcomes['MISSION_INTERVENTION:' . $intervention->getId()] = $this->outcome($spec, array_slice($anomalies, $before),
+                $intervention->getPrimaryFirm() === null && $intervention->isWithoutFirm() ? MissionFinancialEvaluation::WITHOUT_FIRM : MissionFinancialEvaluation::FEE_NOT_APPLICABLE);
         }
 
         foreach ($instrumentistOnly ? [] : $mission->getMaterialLines() as $materialLine) {
@@ -566,6 +567,12 @@ final class FinancialCalculationService
         $firm = $intervention->getPrimaryFirm();
         $interventionType = $intervention->getInterventionType();
 
+        // D-178 — « Aucune firme » explicitement enregistré : aucune prestation de firme, donc
+        // aucune ligne firme et aucune anomalie (son matériel garde sa propre firme). Une firme
+        // simplement absente reste l'anomalie MISSING_PRIMARY_FIRM.
+        if ($firm === null && $intervention->isWithoutFirm()) {
+            return null;
+        }
         if ($firm === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_PRIMARY_FIRM',

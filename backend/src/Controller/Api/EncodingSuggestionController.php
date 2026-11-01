@@ -50,6 +50,18 @@ class EncodingSuggestionController extends AbstractController
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
 
         $firmId = $request->query->get('firmId');
+
+        // D-178 — « Aucune firme » : interventions récentes sans firme de ce chirurgien.
+        if ($firmId === 'none') {
+            $surgeon = $mission->getSurgeon();
+
+            return $this->json([
+                'firmId' => null,
+                'surgeonId' => $surgeon?->getId(),
+                'interventionTypes' => $surgeon !== null ? $this->suggestions->recentInterventionTypesWithoutFirmFor($surgeon) : [],
+            ]);
+        }
+
         if ($firmId === null || !ctype_digit((string) $firmId)) {
             return $this->json(['error' => ['status' => 400, 'code' => 'FIRM_ID_REQUIRED', 'message' => 'Le paramètre firmId est requis.']], 400);
         }

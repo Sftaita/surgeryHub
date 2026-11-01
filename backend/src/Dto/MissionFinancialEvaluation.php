@@ -18,6 +18,7 @@ namespace App\Dto;
  *   kind = LINE                  : une ligne FIRM serait produite (rule = règle résolue) ;
  *          FEE_NOT_APPLICABLE    : aucun forfait prévu (FirmServiceOffering.feeApplicable=false) ;
  *          MATERIAL_NOT_BILLABLE : matériel marqué « non facturable » ;
+ *          WITHOUT_FIRM          : intervention enregistrée « Aucune firme » (D-178) — aucune prestation de firme ;
  *          ANOMALY               : l'élément bloque le calcul (anomalyCodes).
  */
 final readonly class MissionFinancialEvaluation
@@ -25,6 +26,7 @@ final readonly class MissionFinancialEvaluation
     public const LINE = 'LINE';
     public const FEE_NOT_APPLICABLE = 'FEE_NOT_APPLICABLE';
     public const MATERIAL_NOT_BILLABLE = 'MATERIAL_NOT_BILLABLE';
+    public const WITHOUT_FIRM = 'WITHOUT_FIRM';
     public const ANOMALY = 'ANOMALY';
 
     /**

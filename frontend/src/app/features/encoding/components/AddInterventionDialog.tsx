@@ -22,8 +22,12 @@ const BORDER_DEFAULT = GRAY_200;
 
 /** Sentinel jamais atteignable par un vrai id de type (toujours positifs en base). */
 const NOT_IN_CATALOG = -1;
+/** D-178 — sentinel de l'entrée « Aucune firme » dans la liste des firmes (ids toujours positifs). */
+export const NO_FIRM_ITEM_ID = -2;
+export const NO_FIRM_LABEL = "Aucune firme";
+export const NO_FIRM_ITEM: PickerItem = { id: NO_FIRM_ITEM_ID, primary: NO_FIRM_LABEL, secondary: "Interventions autorisées sans firme" };
 
-/** D-146 bis — question posée pour chaque intervention (jamais « Aucune firme »). */
+/** D-146 bis — question posée pour chaque intervention ; D-178 — « Aucune firme » n'ouvre que les types autorisés sans firme. */
 export const FIRM_QUESTION = "Avec quelle firme cette intervention a-t-elle été réalisée ?";
 
 type Step = 1 | 2;
@@ -35,6 +39,8 @@ export type DraftSubmitValues = {
   requestedFirmId?: number;
   /** D-146 bis — firme absente du référentiel, proposée au manager (jamais créée ici). */
   proposedFirmName?: string;
+  /** D-178 — demande faite « Aucune firme ». */
+  withoutFirm?: true;
 };
 
 type Props = {
@@ -104,6 +110,8 @@ export default function AddInterventionDialog({
   const [selectedFirm, setSelectedFirm] = React.useState<CatalogFirm | null>(null);
   /** Non null = « Ma firme n'est pas dans la liste » : seule une demande est possible. */
   const [proposedFirmName, setProposedFirmName] = React.useState<string | null>(null);
+  /** D-178 — « Aucune firme » choisi explicitement. */
+  const [withoutFirm, setWithoutFirm] = React.useState(false);
 
   const [typeId, setTypeId] = React.useState<number | null>(null);
   const [representativePresent, setRepresentativePresent] = React.useState<RepresentativeAnswer>(null);
@@ -121,6 +129,7 @@ export default function AddInterventionDialog({
     setFirmQuery("");
     setSelectedFirm(null);
     setProposedFirmName(null);
+    setWithoutFirm(false);
     setTypeId(null);
     setRepresentativePresent(null);
     setSelectedChoiceOptionId(null);
@@ -132,7 +141,7 @@ export default function AddInterventionDialog({
   const activeFirms = firms.filter((f) => f.active !== false);
 
   const firmId = selectedFirm?.id ?? null;
-  const firmName = selectedFirm?.name ?? proposedFirmName?.trim() ?? "";
+  const firmName = withoutFirm ? NO_FIRM_LABEL : selectedFirm?.name ?? proposedFirmName?.trim() ?? "";
 
   // Prestations de la firme choisie — accélérateur de saisie, jamais une restriction dure
   // (voir FirmServiceOfferingController) : si la firme n'en a aucune, on retombe sur le
@@ -146,14 +155,19 @@ export default function AddInterventionDialog({
   const firmTypes = (offeringsQuery.data ?? [])
     .filter((o) => o.active !== false)
     .map((o) => o.interventionType);
-  const typesToShow = firmId != null && firmTypes.length > 0 ? firmTypes : interventionTypes;
+  // D-178 — « Aucune firme » : uniquement les types que le manager autorise sans firme, jamais
+  // tout le catalogue (une intervention absente passe par la demande au manager).
+  const typesToShow = withoutFirm
+    ? interventionTypes.filter((t) => t.allowedWithoutFirm === true)
+    : firmId != null && firmTypes.length > 0 ? firmTypes : interventionTypes;
 
   const recentFirmsQuery = useRecentFirms(missionId, open);
-  const recentTypesQuery = useRecentInterventionTypes(missionId, firmId, surgeonId, open);
+  const recentTypesQuery = useRecentInterventionTypes(missionId, withoutFirm ? "none" : firmId, surgeonId, open);
 
   function pickFirm(firm: CatalogFirm) {
     setSelectedFirm(firm);
     setProposedFirmName(null);
+    setWithoutFirm(false);
     setTypeId(null);
     setRepresentativePresent(null);
     setSelectedChoiceOptionId(null);
@@ -167,7 +181,19 @@ export default function AddInterventionDialog({
     if (name === "") return;
     setSelectedFirm(null);
     setProposedFirmName(name);
+    setWithoutFirm(false);
     setTypeId(NOT_IN_CATALOG);
+    setRepresentativePresent(null);
+    setSelectedChoiceOptionId(null);
+    setStep(2);
+  }
+
+  /** D-178 — « Aucune firme » : même parcours qu'une firme, liste des types autorisés sans firme. */
+  function pickNoFirm() {
+    setSelectedFirm(null);
+    setProposedFirmName(null);
+    setWithoutFirm(true);
+    setTypeId(null);
     setRepresentativePresent(null);
     setSelectedChoiceOptionId(null);
     setStep(2);
@@ -194,7 +220,7 @@ export default function AddInterventionDialog({
 
   const notInCatalog = typeId === NOT_IN_CATALOG;
   const canSubmitIntervention =
-    !notInCatalog && typeId != null && firmId != null && !loading
+    !notInCatalog && typeId != null && (firmId != null || withoutFirm) && !loading
     && (!showRepresentativeQuestion || representativePresent !== null)
     && (!showChoiceQuestion || selectedChoiceOptionId !== null);
   const canSubmitDraft = notInCatalog && draftLabel.trim() !== "" && !loading;
@@ -206,14 +232,14 @@ export default function AddInterventionDialog({
         label: draftLabel.trim(),
         suggestedCode: draftSuggestedCode.trim() || undefined,
         comment: draftComment.trim() || undefined,
-        ...(firmId != null ? { requestedFirmId: firmId } : { proposedFirmName: (proposedFirmName ?? "").trim() }),
+        ...(withoutFirm ? { withoutFirm: true as const } : firmId != null ? { requestedFirmId: firmId } : { proposedFirmName: (proposedFirmName ?? "").trim() }),
       });
       return;
     }
-    if (typeId == null || firmId == null) return;
+    if (typeId == null || (firmId == null && !withoutFirm)) return;
     onSubmit({
       interventionTypeId: typeId,
-      primaryFirmId: firmId,
+      ...(withoutFirm ? { withoutFirm: true as const } : { primaryFirmId: firmId as number }),
       orderIndex: existingCount,
       ...(showRepresentativeQuestion && representativePresent !== null ? representativeAnswerBody(representativePresent) : {}),
       ...(showChoiceQuestion && selectedChoiceOptionId !== null ? { selectedChoiceOptionId } : {}),
@@ -236,13 +262,13 @@ export default function AddInterventionDialog({
               id="add-itv-firm"
               searchLabel="Rechercher une firme"
               searchPlaceholder="Rechercher une firme…"
-              items={activeFirms.map(firmPickerItem)}
+              items={[NO_FIRM_ITEM, ...activeFirms.map(firmPickerItem)]}
               recent={(recentFirmsQuery.data?.firms ?? []).map(firmPickerItem)}
               recentTitle={RECENT_FIRMS_TITLE}
               recentLoading={recentFirmsQuery.isLoading}
               allTitle="Toutes les firmes"
               emptyText="Aucune firme ne correspond."
-              onSelect={(id) => { const firm = activeFirms.find((f) => f.id === id); if (firm) pickFirm(firm); }}
+              onSelect={(id) => { if (id === NO_FIRM_ITEM_ID) { pickNoFirm(); return; } const firm = activeFirms.find((f) => f.id === id); if (firm) pickFirm(firm); }}
               onQueryChange={setFirmQuery}
               disabled={loading}
             />
@@ -339,8 +365,8 @@ export default function AddInterventionDialog({
                 recent={(recentTypesQuery.data?.interventionTypes ?? []).map(typePickerItem)}
                 recentTitle={RECENT_TYPES_TITLE}
                 recentLoading={recentTypesQuery.isLoading}
-                allTitle={firmTypes.length > 0 ? "Interventions de la firme" : "Toutes les interventions"}
-                emptyText="Aucune intervention ne correspond."
+                allTitle={withoutFirm ? "Interventions autorisées sans firme" : firmTypes.length > 0 ? "Interventions de la firme" : "Toutes les interventions"}
+                emptyText={withoutFirm ? "Aucune intervention autorisée sans firme ne correspond." : "Aucune intervention ne correspond."}
                 value={selectedTypeItem}
                 onSelect={pickType}
                 disabled={loading}

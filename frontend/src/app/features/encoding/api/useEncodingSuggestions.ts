@@ -21,10 +21,10 @@ export function useRecentFirms(missionId: number | undefined, enabled: boolean) 
 }
 
 /** Clé = mission × firme × chirurgien de la mission : un changement de l'un recalcule. */
-export function useRecentInterventionTypes(missionId: number | undefined, firmId: number | null, surgeonId: number | null | undefined, enabled: boolean) {
+export function useRecentInterventionTypes(missionId: number | undefined, firmId: number | "none" | null, surgeonId: number | null | undefined, enabled: boolean) {
   return useQuery({
     queryKey: ["encodingSuggestions", missionId, "interventionTypes", firmId, surgeonId ?? null],
-    queryFn: () => fetchRecentInterventionTypes(missionId as number, firmId as number),
+    queryFn: () => fetchRecentInterventionTypes(missionId as number, firmId as number | "none"),
     enabled: enabled && missionId != null && firmId != null,
     staleTime: 0,
     gcTime: 0,

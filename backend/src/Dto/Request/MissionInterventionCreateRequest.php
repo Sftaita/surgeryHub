@@ -21,6 +21,12 @@ class MissionInterventionCreateRequest
     public ?int $primaryFirmId = null;
 
     /**
+     * D-178 — « Aucune firme » choisi explicitement (exclusif de primaryFirmId) : accepté
+     * uniquement pour un type autorisé sans firme (InterventionRequirementsService::assertFirmChoice()).
+     */
+    public bool $withoutFirm = false;
+
+    /**
      * Refonte Catalogue/Prestations (D-092) — donnée factuelle facultative à la
      * création : la question n'est affichée par le frontend que si
      * FirmServiceOffering.representativePresenceRelevant est vrai pour (firm, type),
