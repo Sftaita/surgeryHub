@@ -16151,6 +16151,10 @@ interdite (`BillingVoter::MANAGE`). Conception figée : `docs/design/Instruction
    implémentation des notifications et du menu compte. Les tokens CSS sont portés sur `.mh`
    (comme `mission-drawer.css`), jamais sur `:root` : aucun effet sur les autres écrans.
    Le contenu s'élargit à 1200 px sur cette seule route (tableau desktop).
+6. Consultation au forfait (validé par l'utilisateur le 2026-11-01) : elle garde son forfait
+   même sans durée réelle encodée — comportement du moteur, inchangé — mais n'ajoute jamais
+   d'heures aux compteurs (0 h, « Heures non renseignées »). L'écran l'étiquette
+   « Forfait consultation » (liste et colonne Tarif), distinct d'une estimation horaire.
 
 **Limites.** Le mois d'appartenance est celui du `startAt` planifié (comme les autres listes) ;
 une mission décalée d'un jour sur un autre mois par ses heures réelles reste dans son mois

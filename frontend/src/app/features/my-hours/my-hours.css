@@ -172,6 +172,7 @@
 .mh-row__surgeon { font-size: 14.5px; font-weight: 700; color: var(--gray-900); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mh-row__site { font-size: 13px; color: var(--gray-600); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mh-row__body .mh-status { margin-top: 4px; }
+.mh-fee-tag { align-self: flex-start; margin-top: 4px; padding: 1px 8px; border-radius: 999px; background: var(--gray-75); color: var(--gray-700); font-size: 11.5px; font-weight: 700; white-space: nowrap; }
 .mh-row__chev { flex: none; display: flex; color: var(--gray-300); }
 
 /* ---- Piste DÉBUT | DURÉE TOTALE | FIN (heures encodées seules, toujours neutre) ---- */

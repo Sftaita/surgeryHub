@@ -264,11 +264,16 @@ function Track({ p }: { p: MyHoursItem }) {
   );
 }
 
+/** Consultation valorisée au forfait : jamais une estimation horaire, jamais d'heures fictives. */
+function isFlatFee(p: MyHoursItem): boolean {
+  return p.estimate?.rateType === "CONSULTATION_FEE";
+}
+
 function rowLabel(p: MyHoursItem): string {
   const hours = p.minutes === null
     ? "heures non renseignées"
     : `${duration(p.minutes)}${p.start && p.end ? `, de ${clock(p.start)} à ${clock(p.end)}${p.endsNextDay ? " le lendemain" : ""}` : ""}`;
-  return `${dateLong(p.date)}, ${p.surgeonName ?? "chirurgien non renseigné"}, ${p.site.name}, ${hours}`;
+  return `${dateLong(p.date)}, ${p.surgeonName ?? "chirurgien non renseigné"}, ${p.site.name}, ${hours}${isFlatFee(p) ? ", forfait consultation" : ""}`;
 }
 
 function PrestationList({ items, onOpen }: { items: MyHoursItem[]; onOpen: (id: number) => void }) {
@@ -282,6 +287,7 @@ function PrestationList({ items, onOpen }: { items: MyHoursItem[]; onOpen: (id: 
             <span className="mh-row__body">
               <span className="mh-row__surgeon">{p.surgeonName ?? "Chirurgien non renseigné"}</span>
               <span className="mh-row__site">{p.site.name}</span>
+              {isFlatFee(p) && <span className="mh-fee-tag">Forfait consultation</span>}
               <StatusLabel status={p.status} />
             </span>
             <span className="mh-row__chev"><ChevronRight /></span>
@@ -295,7 +301,7 @@ function PrestationList({ items, onOpen }: { items: MyHoursItem[]; onOpen: (id: 
 
 function rateCell(p: MyHoursItem): string {
   if (!p.estimate) return "—";
-  return p.estimate.rateType === "HOURLY_RATE" ? hourlyRate(p.estimate.unitAmount) : "forfait";
+  return p.estimate.rateType === "HOURLY_RATE" ? hourlyRate(p.estimate.unitAmount) : "Forfait consultation";
 }
 
 function PrestationTable({ items, summary, estimate, scope, onOpen }: { items: MyHoursItem[]; summary: MyHoursSummary; estimate: MyHoursEstimate | null; scope: string; onOpen: (id: number) => void }) {

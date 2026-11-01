@@ -193,6 +193,32 @@ describe("MyHoursPage (D-179)", () => {
     expect(screen.getByRole("button", { name: /5h00, de 22h00 à 03h00 le lendemain/ })).toBeInTheDocument();
   });
 
+  it("consultation au forfait : libellé « Forfait consultation », distinct d'une estimation horaire, aucune heure fictive", async () => {
+    const consultation = item({ missionId: 21, date: `${MONTH}-08`, start: null, end: null, minutes: null, durationSource: null, missionType: "CONSULTATION", status: "validated", estimate: { rateType: "CONSULTATION_FEE", unitAmount: "120.00", amount: "120.00", currency: "EUR" } });
+    const statement: MyHoursStatement = {
+      ...ALL,
+      sites: [{ id: 1, name: "CHU Brugmann", count: 2 }],
+      summary: { count: 2, encodedMinutes: 510, validatedMinutes: 0, pendingMinutes: 510, validatedPct: 0, missingHoursCount: 1 },
+      items: [item({ missionId: 20 }), consultation],
+    };
+    (fetchMyHours as Mock).mockResolvedValue(statement);
+    const { unmount } = renderPage();
+
+    const row = await screen.findByRole("button", { name: /heures non renseignées, forfait consultation$/ });
+    expect(within(row).getByText("Forfait consultation")).toBeInTheDocument();
+    expect(within(row).getByText("Heures non renseignées")).toBeInTheDocument();
+    expect(within(screen.getByRole("button", { name: /8h30, de 07h30 à 16h00$/ })).queryByText("Forfait consultation")).not.toBeInTheDocument();
+    expect(screen.getAllByText("8h30").length).toBeGreaterThan(0);
+    unmount();
+
+    (useMediaQuery as unknown as Mock).mockReturnValue(true);
+    renderPage();
+    const tableRow = await screen.findByRole("button", { name: /forfait consultation$/ });
+    expect(within(tableRow).getByText("Forfait consultation")).toBeInTheDocument();
+    expect(within(tableRow).getByText("120,00 €")).toBeInTheDocument();
+    expect(within(screen.getByRole("button", { name: /8h30, de 07h30 à 16h00$/ })).getByText("42,00 €/h")).toBeInTheDocument();
+  });
+
   it("erreur de chargement : message et nouvel essai", async () => {
     (fetchMyHours as Mock).mockRejectedValueOnce(new Error("network")).mockResolvedValue(ALL);
     renderPage();
