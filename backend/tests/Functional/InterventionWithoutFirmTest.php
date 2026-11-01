@@ -3,6 +3,7 @@
 namespace App\Tests\Functional;
 
 use App\Dto\MissionFinancialEvaluation;
+use App\Entity\ChoiceOption;
 use App\Entity\Firm;
 use App\Entity\FirmServiceOffering;
 use App\Entity\Hospital;
@@ -13,6 +14,7 @@ use App\Entity\MaterialLine;
 use App\Entity\Mission;
 use App\Entity\MissionIntervention;
 use App\Entity\MissionInterventionDraft;
+use App\Entity\RequiredChoiceGroup;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -39,7 +41,7 @@ final class InterventionWithoutFirmTest extends WebTestCase
     private const TZ = 'Europe/Brussels';
 
     private EntityManagerInterface $em;
-    private array $createdIds = ['missions' => [], 'users' => [], 'sites' => [], 'firms' => [], 'types' => [], 'offerings' => [], 'items' => []];
+    private array $createdIds = ['missions' => [], 'users' => [], 'sites' => [], 'firms' => [], 'types' => [], 'offerings' => [], 'items' => [], 'groups' => [], 'options' => []];
     /** @var list<string> codes de types créés via l'API (résolution d'une demande) */
     private array $createdTypeCodes = [];
 
@@ -62,6 +64,10 @@ final class InterventionWithoutFirmTest extends WebTestCase
                 $conn->executeStatement('DELETE FROM mission_intervention WHERE mission_id = ?', [$id]);
             }
             foreach ($this->createdIds['missions'] as $id) { $e = $this->em->find(Mission::class, $id); if ($e) $this->em->remove($e); }
+            $this->em->flush();
+            foreach ($this->createdIds['options'] as $id) { $e = $this->em->find(ChoiceOption::class, $id); if ($e) $this->em->remove($e); }
+            $this->em->flush();
+            foreach ($this->createdIds['groups'] as $id) { $e = $this->em->find(RequiredChoiceGroup::class, $id); if ($e) $this->em->remove($e); }
             $this->em->flush();
             foreach ($this->createdIds['offerings'] as $id) { $e = $this->em->find(FirmServiceOffering::class, $id); if ($e) $this->em->remove($e); }
             foreach ($this->createdIds['items'] as $id) { $e = $this->em->find(MaterialItem::class, $id); if ($e) $this->em->remove($e); }
@@ -193,6 +199,90 @@ final class InterventionWithoutFirmTest extends WebTestCase
         $other = $this->intervention($mission, $notAllowed, $firm);
         $this->request($client, 'PATCH', "/api/missions/{$mission->getId()}/interventions/{$other->getId()}", $token, ['primaryFirmId' => null, 'withoutFirm' => true]);
         self::assertSame(422, $client->getResponse()->getStatusCode());
+    }
+
+    /**
+     * Passer d'une firme avec choix tarifaire à « Aucune firme » efface le choix et la réponse
+     * délégué, mais ne supprime ni ne modifie jamais le matériel encodé : la confirmation
+     * (confirmRemoveIncompatibleMaterial) ne porte que sur un passage vers un AUTRE choix, et
+     * revenir à la firme avec un autre choix la redemande. Aucun contournement par l'API.
+     */
+    public function test_switching_to_without_firm_never_removes_material_nor_bypasses_the_choice_confirmation(): void
+    {
+        $client = $this->boot();
+        [$surgeon, $instr, $site] = $this->people();
+        $mission = $this->mission($surgeon, $instr, $site);
+        $type = $this->type('TLIF', allowedWithoutFirm: true);
+        $firm = $this->firm('Medtronic');
+        $signatureItem = $this->item($firm);
+        $alteraItem = $this->item($firm);
+        [$signature, $altera] = $this->choiceGroup($firm, $type, $signatureItem, $alteraItem);
+        $otherItem = $this->item($this->firm('Arthrex'));
+        $token = $this->login($client, $instr);
+        $base = "/api/missions/{$mission->getId()}/interventions";
+
+        $this->request($client, 'POST', $base, $token, ['interventionTypeId' => $type->getId(), 'primaryFirmId' => $firm->getId(), 'selectedChoiceOptionId' => $signature->getId()]);
+        self::assertSame(Response::HTTP_CREATED, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+        $id = json_decode((string) $client->getResponse()->getContent(), true)['id'];
+        $signatureLine = $this->materialLine($mission, $id, $signatureItem, $instr);
+        $otherLine = $this->materialLine($mission, $id, $otherItem, $instr);
+        $uri = "{$base}/{$id}";
+        $snapshot = fn (): array => $this->em->getConnection()->fetchAllAssociative(
+            'SELECT id, mission_intervention_id, item_id, quantity FROM material_line WHERE mission_id = ? ORDER BY id', [$mission->getId()],
+        );
+        $before = $snapshot();
+        self::assertCount(2, $before);
+
+        // Un choix fourni avec « Aucune firme » est refusé (jamais ignoré), même avec confirmation : rien ne change.
+        $this->request($client, 'PATCH', $uri, $token, ['withoutFirm' => true, 'primaryFirmId' => null, 'selectedChoiceOptionId' => $altera->getId(), 'confirmRemoveIncompatibleMaterial' => true]);
+        self::assertSame(422, $client->getResponse()->getStatusCode());
+        $this->em->clear();
+        $i = $this->em->find(MissionIntervention::class, $id);
+        self::assertSame($firm->getId(), $i->getPrimaryFirm()?->getId());
+        self::assertSame($signature->getId(), $i->getSelectedChoiceOption()?->getId());
+        self::assertSame($before, $snapshot());
+
+        // Le PATCH du risque signalé : withoutFirm + primaryFirmId null, sans selectedChoiceOptionId.
+        $this->request($client, 'PATCH', $uri, $token, ['withoutFirm' => true, 'primaryFirmId' => null]);
+        self::assertSame(204, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+        $this->em->clear();
+        $i = $this->em->find(MissionIntervention::class, $id);
+        self::assertTrue($i->isWithoutFirm());
+        self::assertNull($i->getPrimaryFirm());
+        self::assertNull($i->getSelectedChoiceOption(), 'sans firme, aucune prestation : choix effacé');
+        self::assertNull($i->getRepresentativePresent());
+        self::assertSame($before, $snapshot(), 'aucun matériel supprimé ni déplacé');
+        self::assertSame([], $this->requirements()->missingFor($i));
+        $evaluation = $this->financial()->evaluate($this->em->find(Mission::class, $mission->getId()));
+        self::assertSame(MissionFinancialEvaluation::WITHOUT_FIRM, $evaluation->outcome('MISSION_INTERVENTION:' . $id)['kind']);
+        foreach ([$signatureLine, $otherLine] as $line) {
+            self::assertNotNull($evaluation->outcome('MATERIAL_LINE:' . $line->getId()), 'matériel toujours évalué avec sa propre firme');
+        }
+
+        // Retirer un choix déjà effacé avec « confirmation » ne supprime rien non plus.
+        $this->request($client, 'PATCH', $uri, $token, ['selectedChoiceOptionId' => null, 'confirmRemoveIncompatibleMaterial' => true]);
+        self::assertSame(204, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+        self::assertSame($before, $snapshot());
+
+        // Revenir à la firme : le choix obligatoire est redemandé…
+        $this->request($client, 'PATCH', $uri, $token, ['primaryFirmId' => $firm->getId()]);
+        self::assertSame(422, $client->getResponse()->getStatusCode());
+        // … et un AUTRE choix, incompatible avec le matériel encodé, exige toujours la confirmation.
+        $this->request($client, 'PATCH', $uri, $token, ['primaryFirmId' => $firm->getId(), 'selectedChoiceOptionId' => $altera->getId()]);
+        self::assertSame(Response::HTTP_CONFLICT, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+        self::assertSame('CHOICE_OPTION_CHANGE_REQUIRES_CONFIRMATION', json_decode((string) $client->getResponse()->getContent(), true)['error']['code']);
+        $this->em->clear();
+        self::assertTrue($this->em->find(MissionIntervention::class, $id)->isWithoutFirm(), 'refus : rien n\'est modifié');
+        self::assertSame($before, $snapshot());
+
+        // Retour sur le choix d'origine : aucun matériel incompatible, aucune suppression.
+        $this->request($client, 'PATCH', $uri, $token, ['primaryFirmId' => $firm->getId(), 'selectedChoiceOptionId' => $signature->getId()]);
+        self::assertSame(204, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+        $this->em->clear();
+        $i = $this->em->find(MissionIntervention::class, $id);
+        self::assertFalse($i->isWithoutFirm());
+        self::assertSame($signature->getId(), $i->getSelectedChoiceOption()?->getId());
+        self::assertSame($before, $snapshot());
     }
 
     // ── Paramétrage modifié ensuite ─────────────────────────────────────
@@ -485,6 +575,33 @@ final class InterventionWithoutFirmTest extends WebTestCase
         $this->em->persist($item); $this->em->flush();
         $this->createdIds['items'][] = $item->getId();
         return $item;
+    }
+
+    /** @return array{0: ChoiceOption, 1: ChoiceOption} prestation firme × type à choix obligatoire (options exclusives). */
+    private function choiceGroup(Firm $firm, InterventionType $type, MaterialItem $first, MaterialItem $second): array
+    {
+        $offering = new FirmServiceOffering();
+        $offering->setFirm($this->em->getReference(Firm::class, $firm->getId()));
+        $offering->setInterventionType($this->em->getReference(InterventionType::class, $type->getId()));
+        $this->em->persist($offering); $this->em->flush();
+        $this->createdIds['offerings'][] = $offering->getId();
+        $group = new RequiredChoiceGroup();
+        $group->setOffering($offering);
+        $group->setQuestion('Quel implant a été utilisé ?');
+        $this->em->persist($group); $this->em->flush();
+        $this->createdIds['groups'][] = $group->getId();
+        $options = [];
+        foreach (['Signature' => $first, 'Altera' => $second] as $label => $item) {
+            $o = new ChoiceOption();
+            $o->setGroup($group);
+            $o->setLabel($label);
+            $o->setMaterialItem($this->em->getReference(MaterialItem::class, $item->getId()));
+            $this->em->persist($o);
+            $options[] = $o;
+        }
+        $this->em->flush();
+        foreach ($options as $o) { $this->createdIds['options'][] = $o->getId(); }
+        return $options;
     }
 
     private function mission(User $surgeon, User $instr, Hospital $site): Mission
