@@ -47,15 +47,35 @@ const NAV_H = 58;
 // principe complet.
 type MobileScope = "instrumentist" | "surgeon";
 
-type TabKey = "today" | "planning" | "offers" | "home" | "activity" | "absences";
+type TabKey = "today" | "planning" | "offers" | "home" | "activity" | "absences" | "hours";
 
 type Tab = {
   key: TabKey;
   label: string;
+  /** Libellé du rail desktop quand il diffère de celui de la bottom nav (D-179 : « Mes heures » / « Heures »). */
+  railLabel?: string;
   path: string;
   match: (pathname: string) => boolean;
   icon: React.ReactNode;
 };
+
+/**
+ * D-179 — contexte passé aux écrans qui rendent leur propre bandeau complet (« Mes heures ») :
+ * la rangée logo / cloche / avatar du shell, réutilisée telle quelle (une seule implémentation
+ * des notifications et du menu compte), et la bascule desktop du layout.
+ */
+export type MobileLayoutOutletContext = {
+  brandTopRow: React.ReactNode;
+  isDesktop: boolean;
+};
+
+function ClockIcon() {
+  return (
+    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
 
 function HomeIcon() {
   return (
@@ -136,6 +156,8 @@ const INSTRUMENTIST_TABS: Tab[] = [
   { key: "today", label: "Aujourd'hui", path: "/app/i/today", match: (p) => p === "/app/i" || p === "/app/i/today", icon: <HomeIcon /> },
   { key: "planning", label: "Planning", path: "/app/i/planning", match: (p) => p.startsWith("/app/i/planning"), icon: <CalendarIcon /> },
   { key: "offers", label: "Offres", path: "/app/i/offers", match: (p) => p.startsWith("/app/i/offers"), icon: <TagIcon /> },
+  // D-179 — juste après Offres (handoff Mes heures, §5 option A).
+  { key: "hours", label: "Heures", railLabel: "Mes heures", path: "/app/i/hours", match: (p) => p.startsWith("/app/i/hours"), icon: <ClockIcon /> },
   { key: "absences", label: "Absences", path: "/app/i/absences", match: (p) => p.startsWith("/app/i/absences"), icon: <AbsenceIcon /> },
 ];
 
@@ -169,6 +191,11 @@ const ENCODING_ROUTE_RE = /^\/app\/i\/missions\/[^/]+\/encoding$/;
 // d'une revue navigateur réelle. Chirurgien uniquement (§ périmètre de cette revue) ;
 // l'instrumentiste a le même souci pré-existant sur /app/i/missions/{id}, hors périmètre ici.
 const SURGEON_MISSION_DETAIL_ROUTE_RE = /^\/app\/s\/missions\/[^/]+(\/encoding)?$/;
+
+// D-179 — « Mes heures » rend son propre bandeau (titre, navigation mensuelle, puces de site)
+// avec la rangée logo/cloche/avatar du shell (MobileLayoutOutletContext), et un tableau
+// desktop plus large que la colonne de 720 px des autres écrans.
+const HOURS_ROUTE_RE = /^\/app\/i\/hours$/;
 
 function initialsOf(firstname?: string | null, lastname?: string | null): string {
   const a = (firstname ?? "").trim()[0] ?? "";
@@ -216,6 +243,7 @@ const WAVE_SHAPE_KEY: Record<TabKey, keyof typeof WAVE_SHAPES> = {
   home: "today",
   activity: "offers",
   absences: "planning",
+  hours: "offers",
 };
 
 // Fixed shape set for the brief "kick" pulse (arrival, leaving encoding) — same
@@ -302,6 +330,104 @@ function BandWaves({ activeKey }: { activeKey: TabKey | null }) {
 }
 
 // ── Brand header band (shared mobile/desktop, shared instrumentist/surgeon) ──
+// D-179 — rangée logo (mobile) / cloche / avatar de la BrandBand, extraite telle quelle pour
+// être réutilisée par les écrans à bandeau propre (MobileLayoutOutletContext.brandTopRow).
+function BrandTopRow({
+  isDesktop,
+  initials,
+  unreadCount,
+  onBell,
+  onAvatar,
+}: {
+  isDesktop: boolean;
+  initials: string;
+  unreadCount: number;
+  onBell: () => void;
+  onAvatar: (e: React.MouseEvent<HTMLElement>) => void;
+}) {
+  const hasUnread = unreadCount > 0;
+  const bellLabel = hasUnread
+    ? `${unreadCount} notification${unreadCount > 1 ? "s" : ""} non lue${unreadCount > 1 ? "s" : ""}`
+    : "Notifications";
+  return (
+    <Box sx={{ display: "flex", alignItems: "center", gap: "12px", position: "relative" }}>
+      {!isDesktop && (
+        <>
+          <Box
+            component="img"
+            src="/logo-mark-transparent.png"
+            alt="SurgeryHub"
+            sx={{ width: 36, height: 36, objectFit: "contain", flexShrink: 0, filter: "drop-shadow(0 2px 5px rgba(0,0,0,.3))" }}
+          />
+          <Box sx={{ fontSize: 16, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff" }}>
+            Surgery<Box component="span" sx={{ color: GREEN_100 }}>Hub</Box>
+          </Box>
+        </>
+      )}
+      <Box sx={{ flex: 1 }} />
+      <Box
+        component="button"
+        type="button"
+        aria-label={bellLabel}
+        onClick={onBell}
+        sx={{
+          position: "relative",
+          width: 40,
+          height: 40,
+          border: "none",
+          background: "rgba(255,255,255,.12)",
+          borderRadius: "12px",
+          cursor: "pointer",
+          color: "#fff",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "background 150ms",
+          "&:hover": { background: "rgba(255,255,255,.2)" },
+          "&:active": { transform: "scale(.96)" },
+        }}
+      >
+        <BellIcon />
+        {hasUnread && (
+          <Box
+            sx={{
+              position: "absolute",
+              top: 8,
+              right: 9,
+              width: 8,
+              height: 8,
+              borderRadius: "999px",
+              background: RED_600,
+              border: `2px solid ${GREEN_700}`,
+            }}
+          />
+        )}
+      </Box>
+      <Box
+        component="button"
+        type="button"
+        aria-label="Compte"
+        onClick={onAvatar}
+        sx={{
+          width: 38,
+          height: 38,
+          border: "none",
+          borderRadius: "999px",
+          background: "rgba(255,255,255,.92)",
+          color: GREEN_800,
+          fontFamily: "inherit",
+          fontSize: 13,
+          fontWeight: 800,
+          cursor: "pointer",
+          "&:active": { transform: "scale(.96)" },
+        }}
+      >
+        {initials}
+      </Box>
+    </Box>
+  );
+}
+
 function BrandBand({
   isDesktop,
   activeKey,
@@ -324,10 +450,6 @@ function BrandBand({
   onBell: () => void;
   onAvatar: (e: React.MouseEvent<HTMLElement>) => void;
 }) {
-  const hasUnread = unreadCount > 0;
-  const bellLabel = hasUnread
-    ? `${unreadCount} notification${unreadCount > 1 ? "s" : ""} non lue${unreadCount > 1 ? "s" : ""}`
-    : "Notifications";
   return (
     <Box sx={isDesktop ? { maxWidth: 760, mx: "auto", width: "100%", px: "20px", pt: "22px" } : { width: "100%" }}>
       <Box
@@ -350,81 +472,7 @@ function BrandBand({
           version de ce correctif, voir MobileLayout.test.tsx "audit iOS, 2026-08-05").
         */}
         <BandWaves key={`waves-${titleKey}`} activeKey={activeKey} />
-        <Box sx={{ display: "flex", alignItems: "center", gap: "12px", position: "relative" }}>
-          {!isDesktop && (
-            <>
-              <Box
-                component="img"
-                src="/logo-mark-transparent.png"
-                alt="SurgeryHub"
-                sx={{ width: 36, height: 36, objectFit: "contain", flexShrink: 0, filter: "drop-shadow(0 2px 5px rgba(0,0,0,.3))" }}
-              />
-              <Box sx={{ fontSize: 16, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff" }}>
-                Surgery<Box component="span" sx={{ color: GREEN_100 }}>Hub</Box>
-              </Box>
-            </>
-          )}
-          <Box sx={{ flex: 1 }} />
-          <Box
-            component="button"
-            type="button"
-            aria-label={bellLabel}
-            onClick={onBell}
-            sx={{
-              position: "relative",
-              width: 40,
-              height: 40,
-              border: "none",
-              background: "rgba(255,255,255,.12)",
-              borderRadius: "12px",
-              cursor: "pointer",
-              color: "#fff",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              transition: "background 150ms",
-              "&:hover": { background: "rgba(255,255,255,.2)" },
-              "&:active": { transform: "scale(.96)" },
-            }}
-          >
-            <BellIcon />
-            {hasUnread && (
-              <Box
-                sx={{
-                  position: "absolute",
-                  top: 8,
-                  right: 9,
-                  width: 8,
-                  height: 8,
-                  borderRadius: "999px",
-                  background: RED_600,
-                  border: `2px solid ${GREEN_700}`,
-                }}
-              />
-            )}
-          </Box>
-          <Box
-            component="button"
-            type="button"
-            aria-label="Compte"
-            onClick={onAvatar}
-            sx={{
-              width: 38,
-              height: 38,
-              border: "none",
-              borderRadius: "999px",
-              background: "rgba(255,255,255,.92)",
-              color: GREEN_800,
-              fontFamily: "inherit",
-              fontSize: 13,
-              fontWeight: 800,
-              cursor: "pointer",
-              "&:active": { transform: "scale(.96)" },
-            }}
-          >
-            {initials}
-          </Box>
-        </Box>
+        <BrandTopRow isDesktop={isDesktop} initials={initials} unreadCount={unreadCount} onBell={onBell} onAvatar={onAvatar} />
         <Box key={titleKey} sx={{ mt: "18px", position: "relative" }}>
           <Box
             component="h1"
@@ -538,7 +586,7 @@ function DesktopSidebar({
             sx={railItem(activeKey === t.key)}
           >
             {t.icon}
-            <span>{t.label}</span>
+            <span>{t.railLabel ?? t.label}</span>
             {t.key === "offers" && offersCount > 0 && (
               <Box
                 sx={{
@@ -921,7 +969,8 @@ export function MobileLayout() {
   // SURGEON_MISSION_DETAIL_ROUTE_RE ci-dessus. Distinct d'isEncodingRoute (instrumentiste
   // uniquement, sert aussi à recordEncodingOrigin) : ne jamais fusionner les deux, l'origine
   // d'encodage ne doit être mémorisée que pour l'instrumentiste.
-  const hasOwnFullHeader = isEncodingRoute || SURGEON_MISSION_DETAIL_ROUTE_RE.test(pathname);
+  const isHoursRoute = HOURS_ROUTE_RE.test(pathname);
+  const hasOwnFullHeader = isEncodingRoute || isHoursRoute || SURGEON_MISSION_DETAIL_ROUTE_RE.test(pathname);
 
   const { from, to } = React.useMemo(() => todayRange(), []);
   const { data: todayData } = useQuery({
@@ -1068,13 +1117,26 @@ export function MobileLayout() {
     );
   }
 
+  const outletContext: MobileLayoutOutletContext = {
+    isDesktop,
+    brandTopRow: (
+      <BrandTopRow
+        isDesktop={isDesktop}
+        initials={initialsOf(firstname, lastname)}
+        unreadCount={notificationsUnreadCount}
+        onBell={() => navigate(notificationsPath)}
+        onAvatar={(e) => setMenuAnchor(e.currentTarget)}
+      />
+    ),
+  };
+
   const content = (
     <Box
       sx={{
-        maxWidth: isEncodingRoute ? 760 : 720,
+        maxWidth: isHoursRoute ? 1200 : isEncodingRoute ? 760 : 720,
         mx: "auto",
         width: "100%",
-        px: isEncodingRoute ? 0 : "20px",
+        px: isEncodingRoute || isHoursRoute ? 0 : "20px",
         pt: 0,
         pb: isDesktop ? "40px" : "130px",
         mt: hasOwnFullHeader ? 0 : "-34px",
@@ -1094,7 +1156,7 @@ export function MobileLayout() {
           },
         }}
       >
-        <Outlet />
+        <Outlet context={outletContext} />
       </Box>
     </Box>
   );

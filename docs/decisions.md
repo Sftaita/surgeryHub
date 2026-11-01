@@ -16117,3 +16117,46 @@ fenêtre n'envoie pas la firme tant qu'elle n'est pas choisie).
 
 Premier type candidat : `SUT-PLAS-TEND-QUAD` « Plastie/Suture du tendon quadricipital » (id 58),
 activé par le manager depuis le catalogue après déploiement — jamais par une écriture directe.
+
+## D-179 — « Mes heures » : relevé mensuel personnel de l'instrumentiste (2026-11-01)
+
+**Contexte.** L'instrumentiste n'avait aucun écran récapitulant ses heures encodées ni, pour
+celles rémunérées à l'heure, l'estimation correspondante ; toute donnée financière lui était
+interdite (`BillingVoter::MANAGE`). Conception figée : `docs/design/Instruction design/handoff-mes-heures/`
+(révision 3).
+
+**Décision.**
+1. Nouvel endpoint `GET /api/me/hours?month=YYYY-MM[&siteId=]` (`docs/api.md` §49), toujours
+   self-scopé, gardé par `MyHoursVoter` : `SELF_ACCESS` (rôle instrumentiste) et
+   `VIEW_OWN_ESTIMATE` (sujet = soi-même). C'est la **seule** exception à
+   `BillingVoter::MANAGE` pour une instrumentiste : sa propre estimation indicative, jamais
+   celle d'une autre, jamais un tarif firme, un calcul financier ou un relevé manager.
+2. **Aucune règle réimplémentée** : statut par `EncodingStateResolver` (SUBMITTED → en
+   attente ; VALIDATED / LOCKED → validé), durée par `resolveEffectiveDuration()` (source
+   `PLANNED` jamais retenue), montant par `FinancialCalculationService::evaluate(…, true)`,
+   le chemin de résolution unique du moteur.
+3. Le serveur calcule **tout** pour le périmètre demandé (mois + site) : liste, compteurs et
+   estimation reflètent le même filtre ; le front ne fait qu'afficher (CLAUDE.md, aucune
+   logique métier côté client). Les calculs prévus côté front par le handoff
+   (`summarize.ts`) ne sont pas portés.
+4. Écarts handoff ↔ modèle, tranchés : les tarifs varient par **type de mission** (bloc =
+   horaire, consultation = forfait), pas par site ; « payé à l'heure » n'existe pas comme
+   attribut — la section financière s'affiche dès qu'une prestation du périmètre est
+   valorisable ; une durée déclarée seule (`ACTUAL_EXPLICIT`) compte, avec début/fin « — » ;
+   une prestation validée sans heures (D-171) compte 0 h et s'affiche « Heures non
+   renseignées ». `CLOSED` est traité comme validé bien qu'aucun flux ne le pose aujourd'hui.
+5. Front : route `/app/i/hours`, onglet « Heures » (rail : « Mes heures ») après Offres.
+   L'écran rend son propre bandeau (handoff §6) mais reçoit la rangée logo / cloche / avatar
+   du shell par le contexte d'Outlet (`MobileLayoutOutletContext.brandTopRow`) : une seule
+   implémentation des notifications et du menu compte. Les tokens CSS sont portés sur `.mh`
+   (comme `mission-drawer.css`), jamais sur `:root` : aucun effet sur les autres écrans.
+   Le contenu s'élargit à 1200 px sur cette seule route (tableau desktop).
+6. Consultation au forfait (validé par l'utilisateur le 2026-11-01) : elle garde son forfait
+   même sans durée réelle encodée — comportement du moteur, inchangé — mais n'ajoute jamais
+   d'heures aux compteurs (0 h, « Heures non renseignées »). L'écran l'étiquette
+   « Forfait consultation » (liste et colonne Tarif), distinct d'une estimation horaire.
+
+**Limites.** Le mois d'appartenance est celui du `startAt` planifié (comme les autres listes) ;
+une mission décalée d'un jour sur un autre mois par ses heures réelles reste dans son mois
+planifié. L'estimation ne reflète pas un éventuel calcul financier approuvé ou verrouillé
+différent (elle est recalculée à la volée, indicative).

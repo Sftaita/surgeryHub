@@ -9063,3 +9063,59 @@ financier : aucune ligne firme et jamais l'anomalie `MISSING_PRIMARY_FIRM` pour 
 `WITHOUT_FIRM`) ; son matériel garde sa propre firme. Facturation firmes : motif `WITHOUT_FIRM`
 « Réalisée sans firme » (non facturable).
 
+## 49. « Mes heures » — relevé mensuel personnel de l'instrumentiste (D-179)
+
+### `GET /api/me/hours?month=YYYY-MM[&siteId=]`
+
+**AuthZ :** `MyHoursVoter::SELF_ACCESS` — `ROLE_INSTRUMENTIST` uniquement (`403` pour manager,
+admin, chirurgien). Toujours limité à l'utilisateur connecté : aucun identifiant
+d'instrumentiste n'est accepté. L'estimation est en plus gardée par
+`MyHoursVoter::VIEW_OWN_ESTIMATE` (sujet = soi-même).
+
+**Paramètres :** `month` obligatoire (`422` sinon) ; `siteId` optionnel, entier positif
+(`422` sinon). Le filtre `siteId` s'applique à `items`, `summary` et `estimate` ; `sites`
+couvre toujours le mois entier.
+
+**Périmètre :** missions de l'instrumentiste dont `startAt` tombe dans le mois (heure de
+Bruxelles) et dont l'encodage est soumis (`pending` = `SUBMITTED`) ou validé (`validated` =
+`VALIDATED`, ou `CLOSED` / facturée), via `EncodingStateResolver`. Brouillons, missions à
+encoder, rejetées (repassées en encodage) et annulées n'apparaissent jamais.
+
+**Réponse — 200 :**
+
+```json
+{
+  "month": "2026-10",
+  "siteId": null,
+  "sites": [{ "id": 3, "name": "CHU Brugmann", "count": 3 }],
+  "summary": { "count": 10, "encodedMinutes": 4950, "validatedMinutes": 3495, "pendingMinutes": 1455, "validatedPct": 71, "missingHoursCount": 0 },
+  "estimate": {
+    "currency": "EUR", "encodedAmount": "3482.75", "validatedAmount": "2445.50",
+    "hourlyRateMin": "40.00", "hourlyRateMax": "45.00", "unratedCount": 0,
+    "lines": [{ "siteName": "CHU Brugmann", "rateType": "HOURLY_RATE", "unitAmount": "42.00", "minutes": 1545, "count": 3, "amount": "1081.50" }]
+  },
+  "items": [{
+    "missionId": 1291, "date": "2026-10-30",
+    "start": "2026-10-30T22:00:00+01:00", "end": "2026-10-31T03:00:00+01:00", "endsNextDay": true,
+    "minutes": 300, "durationSource": "ACTUAL_TIMES", "missionType": "BLOCK", "status": "validated",
+    "surgeonName": "Dr Martin Dubois", "site": { "id": 3, "name": "CHU Brugmann" },
+    "estimate": { "rateType": "HOURLY_RATE", "unitAmount": "42.00", "amount": "210.00", "currency": "EUR" }
+  }]
+}
+```
+
+- **Heures** : uniquement les heures réellement encodées
+  (`MissionExecutionService::resolveEffectiveDuration`). `ACTUAL_TIMES` = fin − début (le
+  passage de minuit est porté par la date de fin, `endsNextDay`) ; `ACTUAL_EXPLICIT` = durée
+  déclarée seule (`start`/`end` null). Sans heures réelles : `minutes`, `durationSource`,
+  `start`, `end` null, la prestation compte 0 h (`missingHoursCount`). Jamais d'horaire
+  planifié, aucune pause.
+- **Heures encodées** = en attente + validées ; **heures validées** = `validated` uniquement.
+- **Estimation** (indicative, jamais un montant validé) : par prestation,
+  `FinancialCalculationService::evaluate($mission, instrumentistOnly: true)` — tarif
+  personnel `HOURLY_RATE` × durée pour un bloc, forfait `CONSULTATION_FEE` pour une
+  consultation, dates d'effet et arrondis du moteur. Rien n'est persisté. `estimate` vaut
+  `null` quand aucune prestation du périmètre n'est valorisable (aucune section financière) ;
+  `unratedCount` compte les prestations avec heures mais sans tarif. Jamais de tarif firme, de
+  montant facturé ni de statut de paiement.
+- **Aucune donnée patient ni texte libre** (commentaires, interventions, matériel).

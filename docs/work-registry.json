@@ -912,6 +912,40 @@
       "nextAction": "Activation par l'utilisateur de CLE (54) et SUT-PLAS-TEND-QUAD (58) dans Catalogue › Interventions ; contrôle personnel des 8 interventions historiques. En cas d'incident : deploy.sh activate 38b4469a95070427bb7ad284a8594dd01a6c5dbc (repli compatible).",
       "lastReviewed": "2026-11-01",
       "prodEvidence": "v2026.11.01-prod (304d607) : migration Version20261031180000 jouée depuis l'image 304d607 à 10:25:38 UTC, 9e922c7 en service (94/94, SQL identique au validé) ; activate 10:27 UTC, migrate « Already at latest », mark OFFICIAL ; instantanés financiers/interventions/demandes identiques avant migration, après migration et après activation ; 8 interventions historiques inchangées ; calcul à blanc identique 9e922c7 / 304d607 / repli 38b4469 sur 77 missions ; cron D-177 OK 10:30 ; repli prêt : release 38b4469 (rollback/d178-compat) construite : voir docs/production.md."
+    },
+    {
+      "id": "D-179",
+      "title": "« Mes heures » : relevé mensuel personnel de l'instrumentiste",
+      "description": "Écran /app/i/hours (onglet « Heures », « Mes heures » dans le rail) et endpoint self-scopé GET /api/me/hours : heures encodées (soumises + validées, CLOSED inclus) et validées du mois, heures réelles uniquement, aucune pause ni heure planifiée, passage de minuit, filtre par site sur listes, compteurs et montants ; estimation indicative au tarif personnel (horaire bloc, forfait consultation) visible uniquement par l'intéressé, sans tarif firme ni donnée manager ni texte libre patient. Aucune migration.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "L'instrumentiste n'avait aucun écran récapitulant ses heures encodées et validées ni l'estimation correspondante.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-11-01",
+      "refs": {
+        "branches": [
+          "feat/mes-heures"
+        ],
+        "decision": "D-179",
+        "worktrees": [
+          "SurgicalHub-mes-heures"
+        ],
+        "prs": [
+          65
+        ],
+        "commits": [
+          "ab6546a2f15d149f17a384cac9b39f9be3f03769"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Rapport d'écart branche / main / production puis décision utilisateur de fusion et de mise en production ; validation fonctionnelle sur un compte instrumentiste réel après déploiement."
+        }
+      ],
+      "nextAction": "Rapport d'écart branche / main / production, puis décision utilisateur de fusion de la PR #65 et de mise en production.",
+      "lastReviewed": "2026-11-01"
     }
   ]
 }
