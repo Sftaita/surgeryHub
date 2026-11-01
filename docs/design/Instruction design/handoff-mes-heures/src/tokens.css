@@ -1,0 +1,62 @@
+/* GÉNÉRÉ depuis docs/design/design-tokens.json — ne pas éditer à la main.
+   Variables CSS attendues par mes-heures.css. Le frontend n'en définit aucune aujourd'hui :
+   importer ce fichier une fois (global) à l'intégration, ou le remplacer par une feuille de tokens commune. */
+:root {
+  --gray-950: #0B1320;
+  --gray-900: #16202B;
+  --gray-800: #243240;
+  --gray-700: #3A4754;
+  --gray-600: #566270;
+  --gray-500: #727E8C;
+  --gray-400: #98A2AE;
+  --gray-300: #C2C9D1;
+  --gray-200: #DDE2E8;
+  --gray-150: #E7EBEF;
+  --gray-100: #EFF2F5;
+  --gray-75: #F1F4F7;
+  --gray-50: #F5F7FA;
+  --green-900: #144D38;
+  --green-800: #1F6B4F;
+  --green-700: #2C7D5F;
+  --green-600: #338F6E;
+  --green-500: #42A882;
+  --green-400: #63C9A3;
+  --green-300: #8FDABF;
+  --green-200: #BCE9D6;
+  --green-100: #DDF4EA;
+  --green-50: #EFFAF5;
+  --amber-800: #8A5A12;
+  --amber-700: #B7791F;
+  --amber-600: #D9920B;
+  --amber-500: #F0A91B;
+  --amber-100: #FBEACB;
+  --amber-50: #FEF6E7;
+  --red-700: #C62F36;
+  --red-600: #E5484D;
+  --red-500: #F0676B;
+  --red-100: #FAD7D8;
+  --red-50: #FDEEEE;
+  --blue-700: #1B5FD0;
+  --blue-600: #2D7FF9;
+  --blue-500: #5598FB;
+  --blue-100: #D6E6FE;
+  --blue-50: #EDF4FF;
+  --purple-700: #7C4FCC;
+  --purple-50: #F3EBFD;
+  --slate-700: #3B6296;
+  --slate-50: #EFF4FB;
+  --white: #FFFFFF;
+  --font-sans: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --shadow-xs: 0 1px 2px rgba(22,32,43,.05);
+  --shadow-sm: 0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06);
+  --shadow-md: 0 2px 6px rgba(22,32,43,.06), 0 8px 20px rgba(22,32,43,.08);
+  --shadow-lg: 0 6px 16px rgba(22,32,43,.08), 0 16px 40px rgba(22,32,43,.12);
+  --border-subtle: #E7EBEF;
+  --border-default: #DDE2E8;
+  --border-strong: #C2C9D1;
+  --border-focus: #42A882;
+  --surface-page: #F5F7FA;
+  --surface-card: #FFFFFF;
+  --surface-sunken: #F1F4F7;
+  --focus-ring: 0 0 0 3px color-mix(in srgb, #42A882 32%, transparent);
+}

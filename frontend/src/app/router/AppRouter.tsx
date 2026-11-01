@@ -22,6 +22,7 @@ import LandingPage from "../pages/LandingPage";
 const TodayPage           = React.lazy(() => import("../pages/instrumentist/TodayPage"));
 const OffersPage          = React.lazy(() => import("../pages/instrumentist/OffersPage"));
 const MyMissionsPage      = React.lazy(() => import("../pages/instrumentist/MyMissionsPage"));
+const MyHoursPage         = React.lazy(() => import("../features/my-hours/MyHoursPage")); // D-179
 const PlanningPage        = React.lazy(() => import("../pages/instrumentist/PlanningPage"));
 const NotificationsPage   = React.lazy(() => import("../pages/instrumentist/NotificationsPage"));
 const DeclareMissionPage  = React.lazy(() => import("../pages/instrumentist/DeclareMissionPage"));
@@ -158,6 +159,7 @@ export function AppRouter() {
                 <Route path="i/today" element={<TodayPage />} />
                 <Route path="i/offers" element={<OffersPage />} />
                 <Route path="i/my-missions" element={<MyMissionsPage />} />
+                <Route path="i/hours" element={<MyHoursPage />} />
                 <Route path="i/planning" element={<PlanningPage />} />
                 <Route path="i/notifications" element={<NotificationsPage />} />
                 <Route path="i/profile" element={<ProfilePage />} />
