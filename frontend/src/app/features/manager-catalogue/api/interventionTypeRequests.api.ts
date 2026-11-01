@@ -19,6 +19,8 @@ export type InterventionTypeRequestDTO = {
   requestedFirm?: CatalogueFirmRefDTO | null;
   requestedFirmNameSnapshot?: string | null;
   proposedFirmName?: string | null;
+  /** D-178 — demande faite « Aucune firme » : se résout sans firme, sur un type autorisé sans firme. */
+  withoutFirm?: boolean;
   /** Intervention provisoire et matériel déjà déclaré dessus (stratégie d'ignorance). */
   draft?: { id: number; status: string; materialLineCount: number; materialItemRequestCount: number } | null;
   mission: (CatalogueRequestMissionDTO & {
@@ -72,7 +74,8 @@ export type OfferingDecision = "FEE_APPLICABLE" | "NO_FEE" | "LEAVE_UNCONFIGURED
 /** D-146 bis — corps de POST /api/intervention-type-requests/{id}/resolve (transaction unique). */
 export type ResolveInterventionTypeRequestBody = {
   interventionTypeId?: number;
-  newInterventionType?: { code: string; label: string };
+  /** D-178 — allowedWithoutFirm : autorisation explicite, obligatoire pour résoudre une demande sans firme. */
+  newInterventionType?: { code: string; label: string; allowedWithoutFirm?: boolean };
   firmId?: number;
   newFirmName?: string;
   offeringDecision?: OfferingDecision;

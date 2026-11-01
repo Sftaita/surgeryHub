@@ -55,6 +55,8 @@ const interventionAnchor = (id: number) => `itv-${id}`;
 const materialAnchor = (id: number) => `ml-${id}`;
 
 function firmNameOf(entry: MissionEncodingEntry): string | null {
+  // D-178 — « Aucune firme » enregistré : affiché comme tel, jamais confondu avec une firme manquante.
+  if (entry.withoutFirm) return "Aucune firme";
   return entry.firm?.name ?? (entry.kind === "DRAFT" ? entry.requestedFirmNameSnapshot : null);
 }
 

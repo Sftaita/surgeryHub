@@ -68,6 +68,8 @@ export type CatalogInterventionType = {
   id: number;
   code: string;
   label: string;
+  /** D-178 — proposé sous « Aucune firme » (paramétrage manager, Catalogue › Interventions). */
+  allowedWithoutFirm?: boolean;
 };
 
 /**
@@ -155,6 +157,8 @@ export type MissionEncodingInterventionEntry = {
   selectedChoiceOptionLabel?: string | null;
   /** D-154 — version optimiste servie par le backend, renvoyée en If-Match à chaque modification / suppression. */
   version?: number | null;
+  /** D-178 — « Aucune firme » enregistré (légitimement sans firme), distinct d'une firme manquante. */
+  withoutFirm?: boolean;
 };
 
 export type MissionEncodingDraftEntry = {
@@ -171,6 +175,8 @@ export type MissionEncodingDraftEntry = {
   requestedFirmNameSnapshot: string | null;
   /** D-146 bis — firme proposée en texte libre (« Ma firme n'est pas dans la liste »). */
   proposedFirmName?: string | null;
+  /** D-178 — demande faite « Aucune firme ». */
+  withoutFirm?: boolean;
   /** "OPEN" (modifiable) ou "KEPT_AS_HISTORY" (lecture seule, voir readOnly). */
   status: "OPEN" | "KEPT_AS_HISTORY" | string;
   readOnly: boolean;
@@ -311,6 +317,8 @@ export type MissionInterventionDto = {
 export type CreateInterventionBody = {
   interventionTypeId: number;
   primaryFirmId?: number;
+  /** D-178 — « Aucune firme » choisi explicitement (exclusif de primaryFirmId). */
+  withoutFirm?: true;
   orderIndex: number;
   /** Refonte Catalogue/Prestations (D-092) — facultatif, uniquement si déjà connu à la création. */
   representativePresent?: boolean | null;
@@ -328,6 +336,8 @@ export type CreateInterventionBody = {
 export type PatchInterventionBody = {
   interventionTypeId?: number;
   primaryFirmId?: number | null;
+  /** D-178 — true = « Aucune firme » (avec primaryFirmId null) ; une firme fournie le lève. */
+  withoutFirm?: boolean;
   orderIndex?: number;
   representativePresent?: boolean | null;
   /** D-172 — correction manager : présence du délégué historiquement inconnue (jamais « non »). */
@@ -349,6 +359,8 @@ export type CreateInterventionTypeRequestBody = {
   /** D-146 bis — firme obligatoire : exactement l'un des deux. */
   requestedFirmId?: number;
   proposedFirmName?: string;
+  /** D-178 — « Aucune firme » : troisième réponse, exclusive des deux autres. */
+  withoutFirm?: true;
 };
 
 /**

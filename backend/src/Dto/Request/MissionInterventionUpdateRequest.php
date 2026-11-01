@@ -18,6 +18,13 @@ final class MissionInterventionUpdateRequest
     public bool $primaryFirmIdProvided = false;
     public ?int $primaryFirmId = null;
 
+    /**
+     * D-178 — `withoutFirm: true` (avec primaryFirmId absent ou null) = « Aucune firme »
+     * choisi explicitement ; `false` ou une firme = intervention avec firme. Absent = inchangé.
+     */
+    public bool $withoutFirmProvided = false;
+    public bool $withoutFirm = false;
+
     public ?int $orderIndex = null;
 
     /**

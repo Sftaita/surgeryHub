@@ -20,7 +20,7 @@ function representativeLabel(value: boolean | null | undefined): string | null {
  */
 export function ReadOnlyInterventionCard({ entry }: { entry: MissionEncodingEntry }) {
   const isDraft = entry.kind === "DRAFT";
-  const firmName = entry.firm?.name ?? (isDraft ? entry.requestedFirmNameSnapshot : null);
+  const firmName = entry.withoutFirm ? "Aucune firme" : entry.firm?.name ?? (isDraft ? entry.requestedFirmNameSnapshot : null);
   const repLabel = entry.kind === "INTERVENTION" ? representativeLabel(entry.representativePresent) : null;
 
   return (

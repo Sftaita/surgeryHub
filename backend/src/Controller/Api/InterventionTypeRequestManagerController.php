@@ -263,6 +263,8 @@ final class InterventionTypeRequestManagerController extends AbstractController
             'requestedFirm' => $requestedFirm ? ['id' => $requestedFirm->getId(), 'name' => $requestedFirm->getName(), 'active' => $requestedFirm->isActive()] : null,
             'requestedFirmNameSnapshot' => $draft?->getRequestedFirmNameSnapshot(),
             'proposedFirmName' => $draft?->getProposedFirmName(),
+            // D-178 — demande faite « Aucune firme » : se résout sans firme, sur un type autorisé.
+            'withoutFirm' => $draft?->isWithoutFirm() ?? false,
             'draft' => $draft ? [
                 'id' => $draft->getId(),
                 'status' => $draft->getStatus(),

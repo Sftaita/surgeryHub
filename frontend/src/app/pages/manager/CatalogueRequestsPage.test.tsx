@@ -885,3 +885,64 @@ describe("CatalogueRequestsPage — détail d'une demande (consultation sans tra
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+describe("CatalogueRequestsPage — demande faite « Aucune firme » (D-178)", () => {
+  const withoutFirmRequest = {
+    ...interventionRequest,
+    label: "Plastie du quadriceps",
+    suggestedCode: null,
+    requestedFirm: null,
+    requestedFirmNameSnapshot: null,
+    proposedFirmName: null,
+    withoutFirm: true,
+    draft: { id: 1, status: "OPEN", materialLineCount: 0, materialItemRequestCount: 0 },
+    mission: { id: 502, site: "Clinique du Parc", status: "ASSIGNED", locked: false, reopenAvailable: false, interventions: [] },
+  };
+  const ALLOWED = { id: 58, code: "SUT-PLAS-TEND-QUAD", label: "Plastie/Suture du tendon quadricipital", specialty: null, active: true, allowedWithoutFirm: true };
+  const NOT_ALLOWED = { id: 19, code: "LCA", label: "Plastie du ligament croisé antérieur", specialty: null, active: true, allowedWithoutFirm: false };
+
+  it("se résout sans firme, uniquement sur une intervention autorisée sans firme", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [withoutFirmRequest], total: 1 });
+    getInterventionTypesMock.mockResolvedValue([ALLOWED, NOT_ALLOWED]);
+    getFirmsMock.mockResolvedValue([{ id: 3, name: "Arthrex" }]);
+    resolveInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 77, offeringDecision: null });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande d'intervention" });
+    expect(within(dialog).getByText(/Demande faite « Aucune firme »/)).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(/Avec quelle firme/)).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByLabelText(/Intervention correspondante/));
+    expect(await screen.findByRole("option", { name: /Plastie\/Suture du tendon quadricipital/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /ligament croisé antérieur/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("option", { name: /Plastie\/Suture du tendon quadricipital/ }));
+    await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
+
+    await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, { interventionTypeId: 58 }));
+    expect(fetchFirmServiceOfferingsMock).not.toHaveBeenCalled();
+  });
+
+  it("nouvelle intervention : autorisation sans firme explicite obligatoire", async () => {
+    const user = userEvent.setup();
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [withoutFirmRequest], total: 1 });
+    getInterventionTypesMock.mockResolvedValue([ALLOWED]);
+    resolveInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 77, offeringDecision: null });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande d'intervention" });
+    await user.click(within(dialog).getByRole("button", { name: "Créer une nouvelle intervention" }));
+    await user.type(within(dialog).getByLabelText(/Code/), "PLAS-QUAD");
+
+    const submit = within(dialog).getByRole("button", { name: "Résoudre" });
+    expect(submit).toBeDisabled();
+    await user.click(within(dialog).getByLabelText(/Autoriser cette nouvelle intervention sans firme/));
+    await user.click(submit);
+
+    await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, {
+      newInterventionType: { code: "PLAS-QUAD", label: "Plastie du quadriceps", allowedWithoutFirm: true },
+    }));
+  });
+});

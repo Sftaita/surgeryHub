@@ -342,6 +342,7 @@ final class InterventionTypeController extends AbstractController
             'label' => $t->getLabel(),
             'specialty' => $t->getSpecialty(),
             'active' => $t->isActive(),
+            'allowedWithoutFirm' => $t->isAllowedWithoutFirm(),
             'mergedIntoId' => $t->getMergedInto()?->getId(),
         ];
 

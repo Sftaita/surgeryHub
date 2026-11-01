@@ -97,6 +97,7 @@ function requestFirmLabel(row: UnifiedRequest): string | null {
   if (row.kind === "material") {
     return row.request.proposedFirm?.name ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (proposée)` : null);
   }
+  if (row.request.withoutFirm) return "Aucune firme";
   return row.request.requestedFirm?.name
     ?? (row.request.proposedFirmName ? `${row.request.proposedFirmName} (proposée)` : row.request.requestedFirmNameSnapshot ?? null);
 }

@@ -325,6 +325,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
         materialLines: [],
         materialItemRequests: [],
         representativePresent: body.representativePresent ?? null,
+        withoutFirm: body.withoutFirm === true,
       };
       setEncodingCache((current) => ({ ...current, entries: [...(current.entries ?? []), optimistic] }));
       return { previous, tempId };
@@ -397,6 +398,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
             firm: firm ? { id: firm.id, name: firm.name } : null,
             requestedFirmNameSnapshot: firm?.name ?? null,
             proposedFirmName: body.proposedFirmName ?? null,
+            withoutFirm: body.withoutFirm === true,
             status: "OPEN",
             readOnly: false,
             materialLines: [],
@@ -984,7 +986,7 @@ function EntryCard({
     ? `${plural(lines.length, "matériel", "matériels")} · ${plural(Math.round(units), "unité", "unités")}`
     : "Aucun matériel encodé";
   const badge = draftBadge(entry);
-  const firmName = entry.kind === "DRAFT" ? (entry.firm?.name ?? entry.requestedFirmNameSnapshot ?? entry.proposedFirmName ?? null) : null;
+  const firmName = entry.kind === "DRAFT" ? (entry.withoutFirm ? "Aucune firme" : entry.firm?.name ?? entry.requestedFirmNameSnapshot ?? entry.proposedFirmName ?? null) : null;
 
   const bodyRef = React.useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = React.useState(0);
