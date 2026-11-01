@@ -920,7 +920,7 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "L'instrumentiste n'avait aucun écran récapitulant ses heures encodées et validées ni l'estimation correspondante.",
-      "status": "pr-ouverte",
+      "status": "deploye",
       "statusSince": "2026-11-01",
       "refs": {
         "branches": [
@@ -934,18 +934,29 @@
           65
         ],
         "commits": [
-          "ab6546a2f15d149f17a384cac9b39f9be3f03769"
+          "ab6546a2f15d149f17a384cac9b39f9be3f03769",
+          "62eb92a9e084bf5ce5a791aa327b784e505cd8f6",
+          "d9e6ee98e583dfee3de6c3b611bf0236a2e66480"
         ]
       },
       "pendingOps": [
         {
           "type": "validation",
+          "status": "fait",
+          "confirmedAt": "2026-11-01",
+          "description": "Rapport d'écart branche / main / production, test de restauration, puis décision utilisateur de fusion et de mise en production.",
+          "evidence": "GO conditionnel utilisateur 2026-11-01 (restauration réussie, CI verte, écart inchangé) ; PR #65 fusionnée (d9e6ee9) ; v2026.11.01-prod-2 OFFICIAL."
+        },
+        {
+          "type": "validation",
           "status": "en-attente",
-          "description": "Rapport d'écart branche / main / production puis décision utilisateur de fusion et de mise en production ; validation fonctionnelle sur un compte instrumentiste réel après déploiement."
+          "validation": "utilisateur",
+          "description": "Validation fonctionnelle par l'utilisateur sur un compte instrumentiste réel (connexion personnelle, aucun compte de test créé en production par l'agent)."
         }
       ],
-      "nextAction": "Rapport d'écart branche / main / production, puis décision utilisateur de fusion de la PR #65 et de mise en production.",
-      "lastReviewed": "2026-11-01"
+      "nextAction": "Validation fonctionnelle de « Mes heures » par l'utilisateur en production. En cas d'incident : deploy/deploy.sh rollback 304d6079885284c9a01cc7878c1e876c5f677fca.",
+      "lastReviewed": "2026-11-01",
+      "prodEvidence": "v2026.11.01-prod-2 (d9e6ee9) : aucune migration (94/94) ; activate 21:46 UTC ; mark OFFICIAL ; API publique en lecture seule : 401/403/422 conformes, 34 missions de 4 instrumentistes identiques au recalcul SQL et aux calculs financiers persistés : voir docs/production.md."
     }
   ]
 }
