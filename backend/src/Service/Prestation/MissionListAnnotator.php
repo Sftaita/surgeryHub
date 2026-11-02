@@ -32,26 +32,41 @@ final class MissionListAnnotator
 
         $groups = $this->groups->groupsFor($missions);
         $conflicts = $this->conflictsFor($missions);
-        $tz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
 
         $result = [];
         foreach ($missions as $m) {
             $id = (int) $m->getId();
-            $group = $groups[$id] ?? [$m];
             $result[$id] = [
-                'prestation' => count($group) < 2 ? null : [
-                    'key' => PrestationGrouping::key($group),
-                    'size' => count($group),
-                    'missionIds' => PrestationGrouping::ids($group),
-                    'plannedStartAt' => min(array_map(static fn (Mission $x) => $x->getStartAt(), $group))->setTimezone($tz)->format(\DateTimeInterface::ATOM),
-                    'plannedEndAt' => max(array_map(static fn (Mission $x) => $x->getEndAt(), $group))->setTimezone($tz)->format(\DateTimeInterface::ATOM),
-                    'plannedUnionMinutes' => PrestationGrouping::plannedUnionMinutes($group),
-                ],
+                'prestation' => self::summary($groups[$id] ?? [$m]),
                 'scheduleConflictMissionIds' => $conflicts[$id] ?? [],
             ];
         }
 
         return $result;
+    }
+
+    /**
+     * Résumé d'une prestation (null pour une mission seule) — aussi servi par le détail de
+     * mission (MissionMapper::toDetailDto()).
+     *
+     * @param list<Mission> $group
+     * @return array<string,mixed>|null
+     */
+    public static function summary(array $group): ?array
+    {
+        if (count($group) < 2) {
+            return null;
+        }
+        $tz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
+
+        return [
+            'key' => PrestationGrouping::key($group),
+            'size' => count($group),
+            'missionIds' => PrestationGrouping::ids($group),
+            'plannedStartAt' => min(array_map(static fn (Mission $x) => $x->getStartAt(), $group))->setTimezone($tz)->format(\DateTimeInterface::ATOM),
+            'plannedEndAt' => max(array_map(static fn (Mission $x) => $x->getEndAt(), $group))->setTimezone($tz)->format(\DateTimeInterface::ATOM),
+            'plannedUnionMinutes' => PrestationGrouping::plannedUnionMinutes($group),
+        ];
     }
 
     /**

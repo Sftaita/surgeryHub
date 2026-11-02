@@ -7,7 +7,7 @@ import { Field } from "../../../ui/sheet/Field";
 import { useToast } from "../../../ui/toast/useToast";
 import { requestMissionSync } from "../../missions/sync/missionSyncBus";
 import { invalidateOperationalPlanning } from "../../missions/dispatch/missionDispatch.api";
-import { formatImputation, formatMinutes, prestationError, submitPrestation, type PrestationView } from "../api/prestations.api";
+import { formatMinutes, prestationError, submitPrestation, type PrestationView } from "../api/prestations.api";
 
 const GREEN_700 = "#2C7D5F";
 const GREEN_800 = "#1F6B4F";
@@ -27,9 +27,11 @@ type Props = {
 };
 
 /**
- * D-156 — « Terminer la prestation » : une seule soumission pour toutes les missions
- * simultanées, tout ou rien (contrôlée et appliquée par le serveur). Une seule justification
- * « sans matériel », posée par le serveur sur les seules missions sans matériel (D-080).
+ * D-156 — « Soumettre la prestation » : une seule soumission pour toutes les missions
+ * simultanées, tout ou rien (contrôlée et appliquée par le serveur). Complément D-156 : un
+ * récapitulatif de la journée, sans détail par salle ni par mission ; une seule
+ * justification « sans matériel », demandée seulement si le serveur l'exige pour toute la
+ * prestation (noMaterialJustificationRequired).
  */
 export default function PrestationSubmitDialog({ open, onClose, anchorMissionId, prestation, onSubmitted, helpTopicId }: Props) {
   const queryClient = useQueryClient();
@@ -44,8 +46,8 @@ export default function PrestationSubmitDialog({ open, onClose, anchorMissionId,
     }
   }, [open]);
 
-  const pending = prestation.missions.filter((m) => m.status !== "SUBMITTED");
-  const withoutMaterial = pending.filter((m) => m.activeMaterialLineCount === 0);
+  const justificationRequired = prestation.noMaterialJustificationRequired;
+  const { interventionCount, materialLineCount } = prestation.encoding;
 
   const mutation = useMutation({
     mutationFn: () => submitPrestation(anchorMissionId, {
@@ -74,39 +76,31 @@ export default function PrestationSubmitDialog({ open, onClose, anchorMissionId,
   });
 
   return (
-    <SheetModal open={open} title="Terminer la prestation" onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
+    <SheetModal open={open} title="Soumettre la prestation" onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
       <Box sx={{ mt: "14px", fontSize: 13.5, color: GRAY_600 }}>
-        Les {prestation.size} missions de cette prestation sont soumises ensemble.
+        Multi-salles · {prestation.size} missions — toute la journée est soumise en une fois.
       </Box>
 
-      <Box component="ul" sx={{ listStyle: "none", p: 0, m: "12px 0 0", display: "flex", flexDirection: "column", gap: "8px" }}>
-        {prestation.missions.map((m) => (
-          <Box component="li" key={m.id} data-testid={`prestation-submit-mission-${m.id}`} sx={{ background: "#F5F7FA", borderRadius: "10px", padding: "10px 12px" }}>
-            <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GRAY_800 }}>{m.label}</Box>
-            <Box sx={{ fontSize: 12.5, color: GRAY_500, mt: "2px" }}>
-              {m.interventionCount} intervention(s) · {m.activeMaterialLineCount} ligne(s) de matériel · {formatImputation(m.imputedMinutes)}
-              {m.status === "SUBMITTED" ? " · déjà soumise" : ""}
-            </Box>
-          </Box>
-        ))}
+      <Box data-testid="prestation-submit-summary" sx={{ mt: "12px", background: "#F5F7FA", borderRadius: "10px", padding: "10px 12px", display: "flex", flexDirection: "column", gap: "4px" }}>
+        <Box sx={{ fontSize: 13.5, color: GRAY_600 }}>
+          Présence réelle :{" "}
+          <Box component="span" sx={{ fontWeight: 700, color: GRAY_800 }}>{formatMinutes(prestation.presence?.totalMinutes)}</Box>
+        </Box>
+        <Box sx={{ fontSize: 13.5, color: GRAY_600 }}>
+          <Box component="span" sx={{ fontWeight: 700, color: GRAY_800 }}>{interventionCount}</Box> intervention(s) ·{" "}
+          <Box component="span" sx={{ fontWeight: 700, color: GRAY_800 }}>{materialLineCount}</Box> ligne(s) de matériel
+        </Box>
       </Box>
 
-      <Box sx={{ mt: "12px", fontSize: 13.5, color: GRAY_600 }}>
-        Présence réelle :{" "}
-        <Box component="span" sx={{ fontWeight: 700, color: GRAY_800 }}>{formatMinutes(prestation.presence?.totalMinutes)}</Box>
-      </Box>
-
-      {withoutMaterial.length > 0 && (
+      {justificationRequired && (
         <Box sx={{ mt: "14px" }}>
           <Field
             id="prestation-no-material-comment"
-            label={withoutMaterial.length === pending.length
-              ? "Aucun matériel encodé : décrivez les interventions réalisées"
-              : `Aucun matériel encodé pour ${withoutMaterial.map((m) => m.label).join(", ")} : décrivez les interventions réalisées`}
+            label="Aucun matériel encodé pour la journée : décrivez les interventions réalisées"
             value={comment}
             onChange={setComment}
             multiline
-            helperText="Une seule justification, appliquée aux missions sans matériel."
+            helperText="Une seule justification pour toute la prestation."
           />
         </Box>
       )}
@@ -126,7 +120,7 @@ export default function PrestationSubmitDialog({ open, onClose, anchorMissionId,
         component="button"
         type="button"
         onClick={() => mutation.mutate()}
-        disabled={mutation.isPending || (withoutMaterial.length > 0 && comment.trim() === "")}
+        disabled={mutation.isPending || (justificationRequired && comment.trim() === "")}
         sx={{
           mt: "16px", width: "100%", height: 52, border: "none", borderRadius: "12px",
           background: GREEN_700, color: "#fff", fontFamily: "inherit", fontSize: 15, fontWeight: 700, cursor: "pointer",

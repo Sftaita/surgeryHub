@@ -44,5 +44,12 @@ final class MissionEncodingDto
         public readonly MissionEncodingCoherenceSummaryDto $coherenceSummary,
         public readonly array $encodingComments,
         public readonly array $progress,
+        /**
+         * Complément D-156 — null pour une mission seule ; sinon la prestation multi-salles :
+         * ['size' => int, 'missionIds' => int[], 'referenceMissionId' => int,
+         *  'acceptsNewContent' => bool] (PrestationContentGuard::describe()). Décidé par le
+         * serveur : le client n'offre l'ajout de contenu que si acceptsNewContent.
+         */
+        public readonly ?array $prestation = null,
     ) {}
 }

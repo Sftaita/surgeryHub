@@ -32,6 +32,10 @@ final class PrestationConflictException extends ConflictHttpException
     public const PRESTATION_REQUIRES_COMMON_SUBMIT = 'PRESTATION_REQUIRES_COMMON_SUBMIT';
     /** Réaffectation / annulation / changement d'horaire d'une mission qui porte déjà des données d'encodage. */
     public const MISSION_HAS_ENCODING_DATA = 'MISSION_HAS_ENCODING_DATA';
+    /** Ajout de contenu (intervention, matériel, demande au catalogue) hors de la mission de référence de la prestation. */
+    public const PRESTATION_REFERENCE_REQUIRED = 'PRESTATION_REFERENCE_REQUIRED';
+    /** Décision manager (valider, renvoyer en correction, rouvrir) impossible : les missions de la prestation ne sont pas dans un état commun compatible. */
+    public const PRESTATION_STATUS_MISMATCH = 'PRESTATION_STATUS_MISMATCH';
 
     /** @param array<string,mixed> $extra */
     public function __construct(private readonly string $errorCode, string $message, private readonly array $extra = [])

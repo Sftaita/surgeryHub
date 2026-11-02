@@ -4,6 +4,7 @@ import { Alert, Button, Checkbox, CircularProgress, Dialog, DialogActions, Dialo
 
 import { completeAndValidateMissionEncoding, isEncodingConcurrentModification } from "../api/encoding.api";
 import { encodingIncompleteText } from "../api/encodingIncomplete";
+import { PrestationDecisionNotice } from "../../prestations/components/PrestationDecisionNotice";
 
 type Props = {
   open: boolean;
@@ -19,6 +20,8 @@ type Props = {
    * annulée ; l'écran relit la mission et explique pourquoi (ENCODING_CHANGED_BEFORE_VALIDATION).
    */
   onConflict?: () => void | Promise<void>;
+  /** Complément D-156 — prestation multi-salles de la mission (détail) : la décision porte sur toute la prestation. */
+  prestation?: { missionIds: number[] } | null;
 };
 
 function errorText(err: any): string {
@@ -37,7 +40,7 @@ function errorText(err: any): string {
  * justification d'un bloc sans matériel, modification concurrente) est fait par le backend et
  * son refus est affiché tel quel dans la fenêtre, rien n'est recalculé ici.
  */
-export default function CompleteAndValidateEncodingDialog({ open, missionId, revision, takeover, onClose, onDone, onConflict }: Props) {
+export default function CompleteAndValidateEncodingDialog({ open, missionId, revision, takeover, onClose, onDone, onConflict, prestation }: Props) {
   const [comment, setComment] = React.useState("");
   const [confirmed, setConfirmed] = React.useState(false);
   // La révision confirmée est celle que le manager avait sous les yeux À L'OUVERTURE : une relecture
@@ -86,6 +89,7 @@ export default function CompleteAndValidateEncodingDialog({ open, missionId, rev
     <Dialog open={open} onClose={close} maxWidth="sm" fullWidth>
       <DialogTitle>{takeover ? "Reprendre, terminer et valider l'encodage" : "Terminer et valider l'encodage"}</DialogTitle>
       <DialogContent dividers>
+        <PrestationDecisionNotice prestation={prestation} />
         <Typography variant="body2" sx={{ mb: 1.5 }}>
           L'encodage sera terminé à votre nom puis validé : interventions et matériel seront verrouillés,
           plus aucune modification possible sauf réouverture explicite ensuite.

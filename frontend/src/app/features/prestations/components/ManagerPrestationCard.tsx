@@ -104,6 +104,12 @@ export function ManagerPrestationCard({ missionId, roomLabel, canEditRoomLabel }
             Temps planifié global {formatMinutes(prestation.planned.unionMinutes)} · présence réelle{" "}
             {prestation.presence ? formatMinutes(prestation.presence.totalMinutes) : "non déclarée"}
           </Typography>
+          {/* Complément D-156 — un seul encodage pour la prestation, porté par la mission de référence (serveur). */}
+          <Typography variant="body2" color="text.secondary" data-testid="prestation-encoding-summary">
+            Encodage unique : {prestation.encoding.interventionCount} intervention(s) · {prestation.encoding.materialLineCount} ligne(s) de matériel,
+            sur la mission n° {prestation.referenceMissionId}
+            {prestation.otherEncodedMissionIds.length > 0 ? ` (encodage antérieur aussi sur n° ${prestation.otherEncodedMissionIds.join(", ")})` : ""}
+          </Typography>
           <Stack component="ul" spacing={0.5} sx={{ listStyle: "none", p: 0, m: "8px 0 0" }}>
             {prestation.missions.map((m) => (
               <Box component="li" key={m.id} sx={{ fontSize: 14 }}>
@@ -114,6 +120,7 @@ export function ManagerPrestationCard({ missionId, roomLabel, canEditRoomLabel }
                 )}
                 {" · "}
                 {formatImputation(m.imputedMinutes)}
+                {m.isReference ? " · encodage de la prestation" : ""}
               </Box>
             ))}
           </Stack>

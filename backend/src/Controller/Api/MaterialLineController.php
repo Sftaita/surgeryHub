@@ -18,6 +18,7 @@ use App\Service\InterventionService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingLock;
 use App\Service\SurgeonEncodingChangeNotifier;
+use App\Service\Prestation\PrestationContentGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -45,6 +46,7 @@ class MaterialLineController extends AbstractController
         private readonly SurgeonEncodingChangeNotifier $surgeonChanges,
         // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
         private readonly MissionEncodingLock $encodingLock,
+        private readonly PrestationContentGuard $prestationContent,
     ) {}
 
     #[Route('', name: 'api_material_lines_create', methods: ['POST'])]
@@ -57,13 +59,16 @@ class MaterialLineController extends AbstractController
 
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
-
         /** @var MaterialLineCreateRequest $dto */
         $dto = $this->serializer->deserialize(
             $request->getContent(),
             MaterialLineCreateRequest::class,
             'json',
         );
+
+        // Complément D-156 — prestation multi-salles : mission de référence, ou matériel d'une
+        // intervention historique existante de CETTE mission (il reste sur sa mission d'origine).
+        $this->prestationContent->assertAcceptsNewContent($mission, $dto->missionInterventionId, $dto->interventionDraftId);
 
         $line = $this->encodingLock->run($mission, fn () => $this->service->createMaterialLine($mission, $dto, $user));
         $this->surgeonChanges->afterWrite($mission, $user);

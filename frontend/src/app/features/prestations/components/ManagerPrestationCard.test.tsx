@@ -29,7 +29,8 @@ function view(allowedActions: string[]): PrestationView {
     id, ordinal, label: `Mission ${ordinal}/2 · ${start}–${end} · n° ${id}`, roomLabel: null,
     startAt: `2026-09-30T${start}:00+02:00`, endAt: `2026-09-30T${end}:00+02:00`, plannedMinutes: 0, status: "SUBMITTED",
     imputedMinutes: imputed, effectiveMinutes: imputed, effectiveSource: "PRESENCE_SHARE", linkedToPresence: true,
-    hasOwnHours: false, interventionCount: 0, activeMaterialLineCount: 0, noMaterialComment: null, allowedActions: [],
+    hasOwnHours: false, interventionCount: 0, activeMaterialLineCount: 0, noMaterialComment: null,
+    isReference: id === 487, carriesContent: false, allowedActions: [],
   });
   return {
     key: "p487-488", size: 2, missionIds: [487, 488],
@@ -40,6 +41,8 @@ function view(allowedActions: string[]): PrestationView {
     presence: { id: 1, revision: 3, actualStartAt: "2026-09-30T08:00:00+02:00", actualEndAt: "2026-09-30T18:00:00+02:00", totalMinutes: 600, missionIds: [487, 488], allocationRule: "EARLIEST_END_FIRST" },
     unlinkedMissionIds: [], ownHoursMissionIds: [], statuses: ["SUBMITTED"], globalStatus: "SUBMITTED", fingerprint: "f",
     allowedActions,
+    referenceMissionId: 487, otherEncodedMissionIds: [],
+    encoding: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 }, noMaterialJustificationRequired: true,
   };
 }
 

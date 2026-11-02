@@ -9225,6 +9225,15 @@ Prestation dynamique de la mission (une mission seule = prestation de taille 1).
 }
 ```
 
+Complément D-156 (encodage unique, 2026-11-02) : chaque mission porte aussi `isReference` et
+`carriesContent` ; la vue porte `referenceMissionId` (mission qui reçoit tout nouvel
+encodage, décidée par le serveur : plus petit id parmi les missions qui portent des
+interventions, du matériel ou des demandes au catalogue, sinon plus petit id),
+`otherEncodedMissionIds` (autres missions portant du contenu historique, jamais déplacé),
+`encoding` (`{interventionCount, encodedInterventionCount, materialLineCount}` de toute la
+prestation, même requête que le suivi) et `noMaterialJustificationRequired` (aucune ligne de
+matériel active sur toute la prestation).
+
 `globalStatus` = le statut commun, ou `MIXED`. `allowedActions` : `edit_presence` si
 `MISSION_EXECUTION_UPDATE` est accordé sur chaque mission, `submit` si `MISSION_SUBMIT` est
 accordé sur chaque mission encore à soumettre. `hoursLockedByMissionIds` (`int[]`) : missions
@@ -9248,7 +9257,9 @@ Erreurs `409` (`error.code`) : `PRESTATION_CHANGED` (composition différente, av
 ### `POST /api/missions/{id}/prestation/submit`
 
 Soumission commune. Corps : `fingerprint` (requis, celui de la vue), `noMaterialComment`
-(une justification, posée sur les seules missions BLOC sans matériel). Droit :
+(une justification pour toute la prestation — complément D-156 : exigée seulement si
+aucune mission ne porte de matériel actif, et alors posée sur chaque mission ; sinon aucune
+mission n'est marquée « sans matériel »). Droit :
 `MISSION_SUBMIT` sur chaque mission encore à soumettre. Tout ou rien, dans une transaction ;
 les missions déjà `SUBMITTED` sont laissées telles quelles. Erreurs : `409 PRESTATION_CHANGED`
 (empreinte différente), `422 ENCODING_INCOMPLETE` (avec `missing`), `422` sans matériel ni
@@ -9263,6 +9274,40 @@ Dans une prestation de 2+ missions, `PATCH /api/missions/{id}/execution`,
 actualEndAt, totalMinutes, missionIds}` ou `null`) et `prestationMissionIds`. Pour une
 mission liée, `actualStartAt` / `actualEndAt` sont `null` et `actualDurationMinutes` est la
 part imputée (`effectiveDurationSource = PRESENCE_SHARE`).
+
+### Complément D-156 — encodage unique et décisions sur toute la prestation (2026-11-02)
+
+- `POST /api/missions/{id}/interventions`, `…/material-lines`, `…/intervention-type-requests`
+  et `…/material-item-requests` sur une mission d'une prestation de 2+ missions qui n'est pas
+  sa mission de référence : `409 PRESTATION_REFERENCE_REQUIRED` (`error.referenceMissionId`,
+  `missionId`, `prestationMissionIds`), rien n'est créé — jamais une redirection. Exception :
+  `…/material-lines` et `…/material-item-requests` dont `missionInterventionId` (ou
+  `interventionDraftId`) désigne une intervention (ou demande) historique de CETTE mission sont
+  acceptés — le matériel reste sur la mission de son intervention. Modifier ou supprimer un
+  élément existant reste possible sur sa mission d'origine.
+- `GET /api/missions/{id}/prestation/encoding` : l'encodage de toute la prestation en une
+  liste, même contrat que `GET /api/missions/{id}/encoding`. `mission`, `catalog`,
+  `coherenceSummary`, `encodingComments` et `prestation` : ceux de la mission de référence ;
+  `entries` / `interventions` / `interventionTypeRequests` : ceux de la référence et des
+  missions portant du contenu historique (historique d'abord) ; `progress` : toutes les entrées
+  servies. Chaque entrée porte `missionId` : le client y adresse toute modification de
+  l'élément et de son matériel. Droit : `MISSION_VIEW` sur chaque mission du groupe et
+  `MISSION_VIEW_ENCODING` sur chaque mission dont le contenu est servi. Les entrées de
+  `GET /api/missions/{id}/encoding` portent aussi `missionId`.
+- `GET /api/missions/{id}/encoding` porte `prestation` : `null` pour une mission seule, sinon
+  `{size, missionIds, referenceMissionId, acceptsNewContent}`.
+- `GET /api/missions/{id}` porte `prestation` (`{key, size, missionIds, plannedStartAt,
+  plannedEndAt, plannedUnionMinutes}` ou `null`) ; pour une mission d'une prestation,
+  `encodingRevision` est l'empreinte de TOUTE la prestation.
+- `POST /api/missions/{id}/encoding/validate`, `…/reject`, `…/reopen` et
+  `…/complete-and-validate` sur une mission d'une prestation s'appliquent à toute la
+  prestation, tout ou rien (verrou de chaque mission, composition revérifiée →
+  `409 PRESTATION_CHANGED`). Valider : toutes les missions non validées doivent être
+  `SUBMITTED`. Renvoyer en correction : refusé si une mission est déjà validée (rouvrir).
+  Rouvrir : les missions `VALIDATED` sont rouvertes, celles encore `SUBMITTED` renvoyées en
+  correction ; une mission clôturée ou un calcul verrouillé bloque tout. Sinon
+  `409 PRESTATION_STATUS_MISMATCH` (`statuses` par mission). Audit et message de cycle de vie
+  par mission (`prestationKey`, `prestationMissionIds`), une seule notification par prestation.
 
 ### `POST /api/missions/{id}/encoding/detach-presence`
 

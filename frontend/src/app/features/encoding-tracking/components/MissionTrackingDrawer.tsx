@@ -13,6 +13,7 @@ import { EncodingContentPanel } from "./EncodingContentPanel";
 import type { EncodingAnomalyMarks, EncodingFocusTarget } from "./EncodingContentPanel";
 import { FinancialAnomaliesCard } from "./FinancialAnomaliesCard";
 import { EncodingCorrectionDialog } from "./EncodingCorrectionDialog";
+import { referenceNotice } from "../../prestations/components/PrestationDecisionNotice";
 import type { EncodingCorrectionKind } from "./EncodingCorrectionDialog";
 import { useToast } from "../../../ui/toast/useToast";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
@@ -230,7 +231,10 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
 
   const validateMutation = useMutation({
     mutationFn: async () => validateMissionEncoding(missionId!, missionQuery.data?.encodingRevision ?? null),
-    onSuccess: async () => { toast.success("Encodage validé."); await refreshAfterAction(); },
+    onSuccess: async () => {
+      toast.success(item?.prestation ? `Prestation validée (${item.prestation.missionIds.length} missions).` : "Encodage validé.");
+      await refreshAfterAction();
+    },
     onError: async (err: any) => {
       // D-171 — révision obsolète : jamais validée ; la mission est relue avant toute nouvelle tentative.
       if (isEncodingConcurrentModification(err)) {
@@ -276,7 +280,9 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       kind === "RETURN" ? rejectMissionEncoding(missionId!, reason) : reopenMissionEncoding(missionId!, reason),
     onSuccess: async (_data, { kind }) => {
       setCorrectionKind(null);
-      toast.success(kind === "RETURN" ? "Encodage renvoyé en correction à l'instrumentiste." : "Encodage rouvert : l'instrumentiste peut le corriger.");
+      toast.success(item?.prestation
+        ? (kind === "RETURN" ? "Prestation renvoyée en correction à l'instrumentiste." : "Prestation rouverte : l'instrumentiste peut la corriger.")
+        : (kind === "RETURN" ? "Encodage renvoyé en correction à l'instrumentiste." : "Encodage rouvert : l'instrumentiste peut le corriger."));
       await refreshAfterAction();
     },
     onSettled: () => { correctionInFlight.current = false; },
@@ -781,7 +787,9 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m5 13 4 4L19 7" /></svg>
-          {item.encodingState === "VALIDATED" || item.encodingState === "LOCKED" ? "Encodage validé" : "Valider l'encodage"}
+          {item.encodingState === "VALIDATED" || item.encodingState === "LOCKED"
+            ? "Encodage validé"
+            : item.prestation ? `Valider la prestation (${item.prestation.missionIds.length} missions)` : "Valider l'encodage"}
         </Box>
         )}
       </Box>
@@ -791,6 +799,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         missionId={item.missionId}
         revision={missionQuery.data?.encodingRevision ?? null}
         takeover={missionQuery.data?.encodingTakeover ?? null}
+        prestation={item.prestation ?? null}
         onClose={() => setCompleteValidateOpen(false)}
         onDone={async () => {
           setCompleteValidateOpen(false);
@@ -814,6 +823,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
         error={correctionError}
         onConfirm={confirmCorrection}
         onCancel={() => setCorrectionKind(null)}
+        prestation={item.prestation ?? null}
       />
 
       {canEditHours && hoursOpen && missionQuery.data && (
@@ -848,6 +858,8 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
               onValidate={() => undefined}
               progress={encodingQuery.data.progress}
               managerCorrection
+              allowAdd={encodingQuery.data.prestation?.acceptsNewContent ?? true}
+              addNotice={referenceNotice(encodingQuery.data.prestation)}
             />
           </DialogContent>
         </Dialog>

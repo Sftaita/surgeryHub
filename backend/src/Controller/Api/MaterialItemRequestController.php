@@ -11,6 +11,7 @@ use App\Security\Voter\MissionVoter;
 use App\Service\MaterialItemRequestService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingLock;
+use App\Service\Prestation\PrestationContentGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -35,6 +36,7 @@ class MaterialItemRequestController extends AbstractController
         private readonly ValidatorInterface $validator,
         // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
         private readonly MissionEncodingLock $encodingLock,
+        private readonly PrestationContentGuard $prestationContent,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -47,7 +49,6 @@ class MaterialItemRequestController extends AbstractController
 
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
-
         /** @var MaterialItemRequestCreateRequest $dto */
         $dto = $this->serializer->deserialize(
             $request->getContent(),
@@ -62,6 +63,10 @@ class MaterialItemRequestController extends AbstractController
         if (count($errors) > 0) {
             throw new UnprocessableEntityHttpException((string) $errors);
         }
+
+        // Complément D-156 — prestation multi-salles : mission de référence, ou matériel d'une
+        // intervention historique existante de CETTE mission (il reste sur sa mission d'origine).
+        $this->prestationContent->assertAcceptsNewContent($mission, $dto->missionInterventionId, $dto->interventionDraftId);
 
         $req = $this->encodingLock->run($mission, fn () => $this->service->create($mission, $dto, $user));
 

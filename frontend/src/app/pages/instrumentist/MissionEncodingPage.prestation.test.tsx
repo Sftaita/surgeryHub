@@ -53,8 +53,8 @@ function prestation(overrides: Record<string, unknown> = {}) {
     size: 2,
     missionIds: [MISSION_A, MISSION_B],
     missions: [
-      { id: MISSION_A, ordinal: 1, label: `Mission 1/2 · 07h45–13h00 · n° ${MISSION_A}`, roomLabel: null, startAt: "2026-11-04T07:45:00+01:00", endAt: "2026-11-04T13:00:00+01:00", plannedMinutes: 315, status: "IN_PROGRESS", imputedMinutes: null, effectiveMinutes: 315, effectiveSource: "PLANNED", linkedToPresence: false, hasOwnHours: false, interventionCount: 0, activeMaterialLineCount: 0, noMaterialComment: null, allowedActions: [] },
-      { id: MISSION_B, ordinal: 2, label: `Mission 2/2 · 07h45–18h00 · n° ${MISSION_B}`, roomLabel: null, startAt: "2026-11-04T07:45:00+01:00", endAt: "2026-11-04T18:00:00+01:00", plannedMinutes: 615, status: "IN_PROGRESS", imputedMinutes: null, effectiveMinutes: 615, effectiveSource: "PLANNED", linkedToPresence: false, hasOwnHours: false, interventionCount: 0, activeMaterialLineCount: 0, noMaterialComment: null, allowedActions: [] },
+      { id: MISSION_A, ordinal: 1, label: `Mission 1/2 · 07h45–13h00 · n° ${MISSION_A}`, roomLabel: null, startAt: "2026-11-04T07:45:00+01:00", endAt: "2026-11-04T13:00:00+01:00", plannedMinutes: 315, status: "IN_PROGRESS", imputedMinutes: null, effectiveMinutes: 315, effectiveSource: "PLANNED", linkedToPresence: false, hasOwnHours: false, interventionCount: 0, activeMaterialLineCount: 0, noMaterialComment: null, isReference: true, carriesContent: false, allowedActions: [] },
+      { id: MISSION_B, ordinal: 2, label: `Mission 2/2 · 07h45–18h00 · n° ${MISSION_B}`, roomLabel: null, startAt: "2026-11-04T07:45:00+01:00", endAt: "2026-11-04T18:00:00+01:00", plannedMinutes: 615, status: "IN_PROGRESS", imputedMinutes: null, effectiveMinutes: 615, effectiveSource: "PLANNED", linkedToPresence: false, hasOwnHours: false, interventionCount: 0, activeMaterialLineCount: 0, noMaterialComment: null, isReference: false, carriesContent: false, allowedActions: [] },
     ],
     date: "2026-11-04",
     instrumentist: { id: 3, name: "Sophie Colette" },
@@ -68,40 +68,55 @@ function prestation(overrides: Record<string, unknown> = {}) {
     globalStatus: "IN_PROGRESS",
     fingerprint: "fp-1",
     allowedActions: ["edit_presence", "submit"],
+    referenceMissionId: MISSION_A,
+    otherEncodedMissionIds: [],
+    encoding: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 },
+    noMaterialJustificationRequired: true,
     ...overrides,
   };
 }
 
-function encoding(id: number) {
+let unifiedEntries: unknown[] = [];
+let unifiedProgress = { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 };
+
+function encoding(id: number, entries: unknown[] = [], progress = { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 }) {
   return {
     mission: { id, type: "BLOCK", status: "IN_PROGRESS", allowedActions: ["edit_encoding", "submit"] },
     interventions: [],
-    entries: [],
+    entries,
     interventionTypeRequests: [],
-    catalog: { firms: [], items: [] },
+    catalog: { firms: [{ id: 10, name: "Arthrex", active: true }], items: [], interventionTypes: [{ id: 1, code: "GEN01", label: "Coiffe des rotateurs" }] },
     coherenceSummary: { hasNoInterventions: true, hasInterventionsWithNoMaterial: false, hasUnusedSuggestions: false, hasMaterialFromOtherFirm: false, hasMissingPrimaryFirm: false },
     encodingComments: [],
-    progress: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 },
+    progress,
   };
 }
 
-function mockApi(view = prestation()) {
+function mockApi(view = prestation(), anchor = MISSION_A) {
   apiGetMock.mockImplementation((url: string) => {
-    if (url === `/api/missions/${MISSION_A}`) return Promise.resolve({ data: mission(MISSION_A) });
-    if (url === `/api/missions/${MISSION_A}/prestation`) return Promise.resolve({ data: view });
-    if (url === `/api/missions/${MISSION_A}/execution`) {
-      return Promise.resolve({ data: { missionId: MISSION_A, hasExecutionRecord: false, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 315, effectiveDurationSource: "PLANNED", disputes: [] } });
+    if (url === `/api/missions/${anchor}`) return Promise.resolve({ data: mission(anchor) });
+    if (url === `/api/missions/${anchor}/prestation`) return Promise.resolve({ data: view });
+    if (url === `/api/missions/${anchor}/execution`) {
+      return Promise.resolve({ data: { missionId: anchor, hasExecutionRecord: false, actualStartAt: null, actualEndAt: null, actualDurationMinutes: null, hoursSource: null, effectiveDurationMinutes: 315, effectiveDurationSource: "PLANNED", disputes: [] } });
+    }
+    // Complément D-156 — prestation : une seule liste, servie pour toute la prestation.
+    if (url === `/api/missions/${anchor}/prestation/encoding`) {
+      return Promise.resolve({ data: encoding(view.referenceMissionId as number, unifiedEntries, unifiedProgress) });
     }
     const enc = url.match(/^\/api\/missions\/(\d+)\/encoding$/);
     if (enc) return Promise.resolve({ data: encoding(Number(enc[1])) });
+    if (url.includes("/encoding-context")) {
+      return Promise.resolve({ data: { interventionType: { id: 1, code: "GEN01", label: "Coiffe des rotateurs" }, suggestedPrimaryFirm: null, offerings: [] } });
+    }
+    if (url.includes("/service-offerings") || url.includes("recent")) return Promise.resolve({ data: [] });
     return Promise.resolve({ data: {} });
   });
 }
 
-function renderPage() {
+function renderPage(anchor = MISSION_A) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[`/app/i/missions/${MISSION_A}/encoding`]}>
+    <MemoryRouter initialEntries={[`/app/i/missions/${anchor}/encoding`]}>
       <QueryClientProvider client={client}>
         <Routes>
           <Route path="/app/i/missions/:id/encoding" element={<MissionEncodingPage />} />
@@ -115,36 +130,70 @@ beforeEach(() => {
   apiGetMock.mockReset();
   apiPostMock.mockReset();
   apiPutMock.mockReset();
+  unifiedEntries = [];
+  unifiedProgress = { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 };
 });
 
-describe("MissionEncodingPage — prestation multi-salles (D-156)", () => {
-  it("affiche une seule prestation avec ses deux missions distinctes et une seule saisie d'heures", async () => {
+const encodingUrls = () => apiGetMock.mock.calls.map(([url]) => url as string).filter((u) => u.endsWith("/encoding"));
+
+describe("MissionEncodingPage — prestation multi-salles (D-156, encodage unique)", () => {
+  it("affiche une seule prestation « Multi-salles · 2 missions », une seule saisie d'heures et aucun choix de salle", async () => {
     mockApi();
     renderPage();
 
     expect(await screen.findByTestId("prestation-panel")).toBeInTheDocument();
-    expect(screen.getByText(/Dr Arnaud Deltour — 2 missions — 07h45–18h00/)).toBeInTheDocument();
+    expect(screen.getByTestId("prestation-kicker")).toHaveTextContent("Multi-salles · 2 missions");
+    expect(screen.getByText(/Dr Arnaud Deltour — 07h45–18h00/)).toBeInTheDocument();
     expect(screen.getByText(/Temps planifié global : 10h15/)).toBeInTheDocument();
-    expect(screen.getByTestId(`prestation-mission-${MISSION_A}`)).toHaveTextContent("Mission 1/2 · 07h45–13h00");
-    expect(screen.getByTestId(`prestation-mission-${MISSION_B}`)).toHaveTextContent("Mission 2/2 · 07h45–18h00");
-    expect(screen.getByText(/1 saisie pour la prestation/)).toBeInTheDocument();
+    expect(screen.getByText(/Temps de travail · 1 saisie/)).toBeInTheDocument();
+    expect(screen.queryByText(/Choisissez la mission/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Mission 1\/2|Mission 2\/2/)).not.toBeInTheDocument();
+    // Une seule liste d'interventions, un seul bouton d'ajout.
+    expect(await screen.findAllByRole("button", { name: "Nouvelle intervention" })).toHaveLength(1);
   });
 
-  it("n'attribue jamais les interventions à une mission par défaut : le choix est explicite", async () => {
-    mockApi();
-    const user = userEvent.setup();
-    renderPage();
+  it("encode toujours sur la mission de référence désignée par le serveur, même ouverte depuis l'autre salle", async () => {
+    mockApi(prestation(), MISSION_B);
+    renderPage(MISSION_B);
 
     await screen.findByTestId("prestation-panel");
-    expect(screen.getByText(/Choisissez la mission \(salle\)/)).toBeInTheDocument();
-    expect(apiGetMock.mock.calls.map(([url]) => url)).not.toContain(`/api/missions/${MISSION_A}/encoding`);
-    expect(apiGetMock.mock.calls.map(([url]) => url)).not.toContain(`/api/missions/${MISSION_B}/encoding`);
+    await waitFor(() => expect(encodingUrls()).toContain(`/api/missions/${MISSION_B}/prestation/encoding`));
+    // Jamais l'encodage d'une seule salle.
+    expect(encodingUrls()).not.toContain(`/api/missions/${MISSION_A}/encoding`);
+    expect(encodingUrls()).not.toContain(`/api/missions/${MISSION_B}/encoding`);
+  });
 
-    await user.click(screen.getByTestId(`prestation-mission-${MISSION_B}`));
+  it("parcours complet sans sélection de salle : intervention, heures, soumission", async () => {
+    mockApi(prestation(), MISSION_B);
+    apiPostMock.mockImplementation((url: string) => {
+      if (url.endsWith("/interventions")) return Promise.resolve({ data: { id: 501, orderIndex: 0, representativePresent: null, selectedChoiceOptionId: null } });
+      return Promise.resolve({ data: prestation({ statuses: ["SUBMITTED"], globalStatus: "SUBMITTED" }) });
+    });
+    apiPutMock.mockResolvedValue({ data: prestation({ presence: { id: 9, revision: 1, actualStartAt: "2026-11-04T07:45:00+01:00", actualEndAt: "2026-11-04T18:00:00+01:00", totalMinutes: 615, missionIds: [MISSION_A, MISSION_B], allocationRule: "EARLIEST_END_FIRST" } }) });
+    const user = userEvent.setup();
+    renderPage(MISSION_B);
 
-    await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith(`/api/missions/${MISSION_B}/encoding`));
-    expect(screen.getByTestId(`prestation-mission-${MISSION_B}`)).toHaveAttribute("aria-checked", "true");
-    expect(apiGetMock.mock.calls.map(([url]) => url)).not.toContain(`/api/missions/${MISSION_A}/encoding`);
+    await screen.findByTestId("prestation-panel");
+    // 1. Intervention : firme puis type, aucune salle demandée ; enregistrée sur la référence.
+    await user.click(await screen.findByRole("button", { name: "Nouvelle intervention" }));
+    await user.click(await screen.findByText("Arthrex"));
+    await user.click(await screen.findByText(/Coiffe des rotateurs/));
+    await user.click(await screen.findByRole("button", { name: "Ajouter" }));
+    await waitFor(() => expect(apiPostMock.mock.calls.map(([u]) => u)).toContain(`/api/missions/${MISSION_A}/interventions`));
+    expect(screen.queryByText(/Choisissez la mission/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument();
+
+    // 2. Heures : une seule saisie pour la journée.
+    await user.click(screen.getByRole("button", { name: "Renseigner" }));
+    await user.click(await screen.findByRole("button", { name: "Enregistrer les heures" }));
+    await waitFor(() => expect(apiPutMock).toHaveBeenCalledWith(`/api/missions/${MISSION_B}/prestation/presence`, expect.objectContaining({ expectedMissionIds: [MISSION_A, MISSION_B] })));
+
+    // 3. Une soumission pour toute la prestation.
+    await user.click((await screen.findAllByRole("button", { name: "Soumettre la prestation" }))[0]);
+    await user.type(await screen.findByLabelText(/Aucun matériel encodé pour la journée/), "Aucun implant.");
+    await user.click((await screen.findAllByRole("button", { name: "Soumettre la prestation" })).at(-1)!);
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith(`/api/missions/${MISSION_B}/prestation/submit`, { fingerprint: "fp-1", noMaterialComment: "Aucun implant." }));
   });
 
   it("enregistre la présence une seule fois pour toute la prestation (composition attendue)", async () => {
@@ -167,19 +216,24 @@ describe("MissionEncodingPage — prestation multi-salles (D-156)", () => {
     expect(apiPostMock).not.toHaveBeenCalled();
   });
 
-  it("soumet la prestation en une fois, avec l'empreinte et une seule justification sans matériel", async () => {
+  it("soumet la prestation en une fois, avec l'empreinte et une seule justification « sans matériel » pour la journée", async () => {
     mockApi();
     apiPostMock.mockResolvedValue({ data: prestation({ statuses: ["SUBMITTED"], globalStatus: "SUBMITTED" }) });
     const user = userEvent.setup();
     renderPage();
 
     await screen.findByTestId("prestation-panel");
-    await user.click(screen.getByTestId("prestation-submit-open"));
-    const submit = await screen.findByRole("button", { name: "Soumettre la prestation" });
-    expect(submit).toBeDisabled();
+    expect(await screen.findByText("Terminer la prestation", { selector: "div" })).toBeInTheDocument();
+    expect(screen.getByText(/une seule soumission pour la journée/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Soumettre la prestation" }));
 
-    await user.type(screen.getByLabelText(/Aucun matériel encodé/), "Aucun implant posé.");
-    await user.click(submit);
+    const dialogSubmit = (await screen.findAllByRole("button", { name: "Soumettre la prestation" })).at(-1)!;
+    expect(dialogSubmit).toBeDisabled();
+    expect(screen.getByTestId("prestation-submit-summary")).toHaveTextContent("0 intervention(s) · 0 ligne(s) de matériel");
+    expect(screen.queryByText(/Mission 1\/2|Mission 2\/2/)).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText(/Aucun matériel encodé pour la journée/), "Aucun implant posé.");
+    await user.click(dialogSubmit);
 
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith(
       `/api/missions/${MISSION_A}/prestation/submit`,
@@ -188,7 +242,23 @@ describe("MissionEncodingPage — prestation multi-salles (D-156)", () => {
     expect(apiPostMock.mock.calls.map(([u]) => u)).not.toContain(`/api/missions/${MISSION_A}/encoding/complete`);
   });
 
-  it("explique pourquoi les heures communes ne sont plus modifiables quand une salle est déjà soumise", async () => {
+  it("aucune justification demandée quand la prestation porte du matériel", async () => {
+    mockApi(prestation({ noMaterialJustificationRequired: false, encoding: { interventionCount: 1, encodedInterventionCount: 1, materialLineCount: 2 } }));
+    apiPostMock.mockResolvedValue({ data: prestation({ statuses: ["SUBMITTED"], globalStatus: "SUBMITTED" }) });
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByTestId("prestation-panel");
+    await user.click(await screen.findByRole("button", { name: "Soumettre la prestation" }));
+    const dialogSubmit = (await screen.findAllByRole("button", { name: "Soumettre la prestation" })).at(-1)!;
+    expect(screen.queryByLabelText(/Aucun matériel encodé/)).not.toBeInTheDocument();
+    expect(dialogSubmit).toBeEnabled();
+    await user.click(dialogSubmit);
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith(`/api/missions/${MISSION_A}/prestation/submit`, { fingerprint: "fp-1" }));
+  });
+
+  it("explique pourquoi les heures communes ne sont plus modifiables, sans parler de salles", async () => {
     const base = prestation();
     mockApi(prestation({
       allowedActions: ["submit"],
@@ -201,38 +271,28 @@ describe("MissionEncodingPage — prestation multi-salles (D-156)", () => {
 
     await screen.findByTestId("prestation-panel");
     expect(screen.queryByRole("button", { name: /Renseigner|Modifier/ })).not.toBeInTheDocument();
-    expect(screen.getByTestId("prestation-hours-locked")).toHaveTextContent(`Mission 2/2 · 07h45–18h00 · n° ${MISSION_B}`);
-    expect(screen.getByTestId("prestation-hours-locked")).toHaveTextContent(/renvoyer aussi en correction/);
+    expect(screen.getByTestId("prestation-hours-locked")).toHaveTextContent(/renvoyer la prestation en correction/);
+    expect(screen.getByTestId("prestation-hours-locked")).not.toHaveTextContent(/Mission 2\/2/);
   });
 
-  it("présente une part de 0 minute comme une imputation financière, jamais comme une mission non travaillée", async () => {
-    const base = prestation();
-    mockApi(prestation({
-      presence: { id: 9, actualStartAt: "2026-11-04T07:45:00+01:00", actualEndAt: "2026-11-04T13:00:00+01:00", totalMinutes: 315, revision: 1 },
-      missions: [
-        { ...base.missions[0], imputedMinutes: 315, effectiveMinutes: 315, effectiveSource: "PRESENCE_SHARE", linkedToPresence: true },
-        { ...base.missions[1], imputedMinutes: 0, effectiveMinutes: 0, effectiveSource: "PRESENCE_SHARE", linkedToPresence: true, interventionCount: 2, activeMaterialLineCount: 3 },
-      ],
-    }));
+  it("une seule liste pour toute la journée, historique compris, compteur = interventions affichées", async () => {
+    const itv = (id: number, missionId: number, label: string) => ({
+      kind: "INTERVENTION", id, requestId: null, orderIndex: 0, label, interventionType: { id: 1, code: "GEN01", label },
+      firm: { id: 10, name: "Arthrex" }, requestedFirmNameSnapshot: null, status: "CATALOGUED", readOnly: false,
+      materialLines: [], materialItemRequests: [], version: 1, missionId,
+    });
+    unifiedEntries = [itv(31, MISSION_B, "Intervention encodée sur l'autre salle"), itv(32, MISSION_A, "Intervention du jour")];
+    unifiedProgress = { interventionCount: 2, encodedInterventionCount: 0, materialLineCount: 0 };
+    mockApi(prestation({ otherEncodedMissionIds: [MISSION_B], encoding: unifiedProgress }));
     renderPage();
 
-    const zero = await screen.findByTestId(`prestation-mission-${MISSION_B}`);
-    expect(zero).toHaveTextContent("2 intervention(s) · 3 ligne(s) de matériel");
-    expect(zero).toHaveTextContent("imputation financière 0h00 (heures comptées sur une autre mission de la prestation)");
-    expect(screen.getByTestId(`prestation-mission-${MISSION_A}`)).toHaveTextContent("imputation financière 5h15");
-    expect(screen.queryByText(/part imputée/)).not.toBeInTheDocument();
-  });
-
-  it("le pied de validation d'une salle annonce la soumission commune de la prestation", async () => {
-    mockApi();
-    const user = userEvent.setup();
-    renderPage();
-
-    await screen.findByTestId("prestation-panel");
-    await user.click(screen.getByTestId(`prestation-mission-${MISSION_B}`));
-    expect(await screen.findByText("Terminer la prestation", { selector: "div" })).toBeInTheDocument();
-    expect(screen.getByText(/Les 2 missions sont soumises ensemble/)).toBeInTheDocument();
-    expect(screen.queryByText(/Vous pouvez valider la mission/)).not.toBeInTheDocument();
+    expect(await screen.findByText("Intervention encodée sur l'autre salle")).toBeInTheDocument();
+    expect(screen.getByText("Intervention du jour")).toBeInTheDocument();
+    expect(screen.getByText(/2 interventions · 0 matériel/)).toBeInTheDocument();
+    expect(screen.queryByText(/Encodage antérieur/)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Nouvelle intervention" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Soumettre la prestation" })).toHaveLength(1);
+    expect(encodingUrls()).toEqual([`/api/missions/${MISSION_A}/prestation/encoding`]);
   });
 
   it("une mission seule garde l'encodage habituel (aucun panneau de prestation)", async () => {

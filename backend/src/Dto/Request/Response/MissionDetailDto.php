@@ -114,5 +114,7 @@ final class MissionDetailDto
         public readonly ?array $encoding = null,
         /** D-156 — libellé de salle facultatif (manager). */
         public readonly ?string $roomLabel = null,
+        /** Complément D-156 — prestation multi-salles (MissionListAnnotator::summary()), null si la mission est seule : les décisions du manager portent sur toute la prestation. */
+        public readonly ?array $prestation = null,
     ) {}
 }

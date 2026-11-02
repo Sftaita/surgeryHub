@@ -256,7 +256,7 @@ function installFakeServer(initial: MissionEncodingEntry[], extras: Record<numbe
   });
 }
 
-function Harness({ canEdit }: { canEdit: boolean }) {
+function Harness({ canEdit, allowAdd, addNotice }: { canEdit: boolean; allowAdd?: boolean; addNotice?: string | null }) {
   const { data } = useQuery({
     queryKey: ["missionEncoding", MISSION_ID],
     queryFn: async () => {
@@ -276,16 +276,23 @@ function Harness({ canEdit }: { canEdit: boolean }) {
       canSubmit={false}
       onValidate={() => {}}
       progress={data.progress}
+      allowAdd={allowAdd}
+      addNotice={addNotice}
     />
   );
 }
 
-function renderSection(entries: MissionEncodingEntry[], canEdit = true, extras: Record<number, Partial<EncodingIntervention>> = {}) {
+function renderSection(
+  entries: MissionEncodingEntry[],
+  canEdit = true,
+  extras: Record<number, Partial<EncodingIntervention>> = {},
+  options: { allowAdd?: boolean; addNotice?: string | null } = {},
+) {
   installFakeServer(entries, extras);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <Harness canEdit={canEdit} />
+      <Harness canEdit={canEdit} allowAdd={options.allowAdd} addNotice={options.addNotice} />
     </QueryClientProvider>,
   );
 }
@@ -296,6 +303,26 @@ beforeEach(() => {
   apiPatchMock.mockReset();
   apiDeleteMock.mockReset();
   toastErrorMock.mockReset();
+});
+
+describe("InterventionsSection — ajout réservé à la mission de référence (complément D-156)", () => {
+  it("sans ajout possible : ni nouvelle intervention ni matériel à ajouter, l'existant reste modifiable et l'écran explique pourquoi", async () => {
+    renderSection([makeDraftEntry()], true, {}, { allowAdd: false, addNotice: "Les ajouts se font sur la mission de référence n° 41." });
+    await screen.findByText("Reconstruction LCL");
+
+    expect(screen.queryByRole("button", { name: /nouvelle intervention/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ajouter du matériel" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("encoding-add-notice")).toHaveTextContent("mission de référence n° 41");
+  });
+
+  it("par défaut (mission seule ou mission de référence), l'ajout reste proposé", async () => {
+    renderSection([makeDraftEntry()]);
+    await screen.findByText("Reconstruction LCL");
+
+    expect(screen.getAllByRole("button", { name: /nouvelle intervention/i })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Ajouter du matériel" })).toBeInTheDocument();
+    expect(screen.queryByTestId("encoding-add-notice")).not.toBeInTheDocument();
+  });
 });
 
 describe("InterventionsSection — état vide", () => {

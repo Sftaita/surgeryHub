@@ -16498,3 +16498,78 @@ mission ambiguë ne peut être liée arbitrairement (`TO_REVIEW` jamais écrit, 
 seulement entre missions que rien ne distingue — aucune dans les données actuelles).
 
 Plan de déploiement : `docs/deploy-plan-d156.md`.
+
+### Validation partielle et complément « encodage unique » (2026-11-02)
+
+**Validation.** Après le déploiement (release `1e45953`), l'utilisateur valide D-156 sur son
+périmètre testé (présence commune, Planning V2 multi-salles, liens poste ↔ mission, missions
+distinctes, actions manager), **à l'exclusion de l'écran d'encodage instrumentiste
+multi-salles**. D-156 n'est donc pas présenté comme entièrement validé tant que le complément
+ci-dessous n'est pas livré et validé (registre : D-156 « déployé », D-156-ENCODAGE-UNIQUE).
+
+**Règle métier (utilisateur).** Dans une prestation multi-salles, on n'a pas besoin de savoir
+dans quelle salle une intervention ou un matériel a été utilisé : même instrumentiste, même
+chirurgien, même établissement, même journée. Le choix « Choisissez la mission (salle) » est
+supprimé ; l'instrumentiste voit une prestation « Multi-salles · N missions », une saisie
+d'heures, une liste d'interventions, une liste de matériel, une soumission. Les missions
+restent distinctes pour le planning et la répartition des heures (inchangée).
+
+**Mission de référence.** Interventions, lignes de matériel et demandes au catalogue restent
+attachées à une mission (aucune migration, aucun nouveau rattachement) : la mission de
+référence, décidée par le serveur seul (`PrestationReference`) — la plus petite id parmi les
+missions qui portent déjà du contenu, sinon la plus petite id. Stable : une mission créée plus
+tard a une id plus grande, et une mission qui porte du contenu ne quitte jamais sa prestation
+en silence (`MissionEncodingDataGuard`). Tout ajout sur une autre mission de la prestation est
+refusé (`409 PRESTATION_REFERENCE_REQUIRED`, avec l'id de la référence) — jamais une
+redirection silencieuse. Un rattachement direct à la prestation a été écarté : la présence
+n'existe qu'une fois les heures saisies, et le calcul financier, les factures firmes, les
+relevés, la régularisation du matériel (D-142), les suggestions et les demandes au catalogue
+fonctionnent tous par mission.
+
+**Historique (décisions utilisateur du 2026-11-02, après la première recette).** Le contenu
+déjà encodé sur une autre mission de la prestation reste sur sa mission d'origine, jamais
+déplacé ni dupliqué. L'instrumentiste voit **une seule liste** pour toute la prestation
+(`GET /api/missions/{id}/prestation/encoding`) : interventions de la référence et
+interventions historiques ensemble, chacune avec son matériel, compteur = interventions
+affichées ; aucune section séparée, aucune salle. Chaque entrée porte son `missionId` : le
+client adresse toute modification à la mission de l'élément. Du matériel peut être ajouté à
+une intervention historique : il reste sur la mission de cette intervention (seule exception à
+la règle « nouveau contenu = mission de référence » ; aucune nouvelle intervention hors
+référence). Autorisations et verrous inchangés (Voters, `MissionEncodingGuard`, verrou
+d'encodage). Production au 2026-11-02 : les 9 paires multi-salles n'ont aucun contenu.
+
+**Stabilité de la référence.** Elle ne dépend que de la présence de contenu, jamais du statut :
+soumission, renvoi, validation et réouverture ne la changent pas ; un ajout sur la référence ne
+la change pas ; supprimer puis réajouter tout le contenu d'une prestation sans historique la
+laisse sur la même mission (la plus petite). Seul cas où elle change : la référence ne porte
+plus rien alors qu'une autre mission porte encore du contenu historique — rien n'est perdu ni
+déplacé, la liste est relue après chaque écriture et les ajouts suivants partent vers la
+nouvelle référence ; un onglet resté ouvert reçoit un `409` explicite et se relit
+automatiquement, sans blocage.
+
+**Facturation.** Aucun tarif ni formule modifié : chaque intervention et chaque ligne de
+matériel produit sa propre ligne firme, indépendamment de la mission qui la porte ; les
+montants facturés aux firmes sont donc identiques et chaque élément n'est valorisé qu'une
+fois (tests : chaque intervention / ligne de matériel apparaît dans exactement une ligne de
+calcul actif). La part d'heures de chaque mission reste celle de la présence commune
+(EARLIEST_END_FIRST).
+
+**Soumission.** La justification « sans matériel » est appréciée sur toute la prestation :
+exigée une fois, seulement si aucune mission ne porte de matériel actif ; aucune mission
+n'est marquée « sans matériel » quand la prestation en porte (le suivi n'affiche plus
+« soumise sans matériel » pour la salle vide).
+
+**Décisions du manager sur toute la prestation.** Valider, renvoyer en correction, rouvrir et
+« Terminer et valider » (D-171) appliqués à une mission d'une prestation portent sur toute la
+prestation, en une opération tout ou rien : verrou de chaque mission (ordre d'id), composition
+revérifiée, tous les contrôles avant la première écriture. États mixtes hérités (une mission
+validée, l'autre soumise) : renvoi refusé (rouvrir à la place), validation qui complète la
+prestation, réouverture qui remet toute la prestation en correction ; sinon
+`409 PRESTATION_STATUS_MISMATCH`. La révision attendue (`encodingRevision`) couvre toute la
+prestation. Un message de cycle de vie par mission (audit, traçabilité), une seule
+notification par prestation (`prestationNotifiedMissionId`) — aussi pour la soumission
+commune, qui notifiait jusqu'ici le chirurgien une fois par salle. Les relances restaient
+déjà une par prestation (D-156).
+
+**Livraison.** Branche `feat/d156-prestation-encodage-unique`, release séparée de D-156 ; rien
+fusionné ni déployé sans accord.
