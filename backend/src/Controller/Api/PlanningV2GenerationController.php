@@ -339,10 +339,14 @@ class PlanningV2GenerationController extends AbstractController
                 isset($p['surgeonId']) ? (int) $p['surgeonId'] : null,
                 isset($p['siteId']) ? (int) $p['siteId'] : null,
                 (bool) ($p['cancelled'] ?? false),
+                \App\Enum\MissionType::tryFrom((string) ($p['missionType'] ?? '')),
             );
         }
 
-        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId, $surgeon, $proposedSlots);
+        // D-156 — the slot's mission type (a new line), so a simultaneous BLOC room of the same
+        // surgeon and site is not reported as a conflict; the edited mission's own type otherwise.
+        $slotType = \App\Enum\MissionType::tryFrom((string) ($params['missionType'] ?? ''));
+        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId, $surgeon, $proposedSlots, $slotType);
         $candidates = array_map(
             fn ($result) => $this->eligibilityService->serializeCandidate($result, $policy),
             $results,

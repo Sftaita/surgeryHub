@@ -273,6 +273,37 @@ final class PlanningMultiRoomConfirmationTest extends WebTestCase
         self::assertSame('DRAFT_CONFLICTS', $this->body($dep)['code']);
     }
 
+    /**
+     * D-165 × D-156 — the editor's roster for a line not saved yet: the same instrumentist on a
+     * simultaneous BLOC room of the same surgeon and site (proposed, not saved) is one
+     * prestation, never a SCHEDULE_CONFLICT; another surgeon's room still is.
+     */
+    #[WithoutErrorHandler]
+    public function test_editor_roster_never_reports_a_proposed_multi_room_line_as_a_conflict(): void
+    {
+        $day = $this->wednesdays()[0];
+        $journee = ['missionId' => null, 'instrumentistId' => $this->sophie->getId(), 'startTime' => '07:45', 'endTime' => '18:00',
+            'surgeonId' => $this->deltour->getId(), 'siteId' => $this->site->getId(), 'cancelled' => false, 'missionType' => 'BLOCK'];
+        $roster = function (array $proposal, ?string $type) use ($day): ?string {
+            $res = $this->api($this->client, $this->token, 'POST', '/api/planning/v2/eligible-instrumentists', [
+                'siteId' => $this->site->getId(), 'date' => $day, 'startTime' => '08:00', 'endTime' => '13:00',
+                'surgeonId' => $this->deltour->getId(), 'missionType' => $type, 'policy' => 'STRICT_ASSIGNMENT', 'proposals' => [$proposal],
+            ]);
+            self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+            foreach ($this->body($res)['candidates'] as $c) {
+                if ($c['id'] === $this->sophie->getId()) {
+                    return in_array('SCHEDULE_CONFLICT', $c['reasons'], true) ? 'CONFLICT' : 'OK';
+                }
+            }
+
+            return null;
+        };
+
+        self::assertSame('OK', $roster($journee, 'BLOCK'), 'Same surgeon, same site, BLOC: one multi-room prestation');
+        self::assertSame('CONFLICT', $roster(['surgeonId' => $this->makeUser('ROLE_SURGEON', 'Yorick', 'Berger')->getId()] + $journee, 'BLOCK'), 'Another surgeon: a real conflict');
+        self::assertSame('CONFLICT', $roster($journee, 'CONSULTATION'), 'A consultation never forms a prestation');
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private function assignOn(array $lines, string $day, string $endTime, ?User $instrumentist, ?string $startTime = null): array

@@ -269,11 +269,16 @@ function isFlatFee(p: MyHoursItem): boolean {
   return p.estimate?.rateType === "CONSULTATION_FEE";
 }
 
+/** D-156 — heures communes d'une prestation multi-salles : cette ligne porte la part imputée à la salle. */
+function isPresenceShare(p: MyHoursItem): boolean {
+  return p.durationSource === "PRESENCE_SHARE";
+}
+
 function rowLabel(p: MyHoursItem): string {
   const hours = p.minutes === null
     ? "heures non renseignées"
     : `${duration(p.minutes)}${p.start && p.end ? `, de ${clock(p.start)} à ${clock(p.end)}${p.endsNextDay ? " le lendemain" : ""}` : ""}`;
-  return `${dateLong(p.date)}, ${p.surgeonName ?? "chirurgien non renseigné"}, ${p.site.name}, ${hours}${isFlatFee(p) ? ", forfait consultation" : ""}`;
+  return `${dateLong(p.date)}, ${p.surgeonName ?? "chirurgien non renseigné"}, ${p.site.name}, ${hours}${isPresenceShare(p) ? ", part imputée de la présence multi-salles" : ""}${isFlatFee(p) ? ", forfait consultation" : ""}`;
 }
 
 function PrestationList({ items, onOpen }: { items: MyHoursItem[]; onOpen: (id: number) => void }) {
@@ -288,6 +293,7 @@ function PrestationList({ items, onOpen }: { items: MyHoursItem[]; onOpen: (id: 
               <span className="mh-row__surgeon">{p.surgeonName ?? "Chirurgien non renseigné"}</span>
               <span className="mh-row__site">{p.site.name}</span>
               {isFlatFee(p) && <span className="mh-fee-tag">Forfait consultation</span>}
+              {isPresenceShare(p) && <span className="mh-fee-tag" data-testid="presence-share-tag">Multi-salles · part imputée</span>}
               <StatusLabel status={p.status} />
             </span>
             <span className="mh-row__chev"><ChevronRight /></span>

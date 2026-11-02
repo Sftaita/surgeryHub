@@ -78,7 +78,8 @@ final class MissionAssignmentRefusalPolicy
         }
 
         $execution = $mission->getExecution();
-        if ($execution !== null && ($execution->getActualStartAt() !== null || $execution->getActualEndAt() !== null)) {
+        // D-156 — shared real hours of a multi-room prestation count as encoded data too.
+        if ($execution !== null && ($execution->getActualStartAt() !== null || $execution->getActualEndAt() !== null || $execution->getPresence() !== null)) {
             return true;
         }
 

@@ -45,3 +45,22 @@ describe("realHoursOf — ce qui a réellement été déclaré, jamais complét�
     expect(r.note).toBe("Déclaration incomplète : l'heure de début n'a pas été renseignée.");
   });
 });
+
+describe("realHoursOf — D-156 présence commune d'une prestation multi-salles", () => {
+  const presence = { id: 9, revision: 2, actualStartAt: "2026-11-04T07:45:00+01:00", actualEndAt: "2026-11-04T18:00:00+01:00", totalMinutes: 615, missionIds: [1, 2] };
+
+  it("bornes de la présence commune, durée = part imputée à cette mission, jamais « durée seule »", () => {
+    const r = realHoursOf({ ...base, actualDurationMinutes: 315, effectiveDurationMinutes: 315, effectiveDurationSource: "PRESENCE_SHARE", presence });
+    expect(r.kind).toBe("PRESENCE_SHARE");
+    expect(r.start).toBe(presence.actualStartAt);
+    expect(r.end).toBe(presence.actualEndAt);
+    expect(r.minutes).toBe(315);
+    expect(r.note).toBe("Présence commune de la prestation multi-salles (10h15) : imputation financière de 5h15 à cette mission.");
+  });
+
+  it("part nulle : expliquée, heures comptées sur une autre mission", () => {
+    const r = realHoursOf({ ...base, actualDurationMinutes: 0, effectiveDurationMinutes: 0, effectiveDurationSource: "PRESENCE_SHARE", presence });
+    expect(r.minutes).toBe(0);
+    expect(r.note).toContain("les heures sont comptées sur une autre mission de la prestation");
+  });
+});

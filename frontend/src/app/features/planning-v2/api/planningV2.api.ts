@@ -520,6 +520,8 @@ export interface RosterProposal {
   surgeonId: number | null;
   siteId: number | null;
   cancelled: boolean;
+  /** D-156 — a simultaneous BLOC room of the same surgeon and site is one prestation, never a conflict (backend rule). */
+  missionType?: string | null;
 }
 
 export async function fetchRosterEligibility(params: {
@@ -529,6 +531,8 @@ export async function fetchRosterEligibility(params: {
   endTime: string;
   excludeMissionId?: number | null;
   surgeonId?: number | null;
+  /** D-156 — the slot's mission type (a line not saved yet). */
+  missionType?: string | null;
   policy?: EligibilityEnforcementPolicy;
   proposals?: RosterProposal[];
 }): Promise<RosterEligibilityResponse> {
@@ -540,6 +544,7 @@ export async function fetchRosterEligibility(params: {
       endTime: params.endTime,
       excludeMissionId: params.excludeMissionId ?? null,
       surgeonId: params.surgeonId ?? null,
+      missionType: params.missionType ?? null,
       policy: params.policy,
       proposals: params.proposals,
     });
@@ -553,6 +558,7 @@ export async function fetchRosterEligibility(params: {
       endTime: params.endTime,
       excludeMissionId: params.excludeMissionId ?? undefined,
       surgeonId: params.surgeonId ?? undefined,
+      missionType: params.missionType ?? undefined,
       policy: params.policy,
     },
   });

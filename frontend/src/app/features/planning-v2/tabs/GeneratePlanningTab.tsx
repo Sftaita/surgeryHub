@@ -948,6 +948,7 @@ export function GeneratePlanningTab() {
         endTime: selectedLine.endTime,
         excludeMissionId: selectedLine.existingMissionId,
         surgeonId: selectedLine.surgeonId,
+        missionType: selectedLine.missionType,
         proposals: buildRosterProposals(effectiveLines, selectedLine, editedKeys),
       }
     : null;

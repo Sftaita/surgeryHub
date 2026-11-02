@@ -126,6 +126,16 @@ describe("MyHoursPage (D-179)", () => {
     expect(screen.getAllByText("Validé")).toHaveLength(3);
   });
 
+  it("D-156 — part imputée d'une présence multi-salles : signalée comme telle, jamais présentée comme des heures propres", async () => {
+    (fetchMyHours as Mock).mockResolvedValue({
+      ...ALL,
+      items: [item({ missionId: 31, date: `${MONTH}-04`, start: null, end: null, minutes: 315, durationSource: "PRESENCE_SHARE", status: "pending" })],
+    });
+    renderPage();
+    const row = await screen.findByRole("button", { name: /5h15, part imputée de la présence multi-salles/ });
+    expect(within(row).getByTestId("presence-share-tag")).toHaveTextContent("Multi-salles · part imputée");
+  });
+
   it("le filtre par site redemande le relevé au serveur : liste, heures ET montants changent ; les puces restent", async () => {
     renderPage();
     await screen.findByText("82h30");

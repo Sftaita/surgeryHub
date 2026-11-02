@@ -315,6 +315,21 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         self::assertTrue($rows[$apm]['hours']['hasRealHours']);
         self::assertNotSame('NO_REAL_HOURS', $rows[$apm]['hours']['comparison']);
         self::assertSame(615, $rows[$apm]['prestation']['plannedUnionMinutes']);
+
+        // D-179 « Mes heures » (intégration D-156) : la présence compte une fois (somme des parts),
+        // chaque salle porte sa part imputée, la salle à 0 min n'est pas « sans tarif ».
+        $res = $this->api($this->client, $sophieToken, 'GET', '/api/me/hours?month=' . $this->day->format('Y-m'));
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $hours = $this->body($res);
+        $mine = array_column(array_values(array_filter($hours['items'], static fn (array $i) => in_array($i['missionId'], [$journee, $matin, $apm], true))), null, 'missionId');
+        self::assertSame([300, 315, 0], [$mine[$journee]['minutes'], $mine[$matin]['minutes'], $mine[$apm]['minutes']]);
+        self::assertSame(['PRESENCE_SHARE'], array_values(array_unique(array_column($mine, 'durationSource'))));
+        self::assertSame(615, $hours['summary']['encodedMinutes'], 'One presence, never 20h30');
+        self::assertSame(0, $hours['summary']['missingHoursCount']);
+        self::assertNotNull($hours['estimate']);
+        self::assertSame(0, $hours['estimate']['unratedCount'], 'A 0-minute share is not a missing rate');
+        self::assertNull($mine[$apm]['estimate']);
+        self::assertSame('387.14', number_format((float) $mine[$journee]['estimate']['amount'] + (float) $mine[$matin]['estimate']['amount'], 2, '.', ''));
     }
 
     #[WithoutErrorHandler]

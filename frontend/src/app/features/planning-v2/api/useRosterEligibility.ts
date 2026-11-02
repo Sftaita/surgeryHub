@@ -11,15 +11,17 @@ export interface RosterSlot {
   excludeMissionId?: number | null;
   /** D-152 — the line's surgeon: his incompatible instrumentists come back flagged. */
   surgeonId?: number | null;
+  /** D-156 — the line's mission type: a simultaneous BLOC room of the same surgeon is one prestation. */
+  missionType?: string | null;
   /** D-165 — the editor's other unsaved lines that day (see buildRosterProposals). */
   proposals?: RosterProposal[];
 }
 
 function slotKey(slot: RosterSlot): string {
   const proposals = (slot.proposals ?? [])
-    .map((p) => `${p.missionId ?? "new"}:${p.instrumentistId ?? "-"}:${p.startTime}-${p.endTime}:${p.cancelled ? "x" : ""}`)
+    .map((p) => `${p.missionId ?? "new"}:${p.instrumentistId ?? "-"}:${p.startTime}-${p.endTime}:${p.surgeonId ?? "-"}:${p.siteId ?? "-"}:${p.missionType ?? "-"}:${p.cancelled ? "x" : ""}`)
     .join(",");
-  return `${slot.siteId ?? "null"}|${slot.date}|${slot.startTime}|${slot.endTime}|${slot.excludeMissionId ?? "null"}|${slot.surgeonId ?? "null"}|${proposals}`;
+  return `${slot.siteId ?? "null"}|${slot.date}|${slot.startTime}|${slot.endTime}|${slot.excludeMissionId ?? "null"}|${slot.surgeonId ?? "null"}|${slot.missionType ?? "null"}|${proposals}`;
 }
 
 function isCompleteSlot(slot: RosterSlot): boolean {

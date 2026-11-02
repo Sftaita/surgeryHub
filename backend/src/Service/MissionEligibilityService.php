@@ -16,6 +16,7 @@ use App\Enum\EligibilityReason;
 use App\Enum\EmploymentType;
 use App\Enum\MissionAssignmentEndReason;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\ParameterType;
 use Doctrine\ORM\EntityManagerInterface;
@@ -789,10 +790,15 @@ class MissionEligibilityService
         // (SURGEON_INCOMPATIBILITY, blocking) — one more query.
         ?User $surgeon = null,
         array $proposals = [],
+        ?MissionType $slotType = null,
     ): array {
-        // D-156 — the mission being edited (if any) gives the slot its surgeon and type, so a
-        // legitimate multi-room overlap is not reported as a conflict for that slot.
+        // D-156 — the mission being edited (if any) gives the slot its surgeon, site and type,
+        // otherwise the request does (a line not saved yet), so a legitimate multi-room overlap
+        // — saved or only proposed by the editor — is not reported as a conflict for that slot.
         $context = $excludeMissionId !== null ? $this->em->find(Mission::class, $excludeMissionId) : null;
+        $slotSurgeon = $context?->getSurgeon() ?? $surgeon;
+        $slotSite = $context?->getSite() ?? $site;
+        $slotType = $context?->getType() ?? $slotType;
 
         // Q1 — full active ROLE_INSTRUMENTIST roster (matches GET /api/instrumentists?active=true).
         /** @var User[] $candidates */
@@ -878,7 +884,7 @@ class MissionEligibilityService
             }
         }
 
-        $proposedConflictsByUser = $this->proposedConflicts($proposals, $startAt, $endAt, $excludeMissionId);
+        $proposedConflictsByUser = $this->proposedConflicts($proposals, $startAt, $endAt, $excludeMissionId, $slotSurgeon, $slotSite, $slotType);
 
         $incompatible = $surgeon !== null ? $this->incompatibleInstrumentistsOf($surgeon) : [];
 
@@ -910,7 +916,7 @@ class MissionEligibilityService
 
             foreach ($conflictsByUser[$uid] ?? [] as $conflict) {
                 if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt
-                    && !self::isLegitimateMultiRoom($conflict, $candidate, $context, $startAt, $endAt)) {
+                    && !PrestationGrouping::isMultiRoomSlot($conflict, $candidate, $slotSurgeon, $slotSite, $slotType, $startAt, $endAt)) {
                     $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
                     $matchedConflict = $conflict;
                     break;
@@ -936,13 +942,28 @@ class MissionEligibilityService
      * @param ProposedSlot[] $proposals
      * @return array<int, ScheduleConflictDetail>
      */
-    private function proposedConflicts(array $proposals, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt, ?int $excludeMissionId): array
-    {
+    private function proposedConflicts(
+        array $proposals,
+        \DateTimeImmutable $startAt,
+        \DateTimeImmutable $endAt,
+        ?int $excludeMissionId,
+        ?User $slotSurgeon = null,
+        ?Hospital $slotSite = null,
+        ?MissionType $slotType = null,
+    ): array {
         /** @var array<int, ProposedSlot> $byUser */
         $byUser = [];
         foreach ($proposals as $p) {
             if ($p->cancelled || $p->instrumentistId === null || isset($byUser[$p->instrumentistId])
                 || ($p->missionId !== null && $p->missionId === $excludeMissionId)) {
+                continue;
+            }
+            // D-156 — a simultaneous BLOC room of the same surgeon on the same site (same day:
+            // the proposals are the editor's lines of the slot's day) is one multi-room
+            // prestation, never a conflict — same rule as PrestationGrouping::isMultiRoomSlot().
+            if ($slotType === MissionType::BLOCK && $p->missionType === MissionType::BLOCK
+                && $slotSurgeon !== null && $p->surgeonId === $slotSurgeon->getId()
+                && $slotSite !== null && $p->siteId === $slotSite->getId()) {
                 continue;
             }
             if ($p->startAt < $endAt && $startAt < $p->endAt) {
