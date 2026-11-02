@@ -16171,7 +16171,8 @@ différent (elle est recalculée à la volée, indicative).
 ## D-156 — Une seule réalité opérationnelle (Missions ↔ Planning V2) et prestations regroupées multi-salles (2026-10-18)
 
 Branche `feat/prestations-regroupees` (worktree `SurgicalHub-prestations`), base
-`origin/main` `8b61500`. Non fusionnée, non déployée. Numérotée D-156 car D-150 → D-155
+`origin/main` `8b61500`. Intégrée sur `main` le 2026-11-02 (voir « Intégration sur `main` »
+ci-dessous) ; non fusionnée, non déployée. Numérotée D-156 car D-150 → D-155
 sont réservées par la branche non fusionnée `feat/surgeon-refusal-compat`.
 
 **Modifie D-091 et D-119 sur un seul cas précis** (voir « Conflits » ci-dessous). Les
@@ -16398,3 +16399,63 @@ différent) inchangés. Aucune donnée réécrite : les paires sont regroupées 
 une mission déjà dotée d'heures propres n'est jamais liée sans confirmation explicite
 (anciennes valeurs dans l'audit) ; les calculs approuvés ou verrouillés ne sont jamais
 rejoués.
+
+### Intégration sur `main` (2026-11-02)
+
+Branche `integration/d156-on-main` (worktree `SurgicalHub-d156-integration`), issue de
+`main` `d9e6ee9` ; `feat/prestations-regroupees` (`108d276`) sauvegardée sur `origin`
+sans PR. Non fusionnée, non déployée.
+
+**Fusion.** 35 fichiers en conflit, résolus en gardant D-150 → D-179 : gardes D-156 sous
+le verrou D-150 ; exception multi-salles reportée dans la détection par paires D-167
+(`findConflicts`, `findConflictsInPool`, réconciliation : une ancienne alerte entre deux
+salles légitimes est résolue) ; un DRAFT reste DRAFT dans les actions d'alerte ;
+`complete()` sous le verrou D-171 et « Terminer et valider » refusé sur une mission seule
+d'une prestation (soumission commune puis validation par mission) ; détail mission D-168 :
+carte de prestation dans le tiroir, `MissionDetailPage` reste supprimée ;
+`findSameDayAssignmentElsewhere` (retiré par D-165) n'est pas réintroduit.
+
+**Identité stable poste ↔ mission.** `Mission.schedulePost` + `scheduleOccurrenceDate`
+(migration additive `Version20261102090000`, NULL pour l'existant) : le poste et la date
+d'origine de l'occurrence, posés à la génération. Le générateur rattache une occurrence à
+SA mission par ce lien ; une mission liée à une autre occurrence n'est jamais prise ; le
+rapprochement par horaires (±30 min, puis instrumentiste) ne vaut plus que pour les
+missions sans lien. Un enregistrement de brouillon rattache une mission DRAFT sans lien à
+l'occurrence de sa ligne. Les anciennes missions se rattachent par
+`app:mission:link-schedule-posts --from --to [--site] [--apply]` (vérification seule par
+défaut ; `--apply` écrit les liens `CLEAR` et `INTERCHANGEABLE`, jamais `TO_REVIEW`, et
+seulement les deux colonnes du lien). Cause prouvée : deux salles identiques
+(07:45–18:00), instrumentistes échangés dans l'éditeur → l'ancien rapprochement plaçait
+la ligne du poste A sur la mission du poste B (test en échec sur l'ancien générateur).
+
+**Compatibilité avec les fonctions récentes.**
+- D-179 « Mes heures » : minutes = part imputée (somme des parts = présence, jamais comptée
+  deux fois) ; une part de 0 min n'est pas « sans tarif » ; ligne « Multi-salles · part
+  imputée ».
+- D-173 heures réelles : tiroir et suivi montrent la présence commune et la part imputée,
+  jamais « durée seule » ; « Corriger les heures » n'est plus proposé sur une mission liée à
+  une présence (le dialogue reconstituait des horaires depuis la part et le serveur
+  refusait) — les heures communes se corrigent sur la prestation.
+- D-165 roster de l'éditeur : une ligne proposée sur une salle BLOC simultanée du même
+  chirurgien et du même site n'est pas un conflit (type du créneau et des propositions
+  transmis).
+- D-158 absences et D-151 refus chirurgien : la présence commune compte comme activité
+  encodée (motif affiché aligné sur la garde D-156).
+- D-171 / D-172 moteur financier : la part imputée passe par
+  `MissionExecutionService::resolveEffectiveDuration()` ; présence valorisée une fois,
+  ventilée au centime ; aucun changement des verrous ni des tarifs rétroactifs.
+- D-178 suggestions d'encodage : inchangées, disponibles salle par salle.
+
+**Postes du Dr Deltour.** Postes #3, #4, #5 (mercredi, Sophie) inchangés, aucune opération
+de données : les affectations habituelles restent appliquées et chaque regroupement se
+confirme à la préparation du planning. Les postes #6 et #7 (jeudi, deux salles
+07:45–18:00) sont le cas réel de salles aux horaires identiques.
+
+**Production (lecture seule, 2026-11-02).** 94 migrations ; les 9 paires BLOC du 2026-10-18
+sont toujours sans heure, intervention, matériel ni calcul (aucun double paiement ni
+écrasement possible) ; une paire aux horaires identiques (missions 314/315, 2026-07-29,
+instrumentistes différents). Copie de production du 2026-11-02 : 3 migrations D-156 jouées
+(< 1 s chacune), données historiques identiques (empreintes de `mission`,
+`mission_execution`, calculs, lignes, interventions, matériel, affectations, postes) ;
+`app:mission:link-schedule-posts --from=2026-06 --to=2027-03` : 221 liens `CLEAR`, 0
+ambigu, 0 à arbitrer, idempotent.

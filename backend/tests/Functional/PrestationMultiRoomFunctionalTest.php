@@ -274,6 +274,11 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         self::assertNull($this->em->find(Mission::class, $apm)->getNoMaterialComment());
         self::assertSame('Aucun implant en salle 1.', $this->em->find(Mission::class, $journee)->getNoMaterialComment());
         self::assertSame('Aucun implant en salle 1.', $this->em->find(Mission::class, $matin)->getNoMaterialComment());
+        // Recette 2026-11-02 : jamais « Corriger les heures » mission par mission sur des heures
+        // communes (le dialogue reconstituait des horaires depuis la part imputée, refusés en 409).
+        $detail = $this->body($this->api($this->client, $this->managerToken, 'GET', "/api/missions/{$matin}"));
+        self::assertNotContains('edit_hours', $detail['allowedActions']);
+        self::assertContains('edit_encoding', $detail['allowedActions'], 'SUBMITTED: the manager may still correct the encoding');
 
         // Validation per mission, then valuation per mission.
         $calcs = [];

@@ -9302,3 +9302,25 @@ calcul est refusée si la présence a changé depuis.
 Chaque élément de `GET /api/billing/encoding-tracking` porte `prestation`
 (`{key, missionIds, plannedUnionMinutes}` ou `null`) : un total d'heures planifiées compte
 chaque prestation une fois.
+
+### Planning V2 — identité stable des lignes (intégration 2026-11-02)
+
+- Chaque ligne d'aperçu / de brouillon porte `occurrenceDate` (`YYYY-MM-DD`) : avec
+  `postId`, l'occurrence du poste qu'elle représente (date d'origine pour une occurrence
+  déplacée). L'éditeur la renvoie telle quelle dans `lines` de `POST /api/planning/v2/generate`
+  et `PATCH /api/planning/v2/drafts/{id}` ; absente, la date de la ligne est utilisée.
+- `GET|POST /api/planning/v2/eligible-instrumentists` : paramètre facultatif `missionType`
+  (type du créneau d'une ligne pas encore enregistrée) et champ `missionType` de chaque
+  proposition. Une proposition BLOC du même chirurgien et du même site, simultanée, n'est
+  jamais un `SCHEDULE_CONFLICT` (prestation multi-salles).
+- Une mission liée à une présence commune n'expose jamais `edit_hours` dans
+  `allowedActions` : ses heures se corrigent par `PUT /api/missions/{id}/prestation/presence`.
+
+### Console — `app:mission:link-schedule-posts`
+
+`--from=YYYY-MM --to=YYYY-MM [--site=ID ...] [--apply]` : rattache les missions générées
+avant le lien stable à leur occurrence de poste, telle que le générateur les rapproche
+aujourd'hui. Sans `--apply` : liste seule, code 1 s'il reste des liens à écrire. Classes :
+`CLEAR`, `INTERCHANGEABLE` (missions équivalentes que rien ne distingue — rattachées),
+`TO_REVIEW` (missions équivalentes qui diffèrent — jamais rattachées). Écrit uniquement
+`mission.schedule_post_id` et `mission.schedule_occurrence_date`, en une transaction.

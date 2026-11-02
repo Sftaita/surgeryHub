@@ -230,7 +230,10 @@ export function buildMissionDrawerView(input: {
       planEnd: mission.endAt,
       real: realHoursOf(execution),
       precision: `Planning : ${formatSchedulePrecision(mission.schedulePrecision).toLowerCase()}`,
-      correctionHint: hoursCorrectionHint(mission),
+      // D-156 — heures communes d'une prestation multi-salles : jamais corrigées mission par mission.
+      correctionHint: execution?.presence
+        ? "Heures communes de la prestation multi-salles : elles se corrigent une seule fois sur la prestation (saisie de l'instrumentiste), ou après un détachement contrôlé."
+        : hoursCorrectionHint(mission),
       openDisputes: execution?.disputes.filter((d) => d.status === "OPEN").length ?? 0,
       disputes: (execution?.disputes ?? []).map((d) => ({
         id: d.id,
