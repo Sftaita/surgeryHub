@@ -232,6 +232,11 @@ final class PlanningDraftService
                     continue;
                 }
 
+                // D-156 — the line the manager works on becomes this mission's stable identity.
+                if ($status !== 'SKIPPED') {
+                    $this->generator->adoptOccurrenceLink($mission, $line);
+                }
+
                 if ($status === 'SKIPPED') {
                     // "Ignorer cette ligne" on an already-persisted draft occurrence — the
                     // Mission never should have existed for this occurrence, so remove it

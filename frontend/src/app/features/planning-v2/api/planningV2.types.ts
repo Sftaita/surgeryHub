@@ -380,7 +380,6 @@ export interface PreviewLineV2 {
    * editable: OPEN/ASSIGNED only). Absent for a preview/new line (everything editable).
    */
   existingMissionActions?: string[] | null;
-
   /**
    * D-156 — informative only (backend preview): size of the multi-room prestation this line
    * forms with simultaneous lines of the same instrumentist; null when alone.
@@ -392,6 +391,8 @@ export interface PreviewLineV2 {
   multiRoomConfirmation?: "REQUIRED" | "CONFIRMED" | null;
   /** D-156 — sent back by the editor: the manager confirmed the group with this key. */
   multiRoomConfirmedKey?: string | null;
+  /** D-156 — date of the post occurrence (original date of a MOVED one): with postId, its stable identity, sent back as-is. */
+  occurrenceDate?: string | null;
   /** D-125 — Modification: nominative request state of the mission (backend `targetedOffer`). */
   pendingOfferName?: string | null;
   offerDeclinedByName?: string | null;

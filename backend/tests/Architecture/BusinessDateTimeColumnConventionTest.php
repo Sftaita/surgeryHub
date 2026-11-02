@@ -55,6 +55,7 @@ final class BusinessDateTimeColumnConventionTest extends TestCase
         'App\Entity\Absence::dateStart' => 'date-only (Y-m-d), never formatted with a time/offset component',
         'App\Entity\Absence::dateEnd' => 'date-only (Y-m-d), never formatted with a time/offset component',
         'App\Entity\WorkedPresence::serviceDate' => 'date-only (Y-m-d local service date of the prestation, D-156), never formatted with a time/offset component',
+        'App\Entity\Mission::scheduleOccurrenceDate' => 'date-only (Y-m-d date of the recurring post occurrence, D-156), never formatted with a time/offset component',
         'App\Entity\PlanningMultiRoomConfirmation::serviceDate' => 'date-only (Y-m-d local date of the confirmed group, D-156), never formatted with a time/offset component',
         'App\Entity\PlanningMultiRoomConfirmation::confirmedAt' => 'server-generated (new \DateTimeImmutable() in the constructor, D-156), never client-submitted',
         'App\Entity\FirmInvoice::periodStart' => 'date-only (Y-m-d)',

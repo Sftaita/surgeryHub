@@ -45,6 +45,21 @@ class PlanningGeneratorServiceV2
     ) {}
 
     /**
+     * D-156 — what the last preview() did for occurrences matched WITHOUT a stable link (by the
+     * times): one entry per such claim, with the other missions that were exactly as close
+     * (`ambiguousWith`, empty when the choice was clear). Read by app:mission:link-schedule-posts.
+     *
+     * @var list<array{postId: int, occurrenceDate: string, missionId: int, ambiguousWith: list<int>}>
+     */
+    private array $unlinkedClaims = [];
+
+    /** @return list<array{postId: int, occurrenceDate: string, missionId: int, ambiguousWith: list<int>}> */
+    public function lastUnlinkedClaims(): array
+    {
+        return $this->unlinkedClaims;
+    }
+
+    /**
      * Preview: returns array of preview lines WITHOUT persisting anything.
      * Exactly one of $siteId / $siteGroupId must be provided, unless $explicitSiteIds is
      * given (D-115bis — reopen() of a group-scoped draft), in which case both are ignored.
@@ -87,6 +102,7 @@ class PlanningGeneratorServiceV2
         );
 
         $claimedMissionIds  = [];
+        $this->unlinkedClaims = [];
         $previewAssignments = []; // [instId => [[dateStr, startMins, endMins], ...]]
         $lines              = [];
 
@@ -156,6 +172,7 @@ class PlanningGeneratorServiceV2
                     $exception->getOverrideStartTime(), $exception->getOverrideEndTime(),
                     $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
                     $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
+                    $exception->getOccurrenceDate()->format('Y-m-d'),
                 );
             }
 
@@ -197,8 +214,12 @@ class PlanningGeneratorServiceV2
         array $missionsByInstrumentist,
         array &$lines,
         array $blockedPairs = [],
+        ?string $occurrenceDate = null,
     ): void {
         $site = $post->getSite();
+        // D-156 — identity of this occurrence: its post and ORIGINAL date (a MOVED occurrence
+        // keeps the date it was moved from), carried by the line and stored on the mission.
+        $occurrenceDate ??= $dayStr;
 
         if ($overrideStartTime !== null && $overrideEndTime !== null) {
             $startTime = $overrideStartTime;
@@ -224,6 +245,7 @@ class PlanningGeneratorServiceV2
             $lines[] = $this->buildLine(
                 $current, $post, $site, $surgeonName, $startTime, $endTime,
                 $effectiveInstrumentist, 'SKIPPED', null,
+                occurrenceDate: $occurrenceDate,
             );
             return;
         }
@@ -235,6 +257,7 @@ class PlanningGeneratorServiceV2
         $existingMission = $this->claimMission(
             $existingMissionsPool, $claimedMissionIds,
             $surgeon, $site, $current, $startTime, $slotInstrumentist, $endTime,
+            $post, $occurrenceDate,
         );
 
         // D-125 — a pre-existing Mission that is already published/operational (created
@@ -257,6 +280,7 @@ class PlanningGeneratorServiceV2
                 $existingInst, $existingBlocked ? 'CONFLICT' : ($existingInst !== null ? 'COVERED' : 'UNCOVERED'), $existingMission->getId(),
                 null, $existingMission->getStatus(),
                 $existingBlocked ? EligibilityReason::SURGEON_INCOMPATIBILITY->value : null,
+                $occurrenceDate,
             );
             return;
         }
@@ -325,6 +349,7 @@ class PlanningGeneratorServiceV2
             $status === 'MODIFIED' ? $existingMissionInstrumentist : null,
             $existingMission?->getStatus(),
             $blocked ? EligibilityReason::SURGEON_INCOMPATIBILITY->value : null,
+            $occurrenceDate,
         );
     }
 
@@ -505,6 +530,7 @@ class PlanningGeneratorServiceV2
                     continue;
                 }
                 $mission->setPlanningVersion($version);
+                $this->adoptOccurrenceLink($mission, $line);
                 $newInstrumentist = ($line['instrumentistId'] ?? null) !== null
                     ? $this->em->find(User::class, $line['instrumentistId'])
                     : null;
@@ -530,6 +556,7 @@ class PlanningGeneratorServiceV2
                     $newInstrumentist = $this->guardInstrumentist($mission, $newInstrumentist, $rejected);
                     $mission->setInstrumentist($newInstrumentist);
                     $mission->setPlanningVersion($version);
+                    $this->adoptOccurrenceLink($mission, $line);
                     $updated++;
                 }
                 continue;
@@ -539,6 +566,7 @@ class PlanningGeneratorServiceV2
                 $mission = $this->em->find(Mission::class, $line['existingMissionId']);
                 if ($mission !== null && $mission->getStatus() === MissionStatus::DRAFT) {
                     $mission->setPlanningVersion($version);
+                    $this->adoptOccurrenceLink($mission, $line);
 
                     if (($line['freedFrom'] ?? false) && $line['instrumentistId'] !== null && $mission->getInstrumentist() === null) {
                         $freed = $this->em->find(User::class, $line['instrumentistId']);
@@ -704,9 +732,55 @@ class PlanningGeneratorServiceV2
         $mission->setSchedulePrecision(SchedulePrecision::EXACT);
         $mission->setCreatedBy($actor);
         $mission->setPlanningVersion($version);
+        $mission->linkToScheduleOccurrence($post, self::occurrenceDateOf($line));
         $mission->setInstrumentist($this->guardInstrumentist($mission, $instrumentist, $rejected));
 
         return $mission;
+    }
+
+    /**
+     * D-156 — a DRAFT mission backed by a post line without a stable link yet (generated before
+     * the link existed, or a manual mission adopted by the post) gets the line's occurrence:
+     * the association the manager has just worked on becomes its identity, so a later reopen
+     * can never move this line onto another room. Never a published mission (R-01), never a
+     * mission of another surgeon/site, never an occurrence another live mission already holds.
+     *
+     * @param array<string, mixed> $line
+     */
+    public function adoptOccurrenceLink(Mission $mission, array $line): void
+    {
+        $postId = (int) ($line['postId'] ?? 0);
+        if ($postId <= 0 || $mission->getStatus() !== MissionStatus::DRAFT || $mission->getSchedulePost() !== null) {
+            return;
+        }
+        $post = $this->em->find(SurgeonSchedulePost::class, $postId);
+        if ($post === null
+            || $post->getSurgeon()?->getId() !== $mission->getSurgeon()?->getId()
+            || $post->getSite()?->getId() !== $mission->getSite()?->getId()) {
+            return;
+        }
+        $date = self::occurrenceDateOf($line);
+        $taken = (int) $this->em->createQuery(sprintf(
+            'SELECT COUNT(m.id) FROM %s m WHERE m.schedulePost = :post AND m.scheduleOccurrenceDate = :date AND m.status <> :cancelled AND m.id <> :id',
+            Mission::class,
+        ))
+            ->setParameter('post', $post)
+            ->setParameter('date', $date, \Doctrine\DBAL\Types\Types::DATE_IMMUTABLE)
+            ->setParameter('cancelled', MissionStatus::CANCELLED)
+            ->setParameter('id', $mission->getId())
+            ->getSingleScalarResult();
+        if ($taken === 0) {
+            $mission->linkToScheduleOccurrence($post, $date);
+        }
+    }
+
+    /** @param array<string, mixed> $line */
+    private static function occurrenceDateOf(array $line): \DateTimeImmutable
+    {
+        $raw = is_string($line['occurrenceDate'] ?? null) ? $line['occurrenceDate'] : (string) $line['date'];
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $raw);
+
+        return $date !== false ? $date : new \DateTimeImmutable((string) $line['date']);
     }
 
     // ── Recurrence expansion (in-memory, no DB hits) ────────────────────────
@@ -1098,6 +1172,8 @@ class PlanningGeneratorServiceV2
         \DateTimeImmutable $slotStart,
         ?User $slotInstrumentist,
         ?\DateTimeImmutable $slotEnd = null,
+        ?SurgeonSchedulePost $post = null,
+        ?string $occurrenceDate = null,
     ): ?Mission {
         if ($surgeon === null || $site === null) {
             return null;
@@ -1108,6 +1184,26 @@ class PlanningGeneratorServiceV2
         if (empty($candidates)) {
             return null;
         }
+
+        // D-156 — the occurrence's OWN mission first, by its stable link (post + occurrence
+        // date), never by the times: two rooms of the same surgeon, site and identical times
+        // are never swapped. A live mission is preferred to a cancelled one of the same
+        // occurrence (a cancelled mission keeps its link, its successor carries it too).
+        if ($post !== null && $occurrenceDate !== null) {
+            $occurrenceKey = $post->getId() . '_' . $occurrenceDate;
+            $own = array_values(array_filter($candidates, static fn (Mission $m) => !isset($claimedIds[$m->getId()]) && $m->scheduleOccurrenceKey() === $occurrenceKey));
+            usort($own, static fn (Mission $a, Mission $b) => [(int) ($a->getStatus() === MissionStatus::CANCELLED), $a->getId()]
+                <=> [(int) ($b->getStatus() === MissionStatus::CANCELLED), $b->getId()]);
+            if ($own !== []) {
+                $claimedIds[$own[0]->getId()] = true;
+
+                return $own[0];
+            }
+        }
+        // A mission linked to another occurrence is never claimed by this one. Only missions
+        // without a link (manual, surgeon request, room takeover, generated before the link
+        // existed) fall back to the historical matching by times below.
+        $candidates = array_filter($candidates, static fn (Mission $m) => $m->scheduleOccurrenceKey() === null);
 
         $slotStartMins = $this->hhmm2mins($slotStart->format('H:i'));
         $slotInstId    = $slotInstrumentist?->getId();
@@ -1121,16 +1217,27 @@ class PlanningGeneratorServiceV2
             $distance = static fn (Mission $m): int => abs(((int) $m->getStartAt()->format('H') * 60 + (int) $m->getStartAt()->format('i')) - $slotStartMins)
                 + abs(((int) $m->getEndAt()->format('H') * 60 + (int) $m->getEndAt()->format('i')) - $slotEndMins);
             // Closest slot first; the same instrumentist only breaks ties (identical times).
-            uasort($nearby, static fn (Mission $a, Mission $b) => [$distance($a), (int) ($a->getInstrumentist()?->getId() !== $slotInstId)]
-                <=> [$distance($b), (int) ($b->getInstrumentist()?->getId() !== $slotInstId)]);
-            foreach ($nearby as $mission) {
-                if (!isset($claimedIds[$mission->getId()])) {
-                    $claimedIds[$mission->getId()] = true;
-                    return $mission;
-                }
+            $rank = static fn (Mission $m): array => [$distance($m), (int) ($m->getInstrumentist()?->getId() !== $slotInstId)];
+            uasort($nearby, static fn (Mission $a, Mission $b) => $rank($a) <=> $rank($b));
+            $free = array_values(array_filter($nearby, static fn (Mission $m) => !isset($claimedIds[$m->getId()])));
+            if ($free === []) {
+                return null;
+            }
+            $claimed = $free[0];
+            $claimedIds[$claimed->getId()] = true;
+            if ($post !== null && $occurrenceDate !== null) {
+                $this->unlinkedClaims[] = [
+                    'postId'         => (int) $post->getId(),
+                    'occurrenceDate' => $occurrenceDate,
+                    'missionId'      => (int) $claimed->getId(),
+                    'ambiguousWith'  => array_values(array_map(
+                        static fn (Mission $m) => (int) $m->getId(),
+                        array_filter(array_slice($free, 1), static fn (Mission $m) => $rank($m) === $rank($claimed)),
+                    )),
+                ];
             }
 
-            return null;
+            return $claimed;
         }
 
         foreach ($nearby as $mission) {
@@ -1269,10 +1376,14 @@ class PlanningGeneratorServiceV2
         ?User $existingInstrumentist = null,
         ?MissionStatus $existingMissionStatus = null,
         ?string $blockedReason = null,
+        ?string $occurrenceDate = null,
     ): array {
         return [
             'date'                      => $day->format('Y-m-d'),
             'postId'                    => $post->getId(),
+            // D-156 — the post occurrence this line stands for (original date of a MOVED one):
+            // with postId, the stable identity createMissionFromLine() stores on the mission.
+            'occurrenceDate'            => $occurrenceDate ?? $day->format('Y-m-d'),
             'surgeonId'                 => $post->getSurgeon()->getId(),
             'surgeonName'               => $surgeonName,
             'missionType'               => $post->getType()->value,

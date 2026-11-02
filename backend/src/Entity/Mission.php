@@ -18,6 +18,8 @@ use Symfony\Component\Serializer\Attribute\Groups;
 // EPIC Pilotage financier, Lot 7 (D-077) — période d'activité filtrée par statut
 // (overview/pipeline "missions VALIDATED sans calcul").
 #[ORM\Index(columns: ['start_at', 'status'], name: 'idx_mission_start_status')]
+// D-156 — stable post occurrence of a generated mission (PlanningGeneratorServiceV2::claimMission()).
+#[ORM\Index(columns: ['schedule_post_id', 'schedule_occurrence_date'], name: 'idx_mission_schedule_occurrence')]
 class Mission
 {
     use TimestampableTrait;
@@ -167,6 +169,22 @@ class Mission
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?string $roomLabel = null;
 
+    /**
+     * D-156 — the recurring post occurrence this mission was generated for: the post and the
+     * date of its occurrence (the ORIGINAL date for a MOVED occurrence). A stable identity,
+     * never derived from the times: PlanningGeneratorServiceV2 matches a post's occurrence
+     * to THIS mission first, so two rooms of the same surgeon, site and identical times are
+     * never swapped in the editor. Null for a mission not generated from a post (manual,
+     * surgeon request, room takeover) or generated before the link existed
+     * (app:mission:link-schedule-posts). Never a business rule beyond that matching.
+     */
+    #[ORM\ManyToOne(targetEntity: SurgeonSchedulePost::class)]
+    #[ORM\JoinColumn(name: 'schedule_post_id', nullable: true, onDelete: 'SET NULL')]
+    private ?SurgeonSchedulePost $schedulePost = null;
+
+    #[ORM\Column(type: 'date_immutable', nullable: true)]
+    private ?\DateTimeImmutable $scheduleOccurrenceDate = null;
+
     #[ORM\ManyToOne(inversedBy: 'missions')]
     #[ORM\JoinColumn(nullable: true)]
     private ?PlanningVersion $planningVersion = null;
@@ -300,6 +318,25 @@ class Mission
 
     public function getRoomLabel(): ?string { return $this->roomLabel; }
     public function setRoomLabel(?string $roomLabel): static { $this->roomLabel = $roomLabel; return $this; }
+
+    public function getSchedulePost(): ?SurgeonSchedulePost { return $this->schedulePost; }
+    public function getScheduleOccurrenceDate(): ?\DateTimeImmutable { return $this->scheduleOccurrenceDate; }
+
+    /** D-156 — "Y-m-d" of the linked post occurrence, null when the mission has no link. */
+    public function scheduleOccurrenceKey(): ?string
+    {
+        return $this->schedulePost !== null && $this->scheduleOccurrenceDate !== null
+            ? $this->schedulePost->getId() . '_' . $this->scheduleOccurrenceDate->format('Y-m-d')
+            : null;
+    }
+
+    public function linkToScheduleOccurrence(SurgeonSchedulePost $post, \DateTimeImmutable $occurrenceDate): static
+    {
+        $this->schedulePost = $post;
+        $this->scheduleOccurrenceDate = $occurrenceDate->setTime(0, 0);
+
+        return $this;
+    }
 
     public function getNoMaterialComment(): ?string { return $this->noMaterialComment; }
     public function setNoMaterialComment(?string $noMaterialComment): static { $this->noMaterialComment = $noMaterialComment; return $this; }

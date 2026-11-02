@@ -49,6 +49,8 @@ final class PreviewLineResponse
          * before deploy; 'CONFIRMED': confirmed in this draft; null when not multi-room.
          */
         public ?string $multiRoomConfirmation = null,
+        /** D-156 — date of the post occurrence (original date of a MOVED one); with postId, its stable identity. */
+        public ?string $occurrenceDate = null,
     ) {
     }
 
@@ -79,6 +81,7 @@ final class PreviewLineResponse
             multiRoomCount: $line['multiRoomCount'] ?? null,
             multiRoomGroupKey: $line['multiRoomGroupKey'] ?? null,
             multiRoomConfirmation: $line['multiRoomConfirmation'] ?? null,
+            occurrenceDate: $line['occurrenceDate'] ?? null,
         );
     }
 }
