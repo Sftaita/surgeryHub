@@ -66,6 +66,13 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
   MISSION_EXECUTION_CREATED: "Prestation créée",
   MISSION_EXECUTION_UPDATED: "Prestation modifiée",
   MISSION_EXECUTION_DURATION_CHANGED: "Durée de prestation modifiée",
+  // D-156 — présence réelle commune d'une prestation multi-salles.
+  MISSION_EXECUTION_PRESENCE_DECLARED: "Heures communes déclarées",
+  MISSION_EXECUTION_PRESENCE_UPDATED: "Heures communes modifiées",
+  MISSION_EXECUTION_PRESENCE_LINKED: "Mission rattachée aux heures communes",
+  MISSION_EXECUTION_PRESENCE_DETACHED: "Mission détachée des heures communes",
+  MISSION_EXECUTION_OWN_HOURS_CONVERTED: "Heures propres reprises dans les heures communes",
+  MISSION_REASSIGNED_WITH_ENCODING_DATA: "Réaffectation confirmée (données d'encodage conservées)",
   MISSION_EXECUTION_DISPUTE_OPENED: "Contestation ouverte",
   MISSION_EXECUTION_DISPUTE_RESOLVED: "Contestation résolue",
   MISSION_EXECUTION_DISPUTE_REJECTED: "Contestation rejetée",

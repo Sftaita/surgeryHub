@@ -375,6 +375,60 @@ describe("ManagerMissionDrawer — corrections (reassign, edit_hours, edit_encod
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Instrumentiste changé."));
   });
 
+  it("D-156 — mission avec interventions encodées : confirmation motivée exigée par le serveur, puis réaffectation confirmée", async () => {
+    const user = userEvent.setup();
+    renderDrawer(assigned);
+    const base = apiGetMock.getMockImplementation()!;
+    apiGetMock.mockImplementation((url: string) =>
+      url.endsWith("/eligible-instrumentists")
+        ? Promise.resolve({ data: { missionId: 42, candidates: [{ id: 15, name: "Julie Lambert", selectable: true, eligible: true, reasons: [] }] } })
+        : base(url));
+    apiPostMock.mockReset();
+    apiPostMock.mockRejectedValueOnce({
+      response: { status: 409, data: { error: { code: "MISSION_HAS_ENCODING_DATA", message: "Impossible de réaffecter cette mission sans confirmation : elle porte déjà des interventions ou du matériel encodés, qui resteront attachés à la mission.", confirmable: true } } },
+    });
+    apiPostMock.mockResolvedValue({ data: {} });
+
+    await user.click(await screen.findByTestId("manager-reassign"));
+    await user.click(await screen.findByText("Julie Lambert"));
+    const dialog = screen.getAllByRole("dialog").find((d) => d.classList.contains("MuiDialog-paper"))!;
+    await user.click(within(dialog).getByRole("button", { name: /Réassigner|Confirmer/ }));
+
+    expect(await screen.findByText("Données d'encodage déjà enregistrées")).toBeInTheDocument();
+    const confirm = screen.getByRole("button", { name: "Confirmer la réaffectation" });
+    expect(confirm).toBeDisabled();
+    await user.type(screen.getByTestId("encoding-data-reason"), "Reprise de la salle par Julie.");
+    await user.click(confirm);
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenLastCalledWith("/api/missions/42/reassign", {
+      instrumentistId: 15, confirmEncodingData: true, encodingDataReason: "Reprise de la salle par Julie.",
+    }));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Instrumentiste changé."));
+  });
+
+  it("D-156 — heures réelles déjà déclarées : aucune confirmation possible, rien n'est envoyé", async () => {
+    const user = userEvent.setup();
+    renderDrawer(assigned);
+    const base = apiGetMock.getMockImplementation()!;
+    apiGetMock.mockImplementation((url: string) =>
+      url.endsWith("/eligible-instrumentists")
+        ? Promise.resolve({ data: { missionId: 42, candidates: [{ id: 15, name: "Julie Lambert", selectable: true, eligible: true, reasons: [] }] } })
+        : base(url));
+    apiPostMock.mockReset();
+    apiPostMock.mockRejectedValueOnce({
+      response: { status: 409, data: { error: { code: "MISSION_HAS_ENCODING_DATA", message: "Des heures réelles y sont déjà enregistrées pour l'instrumentiste actuelle.", confirmable: false } } },
+    });
+
+    await user.click(await screen.findByTestId("manager-reassign"));
+    await user.click(await screen.findByText("Julie Lambert"));
+    const dialog = screen.getAllByRole("dialog").find((d) => d.classList.contains("MuiDialog-paper"))!;
+    await user.click(within(dialog).getByRole("button", { name: /Réassigner|Confirmer/ }));
+
+    expect(await screen.findByText(/Des heures réelles y sont déjà enregistrées/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Confirmer la réaffectation" })).toBeNull();
+    expect(apiPostMock).toHaveBeenCalledTimes(1);
+  });
+
   it("« Corriger les heures » ouvre la saisie manager des heures prestées", async () => {
     const user = userEvent.setup();
     renderDrawer(assigned);

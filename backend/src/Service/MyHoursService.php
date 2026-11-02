@@ -21,7 +21,9 @@ use Doctrine\ORM\EntityManagerInterface;
  *  - statut : EncodingStateResolver (D-118) — SUBMITTED → en attente, VALIDATED|LOCKED → validé ;
  *  - durée : MissionExecutionService::resolveEffectiveDuration() — fin − début réels (le
  *    passage de minuit est porté par la date de fin), ou durée déclarée seule
- *    (ACTUAL_EXPLICIT). La source PLANNED n'est JAMAIS retenue : sans heures réelles, la
+ *    (ACTUAL_EXPLICIT), ou part imputée d'une présence commune multi-salles (PRESENCE_SHARE,
+ *    D-156 : la somme des parts = la présence, jamais comptée deux fois). La source PLANNED
+ *    n'est JAMAIS retenue : sans heures réelles, la
  *    prestation compte 0 h et n'est pas valorisée (D-171) ;
  *  - montant : FinancialCalculationService::evaluate($mission, instrumentistOnly: true) — le
  *    chemin de résolution unique du moteur (tarif personnel HOURLY_RATE pour un bloc,
@@ -242,7 +244,10 @@ final class MyHoursService
             $e = $r['estimate'];
             if ($e === null) {
                 // Heures absentes : déjà signalées par missingHoursCount, pas une absence de tarif.
-                if ($r['minutes'] !== null || $r['missionType'] === 'CONSULTATION') {
+                // D-156 — part imputée nulle d'une présence commune : rien à valoriser ici, la
+                // présence est payée sur les autres missions de la prestation.
+                $zeroShare = $r['durationSource'] === EffectiveDurationSource::PRESENCE_SHARE->value && $r['minutes'] === 0;
+                if (!$zeroShare && ($r['minutes'] !== null || $r['missionType'] === 'CONSULTATION')) {
                     $unrated++;
                 }
                 continue;

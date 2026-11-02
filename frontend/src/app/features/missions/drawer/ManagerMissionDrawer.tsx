@@ -15,6 +15,7 @@ import { MissionDrawer, financeLabel, type DrawerFooterAction } from "./MissionD
 import { buildMissionDrawerView, FINANCE_STATUSES, NO_ENCODING_STATUSES } from "./missionDrawerModel";
 import { LiftPriorityDialog } from "../../room-takeover/RoomTakeoverComponents";
 import { formatDeadline } from "../../room-takeover/roomTakeoverFormat";
+import { ManagerPrestationCard } from "../../prestations/components/ManagerPrestationCard";
 
 interface Props {
   /** null = tiroir fermé. */
@@ -246,7 +247,17 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
         placeholder={placeholder}
         statusPill={mission ? <MissionStatusCell status={missionDisplayStatus(mission)} hideCaption /> : null}
         notices={notices}
-        extra={mission ? <AnomalyReportsManagerPanel missionId={mission.id} /> : null}
+        extra={mission ? (
+          <>
+            {/* D-156 — libellé de salle facultatif et prestation multi-salles (missions distinctes). */}
+            <ManagerPrestationCard
+              missionId={mission.id}
+              roomLabel={mission.roomLabel}
+              canEditRoomLabel={status !== "CANCELLED" && status !== "REJECTED"}
+            />
+            <AnomalyReportsManagerPanel missionId={mission.id} />
+          </>
+        ) : null}
         footer={{ title: footerTitle, sub: footerSub, actions: mission ? footerActions : [] }}
         corrections={mission ? { instrumentist: corrections.reassign, hours: corrections.editHours, encoding: corrections.editEncoding } : undefined}
         onClose={onClose}

@@ -372,6 +372,8 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   const clock = (iso: string) => formatDateTime(iso).slice(-5);
   const realRange = real?.kind === "TIMES"
     ? `${clock(real.start!)} → ${clock(real.end!)}`
+    : real?.kind === "PRESENCE_SHARE"
+      ? `Présence commune ${real.start ? clock(real.start) : "—"} → ${real.end ? clock(real.end) : "—"} · part imputée`
     : real?.kind === "DURATION_ONLY"
       ? "Durée déclarée · début et fin non renseignés"
       : real?.kind === "PARTIAL"

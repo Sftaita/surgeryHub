@@ -106,6 +106,17 @@ final readonly class EncodingTrackingItem
          */
         public ?string $submittedByName = null,
         public ?string $submittedByRole = null,
+
+        /**
+         * D-156 — prestation regroupée multi-salles (null si la mission est seule) : clé du
+         * groupe et union de ses horaires planifiés. Un total « heures planifiées » compte
+         * chaque prestation une fois (jamais la somme brute des missions simultanées) ;
+         * effectiveMinutes est déjà la part imputée (somme du groupe = présence réelle).
+         */
+        public ?string $prestationKey = null,
+        public ?int $prestationPlannedUnionMinutes = null,
+        /** @var list<int> */
+        public array $prestationMissionIds = [],
     ) {}
 
     /** L'écart entre planifié et réel n'a de sens que si le réel existe. */

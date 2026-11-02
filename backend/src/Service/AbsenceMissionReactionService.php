@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\MissionEncodingDataGuard;
 use App\Entity\Absence;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -294,6 +295,11 @@ class AbsenceMissionReactionService
             if (!AbsenceMissionProtectionPolicy::canAutoRelease($mission, Clock::get()->now())) {
                 return;
             }
+            // D-156 — a mission whose work is already encoded is never released automatically
+            // (its hours/interventions would move to the pool): left to the manager.
+            if (MissionEncodingDataGuard::hasEncodingData($mission)) {
+                return;
+            }
 
             $instrumentist = $mission->getInstrumentist();
             $captured = [
@@ -359,6 +365,10 @@ class AbsenceMissionReactionService
             // mission already started / carrying encoded activity: never cancelled blindly —
             // left as is, AbsenceImpactService raises the manager's SURGEON_ABSENCE alert.
             if (!AbsenceMissionProtectionPolicy::canAutoCancel($mission, Clock::get()->now())) {
+                return;
+            }
+            // D-156 — already-encoded work is never cancelled automatically: left to the manager.
+            if (MissionEncodingDataGuard::hasEncodingData($mission)) {
                 return;
             }
 

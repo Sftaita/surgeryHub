@@ -12,7 +12,10 @@ use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Exception\EncodingConcurrencyException;
+use App\Exception\PrestationConflictException;
 use App\Message\MissionLifecycleChangedMessage;
+use App\Service\Prestation\PrestationGroupResolver;
+use App\Service\Prestation\PrestationGrouping;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Clock\Clock;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
@@ -53,6 +56,7 @@ final class MissionEncodingWorkflowService
         private readonly MessageBusInterface $bus,
         private readonly EncodingCompletenessService $completeness,
         private readonly EncodingContentCompletenessService $contentCompleteness,
+        private readonly PrestationGroupResolver $prestationGroups,
         // D-171 — optional only so plain unit tests can build the service; always autowired.
         private readonly ?EncodingTakeoverService $takeovers = null,
         // D-171 — every transition runs under the mission lock (serialized with encoding writes).
@@ -121,11 +125,95 @@ final class MissionEncodingWorkflowService
      */
     public function complete(Mission $mission, User $actor, ?string $comment = null): Mission
     {
-        return $this->locked($mission, fn (): Mission => $this->completeTransition($mission, $actor, $comment, true));
+        return $this->locked($mission, function () use ($mission, $actor, $comment): Mission {
+            $this->assertNotInPrestation($mission);
+
+            return $this->completeTransition($mission, $actor, $comment, true);
+        });
     }
 
     /** $requireHours = false only for a manager takeover (D-171): missing hours stay missing. */
     private function completeTransition(Mission $mission, User $actor, ?string $comment, bool $requireHours): Mission
+    {
+        $this->assertCompletable($mission, $actor, $comment, $requireHours);
+        $payload = $this->applyComplete($mission, $actor, $comment);
+        $this->em->flush();
+
+        $this->dispatch($mission, MissionChangeType::ENCODING_COMPLETED, $actor, $payload);
+
+        return $mission;
+    }
+
+    /**
+     * D-156 — une mission d'une prestation multi-salles se soumet avec ses missions sœurs
+     * (completePrestation), jamais seule : aucune mission soumise et l'autre oubliée. Vaut
+     * aussi pour « Terminer et valider » (D-171) : le manager soumet la prestation complète,
+     * puis valide chaque mission.
+     */
+    private function assertNotInPrestation(Mission $mission): void
+    {
+        $group = $this->prestationGroups->groupOf($mission);
+        if (count($group) > 1) {
+            throw new PrestationConflictException(
+                PrestationConflictException::PRESTATION_REQUIRES_COMMON_SUBMIT,
+                'Cette mission fait partie d\'une prestation multi-salles : soumettez la prestation complète.',
+                ['missionId' => $mission->getId(), 'prestationMissionIds' => PrestationGrouping::ids($group)],
+            );
+        }
+    }
+
+    /**
+     * D-156 — soumission commune d'une prestation regroupée multi-salles : TOUTES les
+     * missions à soumettre sont contrôlées (mêmes règles que complete(), aucune exception)
+     * avant qu'aucune ne change de statut, puis toutes passent SUBMITTED dans la même
+     * transaction — jamais une mission soumise et l'autre oubliée. Idempotent : une mission
+     * déjà SUBMITTED est laissée telle quelle. La justification « sans matériel » unique
+     * n'est posée que sur les missions BLOC sans matériel actif (D-080). Les messages de
+     * cycle de vie partent après le commit, un par mission (traçabilité individuelle).
+     *
+     * @param \Closure(): list<Mission> $lockAndResolve résout la prestation SOUS VERROU, dans
+     *        cette même transaction (contrôles de composition/empreinte de l'appelant inclus)
+     * @return list<Mission> les missions effectivement soumises par cet appel
+     */
+    public function completePrestation(\Closure $lockAndResolve, User $actor, ?string $noMaterialComment, string $prestationKey): array
+    {
+        $submitted = $this->em->wrapInTransaction(function () use ($lockAndResolve, $actor, $noMaterialComment, $prestationKey): array {
+            $missions = $lockAndResolve();
+            $toSubmit = array_values(array_filter($missions, static fn (Mission $m) => $m->getStatus() !== MissionStatus::SUBMITTED));
+            foreach ($toSubmit as $mission) {
+                $this->assertCompletable($mission, $actor, $this->justificationFor($mission, $noMaterialComment));
+            }
+
+            $applied = [];
+            foreach ($toSubmit as $mission) {
+                $payload = $this->applyComplete($mission, $actor, $this->justificationFor($mission, $noMaterialComment), [
+                    'prestationKey' => $prestationKey,
+                    'prestationMissionIds' => array_map(static fn (Mission $m) => $m->getId(), $missions),
+                ]);
+                $applied[] = [$mission, $payload];
+            }
+            $this->em->flush();
+
+            return $applied;
+        });
+
+        foreach ($submitted as [$mission, $payload]) {
+            $this->dispatch($mission, MissionChangeType::ENCODING_COMPLETED, $actor, $payload);
+        }
+
+        return array_map(static fn (array $pair) => $pair[0], $submitted);
+    }
+
+    /** Justification « sans matériel » : uniquement sur une mission BLOC sans matériel actif. */
+    private function justificationFor(Mission $mission, ?string $comment): ?string
+    {
+        return $mission->getType() === MissionType::BLOCK && $this->countActiveMaterialLines($mission) === 0
+            ? $comment
+            : null;
+    }
+
+    /** Tous les contrôles de complete(), sans aucune écriture. */
+    private function assertCompletable(Mission $mission, User $actor, ?string $comment, bool $requireHours = true): void
     {
         $this->encodingGuard->assertEncodingAllowed($mission, $actor);
 
@@ -159,14 +247,25 @@ final class MissionEncodingWorkflowService
         );
 
         $trimmedComment = $comment !== null ? trim($comment) : null;
-        $hasNoActiveMaterial = $this->countActiveMaterialLines($mission) === 0;
-        $requiresJustification = $mission->getType() === MissionType::BLOCK && $hasNoActiveMaterial;
+        $requiresJustification = $mission->getType() === MissionType::BLOCK && $this->countActiveMaterialLines($mission) === 0;
 
         if ($requiresJustification && ($trimmedComment === null || $trimmedComment === '')) {
             throw new UnprocessableEntityHttpException(
                 "Aucun matériel n'a été encodé pour cette mission : décrivez les interventions réalisées avant de clôturer.",
             );
         }
+    }
+
+    /**
+     * Les écritures de complete() (statut, horodatage, justification, audit), sans flush.
+     *
+     * @param array<string,mixed> $extraPayload
+     * @return array<string,mixed> payload de l'AuditEvent / du message
+     */
+    private function applyComplete(Mission $mission, User $actor, ?string $comment, array $extraPayload = []): array
+    {
+        $trimmedComment = $comment !== null ? trim($comment) : null;
+        $hasNoActiveMaterial = $this->countActiveMaterialLines($mission) === 0;
 
         $mission->setSubmittedWithoutMaterial($hasNoActiveMaterial);
         if ($trimmedComment !== null && $trimmedComment !== '') {
@@ -176,13 +275,10 @@ final class MissionEncodingWorkflowService
         $mission->setStatus(MissionStatus::SUBMITTED);
         $mission->setSubmittedAt(new \DateTimeImmutable());
 
-        $payload = $this->actorPayload($actor);
+        $payload = $this->actorPayload($actor) + $extraPayload;
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_COMPLETED, $payload);
-        $this->em->flush();
 
-        $this->dispatch($mission, MissionChangeType::ENCODING_COMPLETED, $actor, $payload);
-
-        return $mission;
+        return $payload;
     }
 
     /**
@@ -239,6 +335,7 @@ final class MissionEncodingWorkflowService
         }
 
         return $this->encodingLock->run($mission, function () use ($mission, $actor, $comment, $expectedRevision, $takeoverConfirmed): Mission {
+            $this->assertNotInPrestation($mission);
             $blocked = MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now());
             if ($blocked !== null) {
                 throw new ConflictHttpException($blocked);

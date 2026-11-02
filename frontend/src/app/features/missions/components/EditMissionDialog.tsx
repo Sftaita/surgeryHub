@@ -27,6 +27,7 @@ import type {
   SchedulePrecision,
 } from "../api/missions.types";
 import { patchMission } from "../api/missions.api";
+import { invalidateOperationalPlanning } from "../dispatch/missionDispatch.api";
 import {
   getMissionSiteId,
   type MissionPatchBody,
@@ -108,9 +109,9 @@ export default function EditMissionDialog({ open, onClose, mission }: Props) {
     mutationFn: async (body: MissionPatchBody) =>
       patchMission(mission.id, body),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["mission", mission.id],
-      });
+      // D-156 lot 1 — a schedule/type change must reach every planning view, not only
+      // this mission's detail (the Missions list and Planning V2 stayed stale before).
+      await invalidateOperationalPlanning(queryClient, mission.id);
       onClose();
     },
     onError: (err) => {

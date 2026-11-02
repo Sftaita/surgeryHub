@@ -301,6 +301,7 @@ export function buildRosterProposals(
       surgeonId: l.surgeonId || null,
       siteId: l.siteId,
       cancelled: l.status === "SKIPPED",
+      missionType: l.missionType,
     }));
 }
 

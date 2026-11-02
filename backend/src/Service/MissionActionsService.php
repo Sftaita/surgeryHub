@@ -23,6 +23,21 @@ final class MissionActionsService
      */
     public function allowedActions(Mission $mission, User $viewer): array
     {
+        $actions = $this->computeActions($mission, $viewer);
+
+        // D-156 — the hours of a mission linked to the shared presence of a multi-room prestation
+        // are the prestation's (PUT /api/missions/{id}/prestation/presence): the per-mission hours
+        // dialog would rebuild them from the imputed share and be refused (PRESTATION_REQUIRES_COMMON_HOURS).
+        if ($mission->getExecution()?->getPresence() !== null) {
+            $actions = array_values(array_filter($actions, static fn (string $a) => $a !== 'edit_hours'));
+        }
+
+        return $actions;
+    }
+
+    /** @return string[] */
+    private function computeActions(Mission $mission, User $viewer): array
+    {
         $roles = $viewer->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
         $isInstr = in_array('ROLE_INSTRUMENTIST', $roles, true);

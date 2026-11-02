@@ -112,5 +112,7 @@ final class MissionDetailDto
         public readonly bool $hoursPendingAfterValidation = false,
         /** D-172 — managers only: same block as the list (MissionEncodingOverviewService). */
         public readonly ?array $encoding = null,
+        /** D-156 — libellé de salle facultatif (manager). */
+        public readonly ?string $roomLabel = null,
     ) {}
 }

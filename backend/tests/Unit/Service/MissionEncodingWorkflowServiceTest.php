@@ -59,6 +59,7 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
             $this->bus,
             new EncodingCompletenessService(),
             \App\Tests\Support\CatalogueRequestServiceFactory::contentCompleteness($this->em),
+            $this->createMock(\App\Service\Prestation\PrestationGroupResolver::class), // D-156 — aucune prestation multi-salles ici
         );
     }
 

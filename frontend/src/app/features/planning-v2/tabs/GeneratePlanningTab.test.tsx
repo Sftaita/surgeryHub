@@ -6,6 +6,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GeneratePlanningTab } from "./GeneratePlanningTab";
 import type { PreviewLineV2, PreviewResponseV2 } from "../api/planningV2.types";
 
+// Recette D-156 (2026-10-19) — these full-editor flows (MUI Autocomplete, many userEvent
+// steps) take 5–11 s on a loaded machine, already timing out on main at 5/10 s: a
+// realistic per-file timeout instead of flaky failures (the logic itself is unchanged).
+vi.setConfig({ testTimeout: 30_000 });
+
 vi.mock("../../sites/api/sites.api", () => ({
   fetchSites: vi.fn().mockResolvedValue([{ id: 1, name: "Delta" }]),
 }));
@@ -35,7 +40,12 @@ vi.mock("../api/planningV2.api", () => ({
   cancelAllMissions: vi.fn(),
   verifyConflicts: vi.fn(),
   // CAS D (D-115)
-  reopenDraft: vi.fn(),
+  // Recette D-156 (A9) — generate() is now followed by a reopen of the persisted draft.
+  reopenDraft: vi.fn().mockResolvedValue({
+    version: { id: 1, status: "DRAFT", periodStart: "2026-06-01", periodEnd: "2026-06-30", siteId: 1, siteName: "Delta", generatedAt: "2026-06-01T00:00:00Z", scopeSource: null, scopeSiteIds: null },
+    lines: [], summary: { total: 0, covered: 0, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+    previewVersion: "hash", divergent: false, generatedAt: "2026-06-01T00:00:00Z",
+  }),
   updateDraft: vi.fn(),
   deletePlanningVersionDraft: vi.fn(),
   // D-091 follow-up
@@ -1422,7 +1432,65 @@ describe("GeneratePlanningTab — Brouillons (CAS D, D-115)", () => {
     // plusieurs clics) — vérifié à la main que la logique est correcte et s'exécute en
     // ~4s hors démarrage Vitest ; seul le délai par défaut de 5000ms est trop juste
     // sous charge (même convention que AdminCreateUserModal.test.tsx).
-  }, 10000);
+  }, 30_000);
+
+  // Recette D-156 (A9) — a change made after "Générer les missions" used to stay local:
+  // deploy() published the persisted draft without it, silently.
+  it("A9 — une modification après « Générer les missions » est enregistrée dans le brouillon avant tout déploiement, jamais perdue", async () => {
+    toastWarning.mockClear();
+    // Its own roster: a D-165 Modification describe above leaves a roster without Diane.
+    (planningV2Api.fetchRosterEligibility as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue({
+      policy: "STRICT_ASSIGNMENT",
+      candidates: [{ id: 9, name: "Diane Lefebvre", email: "diane@test.com", eligible: true, selectable: true, reasons: [], unavailability: null, conflict: null }],
+    });
+    const now = new Date();
+    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-14`;
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({
+      lines: [line({ date, status: "UNCOVERED" })],
+      summary: { total: 1, covered: 0, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-1", generatedAt: "2026-06-01T00:00:00Z",
+    });
+    (planningV2Api.generatePlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({ versionId: 88, created: 1, updated: 0, skipped: 0, rejectedAssignments: [] });
+    const persisted = {
+      ...draftReopenResponse(),
+      version: { ...draftReopenResponse().version, id: 88, scopeSource: null, scopeSiteIds: null },
+      lines: [line({ date, status: "UNCOVERED", existingMissionId: 601 })],
+      summary: { total: 1, covered: 0, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
+    };
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(persisted);
+    (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue({ created: 0, updated: 1, removed: 0, skipped: 0, rejectedAssignments: [] });
+    const deployCallsBefore = (planningV2Api.deployPlanningV2 as ReturnType<typeof vi.fn>).mock.calls.length;
+    const user = userEvent.setup();
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await user.click(await screen.findByRole("button", { name: "Générer les missions" }));
+
+    // The editor now shows the persisted draft (real mission ids), deploy available.
+    await waitFor(() => expect(planningV2Api.reopenDraft).toHaveBeenCalledWith(88));
+    expect(await screen.findByRole("button", { name: /Déployer le planning/ })).toBeInTheDocument();
+
+    // A change after generation: deploy is replaced by an explicit save onto the draft.
+    await user.click(await screen.findByText("À pourvoir"));
+    const input = (await screen.findByText("Instrumentiste")).closest("div")!.querySelector("input")!;
+    await user.click(input);
+    await user.click(await screen.findByText("Diane Lefebvre"));
+    expect(await screen.findByTestId("pending-draft-edits")).toHaveTextContent("pas encore dans le brouillon");
+    expect(screen.queryByRole("button", { name: /Déployer le planning/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("save-draft-before-deploy"));
+    await waitFor(() => expect(planningV2Api.updateDraft).toHaveBeenCalledTimes(1));
+    const [versionId, sent] = (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(versionId).toBe(88);
+    expect(sent[0]).toMatchObject({ existingMissionId: 601, instrumentistId: 9 });
+
+    // Saved: the persisted draft is reloaded, deploy is available again, nothing was deployed meanwhile.
+    await waitFor(() => expect(planningV2Api.reopenDraft).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: /Déployer le planning/ })).toBeInTheDocument();
+    expect(screen.queryByTestId("pending-draft-edits")).not.toBeInTheDocument();
+    expect((planningV2Api.deployPlanningV2 as ReturnType<typeof vi.fn>).mock.calls.length).toBe(deployCallsBefore);
+    expect(toastWarning).not.toHaveBeenCalled();
+  }, 30_000);
 });
 
 describe("GeneratePlanningTab — conflit de déploiement, autorisation de dérogation (D-091 suite)", () => {
@@ -1522,5 +1590,113 @@ describe("GeneratePlanningTab — conflit de déploiement, autorisation de déro
     // deux appels réseau simulés) — vérifié à la main que la logique est correcte ;
     // seul le délai par défaut de 5000ms est trop juste sous charge (même convention
     // que AdminCreateUserModal.test.tsx).
-  }, 10000);
+  }, 30_000);
+});
+
+describe("GeneratePlanningTab — indication multi-salles (D-156)", () => {
+  it("signale, sans rien bloquer, les missions simultanées confiées à la même personne", async () => {
+    const user = userEvent.setup();
+    const now = new Date();
+    const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-06`;
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({
+      lines: [
+        line({ date, postId: 3, startTime: "07:45", endTime: "18:00", instrumentistId: 9, instrumentistName: "Diane Lefebvre", multiRoomCount: 2 }),
+        line({ date, postId: 4, startTime: "07:45", endTime: "13:00", instrumentistId: 9, instrumentistName: "Diane Lefebvre", multiRoomCount: 2 }),
+        line({ date, postId: 5, startTime: "13:00", endTime: "18:00", status: "UNCOVERED" }),
+      ],
+      summary: { total: 3, covered: 2, uncovered: 1, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "v-mr", generatedAt: "2026-06-01T00:00:00Z",
+    });
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+
+    const chips = await screen.findAllByTestId("multi-room-chip");
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveTextContent("Multi-salles · 2 missions");
+    expect(chips[0]).toHaveAttribute("title", expect.stringContaining("2 missions simultanées confiées à la même personne"));
+    expect(screen.getByRole("button", { name: "Générer les missions" })).toBeEnabled();
+  });
+});
+
+describe("GeneratePlanningTab — confirmation ciblée multi-salles (D-156)", () => {
+  function draftWithGroups(date1: string, date2: string, confirmation: "REQUIRED" | "CONFIRMED" = "REQUIRED") {
+    const g = (date: string, key: string, mission: number, startTime: string, endTime: string) => line({
+      date, postId: mission, existingMissionId: mission, startTime, endTime, instrumentistId: 9, instrumentistName: "Diane Lefebvre",
+      multiRoomCount: 2, multiRoomGroupKey: key, multiRoomConfirmation: confirmation,
+    });
+    return {
+      version: { id: 91, status: "DRAFT" as const, periodStart: "2026-06-01", periodEnd: "2026-06-30", siteId: 1, siteName: "Delta", generatedAt: "2026-06-01T00:00:00Z", scopeSource: null, scopeSiteIds: null },
+      lines: [g(date1, "k1", 701, "07:45", "18:00"), g(date1, "k1", 702, "07:45", "13:00"), g(date2, "k2", 703, "07:45", "18:00"), g(date2, "k2", 704, "07:45", "13:00")],
+      summary: { total: 4, covered: 4, uncovered: 0, skipped: 0, conflict: 0, modified: 0 },
+      previewVersion: "h", divergent: false, generatedAt: "2026-06-02T00:00:00Z",
+    };
+  }
+
+  async function generateInto(draft: ReturnType<typeof draftWithGroups>) {
+    const user = userEvent.setup();
+    (planningV2Api.previewPlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({ ...draft, lines: draft.lines.map((l) => ({ ...l, existingMissionId: null })) });
+    (planningV2Api.generatePlanningV2 as ReturnType<typeof vi.fn>).mockResolvedValue({ versionId: 91, created: 4, updated: 0, skipped: 0, rejectedAssignments: [] });
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(draft);
+    (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue({ created: 0, updated: 4, removed: 0, skipped: 0, rejectedAssignments: [] });
+    renderTab();
+    await selectSite(user);
+    await user.click(screen.getByRole("button", { name: "Prévisualiser" }));
+    await user.click(await screen.findByRole("button", { name: "Générer les missions" }));
+    await waitFor(() => expect(planningV2Api.reopenDraft).toHaveBeenCalledWith(91));
+    return user;
+  }
+
+  const now = new Date();
+  const d1 = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-03`;
+  const d2 = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-10`;
+
+  it("bloque le déploiement tant que les affectations multi-salles proposées par les postes ne sont pas confirmées", async () => {
+    await generateInto(draftWithGroups(d1, d2));
+    expect(await screen.findAllByText("Multi-salles — affectation à confirmer")).toHaveLength(4);
+    expect(await screen.findByTestId("multi-room-pending")).toHaveTextContent("2 affectation(s) multi-salles");
+    expect(screen.getByRole("button", { name: /Déployer le planning/ })).toBeDisabled();
+  });
+
+  it("« Confirmer » sur une ligne confirme son seul groupe, enregistré avec sa clé dans le brouillon", async () => {
+    const user = await generateInto(draftWithGroups(d1, d2));
+    const confirms = await screen.findAllByTestId("multi-room-confirm");
+    await user.click(confirms[0]);
+    expect(screen.getAllByText("Multi-salles — affectation à confirmer")).toHaveLength(2);
+    expect(screen.getByTestId("multi-room-pending")).toHaveTextContent("1 affectation(s)");
+
+    await user.click(screen.getByTestId("save-draft-before-deploy"));
+    await waitFor(() => expect(planningV2Api.updateDraft).toHaveBeenCalledTimes(1));
+    const sent = (planningV2Api.updateDraft as ReturnType<typeof vi.fn>).mock.calls[0][1] as PreviewLineV2[];
+    expect(sent.filter((l) => l.multiRoomConfirmedKey === "k1").map((l) => l.existingMissionId)).toEqual([701, 702]);
+    expect(sent.filter((l) => l.multiRoomGroupKey === "k2").every((l) => !l.multiRoomConfirmedKey)).toBe(true);
+  });
+
+  it("confirme plusieurs dates sélectionnées en une fois, et autorise le déploiement une fois confirmées côté serveur", async () => {
+    const user = await generateInto(draftWithGroups(d1, d2));
+    await screen.findAllByTestId("multi-room-confirm");
+    for (const checkbox of screen.getAllByRole("checkbox").slice(0, 4)) {
+      await user.click(checkbox);
+    }
+    await user.click(screen.getByTestId("bulk-confirm-multi-room"));
+    expect(screen.queryByText("Multi-salles — affectation à confirmer")).not.toBeInTheDocument();
+
+    (planningV2Api.reopenDraft as ReturnType<typeof vi.fn>).mockResolvedValue(draftWithGroups(d1, d2, "CONFIRMED"));
+    await user.click(screen.getByTestId("save-draft-before-deploy"));
+    await waitFor(() => expect(planningV2Api.reopenDraft).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: /Déployer le planning/ })).toBeEnabled();
+    expect(screen.queryByTestId("multi-room-pending")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("multi-room-chip")[0]).toHaveTextContent("Multi-salles · 2 missions · confirmée");
+  });
+
+  it("affiche le refus serveur (409 MULTI_ROOM_CONFIRMATION_REQUIRED) avec les dates concernées", async () => {
+    toastError.mockClear();
+    const user = await generateInto(draftWithGroups(d1, d2, "CONFIRMED"));
+    (planningV2Api.deployPlanningV2 as ReturnType<typeof vi.fn>).mockReset().mockRejectedValueOnce({
+      response: { status: 409, data: { code: "MULTI_ROOM_CONFIRMATION_REQUIRED", groups: [{ date: d1, instrumentistName: "Diane Lefebvre", surgeonName: "Dr Martin", slots: ["07:45–18:00", "07:45–13:00"] }] } },
+    });
+    await user.click(await screen.findByRole("button", { name: /Déployer le planning/ }));
+    await waitFor(() => expect(toastError).toHaveBeenCalled());
+    expect(toastError.mock.calls.at(-1)?.[0]).toContain(`${d1} · Diane Lefebvre · Dr Martin (07:45–18:00, 07:45–13:00)`);
+  });
 });

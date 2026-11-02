@@ -470,8 +470,20 @@ export async function cancelMission(id: number, reason?: string): Promise<void> 
   await apiClient.post(`/api/missions/${id}/cancel`, reason ? { reason } : {});
 }
 
-export async function reassignMission(id: number, instrumentistId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${id}/reassign`, { instrumentistId });
+/**
+ * D-156 — `confirmEncodingData` + motif : correction contrôlée d'une mission qui porte déjà
+ * des interventions / du matériel (le serveur répond 409 MISSION_HAS_ENCODING_DATA sinon,
+ * `confirmable: true` quand cette confirmation suffit).
+ */
+export async function reassignMission(
+  id: number,
+  instrumentistId: number,
+  confirmation?: { encodingDataReason: string },
+): Promise<void> {
+  await apiClient.post(`/api/missions/${id}/reassign`, {
+    instrumentistId,
+    ...(confirmation ? { confirmEncodingData: true, encodingDataReason: confirmation.encodingDataReason } : {}),
+  });
 }
 
 export async function fetchMissionAudit(id: number): Promise<MissionAuditEvent[]> {
@@ -508,6 +520,8 @@ export interface RosterProposal {
   surgeonId: number | null;
   siteId: number | null;
   cancelled: boolean;
+  /** D-156 — a simultaneous BLOC room of the same surgeon and site is one prestation, never a conflict (backend rule). */
+  missionType?: string | null;
 }
 
 export async function fetchRosterEligibility(params: {
@@ -517,6 +531,8 @@ export async function fetchRosterEligibility(params: {
   endTime: string;
   excludeMissionId?: number | null;
   surgeonId?: number | null;
+  /** D-156 — the slot's mission type (a line not saved yet). */
+  missionType?: string | null;
   policy?: EligibilityEnforcementPolicy;
   proposals?: RosterProposal[];
 }): Promise<RosterEligibilityResponse> {
@@ -528,6 +544,7 @@ export async function fetchRosterEligibility(params: {
       endTime: params.endTime,
       excludeMissionId: params.excludeMissionId ?? null,
       surgeonId: params.surgeonId ?? null,
+      missionType: params.missionType ?? null,
       policy: params.policy,
       proposals: params.proposals,
     });
@@ -541,6 +558,7 @@ export async function fetchRosterEligibility(params: {
       endTime: params.endTime,
       excludeMissionId: params.excludeMissionId ?? undefined,
       surgeonId: params.surgeonId ?? undefined,
+      missionType: params.missionType ?? undefined,
       policy: params.policy,
     },
   });

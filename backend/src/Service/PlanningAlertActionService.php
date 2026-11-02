@@ -78,9 +78,11 @@ class PlanningAlertActionService
             }
             $this->missionPostDeployService->assign($mission, $actor, $instrumentistId);
         } elseif ($mission->getStatus() === MissionStatus::DRAFT) {
-            // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
+            // DRAFT — pre-deploy setup: only the instrumentist changes. D-156 lot 1 — the status
+            // used to be flipped to ASSIGNED here, which published the mission silently (no
+            // publication, no audit, no notification, D-056 bypassed) while its draft version
+            // was not deployed. A DRAFT stays DRAFT; deploy() or the dispatch publish it.
             $mission->setInstrumentist($instrumentist);
-            $mission->setStatus(MissionStatus::ASSIGNED);
         } else {
             // D-150 — the other non-locked statuses (DECLARED, IN_PROGRESS, ENCODING_IN_PROGRESS,
             // CANCELLED, REJECTED) keep their existing behaviour, but the mission is published:
@@ -118,9 +120,9 @@ class PlanningAlertActionService
             }
             $this->missionPostDeployService->release($mission, $actor);
         } elseif ($mission->getStatus() === MissionStatus::DRAFT) {
-            // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
+            // DRAFT — pre-deploy setup: the slot is simply left without instrumentist, still
+            // DRAFT (D-156 lot 1, same reason as reassign() above): it is deployed as OPEN.
             $mission->setInstrumentist(null);
-            $mission->setStatus(MissionStatus::OPEN);
         } elseif ($mission->getStatus() !== MissionStatus::OPEN) {
             // D-150 — same as reassign(): published non-locked statuses keep their behaviour,
             // the affectation history follows, under the mission lock.
@@ -245,7 +247,7 @@ class PlanningAlertActionService
     private function hasConflict(User $instrumentist, Mission $mission): bool
     {
         return $this->conflictDetection->findConflict(
-            $instrumentist, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(),
+            $instrumentist, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), null, $mission,
         ) !== null;
     }
 }

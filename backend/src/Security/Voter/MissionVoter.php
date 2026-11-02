@@ -79,6 +79,13 @@ class MissionVoter extends Voter
     // ENCODING_REMIND : condition unique dans MissionHoursReminderPolicy.
     public const HOURS_REMIND = 'MISSION_HOURS_REMIND';
 
+    // D-156 — correction contrôlée : détacher une mission de sa présence réelle partagée
+    // (prestation multi-salles). Manager/admin uniquement, mission liée et non verrouillée ;
+    // les gardes métier (calculs arrêtés, présence orpheline) restent dans WorkedPresenceService.
+    public const PRESENCE_DETACH = 'MISSION_PRESENCE_DETACH';
+
+    // D-156 — libellé de salle facultatif : manager/admin, mission non annulée/refusée.
+    public const EDIT_ROOM_LABEL = 'MISSION_EDIT_ROOM_LABEL';
     // D-151 — the mission's own surgeon (ROLE_SURGEON): refuse the instrumentist who accepted
     // it / ask the managers to intervene. The business conditions (refusal window, imminent
     // mission, financial guards) are decided by MissionAssignmentRefusalPolicy under the lock.
@@ -138,6 +145,8 @@ class MissionVoter extends Voter
             self::VIEW_ENCODING_HISTORY,
             self::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST,
             self::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST,
+            self::PRESENCE_DETACH,
+            self::EDIT_ROOM_LABEL,
         ], true)) {
             return false;
         }
@@ -208,7 +217,12 @@ class MissionVoter extends Voter
             self::VIEW_ENCODING_HISTORY       => $isManager,
             self::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST => ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $user, Clock::get()->now()),
             self::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST  => ExecutedWithoutInstrumentistPolicy::canCancel($mission, $user),
-            default                          => false,
+            self::PRESENCE_DETACH             => $isManager
+                && $mission->getExecution()?->getPresence() !== null
+                && !$mission->isEncodingLocked(),
+            self::EDIT_ROOM_LABEL             => $isManager
+                && !in_array($mission->getStatus(), [MissionStatus::CANCELLED, MissionStatus::REJECTED], true),
+            default                           => false,
         };
     }
 

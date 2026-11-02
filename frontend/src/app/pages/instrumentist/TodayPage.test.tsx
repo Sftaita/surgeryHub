@@ -97,7 +97,7 @@ afterEach(() => {
 describe("TodayPage — image de l'hôpital", () => {
   it("résout et affiche la photo réelle de l'hôpital via resolveApiAssetUrl", async () => {
     fetchMissionsMock.mockImplementation((_p: number, _l: number, filters: any) =>
-      filters?.status === "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED"
+      filters?.status === "ASSIGNED,DECLARED,IN_PROGRESS,ENCODING_IN_PROGRESS,SUBMITTED,VALIDATED"
         ? Promise.resolve({ items: [makeMission({ site: { id: 1, name: "CHU Brugmann", photoPath: "/uploads/hospital-photos/photo1.jpg" } })] })
         : Promise.resolve({ items: [] }),
     );
@@ -112,7 +112,7 @@ describe("TodayPage — image de l'hôpital", () => {
 
   it("affiche le fallback design (dégradé) quand aucune photo n'existe", async () => {
     fetchMissionsMock.mockImplementation((_p: number, _l: number, filters: any) =>
-      filters?.status === "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED"
+      filters?.status === "ASSIGNED,DECLARED,IN_PROGRESS,ENCODING_IN_PROGRESS,SUBMITTED,VALIDATED"
         ? Promise.resolve({ items: [makeMission({ site: { id: 1, name: "CHU Brugmann", photoPath: null } })] })
         : Promise.resolve({ items: [] }),
     );
@@ -128,7 +128,7 @@ describe("TodayPage — image de l'hôpital", () => {
 
   it("retombe sur le fallback design quand l'image échoue réellement au chargement", async () => {
     fetchMissionsMock.mockImplementation((_p: number, _l: number, filters: any) =>
-      filters?.status === "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED"
+      filters?.status === "ASSIGNED,DECLARED,IN_PROGRESS,ENCODING_IN_PROGRESS,SUBMITTED,VALIDATED"
         ? Promise.resolve({ items: [makeMission({ site: { id: 1, name: "CHU Brugmann", photoPath: "/uploads/hospital-photos/broken.jpg" } })] })
         : Promise.resolve({ items: [] }),
     );
@@ -154,7 +154,7 @@ describe("TodayPage — image de l'hôpital", () => {
 describe("TodayPage — pastille « En cours » (dérivée du temps réel, pas du cron)", () => {
   function mockTodayMission(mission: Record<string, any>) {
     fetchMissionsMock.mockImplementation((_p: number, _l: number, filters: any) =>
-      filters?.status === "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED"
+      filters?.status === "ASSIGNED,DECLARED,IN_PROGRESS,ENCODING_IN_PROGRESS,SUBMITTED,VALIDATED"
         ? Promise.resolve({ items: [mission] })
         : Promise.resolve({ items: [] }),
     );

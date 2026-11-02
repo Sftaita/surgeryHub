@@ -14,6 +14,7 @@ import {
 import type { Mission, MissionStatus } from "../../features/missions/api/missions.types";
 import { resolveApiAssetUrl } from "../../api/apiAssetUrl";
 import { SPECIALTIES } from "../../features/planning-manager/api/planning.api";
+import { collapsePrestations } from "../../features/prestations/utils/collapsePrestations";
 
 dayjs.extend(calendar);
 dayjs.locale("fr");
@@ -44,8 +45,11 @@ const SHADOW_SM = "0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06)";
 // docs/design/components/mission-hero.md — repli sans photo : dégradé encodeHeader, jamais un autre.
 const ENCODE_HEADER_GRADIENT = "linear-gradient(150deg, #123F30 0%, #1E634A 55%, #2E7D5F 120%)";
 
-const TODAY_STATUSES = "ASSIGNED,DECLARED,IN_PROGRESS,SUBMITTED,VALIDATED";
-const ENCODING_PENDING_STATUSES = "ASSIGNED,IN_PROGRESS,DECLARED";
+// D-156 lot 1 — ENCODING_IN_PROGRESS (encodage démarré, pas encore soumis) manquait : la
+// mission disparaissait d'« Aujourd'hui » et de « À encoder » dès le premier clic sur
+// « Commencer l'encodage » (D-143 : encodage encore attendu = ces quatre statuts).
+const TODAY_STATUSES = "ASSIGNED,DECLARED,IN_PROGRESS,ENCODING_IN_PROGRESS,SUBMITTED,VALIDATED";
+const ENCODING_PENDING_STATUSES = "ASSIGNED,IN_PROGRESS,ENCODING_IN_PROGRESS,DECLARED";
 
 function todayRange() {
   const now = new Date();
@@ -589,7 +593,10 @@ export default function TodayPage() {
   });
 
   const { data: offersData, isLoading: loadingOffers } = useQuery({
-    queryKey: ["missions", "offers"],
+    // Clé propre à l'aperçu (4 offres) : partager ["missions","offers"] avec la liste
+    // complète (100) faisait afficher 4 offres sur l'écran Offres (recette D-156). Le
+    // préfixe commun garde les invalidations ["missions","offers"] existantes.
+    queryKey: ["missions", "offers", "today-preview"],
     queryFn: () => fetchInstrumentistOffersWithFallback(1, 4),
     refetchInterval: 60_000,
   });
@@ -599,9 +606,13 @@ export default function TodayPage() {
   // consulte via "Voir tout" (redirige vers Offres, décision produit explicite).
   const upcomingMissions = React.useMemo(
     () =>
-      (upcomingData?.items ?? [])
-        .slice()
-        .sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? ""))
+      // D-156 — une prestation multi-salles n'occupe qu'une ligne de l'aperçu.
+      collapsePrestations(
+        (upcomingData?.items ?? [])
+          .slice()
+          .sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? "")),
+      )
+        .map((row) => row.mission)
         .slice(0, 3),
     [upcomingData],
   );
@@ -610,7 +621,10 @@ export default function TodayPage() {
 
   const toEncodeMission = React.useMemo(() => {
     const candidates = (pendingEncodingData?.items ?? [])
-      .filter((m) => m.id !== mainMission?.id && m.allowedActions?.some((a) => a === "encoding" || a === "edit_encoding"))
+      // D-156 — une mission sœur de la mission du jour (même prestation multi-salles) n'est
+      // pas une seconde demande d'encodage : la prestation s'encode en une fois.
+      .filter((m) => m.id !== mainMission?.id && !(m.prestation && m.prestation.key === mainMission?.prestation?.key))
+      .filter((m) => m.allowedActions?.some((a) => a === "encoding" || a === "edit_encoding"))
       .sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? ""));
     return candidates[0] ?? null;
   }, [pendingEncodingData, mainMission]);

@@ -22,7 +22,8 @@ export interface MyHoursItem {
   endsNextDay: boolean;
   /** Durée = fin − début (ou durée déclarée seule) ; null = aucune heure réelle (jamais le planifié). */
   minutes: number | null;
-  durationSource: "ACTUAL_TIMES" | "ACTUAL_EXPLICIT" | null;
+  /** D-156 — PRESENCE_SHARE : part imputée de la présence commune d'une prestation multi-salles. */
+  durationSource: "ACTUAL_TIMES" | "ACTUAL_EXPLICIT" | "PRESENCE_SHARE" | null;
   missionType: "BLOCK" | "CONSULTATION" | null;
   status: MyHoursStatus;
   surgeonName: string | null;

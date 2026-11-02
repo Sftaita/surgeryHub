@@ -44,8 +44,11 @@ final class EncodingCompletenessService
         }
 
         $execution = $mission->getExecution();
-        $start = $execution?->getActualStartAt();
-        $end = $execution?->getActualEndAt();
+        // D-156 — mission d'une prestation multi-salles : les heures réelles sont celles de
+        // la présence commune (la mission n'a pas d'horaires propres).
+        $presence = $execution?->getPresence();
+        $start = $presence !== null ? $presence->getActualStartAt() : $execution?->getActualStartAt();
+        $end = $presence !== null ? $presence->getActualEndAt() : $execution?->getActualEndAt();
 
         $missing = [];
         if ($start === null) {
@@ -104,7 +107,8 @@ final class EncodingCompletenessService
     {
         $execution = $mission->getExecution();
         if ($execution !== null && (
-            $execution->getActualStartAt() !== null
+            $execution->getPresence() !== null
+            || $execution->getActualStartAt() !== null
             || $execution->getActualEndAt() !== null
             || $execution->getActualDurationMinutes() !== null
         )) {

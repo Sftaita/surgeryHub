@@ -29,20 +29,28 @@ final class MissionMapper
      * D-172 — a page of missions: the managers' encoding block is computed once for the page
      * (fixed number of queries), never per mission.
      *
+     * D-156 — $annotations (MissionListAnnotator::annotate(), also per page) carry each
+     * mission's prestation and real schedule conflicts, keyed by mission id.
+     *
      * @param list<Mission> $missions
+     * @param array<int, array{prestation: ?array<string,mixed>, scheduleConflictMissionIds: list<int>}> $annotations
      * @return list<MissionListDto>
      */
-    public function toListDtos(array $missions, User $viewer): array
+    public function toListDtos(array $missions, User $viewer, array $annotations = []): array
     {
         $overview = self::isManager($viewer) && $this->encodingOverview !== null
             ? $this->encodingOverview->overviewOf($missions, Clock::get()->now())
             : [];
 
-        return array_map(fn (Mission $m) => $this->toListDto($m, $viewer, $overview[(int) $m->getId()] ?? null), $missions);
+        return array_map(fn (Mission $m) => $this->toListDto($m, $viewer, $overview[(int) $m->getId()] ?? null, $annotations[(int) $m->getId()] ?? null), $missions);
     }
 
-    /** @param array<string,mixed>|null $encoding D-172 — see toListDtos() */
-    public function toListDto(Mission $m, User $viewer, ?array $encoding = null): MissionListDto
+    /**
+     * @param array<string,mixed>|null $encoding D-172 — see toListDtos()
+     * @param array{prestation: ?array<string,mixed>, scheduleConflictMissionIds: list<int>}|null $annotation
+     *        D-156 — MissionListAnnotator, calculé par page (jamais par mission)
+     */
+    public function toListDto(Mission $m, User $viewer, ?array $encoding = null, ?array $annotation = null): MissionListDto
     {
         return new MissionListDto(
             id: (int) $m->getId(),
@@ -60,6 +68,9 @@ final class MissionMapper
             covered: $this->coverage->isCovered($m),
             targetedOffer: $this->targetedOffer($m),
             encoding: $encoding,
+            roomLabel: $m->getRoomLabel(),
+            prestation: $annotation['prestation'] ?? null,
+            scheduleConflictMissionIds: $annotation['scheduleConflictMissionIds'] ?? [],
         );
     }
 
@@ -126,6 +137,7 @@ final class MissionMapper
             lastEncodingTakeover: $seesTakeover ? $this->takeovers?->lastTakeover($m) : null,
             hoursPendingAfterValidation: $seesTakeover && MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($m),
             encoding: $isManagerViewer ? $this->encodingOverview?->overviewOfMission($m, Clock::get()->now()) : null,
+            roomLabel: $m->getRoomLabel(),
         );
     }
 

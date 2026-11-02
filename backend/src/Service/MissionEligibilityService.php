@@ -2,6 +2,8 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\PrestationGrouping;
+
 use App\Dto\EligibilityResult;
 use App\Dto\ProposedSlot;
 use App\Dto\ScheduleConflictDetail;
@@ -14,6 +16,7 @@ use App\Enum\EligibilityReason;
 use App\Enum\EmploymentType;
 use App\Enum\MissionAssignmentEndReason;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\ParameterType;
 use Doctrine\ORM\EntityManagerInterface;
@@ -80,7 +83,7 @@ class MissionEligibilityService
         }
 
         if ($startAt !== null && $endAt !== null
-            && $this->hasScheduleConflict($candidate, $startAt, $endAt, $mission->getId() ?? 0)) {
+            && $this->hasScheduleConflict($candidate, $startAt, $endAt, $mission->getId() ?? 0, $mission)) {
             $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
         }
 
@@ -136,7 +139,7 @@ class MissionEligibilityService
 
         if ($startAt !== null && $endAt !== null) {
             $excludeId = $excludeMissionId ?? ($mission->getId() ?? 0);
-            if ($this->hasScheduleConflict($candidate, $startAt, $endAt, $excludeId)) {
+            if ($this->hasScheduleConflict($candidate, $startAt, $endAt, $excludeId, $mission)) {
                 $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
             }
         }
@@ -382,11 +385,17 @@ class MissionEligibilityService
      * Q3 — overlapping active mission (cross-site, cross-PlanningVersion by construction —
      * scoped by person only, matches PlanningConflictDetectionService::findConflict()'s
      * same end-exclusive overlap rule: A.startAt < B.endAt AND A.endAt > B.startAt).
+     *
+     * D-156 — a legitimate multi-room overlap (BLOC, same surgeon, same site, same local
+     * date as $target — PrestationGrouping::isMultiRoomSlot()) is never a conflict: the
+     * instrumentist works one combined shift across both rooms. Every other overlap
+     * (other surgeon, other site, consultation…) stays a conflict.
      */
-    private function hasScheduleConflict(User $candidate, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt, int $excludeMissionId): bool
+    private function hasScheduleConflict(User $candidate, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt, int $excludeMissionId, ?Mission $target = null): bool
     {
-        $count = (int) $this->em->createQuery(
-            'SELECT COUNT(m.id) FROM App\Entity\Mission m
+        /** @var Mission[] $overlapping */
+        $overlapping = $this->em->createQuery(
+            'SELECT m FROM App\Entity\Mission m
              WHERE m.instrumentist = :user
                AND m.id <> :missionId
                AND m.startAt < :endAt AND m.endAt > :startAt
@@ -397,9 +406,23 @@ class MissionEligibilityService
             ->setParameter('startAt', $startAt)
             ->setParameter('endAt', $endAt)
             ->setParameter('excluded', [MissionStatus::CANCELLED, MissionStatus::REJECTED])
-            ->getSingleScalarResult();
+            ->getResult();
 
-        return $count > 0;
+        foreach ($overlapping ?? [] as $existing) {
+            if (!self::isLegitimateMultiRoom($existing, $candidate, $target, $startAt, $endAt)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** D-156 — see hasScheduleConflict(). */
+    private static function isLegitimateMultiRoom(Mission $existing, User $candidate, ?Mission $target, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt): bool
+    {
+        return $target !== null && PrestationGrouping::isMultiRoomSlot(
+            $existing, $candidate, $target->getSurgeon(), $target->getSite(), $target->getType(), $startAt, $endAt,
+        );
     }
 
     /**
@@ -716,7 +739,8 @@ class MissionEligibilityService
 
             if ($startAt !== null && $endAt !== null) {
                 foreach ($conflictsByUser[$uid] ?? [] as $conflict) {
-                    if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt) {
+                    if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt
+                        && !self::isLegitimateMultiRoom($conflict, $candidate, $mission, $startAt, $endAt)) {
                         $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
                         $matchedConflict = $conflict;
                         break;
@@ -766,7 +790,16 @@ class MissionEligibilityService
         // (SURGEON_INCOMPATIBILITY, blocking) — one more query.
         ?User $surgeon = null,
         array $proposals = [],
+        ?MissionType $slotType = null,
     ): array {
+        // D-156 — the mission being edited (if any) gives the slot its surgeon, site and type,
+        // otherwise the request does (a line not saved yet), so a legitimate multi-room overlap
+        // — saved or only proposed by the editor — is not reported as a conflict for that slot.
+        $context = $excludeMissionId !== null ? $this->em->find(Mission::class, $excludeMissionId) : null;
+        $slotSurgeon = $context?->getSurgeon() ?? $surgeon;
+        $slotSite = $context?->getSite() ?? $site;
+        $slotType = $context?->getType() ?? $slotType;
+
         // Q1 — full active ROLE_INSTRUMENTIST roster (matches GET /api/instrumentists?active=true).
         /** @var User[] $candidates */
         $candidates = $this->em->createQuery(
@@ -851,7 +884,7 @@ class MissionEligibilityService
             }
         }
 
-        $proposedConflictsByUser = $this->proposedConflicts($proposals, $startAt, $endAt, $excludeMissionId);
+        $proposedConflictsByUser = $this->proposedConflicts($proposals, $startAt, $endAt, $excludeMissionId, $slotSurgeon, $slotSite, $slotType);
 
         $incompatible = $surgeon !== null ? $this->incompatibleInstrumentistsOf($surgeon) : [];
 
@@ -882,7 +915,8 @@ class MissionEligibilityService
             }
 
             foreach ($conflictsByUser[$uid] ?? [] as $conflict) {
-                if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt) {
+                if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt
+                    && !PrestationGrouping::isMultiRoomSlot($conflict, $candidate, $slotSurgeon, $slotSite, $slotType, $startAt, $endAt)) {
                     $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
                     $matchedConflict = $conflict;
                     break;
@@ -908,13 +942,28 @@ class MissionEligibilityService
      * @param ProposedSlot[] $proposals
      * @return array<int, ScheduleConflictDetail>
      */
-    private function proposedConflicts(array $proposals, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt, ?int $excludeMissionId): array
-    {
+    private function proposedConflicts(
+        array $proposals,
+        \DateTimeImmutable $startAt,
+        \DateTimeImmutable $endAt,
+        ?int $excludeMissionId,
+        ?User $slotSurgeon = null,
+        ?Hospital $slotSite = null,
+        ?MissionType $slotType = null,
+    ): array {
         /** @var array<int, ProposedSlot> $byUser */
         $byUser = [];
         foreach ($proposals as $p) {
             if ($p->cancelled || $p->instrumentistId === null || isset($byUser[$p->instrumentistId])
                 || ($p->missionId !== null && $p->missionId === $excludeMissionId)) {
+                continue;
+            }
+            // D-156 — a simultaneous BLOC room of the same surgeon on the same site (same day:
+            // the proposals are the editor's lines of the slot's day) is one multi-room
+            // prestation, never a conflict — same rule as PrestationGrouping::isMultiRoomSlot().
+            if ($slotType === MissionType::BLOCK && $p->missionType === MissionType::BLOCK
+                && $slotSurgeon !== null && $p->surgeonId === $slotSurgeon->getId()
+                && $slotSite !== null && $p->siteId === $slotSite->getId()) {
                 continue;
             }
             if ($p->startAt < $endAt && $startAt < $p->endAt) {
@@ -1025,7 +1074,8 @@ class MissionEligibilityService
         }
 
         foreach ($conflictsByUser[$userId] ?? [] as $conflict) {
-            if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt) {
+            if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt
+                && !self::isLegitimateMultiRoom($conflict, $candidate, $mission, $startAt, $endAt)) {
                 return false;
             }
         }

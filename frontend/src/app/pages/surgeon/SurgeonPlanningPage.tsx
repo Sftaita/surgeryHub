@@ -18,7 +18,7 @@ import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import MeetingRoomOutlinedIcon from "@mui/icons-material/MeetingRoomOutlined";
 
-import { fetchMissions } from "../../features/missions/api/missions.api";
+import { fetchAllMissions } from "../../features/missions/api/missions.api";
 import { MissionDetailContent } from "../instrumentist/MissionDetailPage";
 import type { Mission } from "../../features/missions/api/missions.types";
 import type { DateTileVariant } from "../../ui/mobile/DateTile";
@@ -63,8 +63,11 @@ import {
 // DECLARED/REJECTED/ENCODING_IN_PROGRESS ne sont ni couverts ni "à couvrir" au sens
 // actionnable — visibles seulement sous "Toutes"). CANCELLED n'est jamais compté
 // comme "à couvrir", affiché discrètement (pastille grise "Annulée").
+// D-156 lot 1 — DECLARED et ENCODING_IN_PROGRESS étaient absents de la requête alors que le
+// commentaire ci-dessus les annonce « visibles sous Toutes » : une mission disparaissait du
+// planning chirurgien dès que l'instrumentiste commençait l'encodage.
 const SURGEON_PLANNING_STATUSES =
-  "OPEN,ASSIGNED,SUBMITTED,VALIDATED,CLOSED,IN_PROGRESS,CANCELLED";
+  "OPEN,ASSIGNED,DECLARED,SUBMITTED,VALIDATED,CLOSED,IN_PROGRESS,ENCODING_IN_PROGRESS,CANCELLED";
 
 type CoverageFilter = "all" | "covered" | "uncovered";
 
@@ -174,12 +177,15 @@ export default function SurgeonPlanningPage() {
   // assignedToMe:true filtrerait sur m.instrumentist, toujours vide pour un chirurgien.
   const missionsQuery = useQuery({
     queryKey: ["missions", "surgeon-planning", { view, date, from: range.from, to: range.to }],
-    queryFn: () =>
-      fetchMissions(1, 200, {
+    // D-156 lot 1 — every page: limit 200 was silently capped at 100 by the API.
+    queryFn: async () => {
+      const items = await fetchAllMissions({
         from: range.from,
         to: range.to,
         status: SURGEON_PLANNING_STATUSES,
-      }),
+      });
+      return { items, total: items.length };
+    },
   });
 
   const allMissions = missionsQuery.data?.items ?? [];

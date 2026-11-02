@@ -251,7 +251,7 @@ describe("buildRosterProposals()", () => {
   it("sends an edited saved mission at its proposed slot, never the target line itself", () => {
     const proposals = buildRosterProposals([philippe, yorick], yorick, new Set(["m1085", "m1084"]));
     expect(proposals).toEqual([
-      { missionId: 1085, instrumentistId: 24, startTime: "07:45", endTime: "14:00", surgeonId: 11, siteId: 1, cancelled: false },
+      { missionId: 1085, instrumentistId: 24, startTime: "07:45", endTime: "14:00", surgeonId: 11, siteId: 1, cancelled: false, missionType: "BLOCK" },
     ]);
   });
 

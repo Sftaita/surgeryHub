@@ -227,7 +227,7 @@ final class EncodingTrackingRepository
                     AND EXISTS (SELECT 1 FROM material_line ml2 WHERE ml2.mission_intervention_id = mi2.id AND ml2.quantity > 0)
                 ) AS encodedInterventionCount,
                 CASE WHEN me.id IS NOT NULL
-                      AND (me.actual_start_at IS NOT NULL OR me.actual_end_at IS NOT NULL OR me.actual_duration_minutes IS NOT NULL)
+                      AND (me.presence_id IS NOT NULL OR me.actual_start_at IS NOT NULL OR me.actual_end_at IS NOT NULL OR me.actual_duration_minutes IS NOT NULL)
                      THEN 1 ELSE 0 END AS hasExecutionActuals";
     }
 

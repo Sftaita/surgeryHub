@@ -77,7 +77,8 @@ final class AbsenceMissionProtectionPolicy
 
         $execution = $mission->getExecution();
 
+        // D-156 - the shared real hours of a multi-room prestation are encoded activity too.
         return $execution !== null
-            && ($execution->getActualStartAt() !== null || $execution->getActualEndAt() !== null);
+            && ($execution->getActualStartAt() !== null || $execution->getActualEndAt() !== null || $execution->getPresence() !== null);
     }
 }

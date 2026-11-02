@@ -23,6 +23,7 @@ import { useNavBadgeCount } from "../../ui/hooks/useNavBadgeCount";
 import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 import { EmptyState } from "../../ui/EmptyState";
 import { ManagerMissionDrawer } from "../../features/missions/drawer/ManagerMissionDrawer";
+import { OPERATIONAL_LIVE_QUERY_OPTIONS } from "../../features/missions/sync/liveQueryOptions";
 
 const DAY_PAGE_SIZE = 50;
 const TABLE_PAGE_SIZE = 100;
@@ -132,6 +133,7 @@ export default function MissionsListPage() {
     getNextPageParam: (last, pages) => (pages.length * DAY_PAGE_SIZE < last.total ? pages.length + 1 : undefined),
     enabled: !isRequestsView && filters.view === "day",
     placeholderData: keepPreviousData,
+    ...OPERATIONAL_LIVE_QUERY_OPTIONS,
   });
 
   const [tablePage, setTablePage] = useState(1);
@@ -141,6 +143,7 @@ export default function MissionsListPage() {
     queryFn: () => fetchMissions(tablePage, TABLE_PAGE_SIZE, effectiveFilters),
     enabled: !isRequestsView && filters.view === "table",
     placeholderData: keepPreviousData,
+    ...OPERATIONAL_LIVE_QUERY_OPTIONS,
   });
 
   const activeQuery = filters.view === "day" ? dayQuery : tableQuery;
@@ -191,7 +194,8 @@ export default function MissionsListPage() {
         headerName: "Site",
         flex: 1,
         sortable: false,
-        valueGetter: (_, row) => row.site?.name ?? "—",
+        // D-156 — libellé de salle facultatif à côté du site.
+        valueGetter: (_, row) => `${row.site?.name ?? "—"}${row.roomLabel ? ` · ${row.roomLabel}` : ""}`,
       },
       {
         field: "type",

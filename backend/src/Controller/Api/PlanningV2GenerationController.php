@@ -19,6 +19,7 @@ use App\Entity\User;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\PlanningVersionStatus;
 use App\Exception\PlanningDraftAlreadyExistsException;
+use App\Exception\MultiRoomConfirmationRequiredException;
 use App\Exception\PlanningDraftConflictException;
 use App\Security\Voter\PlanningVoter;
 use App\Service\MissionConflictWaiverService;
@@ -164,6 +165,13 @@ class PlanningV2GenerationController extends AbstractController
                 'code'      => 'DRAFT_CONFLICTS',
                 'message'   => $e->getMessage(),
                 'conflicts' => $e->getConflicts(),
+            ], 409);
+        } catch (MultiRoomConfirmationRequiredException $e) {
+            // D-156 — multi-room assignments proposed by the posts, still to confirm or reorganise.
+            return $this->json([
+                'code'    => 'MULTI_ROOM_CONFIRMATION_REQUIRED',
+                'message' => $e->getMessage(),
+                'groups'  => $e->getGroups(),
             ], 409);
         }
 
@@ -331,10 +339,14 @@ class PlanningV2GenerationController extends AbstractController
                 isset($p['surgeonId']) ? (int) $p['surgeonId'] : null,
                 isset($p['siteId']) ? (int) $p['siteId'] : null,
                 (bool) ($p['cancelled'] ?? false),
+                \App\Enum\MissionType::tryFrom((string) ($p['missionType'] ?? '')),
             );
         }
 
-        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId, $surgeon, $proposedSlots);
+        // D-156 — the slot's mission type (a new line), so a simultaneous BLOC room of the same
+        // surgeon and site is not reported as a conflict; the edited mission's own type otherwise.
+        $slotType = \App\Enum\MissionType::tryFrom((string) ($params['missionType'] ?? ''));
+        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId, $surgeon, $proposedSlots, $slotType);
         $candidates = array_map(
             fn ($result) => $this->eligibilityService->serializeCandidate($result, $policy),
             $results,

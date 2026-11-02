@@ -58,6 +58,8 @@ use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpKernel\Event\ExceptionEvent;
+use App\Exception\MissionCreatedNotDispatchedException;
+use App\Exception\PrestationConflictException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\HttpKernel\KernelInterface;
@@ -330,6 +332,18 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = $e->getErrorCode();
             $message = $e->getMessage();
+        } elseif ($e instanceof PrestationConflictException) {
+            // D-156 — refus explicite, avec le contexte permettant de rafraîchir / corriger.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+        } elseif ($e instanceof MissionCreatedNotDispatchedException) {
+            // D-156 lot 1 — created as DRAFT, dispatch refused: the id avoids a duplicate on retry.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
         } elseif ($e instanceof ReleasedRoomSlotConflictException) {
             $status = 409;
             $code = $e->getErrorCode();

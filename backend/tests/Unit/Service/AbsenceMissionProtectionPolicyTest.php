@@ -74,6 +74,15 @@ final class AbsenceMissionProtectionPolicyTest extends TestCase
         self::assertSame(AbsenceMissionProtectionPolicy::BLOCKED_ACTIVITY_ENCODED, AbsenceMissionProtectionPolicy::blockedReason($m, self::now()));
     }
 
+    /** D-156 — a mission linked to the shared presence of a multi-room prestation has no own hours. */
+    public function test_shared_presence_of_a_multi_room_prestation_blocks_auto_cancellation(): void
+    {
+        $m = $this->mission(MissionStatus::ASSIGNED);
+        $m->setExecution((new MissionExecution())->setPresence(new \App\Entity\WorkedPresence()));
+
+        self::assertSame(AbsenceMissionProtectionPolicy::BLOCKED_ACTIVITY_ENCODED, AbsenceMissionProtectionPolicy::blockedReason($m, self::now()));
+    }
+
     public function test_execution_row_without_actual_hours_does_not_block(): void
     {
         $m = $this->mission(MissionStatus::ASSIGNED);

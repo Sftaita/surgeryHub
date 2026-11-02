@@ -223,37 +223,43 @@
     {
       "id": "D-156",
       "title": "Prestations regroupées multi-salles et cohérence Missions/Planning V2",
-      "description": "Présence réelle unique (WorkedPresence), ventilation EARLIEST_END_FIRST, encodage commun, confirmation ciblée des affectations multi-salles à la génération. 8 commits, 2 migrations (Version20261018090000, Version20261019090000).",
+      "description": "Présence réelle unique (WorkedPresence), ventilation EARLIEST_END_FIRST, encodage commun, confirmation ciblée des affectations multi-salles, identité stable poste ↔ mission. 3 migrations (Version20261018090000, Version20261019090000, Version20261102090000).",
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Instrumentiste sur deux salles simultanées du même chirurgien : encodage et facturation en double aujourd'hui.",
-      "status": "bloque",
-      "statusSince": "2026-10-19",
-      "blockedReason": "Branche jamais poussée (ce poste seulement), 61 commits de retard et conflits avec main (D-150 à D-167 touchent les mêmes fichiers) ; suite frontend non relancée après les derniers changements ; arbitrage des postes #3–#5 du chirurgien concerné non appliqué.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-11-02",
       "refs": {
         "decision": "D-156",
         "branches": [
-          "feat/prestations-regroupees"
+          "feat/prestations-regroupees",
+          "integration/d156-on-main"
         ],
         "worktrees": [
-          "SurgicalHub-prestations"
+          "SurgicalHub-prestations",
+          "SurgicalHub-d156-integration"
         ],
         "migrations": [
           "Version20261018090000",
-          "Version20261019090000"
+          "Version20261019090000",
+          "Version20261102090000"
+        ],
+        "prs": [
+          67
         ]
       },
       "pendingOps": [
         {
           "type": "reprise-donnees",
           "status": "en-attente",
-          "description": "PATCH des postes #4/#5 du chirurgien concerné (instrumentiste à assigner) pour les générations futures",
+          "description": "app:mission:link-schedule-posts --apply après déploiement (copie du 2026-11-02 : 221 liens CLEAR, 0 à arbitrer)",
           "validation": "accord explicite"
         }
       ],
-      "validationNeeded": "Accord pour pousser la branche (sauvegarde distante), puis pour le rebase et la recette.",
-      "nextAction": "Pousser la branche sur origin pour ne pas dépendre de ce poste, puis rebase sur main et recette complète.",
-      "lastReviewed": "2026-10-24"
+      "validationNeeded": "Accord pour fusionner la PR #67, puis pour déployer (docs/deploy-plan-d156.md), puis pour app:mission:link-schedule-posts --apply.",
+      "nextAction": "Revue et accord de fusion de la PR #67 ; décision sur le tarif de Salve en septembre avant de valoriser ses missions de septembre.",
+      "lastReviewed": "2026-11-02",
+      "notes": "Postes #3/#4/#5 du Dr Deltour inchangés. Tarif de Salve : 0 € du 07/09 au 01/10 (saisi explicitement), 65 € ensuite — décision attendue."
     },
     {
       "id": "D-139",

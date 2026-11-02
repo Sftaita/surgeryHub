@@ -31,6 +31,7 @@ final class MissionInstrumentistWriteArchitectureTest extends TestCase
         'src/Service/InstrumentistStatementService.php' => [1, 'InstrumentistStatement — not Mission'],
         'src/Service/RatingService.php' => [2, 'InstrumentistRating / SurgeonRatingByInstrumentist — not Mission'],
         'src/Service/SurgeonSchedulePostService.php' => [2, 'SurgeonSchedulePost (recurring post template) — not Mission'],
+        'src/Service/Prestation/WorkedPresenceService.php' => [1, 'WorkedPresence (D-156 shared real presence) — not Mission'],
     ];
 
     /** DQL `SET m.instrumentist =` / SQL `SET instrumentist_id =` — never allowed. */

@@ -155,13 +155,14 @@ final class MissionConflictWaiverTest extends WebTestCase
         ?PlanningVersion $version, Hospital $site, User $surgeon, User $createdBy,
         string $date, string $startTime, string $endTime, ?User $instrumentist,
         MissionStatus $status = MissionStatus::DRAFT,
+        MissionType $type = MissionType::BLOCK,
     ): Mission {
         $tz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
         $m = new Mission();
         if ($version !== null) {
             $m->setPlanningVersion($version);
         }
-        $m->setType(MissionType::BLOCK);
+        $m->setType($type);
         $m->setSite($site);
         $m->setSurgeon($surgeon);
         $m->setCreatedBy($createdBy);
@@ -221,6 +222,35 @@ final class MissionConflictWaiverTest extends WebTestCase
 
     // ── Rule 3/4 — same surgeon, same site: reported waivable, authorizing unblocks deploy ──
 
+    /**
+     * D-156 — for BLOC missions this exact shape (same surgeon + instrumentist + site, same
+     * day) is a legitimate multi-room prestation: no conflict, no waiver, deploy goes through.
+     */
+    #[WithoutErrorHandler]
+    public function test_d156_bloc_double_room_with_same_instrumentist_deploys_without_any_waiver(): void
+    {
+        $client   = $this->boot();
+        $manager  = $this->createUser('ROLE_MANAGER');
+        $token    = $this->login($client, $manager);
+        $surgeon  = $this->createUser('ROLE_SURGEON');
+        $instr    = $this->createUser('ROLE_INSTRUMENTIST');
+        $site     = $this->makeSite('Double');
+
+        $this->makeMission(null, $site, $surgeon, $manager, '2026-11-02', '08:00', '13:00', $instr, MissionStatus::ASSIGNED);
+        $version = $this->makeDraftVersion($site, $manager, '2026-11-01', '2026-11-30');
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, '2026-11-02', '10:00', '14:00', $instr);
+
+        $response = $this->deploy($client, $token, $version);
+
+        self::assertSame(200, $response->getStatusCode(), (string) $response->getContent());
+        self::assertSame(MissionStatus::ASSIGNED, $this->freshMission($mission->getId())->getStatus());
+        self::assertNull($this->em->getRepository(MissionConflictWaiver::class)->findOneBy(['missionHigh' => $mission->getId()]));
+    }
+
+    /**
+     * The narrow D-091 follow-up waiver is unchanged for what D-156 does not group
+     * (CONSULTATION missions — out of scope of the multi-room prestation in this version).
+     */
     #[WithoutErrorHandler]
     public function test_same_surgeon_same_instrumentist_same_site_conflict_is_reported_waivable(): void
     {
@@ -231,10 +261,9 @@ final class MissionConflictWaiverTest extends WebTestCase
         $instr    = $this->createUser('ROLE_INSTRUMENTIST');
         $site     = $this->makeSite('Double');
 
-        // Surgeon running two overlapping rooms of the SAME site, same floating instrumentist.
-        $this->makeMission(null, $site, $surgeon, $manager, '2026-11-02', '08:00', '13:00', $instr, MissionStatus::ASSIGNED);
+        $this->makeMission(null, $site, $surgeon, $manager, '2026-11-02', '08:00', '13:00', $instr, MissionStatus::ASSIGNED, MissionType::CONSULTATION);
         $version = $this->makeDraftVersion($site, $manager, '2026-11-01', '2026-11-30');
-        $mission = $this->makeMission($version, $site, $surgeon, $manager, '2026-11-02', '10:00', '14:00', $instr);
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, '2026-11-02', '10:00', '14:00', $instr, MissionStatus::DRAFT, MissionType::CONSULTATION);
 
         $response = $this->deploy($client, $token, $version);
 
@@ -256,9 +285,10 @@ final class MissionConflictWaiverTest extends WebTestCase
         $instr    = $this->createUser('ROLE_INSTRUMENTIST');
         $site     = $this->makeSite('Double');
 
-        $existing = $this->makeMission(null, $site, $surgeon, $manager, '2026-11-03', '08:00', '13:00', $instr, MissionStatus::ASSIGNED);
+        // CONSULTATION (D-156 groups BLOC missions only): the waiver mechanism still applies.
+        $existing = $this->makeMission(null, $site, $surgeon, $manager, '2026-11-03', '08:00', '13:00', $instr, MissionStatus::ASSIGNED, MissionType::CONSULTATION);
         $version  = $this->makeDraftVersion($site, $manager, '2026-11-01', '2026-11-30');
-        $mission  = $this->makeMission($version, $site, $surgeon, $manager, '2026-11-03', '10:00', '14:00', $instr);
+        $mission  = $this->makeMission($version, $site, $surgeon, $manager, '2026-11-03', '10:00', '14:00', $instr, MissionStatus::DRAFT, MissionType::CONSULTATION);
 
         $blocked = $this->deploy($client, $token, $version);
         self::assertSame(409, $blocked->getStatusCode());

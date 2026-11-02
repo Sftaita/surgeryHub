@@ -5035,6 +5035,29 @@ existant — sans bloquer le reste du déploiement : ce cas ne produit jamais de
 D-090 (`docs/decisions.md`) pour le détail complet et la cause racine de ces deux
 anomalies.
 
+**Réponse — 409 `MULTI_ROOM_CONFIRMATION_REQUIRED`** (D-156, vérifiée après les conflits) :
+le brouillon contient encore des affectations multi-salles proposées par les postes (même
+instrumentiste sur plusieurs missions BLOC simultanées du même chirurgien, même site, même
+jour) ni confirmées ni réorganisées. Rien n'est publié.
+
+```json
+{
+  "code": "MULTI_ROOM_CONFIRMATION_REQUIRED",
+  "message": "Déploiement bloqué : 1 affectation(s) multi-salles à confirmer ou à réorganiser.",
+  "groups": [{
+    "date": "2027-02-03", "instrumentistId": 19, "instrumentistName": "Sophie Collette",
+    "surgeonId": 8, "surgeonName": "Arnaud Deltour", "siteId": 1, "siteName": "CHIREC - Hôpital Delta",
+    "missionIds": [1244, 1243, 1245], "slots": ["07:45–13:00", "07:45–18:00", "13:00–18:00"],
+    "groupKey": "8debe8c7…"
+  }]
+}
+```
+
+Résolution : confirmer le groupe (ligne `multiRoomConfirmedKey` = `multiRoomGroupKey` dans
+`PATCH /api/planning/v2/drafts/{id}` ou dans `lines` de `generate`), ou le réorganiser
+(autre instrumentiste, mission laissée à pourvoir). Une confirmation ne vaut que pour la
+composition et les horaires confirmés : toute modification la rend caduque.
+
 **Conflit `CROSS_SITE_CONFLICT` (D-091, corrigé D-119)** — même revalidation, un second
 type de `conflicts[]` : même personne (chirurgien ou instrumentiste) sur deux missions
 actives qui se chevauchent dans le temps. Champ additionnel `waivable: boolean` sur chaque
@@ -5042,7 +5065,10 @@ entrée (D-091 follow-up). Règle métier (D-119, 2026-09-13) :
 - **Chirurgien**, même site, chevauchement → **jamais** dans `conflicts[]` (« double salle »
   autorisée par construction, quels que soient les instrumentistes — D-035). Seul un
   chirurgien sur des sites **différents** produit une entrée, toujours `waivable: false`.
-- **Instrumentiste**, même site ou non, chevauchement → toujours dans `conflicts[]`
+- **D-156** — **Instrumentiste**, missions **BLOC**, même chirurgien, même site, même date
+  locale, chevauchement → **jamais** dans `conflicts[]` : prestation multi-salles légitime
+  (une seule présence réelle, aucune dérogation nécessaire).
+- **Instrumentiste**, autres cas (chirurgien ou site différent, CONSULTATION), chevauchement → toujours dans `conflicts[]`
   (un instrumentiste ne peut pas être dans deux salles à la fois). `waivable: true`
   uniquement dans la forme étroite même chirurgien + même instrumentiste + même site des
   deux côtés (D-091 follow-up) ; sinon `false`.
@@ -5098,6 +5124,12 @@ a changé depuis la génération de ce brouillon (comparaison de `previewHash`, 
 par la migration `Version20260908090000`) — **purement informationnel**, ne bloque jamais la
 réouverture et ne remplace rien.
 
+`status: "CONFLICT"` (D-156, recette 2026-10-18) sur une ligne liée à une mission du
+brouillon signifie que le déploiement la refuserait en l'état : même contrôle que la
+revalidation du déploiement (instrumentiste absent, chevauchement réel, dérogations D-091 et
+exception multi-salles D-156 comprises). Affichage seulement : `PATCH` ignore le statut d'une
+ligne persistée.
+
 **Réponse — 409 `PLANNING_VERSION_NOT_DRAFT`** : la version n'est plus `DRAFT` (déjà
 déployée/archivée).
 
@@ -5117,7 +5149,10 @@ Enregistre des modifications de lignes directement sur les `Mission` réelles de
 ```
 
 Mêmes règles d'éligibilité que 26.5 (`rejectedAssignments`, jamais une réaffectation
-silencieusement invalide conservée). `removed` compte les lignes marquées `SKIPPED` sur une
+silencieusement invalide conservée). Seules les lignes dont l'instrumentiste **change** sont
+revalidées (D-156, recette 2026-10-19) : une ligne renvoyée inchangée est conservée telle
+quelle, et un vrai conflit déjà présent reste affiché `CONFLICT` à la réouverture et bloque le
+déploiement — il n'est jamais résolu implicitement en retirant l'instrumentiste. `removed` compte les lignes marquées `SKIPPED` sur une
 occurrence déjà couverte par une `Mission` persistée — celle-ci est supprimée (jamais annulée
 : elle n'aurait jamais dû exister pour cette occurrence).
 
@@ -8657,6 +8692,23 @@ ligne. `null` sinon.
 `instrumentistBlocked` (booléen) — l'instrumentiste par défaut du poste est devenu incompatible
 avec son chirurgien ; le manager corrige le poste (`PATCH` avec un autre instrumentiste ou
 aucun ; garder l'instrumentiste incompatible → 422).
+### Preview V2 — confirmation ciblée multi-salles (D-156)
+
+`POST /api/planning/v2/preview` et `GET /api/planning/v2/drafts/{id}` : chaque ligne porte
+`multiRoomCount` (taille du groupe multi-salles : même personne, BLOC, même chirurgien, même
+site, même jour, chevauchement strict, transitif), `multiRoomGroupKey` (empreinte du groupe :
+composition et horaires) et `multiRoomConfirmation` (`REQUIRED` : proposé par les postes, à
+confirmer avant déploiement ; `CONFIRMED` : confirmé dans ce brouillon ; `null` : pas de
+groupe). Les lignes `SKIPPED`, `CONFLICT` et celles d'une mission déjà publiée n'en font
+jamais partie. Pour une ligne liée à une mission du brouillon, le groupe est celui des
+missions elles-mêmes (horaires réels de la mission), comme au déploiement.
+
+Champ **envoyé** par l'éditeur : `multiRoomConfirmedKey` (dans `lines` de
+`POST /api/planning/v2/generate` et de `PATCH /api/planning/v2/drafts/{id}`) — le manager a
+confirmé le groupe de cette clé ; enregistré seulement si la clé correspond encore au groupe
+au moment de l'enregistrement. Une ligne dont le manager a lui-même choisi l'instrumentiste
+(différent de celui du poste, ou modifié dans le brouillon) confirme son groupe sans action
+supplémentaire. Voir le 409 `MULTI_ROOM_CONFIRMATION_REQUIRED` de `POST /api/planning/v2/deploy`.
 
 ## Intégration MedVue — liaison des comptes et lecture des congés (D-140)
 
@@ -9119,3 +9171,163 @@ encoder, rejetées (repassées en encodage) et annulées n'apparaissent jamais.
   `unratedCount` compte les prestations avec heures mais sans tarif. Jamais de tarif firme, de
   montant facturé ni de statut de paiement.
 - **Aucune donnée patient ni texte libre** (commentaires, interventions, matériel).
+
+## 50. Missions ↔ Planning V2 et prestations regroupées multi-salles (D-156)
+
+Voir D-156 dans `docs/decisions.md` pour les règles complètes.
+
+### `GET /api/missions` — bornes de dates (lot 1)
+
+`from` / `to` : instant ISO 8601 avec offset (converti en heure de Bruxelles) ou valeur
+sans offset (`2026-11-12`, `2026-11-12T08:00`), lue comme heure locale de Bruxelles. `to`
+reste exclusif. Chaque élément porte en plus :
+
+- `roomLabel` (`string|null`) — libellé de salle facultatif ;
+- `prestation` (`object|null`) — prestation multi-salles de la mission, `null` si elle est
+  seule : `{key, size, missionIds, plannedStartAt, plannedEndAt, plannedUnionMinutes}` ;
+- `scheduleConflictMissionIds` (`int[]`) — vrais conflits d'horaire de l'instrumentiste
+  (chevauchement qui n'est pas une double salle légitime). Calculés par le serveur ; le
+  client ne recalcule jamais de conflit.
+
+Mêmes champs dans `GET /api/instrumentist/missions/sync`. `GET /api/missions/{id}` expose
+`roomLabel`.
+
+### `POST /api/missions` — création et diffusion en une requête (lot 1)
+
+Champs optionnels : `dispatchMode` (`POOL` | `TARGETED` | `DIRECT`) et
+`dispatchInstrumentistId`. La diffusion est validée AVANT la création (un choix inéligible
+est refusé, rien n'est créé), puis appliquée dans la même requête. Échec résiduel après
+création : `409 MISSION_CREATED_NOT_DISPATCHED`, `error.missionId` = la mission créée en
+DRAFT (l'ouvrir, ne pas recréer). Sans `dispatchMode` : comportement inchangé (DRAFT).
+
+### `GET /api/missions/{id}/prestation`
+
+Prestation dynamique de la mission (une mission seule = prestation de taille 1). Droit :
+`MISSION_VIEW` sur chaque mission du groupe.
+
+```json
+{
+  "key": "p674-675", "size": 2, "missionIds": [674, 675], "date": "2026-11-04",
+  "missions": [
+    { "id": 674, "ordinal": 1, "label": "Mission 1/2 · 07h45–13h00 · n° 674", "roomLabel": null,
+      "startAt": "…", "endAt": "…", "plannedMinutes": 315, "status": "ENCODING_IN_PROGRESS",
+      "imputedMinutes": 315, "effectiveMinutes": 315, "effectiveSource": "PRESENCE_SHARE",
+      "linkedToPresence": true, "hasOwnHours": false, "interventionCount": 2,
+      "activeMaterialLineCount": 3, "noMaterialComment": null, "allowedActions": ["…"] }
+  ],
+  "instrumentist": {"id": 18, "name": "…"}, "surgeon": {"id": 8, "name": "Dr …"}, "site": {"id": 1, "name": "…"},
+  "planned": { "startAt": "…", "endAt": "…", "unionMinutes": 615 },
+  "presence": { "id": 9, "revision": 2, "actualStartAt": "…", "actualEndAt": "…", "totalMinutes": 615,
+                "missionIds": [674, 675], "allocationRule": "EARLIEST_END_FIRST" },
+  "unlinkedMissionIds": [], "ownHoursMissionIds": [],
+  "statuses": ["ENCODING_IN_PROGRESS"], "globalStatus": "ENCODING_IN_PROGRESS",
+  "fingerprint": "sha256…", "allowedActions": ["edit_presence", "submit"]
+}
+```
+
+`globalStatus` = le statut commun, ou `MIXED`. `allowedActions` : `edit_presence` si
+`MISSION_EXECUTION_UPDATE` est accordé sur chaque mission, `submit` si `MISSION_SUBMIT` est
+accordé sur chaque mission encore à soumettre. `hoursLockedByMissionIds` (`int[]`) : missions
+pour lesquelles le lecteur n'a pas `MISSION_EXECUTION_UPDATE` (soumise, validée…) — une seule
+suffit à verrouiller les heures communes ; sert à l'expliquer, jamais à décider côté client.
+
+### `PUT /api/missions/{id}/prestation/presence`
+
+Heures réelles de la prestation, saisies une fois. Corps : `actualStartAt` (requis),
+`actualEndAt` (optionnel = brouillon, D-143), `expectedMissionIds` (requis),
+`expectedRevision` (si une présence existe), `convertOwnHours` (confirmation explicite de
+remplacer des heures propres déjà saisies). Droit : `MISSION_EXECUTION_UPDATE` sur chaque
+mission. Prestation d'une seule mission sans présence : identique à
+`PATCH /api/missions/{id}/execution`. Réponse : la vue `GET …/prestation`.
+
+Erreurs `409` (`error.code`) : `PRESTATION_CHANGED` (composition différente, avec
+`currentMissionIds`), `PRESENCE_REVISION_CHANGED`, `PRESTATION_HAS_OWN_HOURS` (avec
+`missionIds`), `PRESTATION_PRESENCE_CONFLICT`, `PRESENCE_ENCODING_LOCKED`,
+`PRESENCE_FINANCIALLY_SETTLED`. `422` : fin ≤ début.
+
+### `POST /api/missions/{id}/prestation/submit`
+
+Soumission commune. Corps : `fingerprint` (requis, celui de la vue), `noMaterialComment`
+(une justification, posée sur les seules missions BLOC sans matériel). Droit :
+`MISSION_SUBMIT` sur chaque mission encore à soumettre. Tout ou rien, dans une transaction ;
+les missions déjà `SUBMITTED` sont laissées telles quelles. Erreurs : `409 PRESTATION_CHANGED`
+(empreinte différente), `422 ENCODING_INCOMPLETE` (avec `missing`), `422` sans matériel ni
+justification.
+
+Dans une prestation de 2+ missions, `PATCH /api/missions/{id}/execution`,
+`PATCH /api/missions/{id}/service`, `POST /api/missions/{id}/encoding/complete` et
+`POST /api/missions/{id}/submit` répondent `409 PRESTATION_REQUIRES_COMMON_HOURS` /
+`PRESTATION_REQUIRES_COMMON_SUBMIT` (avec `prestationMissionIds`).
+
+`GET /api/missions/{id}/execution` expose en plus `presence` (`{id, revision, actualStartAt,
+actualEndAt, totalMinutes, missionIds}` ou `null`) et `prestationMissionIds`. Pour une
+mission liée, `actualStartAt` / `actualEndAt` sont `null` et `actualDurationMinutes` est la
+part imputée (`effectiveDurationSource = PRESENCE_SHARE`).
+
+### `POST /api/missions/{id}/encoding/detach-presence`
+
+Correction contrôlée, manager (`MISSION_PRESENCE_DETACH`). Corps : `reason` (requis). La
+mission quitte la présence (sans heures réelles ; rien n'est transféré ni effacé), les autres
+missions sont réimputées, audit sur chaque mission. Erreurs : `409 PRESENCE_LAST_MISSION`,
+`PRESENCE_ENCODING_LOCKED`, `PRESENCE_FINANCIALLY_SETTLED` ; `403` si la mission est
+verrouillée ou non liée.
+
+### `PATCH /api/missions/{id}/room-label`
+
+Manager (`MISSION_EDIT_ROOM_LABEL`, mission ni annulée ni refusée). Corps : `roomLabel`
+(≤ 60 caractères ; vide ou `null` = retiré). Audit `MISSION_ROOM_LABEL_CHANGED`. Purement
+descriptif.
+
+### Données encodées — `409 MISSION_HAS_ENCODING_DATA`
+
+`reassign`, `release`, `cancel`, `updateSchedule` (et `assign` remplaçant un instrumentiste)
+refusent une mission qui porte des heures, une présence, des interventions, du matériel ou
+des demandes. `error` : `missionId`, `operation`, `confirmable`, `hasOwnHours`, `presenceId`,
+`interventionCount`, `materialLineCount`, `interventionRequestCount`. Si `confirmable` est
+vrai (interventions / matériel seuls), `POST /api/missions/{id}/reassign` accepte
+`confirmEncodingData: true` et `encodingDataReason` (requis) ; les données restent sur la
+mission.
+
+### Valorisation — anomalies D-156
+
+`SHARED_PRESENCE_STALE`, `SHARED_PRESENCE_SETTLED`, `OVERLAPPING_HOURS_IN_PRESTATION`
+(catégorie ENCODING, action « Corriger les heures communes de la prestation »). Le snapshot
+d'une ligne `INSTRUMENTIST_HOURLY` valorisée sur une présence porte `presenceId`,
+`presenceRevision`, `presenceTotalMinutes`, `presenceTotalAmount`, `prestationMissionIds`,
+`imputedMinutesByMission`, `imputedAmountByMission`, `allocationRule`. L'approbation d'un tel
+calcul est refusée si la présence a changé depuis.
+
+### Suivi des encodages
+
+Chaque élément de `GET /api/billing/encoding-tracking` porte `prestation`
+(`{key, missionIds, plannedUnionMinutes}` ou `null`) : un total d'heures planifiées compte
+chaque prestation une fois.
+
+### Planning V2 — identité stable des lignes (intégration 2026-11-02)
+
+- Chaque ligne d'aperçu / de brouillon porte `occurrenceDate` (`YYYY-MM-DD`) : avec
+  `postId`, l'occurrence du poste qu'elle représente (date d'origine pour une occurrence
+  déplacée). L'éditeur la renvoie telle quelle dans `lines` de `POST /api/planning/v2/generate`
+  et `PATCH /api/planning/v2/drafts/{id}` ; absente, la date de la ligne est utilisée.
+- `GET|POST /api/planning/v2/eligible-instrumentists` : paramètre facultatif `missionType`
+  (type du créneau d'une ligne pas encore enregistrée) et champ `missionType` de chaque
+  proposition. Une proposition BLOC du même chirurgien et du même site, simultanée, n'est
+  jamais un `SCHEDULE_CONFLICT` (prestation multi-salles).
+- Une mission liée à une présence commune n'expose jamais `edit_hours` dans
+  `allowedActions` : ses heures se corrigent par `PUT /api/missions/{id}/prestation/presence`.
+
+### Console — `app:mission:link-schedule-posts`
+
+`--from=YYYY-MM --to=YYYY-MM [--site=ID ...] [--apply]` : rattache les missions générées
+avant le lien stable à leur occurrence de poste, telle que le générateur les rapproche
+aujourd'hui. Sans `--apply` : liste seule, code 1 s'il reste des liens à écrire. Classes :
+`CLEAR`, `INTERCHANGEABLE` (missions équivalentes que rien ne distingue — rattachées),
+`TO_REVIEW` (missions équivalentes qui diffèrent — jamais rattachées). Écrit uniquement
+`mission.schedule_post_id` et `mission.schedule_occurrence_date`, en une transaction.
+### `PUT /api/missions/{id}/prestation/presence` — correction par un manager (2026-11-02)
+
+Champ `reason` obligatoire quand l'appelant est manager / admin (422 sinon) : correction
+motivée des heures communes de toute la prestation, historisée (motif, heures et parts
+avant/après). Les calculs `CALCULATED` des missions deviennent obsolètes
+(`obsoleteFinancialCalculationIds` dans l'audit) ; `409 PRESENCE_FINANCIALLY_SETTLED` si un
+calcul est approuvé ou verrouillé, `403` si une mission n'est plus corrigeable (Voters).

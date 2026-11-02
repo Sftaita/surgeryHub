@@ -7,6 +7,10 @@ use App\Dto\Request\Response\MissionExecutionDisputeDto;
 use App\Dto\Request\Response\MissionExecutionDto;
 use App\Entity\Mission;
 use App\Entity\MissionExecution;
+use App\Entity\WorkedPresence;
+use App\Exception\PrestationConflictException;
+use App\Service\Prestation\PrestationGroupResolver;
+use App\Service\Prestation\PrestationGrouping;
 use App\Entity\MissionExecutionDispute;
 use App\Entity\User;
 use App\Security\Voter\MissionExecutionVoter;
@@ -36,6 +40,7 @@ final class MissionExecutionController extends AbstractController
         private readonly MissionExecutionService $executionService,
         private readonly SerializerInterface $serializer,
         private readonly ValidatorInterface $validator,
+        private readonly PrestationGroupResolver $prestationGroups,
     ) {}
 
     #[Route('', name: 'api_missions_execution_get', methods: ['GET'])]
@@ -55,6 +60,8 @@ final class MissionExecutionController extends AbstractController
 
         /** @var MissionExecutionUpdateRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionExecutionUpdateRequest::class);
+
+        self::assertNotPartOfPrestation($mission, $this->prestationGroups);
 
         $this->executionService->updateActuals(
             $mission,
@@ -85,7 +92,43 @@ final class MissionExecutionController extends AbstractController
             disputes: $execution !== null
                 ? array_map($this->toDisputeDto(...), $execution->getDisputes()->toArray())
                 : [],
+            presence: self::presenceDto($execution?->getPresence()),
+            prestationMissionIds: PrestationGrouping::ids($this->prestationGroups->groupOf($mission)),
         );
+    }
+
+    /** @return array<string,mixed>|null */
+    public static function presenceDto(?WorkedPresence $presence): ?array
+    {
+        if ($presence === null) {
+            return null;
+        }
+
+        return [
+            'id' => $presence->getId(),
+            'revision' => $presence->getRevision(),
+            'actualStartAt' => $presence->getActualStartAt()?->format(\DateTimeInterface::ATOM),
+            'actualEndAt' => $presence->getActualEndAt()?->format(\DateTimeInterface::ATOM),
+            'totalMinutes' => $presence->getTotalMinutes(),
+            'missionIds' => PrestationGrouping::ids($presence->getMissions()),
+        ];
+    }
+
+    /**
+     * D-156 — dans une prestation regroupée (2+ missions, ou déjà liée à une présence), les
+     * heures réelles se saisissent UNE fois sur la prestation : jamais mission par mission,
+     * ce qui recréerait des heures simultanées comptées deux fois.
+     */
+    public static function assertNotPartOfPrestation(Mission $mission, PrestationGroupResolver $groups): void
+    {
+        $group = $groups->groupOf($mission);
+        if (count($group) > 1 || $mission->getExecution()?->getPresence() !== null) {
+            throw new PrestationConflictException(
+                PrestationConflictException::PRESTATION_REQUIRES_COMMON_HOURS,
+                "Cette mission fait partie d'une prestation multi-salles : ses heures réelles se saisissent une seule fois sur la prestation.",
+                ['missionId' => $mission->getId(), 'prestationMissionIds' => PrestationGrouping::ids($group)],
+            );
+        }
     }
 
     private function toDisputeDto(MissionExecutionDispute $d): MissionExecutionDisputeDto

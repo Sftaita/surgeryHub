@@ -11,8 +11,10 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningDeploymentStatus;
 use App\Enum\PlanningVersionStatus;
+use App\Exception\MultiRoomConfirmationRequiredException;
 use App\Exception\PlanningDraftConflictException;
 use App\Message\PlanningDeployPdfsMessage;
+use App\Service\Prestation\MultiRoomConfirmationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -26,6 +28,7 @@ class PlanningDeploymentService
         private readonly MessageBusInterface $bus,
         private readonly PlanningDraftRevalidationService $draftRevalidation,
         private readonly PlanningActivityRecorder $activity,
+        private readonly MultiRoomConfirmationService $multiRoom,
         ?MissionAssignmentService $assignments = null,
     ) {
         // Always autowired; a plain unit test that omits it still gets the real writer.
@@ -79,6 +82,12 @@ class PlanningDeploymentService
             if (!empty($revalidation['blockingConflicts'])) {
                 throw new PlanningDraftConflictException($revalidation['blockingConflicts']);
             }
+            // D-156 — multi-room assignments proposed by the posts must be confirmed (or
+            // reorganised) by the manager first: checked here, server-side, never only in UI.
+            $unconfirmed = $this->multiRoom->unconfirmedGroups($version);
+            if ($unconfirmed !== []) {
+                throw new MultiRoomConfirmationRequiredException(MultiRoomConfirmationService::describe($unconfirmed));
+            }
             if (!empty($revalidation['neutralized'])) {
                 $this->draftRevalidation->neutralize($revalidation['neutralized'], $deployedBy);
             }
@@ -89,7 +98,7 @@ class PlanningDeploymentService
 
         // ── 2. Archive the current ACTIVE version (if any) ───────────────────
         if ($version !== null) {
-            $previousActive = $this->findActiveVersion($version->getSite()?->getId(), $fromDate, $toDate);
+            $previousActive = $this->findActiveVersion($version->getSite()?->getId(), $fromDate, $toDate, $version->getSiteGroup()?->getId());
             if ($previousActive !== null && $previousActive->getId() !== $version->getId()) {
                 $previousActive->setStatus(PlanningVersionStatus::ARCHIVED);
                 $previousActive->setArchivedAt(new \DateTimeImmutable());
@@ -266,7 +275,14 @@ class PlanningDeploymentService
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    private function findActiveVersion(?int $siteId, \DateTimeImmutable $from, \DateTimeImmutable $to): ?PlanningVersion
+    /**
+     * D-156 lot 1 — the ACTIVE version a deploy replaces is the one of the SAME target: same
+     * site, or same site group, or (legacy) the global scope. `v.site IS NULL` alone matched
+     * any group's or the global version: deploying group A could archive group B's ACTIVE
+     * month, whose missions then stayed live but could no longer be opened in Modification
+     * mode.
+     */
+    private function findActiveVersion(?int $siteId, \DateTimeImmutable $from, \DateTimeImmutable $to, ?int $siteGroupId = null): ?PlanningVersion
     {
         $qb = $this->em->createQueryBuilder()
             ->select('v')
@@ -281,10 +297,21 @@ class PlanningDeploymentService
 
         if ($siteId !== null) {
             $qb->andWhere('v.site = :siteId')->setParameter('siteId', $siteId);
-        } else {
-            $qb->andWhere('v.site IS NULL');
+
+            return $qb->getQuery()->getOneOrNullResult();
         }
 
-        return $qb->getQuery()->getOneOrNullResult();
+        $qb->andWhere('v.site IS NULL');
+        if ($siteGroupId !== null) {
+            // Same group first; otherwise a legacy global version (no site, no group) that
+            // this group deploy supersedes — never another group's version.
+            $sameGroup = (clone $qb)->andWhere('v.siteGroup = :siteGroupId')->setParameter('siteGroupId', $siteGroupId)
+                ->getQuery()->getOneOrNullResult();
+            if ($sameGroup !== null) {
+                return $sameGroup;
+            }
+        }
+
+        return $qb->andWhere('v.siteGroup IS NULL')->getQuery()->getOneOrNullResult();
     }
 }

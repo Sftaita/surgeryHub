@@ -6344,6 +6344,9 @@ préexistante, hors périmètre).
 
 ## D-091 follow-up — dérogation manager pour un conflit « double salle » au déploiement (2026-09-11)
 
+> **Modifié par D-156 (2026-10-18), sur ce seul cas :** missions BLOC avec le même instrumentiste, le même chirurgien, le même site et la même date locale qui se chevauchent = prestation multi-salles légitime, jamais un conflit, sans dérogation. Tous les autres cas, et les dérogations existantes (historique), sont inchangés.
+
+
 **Statut : DONE, testé (backend et frontend verts, vérifié en direct sur données réelles), committé, déployé (`v2026.09.11-prod-4`).**
 
 ### Contexte
@@ -10359,6 +10362,9 @@ Ajout minimal : `EncodingTrackingItem::$isStale`, calculé dans
 ---
 
 ## D-119 — Correctif faux SURGEON_CONFLICT « double salle » : la règle doit porter sur le site, jamais sur l'instrumentiste (2026-09-13)
+
+> **Modifié par D-156 (2026-10-18), sur ce seul cas :** missions BLOC avec le même instrumentiste, le même chirurgien, le même site et la même date locale qui se chevauchent = prestation multi-salles légitime, jamais un conflit, sans dérogation. Tous les autres cas, et les dérogations existantes (historique), sont inchangés.
+
 
 ### Contexte
 
@@ -16160,3 +16166,335 @@ interdite (`BillingVoter::MANAGE`). Conception figée : `docs/design/Instruction
 une mission décalée d'un jour sur un autre mois par ses heures réelles reste dans son mois
 planifié. L'estimation ne reflète pas un éventuel calcul financier approuvé ou verrouillé
 différent (elle est recalculée à la volée, indicative).
+---
+
+## D-156 — Une seule réalité opérationnelle (Missions ↔ Planning V2) et prestations regroupées multi-salles (2026-10-18)
+
+Branche `feat/prestations-regroupees` (worktree `SurgicalHub-prestations`), base
+`origin/main` `8b61500`. Intégrée sur `main` le 2026-11-02 (voir « Intégration sur `main` »
+ci-dessous) ; non fusionnée, non déployée. Numérotée D-156 car D-150 → D-155
+sont réservées par la branche non fusionnée `feat/surgeon-refusal-compat`.
+
+**Modifie D-091 et D-119 sur un seul cas précis** (voir « Conflits » ci-dessous). Les
+dérogations `MissionConflictWaiver` existantes sont conservées telles quelles (historique).
+
+### Lot 1 — Missions ↔ Planning V2 : causes confirmées et corrections
+
+Principe : `Mission` est la source de vérité du planning opérationnel ; `SurgeonSchedulePost`
+reste la source des postes récurrents et `PlanningVersion` un objet de génération, de
+publication et d'historique. Aucune mission n'est créée pour faire correspondre deux écrans.
+
+Causes confirmées dans le code (bugs réels) :
+
+1. **Fuseau des filtres de dates.** `from`/`to` de `GET /api/missions` (et des plannings des
+   fiches instrumentiste/chirurgien) étaient liés sans type : un instant `Z` était comparé
+   tel quel aux colonnes en heure de Bruxelles (décalage de 1–2 h sur chaque borne de
+   jour). Corrigé : liaison en `business_datetime_immutable` (conversion Bruxelles) ; une
+   valeur sans offset est lue comme heure locale de Bruxelles (`MissionFilter`).
+2. **Planning publié : jour « Au » exclu.** Le `to` de l'API est exclusif ; l'écran envoyait
+   la date « Au » telle quelle, donc toutes les missions de ce jour manquaient. Corrigé côté
+   écran (lendemain envoyé). Dates par défaut calculées en jour local.
+3. **Affectation impossible depuis le Planning publié.** Le sélecteur des lignes OPEN
+   appelait `/assign-instrumentist` (réservé aux brouillons) : 409 systématique. Corrigé :
+   attribution directe (`/assign-directly`, audit et notification).
+4. **Création + diffusion non atomique.** L'assistant créait la mission (DRAFT) puis la
+   diffusait par un second appel : un échec laissait un brouillon orphelin (invisible du
+   planning publié) et un nouvel essai créait un doublon. Corrigé : `POST /api/missions`
+   accepte `dispatchMode` / `dispatchInstrumentistId`, valide la diffusion AVANT de créer et
+   diffuse dans la même requête ; échec résiduel = 409 `MISSION_CREATED_NOT_DISPATCHED`
+   avec `missionId` (le client ouvre la mission au lieu de la recréer).
+5. **Suppression d'un brouillon de planning.** `generate()` reprend les missions DRAFT
+   manuelles du même créneau ; supprimer le brouillon les supprimait physiquement. Corrigé :
+   les missions créées à la main (`MISSION_CREATED_MANUALLY`) sont détachées (toujours DRAFT,
+   sans version) ; seules les missions générées sont supprimées.
+6. **Archivage entre groupes de sites.** Déployer le groupe A archivait n'importe quelle
+   version ACTIVE « sans site » (un autre groupe) : ses missions restaient vivantes mais le
+   mois ne s'ouvrait plus en mode Modification. Corrigé : même site, ou même groupe, sinon
+   la version globale historique qu'il remplace.
+7. **Publication silencieuse par les actions d'alerte.** « Réassigner » / « ouvrir au pool »
+   sur une mission DRAFT passaient son statut à ASSIGNED / OPEN directement (D-056
+   contourné, ni publication ni notification). Corrigé : un DRAFT reste DRAFT.
+8. **Caches frontend.** Plusieurs mutations ne rafraîchissaient que l'écran d'origine
+   (modification d'horaire, annulation depuis la fiche, déploiement, modifications Planning
+   V2, actions d'alerte, reprise de salle, déclaration). Corrigé : une invalidation commune
+   (`invalidateOperationalPlanning`, liste exhaustive des vues) ; rafraîchissement au focus
+   et polling léger (60 s, onglet visible) des vues manager. Aucune infrastructure temps réel.
+9. **Statuts manquants côté personnel.** `ENCODING_IN_PROGRESS` absent des plannings
+   instrumentiste et chirurgien et d'« Aujourd'hui », `DECLARED` absent du planning
+   chirurgien (le commentaire l'annonçait), pages tronquées à 100 missions. Corrigé.
+
+Différences intentionnelles maintenues : le Planning publié n'affiche pas les DRAFT (il
+annonce désormais leur nombre, avec un lien vers Missions) ; le mode Modification reste le
+périmètre opérationnel d'une version (D-125).
+
+Limites documentées (non corrigées, sans nécessité démontrée en production — un seul groupe
+de sites) : la vérification « brouillon déjà existant », la numérotation des versions et le
+diff utilisent encore `site IS NULL` pour un groupe ; une collision de clé React Query
+`["missions","offers"]` (limites 4 et 100) subsiste.
+
+Données de production (lecture seule, 2026-10-18) : 4 missions manuelles DRAFT, dont 1 à
+venir (#626, 04/11, sans instrumentiste), invisibles du planning publié par construction et
+non modifiées ; toutes les missions actives à venir sont couvertes par une version ACTIVE.
+
+### Lot 2 — Prestations regroupées multi-salles
+
+**Regroupement (jamais persisté).** `PrestationGrouping` (règle pure, unique) et
+`PrestationGroupResolver` (lecture) : deux missions forment une même prestation quand elles
+sont BLOC, ont le même instrumentiste, le même chirurgien, le même site, la même date locale
+de début (Europe/Brussels) et un chevauchement strict ; le groupe est la composante connexe
+(chevauchements transitifs). Statuts retenus : ASSIGNED, IN_PROGRESS, ENCODING_IN_PROGRESS,
+DECLARED, SUBMITTED, VALIDATED, CLOSED. Indépendant de l'origine de la mission et de toute
+`PlanningVersion` : les plannings déjà publiés sont reconnus sans migration ; réaffecter une
+salle sépare la prestation de ce jour uniquement, la réaffecter à nouveau la reforme.
+CONSULTATION hors regroupement dans cette version (forfaits inchangés).
+
+**Présence réelle — `WorkedPresence` (migration additive `Version20261018090000`).**
+Présence physique unique de l'instrumentiste pour une prestation de 2+ missions, liée par
+`mission_execution.presence_id` (FK RESTRICT). Invariants : une mission liée n'a jamais ses
+propres horaires réels (CHECK `chk_mission_execution_single_hours_source`) ; la présence
+appartient à un instrumentiste, un chirurgien, un site et une date ; jamais orpheline ;
+`revision` (verrou optimiste) incrémentée à chaque modification ; chaque écriture auditée
+sur chaque mission (`MISSION_EXECUTION_PRESENCE_*` : avant/après, révision, membres). Seul
+`WorkedPresenceService` l'écrit, en transaction, sous verrou pessimiste des missions (ordre
+d'id) et de la présence, après contrôle de la composition et de la révision attendues.
+Pauses : D-146 bis inchangé (fin − début).
+
+**Imputation — règle EARLIEST_END_FIRST (validée).** Un segment planifié couvert par
+plusieurs missions revient à celle qui termine le plus tôt, puis à celle qui commence le plus
+tôt, puis au plus petit id. Chaque minute réelle est imputée au propriétaire du segment où
+elle tombe : arrivée anticipée → premier segment ; dépassement → dernier segment ;
+interruption non planifiée → segment précédent ; départ anticipé → une mission peut recevoir
+0 minute. Somme des parts = durée réelle exacte (plus grand reste à la minute). Exemple :
+07:45–13:00 et 07:45–18:00, présence 07:45–18:00 → 5h15 + 5h00 = 10h15. La part imputée est
+rangée dans `mission_execution.actual_duration_minutes` des missions liées (source
+`PRESENCE_SHARE` de `resolveEffectiveDuration()`, point d'entrée canonique) : imputation
+comptable, distincte de l'horaire opérationnel (Mission) et de la présence physique
+(WorkedPresence). Une part de 0 minute (mission entièrement couverte par des sœurs mieux
+classées, ou départ anticipé) ne produit aucune ligne horaire à sa valorisation : la présence
+est intégralement payée sur les autres missions, dont le snapshot porte la répartition
+complète (`imputedMinutesByMission`). Constat de recette (2026-10-18) : les postes réels
+Journée + Matin + Après-midi d'un même chirurgien avec la même instrumentiste donnent une
+prestation de 3 missions dont l'après-midi reçoit 0 minute — total exact. Arbitrage
+(2026-10-18) : la règle est conservée, à condition d'être présentée comme une **imputation
+financière**, jamais comme une absence de travail. Les écrans affichent « imputation
+financière 0h00 (heures comptées sur une autre mission de la prestation) » ; la mission reste
+encodable, soumise, validée et valorisée normalement (interventions et matériel facturés aux
+firmes), suivi « Validé / Calculé » avec heures réelles (source `PRESENCE_SHARE`).
+
+**Confirmation ciblée des affectations multi-salles à la génération — décision (2026-10-19).**
+Les postes récurrents gardent leurs affectations habituelles (les postes #3, #4 et #5 du
+Dr Deltour ne sont pas modifiés : l'organisation change d'une semaine à l'autre). Quand les
+postes proposent la même instrumentiste sur plusieurs missions BLOC simultanées du même
+chirurgien, même site, même jour, l'aperçu et le brouillon l'affichent « Multi-salles —
+affectation à confirmer » ; le manager confirme l'affectation commune (bouton « Confirmer »
+sur la ligne, ou « Confirmer les affectations multi-salles » sur une sélection de plusieurs
+dates), répartit les missions entre plusieurs instrumentistes ou en laisse à pourvoir
+(« Laisser à pourvoir », aussi en sélection). Une affectation que le manager fait lui-même
+dans l'éditeur vaut confirmation (jamais redemandée). **Contrôle serveur :** table
+`planning_multi_room_confirmation` (migration `Version20261019090000`, additive), une ligne
+par groupe confirmé d'un brouillon, identifiée par une empreinte (instrumentiste, chirurgien,
+site, date, horaires de chaque mission — `PrestationGrouping::multiRoomFingerprint()`) ;
+`deploy()` refuse (409 `MULTI_ROOM_CONFIRMATION_REQUIRED`, après les vrais conflits) tout
+groupe de missions DRAFT de la version sans confirmation à son empreinte **actuelle** : un
+changement de composition ou d'horaire rend la confirmation caduque. Seules les missions
+DRAFT du brouillon sont concernées : missions publiées et réaffectations après déploiement
+ne sont jamais soumises à ce workflow (le regroupement s'y fait automatiquement).
+L'éditeur ne traite plus comme « déjà affectée ailleurs » une salle simultanée du même
+chirurgien sur le même site, ni un créneau consécutif du même jour (Matin puis Après-midi) :
+seul un vrai chevauchement l'est.
+
+**Défauts corrigés pendant la recette (2026-10-19).** (1) Deux salles commençant à la même
+heure (Journée 07:45–18:00 et Matin 07:45–13:00) : la réouverture d'un brouillon associait la
+ligne d'un poste à la mission de l'autre salle (`claimMission()` ne regardait que l'heure de
+début), si bien qu'une modification de la ligne Journée changeait le Matin — l'association
+privilégie désormais la mission dont le début ET la fin sont les plus proches du créneau du
+poste (l'instrumentiste ne départage que des horaires identiques). (2) `PATCH` d'un brouillon
+refusait une affectation légitime selon l'ordre des lignes (contrôle en base d'une mission déjà
+modifiée en mémoire) — chaque changement accepté est écrit avant de contrôler le suivant.
+(3) Les disponibilités du sélecteur étaient gardées en cache après enregistrement du brouillon
+— rafraîchies au rechargement.
+
+**Historique du constat (2026-10-18).**
+Le générateur ne choisit aucun candidat : il applique l'instrumentiste configuré sur chaque
+poste (`SurgeonSchedulePost.instrumentist`). En production, les trois postes du mercredi du
+Dr Deltour (Journée, Matin, Après-midi) désignent tous Sophie. Avant D-156, l'aperçu marquait
+deux d'entre eux « Conflit », les brouillons portaient pourtant Sophie sur les trois et le
+déploiement était bloqué (`DRAFT_CONFLICTS`) jusqu'à une résolution manuelle (historique :
+Salve sur Journée + Matin et Sophie sur l'Après-midi en juillet–septembre ; Sophie sur une
+seule salle et les deux autres à pourvoir d'octobre à décembre). Depuis D-156, le même
+paramétrage est déployé sans blocage avec Sophie sur les trois. Le comportement à retenir
+(appliquer le paramétrage, ou exiger une confirmation explicite des regroupements issus du
+générateur) reste à décider ; rien n'est changé dans le générateur en attendant.
+
+**Brouillons (recette 2026-10-18).** La réouverture d'un brouillon (`GET
+/api/planning/v2/drafts/{id}`) marque `CONFLICT` toute ligne dont la mission est refusée par
+la revalidation du déploiement (`PlanningDraftRevalidationService::revalidate()`, même
+exception multi-salles, mêmes dérogations) : l'éditeur et le déploiement ne peuvent plus se
+contredire. Après « Générer les missions » (un mois), l'éditeur recharge le brouillon
+persistant ; une modification ultérieure s'enregistre sur ce brouillon (`PATCH`) et le
+déploiement est indisponible tant qu'elle ne l'est pas (plusieurs mois générés : déploiement
+bloqué avec message tant que les modifications ne sont pas réinitialisées ou enregistrées
+depuis le brouillon du mois). Aucune modification n'est plus perdue silencieusement.
+Enregistrer un brouillon (`PATCH /api/planning/v2/drafts/{id}`) ne revalide plus que les
+lignes dont l'instrumentiste change (D-101 s'applique à toute affectation ou réaffectation) :
+une ligne renvoyée inchangée est conservée telle quelle. Auparavant, une seule modification
+sans rapport retirait l'instrumentiste des deux missions d'un vrai conflit, qui partaient
+ensuite au déploiement en missions ouvertes ; le conflit reste désormais affiché
+`CONFLICT` et bloque le déploiement jusqu'à la décision du manager.
+
+**Encodage commun.** `GET /api/missions/{id}/prestation`, `PUT …/prestation/presence`,
+`POST …/prestation/submit`. La soumission porte une empreinte de l'état (composition,
+statuts, horaires, révision, heures, interventions, matériel) : 409 `PRESTATION_CHANGED` si
+elle a changé ; toutes les missions sont contrôlées avant toute transition puis soumises dans
+la même transaction ; idempotente. Une seule justification « sans matériel », posée sur les
+seules missions BLOC sans matériel (D-080). Saisie d'heures et soumission mission par
+mission refusées dans une prestation (409 `PRESTATION_REQUIRES_COMMON_HOURS` /
+`PRESTATION_REQUIRES_COMMON_SUBMIT`). Interventions et matériel restent sur leur mission ;
+l'écran impose un choix explicite de la mission (aucune présélection). Validation manager
+inchangée, par mission. Libellé de salle facultatif `Mission.roomLabel`
+(`PATCH …/room-label`, manager, audité) ; à défaut « Mission n/N · horaires · n° id ».
+
+**Données encodées et réaffectation.** `MissionEncodingDataGuard` : réaffecter, remettre au
+pool, annuler ou changer l'horaire d'une mission qui porte des heures, une présence, des
+interventions, du matériel ou des demandes → 409 `MISSION_HAS_ENCODING_DATA`. Corrections
+contrôlées : `POST …/encoding/detach-presence` (manager, motif ; refusé si une mission liée
+est verrouillée ou financièrement arrêtée, ou si la présence deviendrait orpheline) ;
+réaffectation confirmée et motivée (`confirmEncodingData`) quand seules des interventions ou
+du matériel existent (ils restent sur la mission, auteurs conservés, audit
+`MISSION_REASSIGNED_WITH_ENCODING_DATA`). Les heures ne suivent jamais une mission. La
+réaction automatique aux absences (D-062) laisse ces missions au manager.
+
+**Finance.** Moteur unique, inchangé dans sa structure (`resolveInstrumentistHourlyLine()`) :
+la présence est valorisée UNE fois (durée totale × tarif, même arrondi qu'une ligne) puis
+répartie au centime (plus grand reste) — aucun écart d'un centime. Snapshot : présence,
+révision, membres, parts (minutes et montants), règle. Anomalies bloquantes expliquées :
+`SHARED_PRESENCE_STALE` (part obsolète), `SHARED_PRESENCE_SETTLED` (mission sœur arrêtée
+sur une autre révision), `OVERLAPPING_HOURS_IN_PRESTATION` (heures propres simultanées
+historiques). Approbation sous verrou de la présence (révision revérifiée) ; présence non
+modifiable dès qu'une mission liée a un calcul approuvé ou verrouillé. Facturation firmes
+inchangée : une ligne par intervention et par matériel de chaque mission ; aucun forfait par
+mission ou par jour n'existe.
+
+**Conflits (modifie D-091 / D-119 sur ce seul cas).** Même instrumentiste + même chirurgien
++ même site + même date locale + BLOC + chevauchement = prestation multi-salles, jamais un
+conflit, sans dérogation : éligibilité (4 prédicats), moteur central (`findConflict` /
+`hasConflictInPool`, rôle instrumentiste), aperçu Planning V2 (dans le lot et contre
+l'existant), revalidation au déploiement, actions d'alerte. Tout autre chevauchement
+(chirurgien ou site différent, CONSULTATION) et les absences restent bloquants ; la
+dérogation D-091 reste disponible pour ces cas. L'auto-affectation des instrumentistes
+« libérés » (second passage de l'aperçu) n'est volontairement pas modifiée. Le calendrier
+instrumentiste ne calcule plus aucun conflit côté client (`scheduleConflictMissionIds`
+fourni par le serveur).
+
+**Statistiques et rappels.** Durée par mission = part imputée (les moyennes par mission ou
+par type gardent leur sens) ; temps réellement presté = somme des parts = présence (suivi
+« Temps effectif », classement des heures exécutées) ; heures planifiées du suivi = union
+par prestation. Relances J+1 / J+2 / J+4 : une par prestation et par échéance (première
+mission en attente du groupe).
+
+**Données existantes.** Production (lecture seule, 2026-10-18) : 9 paires BLOC regroupables
+(même trio instrumentiste #18 / chirurgien #8 / site #1, juillet → septembre), sans heure,
+intervention, matériel ni calcul ; 0 dérogation ; 3 vrais conflits (chirurgien ou site
+différent) inchangés. Aucune donnée réécrite : les paires sont regroupées dynamiquement ;
+une mission déjà dotée d'heures propres n'est jamais liée sans confirmation explicite
+(anciennes valeurs dans l'audit) ; les calculs approuvés ou verrouillés ne sont jamais
+rejoués.
+
+### Intégration sur `main` (2026-11-02)
+
+Branche `integration/d156-on-main` (worktree `SurgicalHub-d156-integration`), issue de
+`main` `d9e6ee9` ; `feat/prestations-regroupees` (`108d276`) sauvegardée sur `origin`
+sans PR. Non fusionnée, non déployée.
+
+**Fusion.** 35 fichiers en conflit, résolus en gardant D-150 → D-179 : gardes D-156 sous
+le verrou D-150 ; exception multi-salles reportée dans la détection par paires D-167
+(`findConflicts`, `findConflictsInPool`, réconciliation : une ancienne alerte entre deux
+salles légitimes est résolue) ; un DRAFT reste DRAFT dans les actions d'alerte ;
+`complete()` sous le verrou D-171 et « Terminer et valider » refusé sur une mission seule
+d'une prestation (soumission commune puis validation par mission) ; détail mission D-168 :
+carte de prestation dans le tiroir, `MissionDetailPage` reste supprimée ;
+`findSameDayAssignmentElsewhere` (retiré par D-165) n'est pas réintroduit.
+
+**Identité stable poste ↔ mission.** `Mission.schedulePost` + `scheduleOccurrenceDate`
+(migration additive `Version20261102090000`, NULL pour l'existant) : le poste et la date
+d'origine de l'occurrence, posés à la génération. Le générateur rattache une occurrence à
+SA mission par ce lien ; une mission liée à une autre occurrence n'est jamais prise ; le
+rapprochement par horaires (±30 min, puis instrumentiste) ne vaut plus que pour les
+missions sans lien. Un enregistrement de brouillon rattache une mission DRAFT sans lien à
+l'occurrence de sa ligne. Les anciennes missions se rattachent par
+`app:mission:link-schedule-posts --from --to [--site] [--apply]` (vérification seule par
+défaut ; `--apply` écrit les liens `CLEAR` et `INTERCHANGEABLE`, jamais `TO_REVIEW`, et
+seulement les deux colonnes du lien). Cause prouvée : deux salles identiques
+(07:45–18:00), instrumentistes échangés dans l'éditeur → l'ancien rapprochement plaçait
+la ligne du poste A sur la mission du poste B (test en échec sur l'ancien générateur).
+
+**Compatibilité avec les fonctions récentes.**
+- D-179 « Mes heures » : minutes = part imputée (somme des parts = présence, jamais comptée
+  deux fois) ; une part de 0 min n'est pas « sans tarif » ; ligne « Multi-salles · part
+  imputée ».
+- D-173 heures réelles : tiroir et suivi montrent la présence commune et la part imputée,
+  jamais « durée seule » ; « Corriger les heures » n'est plus proposé sur une mission liée à
+  une présence (le dialogue reconstituait des horaires depuis la part et le serveur
+  refusait) — les heures communes se corrigent sur la prestation.
+- D-165 roster de l'éditeur : une ligne proposée sur une salle BLOC simultanée du même
+  chirurgien et du même site n'est pas un conflit (type du créneau et des propositions
+  transmis).
+- D-158 absences et D-151 refus chirurgien : la présence commune compte comme activité
+  encodée (motif affiché aligné sur la garde D-156).
+- D-171 / D-172 moteur financier : la part imputée passe par
+  `MissionExecutionService::resolveEffectiveDuration()` ; présence valorisée une fois,
+  ventilée au centime ; aucun changement des verrous ni des tarifs rétroactifs.
+- D-178 suggestions d'encodage : inchangées, disponibles salle par salle.
+
+**Postes du Dr Deltour.** Postes #3, #4, #5 (mercredi, Sophie) inchangés, aucune opération
+de données : les affectations habituelles restent appliquées et chaque regroupement se
+confirme à la préparation du planning. Les postes #6 et #7 (jeudi, deux salles
+07:45–18:00) sont le cas réel de salles aux horaires identiques.
+
+**Production (lecture seule, 2026-11-02).** 94 migrations ; les 9 paires BLOC du 2026-10-18
+sont toujours sans heure, intervention, matériel ni calcul (aucun double paiement ni
+écrasement possible) ; une paire aux horaires identiques (missions 314/315, 2026-07-29,
+instrumentistes différents). Copie de production du 2026-11-02 : 3 migrations D-156 jouées
+(< 1 s chacune), données historiques identiques (empreintes de `mission`,
+`mission_execution`, calculs, lignes, interventions, matériel, affectations, postes) ;
+`app:mission:link-schedule-posts --from=2026-06 --to=2027-03` : 221 liens `CLEAR`, 0
+ambigu, 0 à arbitrer, idempotent.
+### Finalisation avant fusion (2026-11-02)
+
+**Correction des heures communes par le manager.** Tiroir manager, carte de prestation :
+« Corriger les heures communes », servi seulement si le serveur expose `edit_presence`
+(Voters inchangés : statuts DECLARED → SUBMITTED, encodage non verrouillé, aucun calcul
+verrouillé). Toujours sur toute la prestation, par `WorkedPresenceService::declare()` (mêmes
+verrous, contrôle de révision et de composition, même ventilation EARLIEST_END_FIRST) — aucun
+calcul parallèle. Motif obligatoire pour un manager (422 sinon) ; audit
+`MISSION_EXECUTION_PRESENCE_UPDATED` avec motif, heures avant/après, part avant/après,
+`hoursSource = MANAGER`, affiché lisiblement dans l'historique du tiroir. Finances : un calcul
+`CALCULATED` de la prestation devient obsolète (mécanisme D-153 : jamais approuvé, verrouillé
+ni facturé en l'état, montants inchangés, seul « Recalculer » le remplace après
+revalidation) ; un calcul approuvé ou verrouillé, ou une mission validée ou facturée, bloque
+la correction (409, rien ne bouge). Une mission validée se corrige après réouverture (D-148)
+de toutes les missions de la prestation.
+
+**Réaffectation depuis le tiroir.** Sur 409 `MISSION_HAS_ENCODING_DATA`, le tiroir rouvre le
+dialogue de confirmation motivée quand le serveur l'autorise (`confirmable` : interventions ou
+matériel seuls) ; aucune confirmation n'est possible quand des heures réelles existent (elles
+ne suivent jamais une réaffectation). Protections backend inchangées ; test du chemin confirmé
+ajouté (il n'en existait aucun).
+
+**Tarif de Salve (#18), lecture seule.** Deux versions de tarif horaire : 0,00 € du 2026-09-07
+au 2026-10-01 (créée à 0 le 2026-09-07 par le manager #7, audit
+`INSTRUMENTIST_RATE_CREATED`), puis 65,00 € depuis le 2026-10-01 (remplacement du 2026-10-10,
+date d'effet ramenée au 2026-10-01 le 2026-10-29, D-172). Les calculs d'octobre sont à 65 €
+(dont #1039 recalculé). Le 0 € ne vaut que pour septembre : il s'appliquerait aux missions de
+septembre de Salve encore à valoriser, dont les 9 paires multi-salles de juillet → septembre
+avec le Dr Deltour. Aucun élément ne dit s'il est volontaire ; valeur saisie explicitement à
+0, jamais modifiée depuis. Décision attendue avant de valoriser ces missions ; aucune donnée
+modifiée. Constat annexe : Salve est bloquée chez le Dr Deltour et le chirurgien #9 depuis le
+2026-10-27 (incompatibilités créées par le manager #7) — sans effet sur ces missions passées.
+
+**Rattachements.** Copie de production du 2026-11-02 (relevée deux fois) : les mêmes 221
+triplets mission / poste / occurrence, tous `CLEAR` ; contrôles de cohérence à 0 ; aucune
+mission ambiguë ne peut être liée arbitrairement (`TO_REVIEW` jamais écrit, `INTERCHANGEABLE`
+seulement entre missions que rien ne distingue — aucune dans les données actuelles).
+
+Plan de déploiement : `docs/deploy-plan-d156.md`.

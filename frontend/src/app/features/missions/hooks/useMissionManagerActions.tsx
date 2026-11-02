@@ -30,11 +30,14 @@ import InterventionsSection from "../../encoding/components/InterventionsSection
 import CompleteAndValidateEncodingDialog from "../../encoding/components/CompleteAndValidateEncodingDialog";
 import { reassignMission } from "../../planning-v2/api/planningV2.api";
 import { ReassignMissionDialog } from "../../planning-v2/components/ReassignMissionDialog";
+import { EncodingDataConfirmDialog } from "../../prestations/components/EncodingDataConfirmDialog";
+import { prestationError } from "../../prestations/api/prestations.api";
 import EditServiceHoursDialog from "../components/EditServiceHoursDialog";
 import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
 import EditMissionDialog from "../components/EditMissionDialog";
 import PublishMissionDialog from "../components/PublishMissionDialog";
 import { useToast } from "../../../ui/toast/useToast";
+import { invalidateOperationalPlanning } from "../dispatch/missionDispatch.api";
 
 /**
  * Actions manager d'une mission — tonalité visuelle seulement : la page détail la traduit
@@ -100,6 +103,12 @@ export function useMissionManagerActions(
   const [cancelDeclarationReason, setCancelDeclarationReason] = React.useState("");
   // Corrections ponctuelles servies par le backend (reassign, D-153 edit_hours / edit_encoding).
   const [reassignOpen, setReassignOpen] = React.useState(false);
+  // D-156 — 409 MISSION_HAS_ENCODING_DATA : la mission porte déjà des interventions ou du
+  // matériel ; confirmation motivée seulement si le serveur l'autorise (`confirmable`), jamais
+  // un transfert implicite (les heures réelles ne suivent jamais une réaffectation).
+  const [encodingDataConflict, setEncodingDataConflict] = React.useState<
+    { instrumentistId: number; message: string; confirmable: boolean } | null
+  >(null);
   const [hoursOpen, setHoursOpen] = React.useState(false);
   const [encodingEditOpen, setEncodingEditOpen] = React.useState(false);
 
@@ -109,7 +118,9 @@ export function useMissionManagerActions(
     await queryClient.invalidateQueries({ queryKey: ["mission-audit", missionId] });
     await queryClient.invalidateQueries({ queryKey: ["mission-execution", missionId] });
     await queryClient.invalidateQueries({ queryKey: ["mission-financial-calculations", missionId] });
-    await queryClient.invalidateQueries({ queryKey: ["missions"], exact: false });
+    // D-156 lot 1 — every operational view (Missions, published planning, Planning V2,
+    // fiches, dashboard), not only the Missions list.
+    await invalidateOperationalPlanning(queryClient, missionId);
     await queryClient.refetchQueries({ queryKey: ["missions"], exact: false });
     // D-121 — validate/reject/reopen changent tous le nombre de missions SUBMITTED :
     // le badge de nav doit refléter l'action immédiatement, pas seulement au prochain
@@ -199,7 +210,10 @@ export function useMissionManagerActions(
       onLeave();
     },
     onError: (err: any) => {
-      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors de l'annulation.");
+      // D-156 — un refus métier (409, ex. MISSION_HAS_ENCODING_DATA) porte son explication.
+      const status = err?.response?.status;
+      const serverMessage: string | undefined = err?.response?.data?.error?.message;
+      toast.error(status === 403 ? "Accès interdit." : status === 409 && serverMessage ? serverMessage : "Erreur lors de l'annulation.");
     },
   });
 
@@ -225,13 +239,23 @@ export function useMissionManagerActions(
   });
 
   const reassignMutation = useMutation({
-    mutationFn: async (instrumentistId: number) => reassignMission(missionId, instrumentistId),
+    mutationFn: async ({ instrumentistId, encodingDataReason }: { instrumentistId: number; encodingDataReason?: string }) =>
+      reassignMission(missionId, instrumentistId, encodingDataReason ? { encodingDataReason } : undefined),
     onSuccess: async () => {
       setReassignOpen(false);
+      setEncodingDataConflict(null);
       await refreshAfterAction();
       toast.success("Instrumentiste changé.");
     },
-    onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? (err?.response?.status === 403 ? "Accès interdit." : "Changement d'instrumentiste impossible.")),
+    onError: (err: any, { instrumentistId }) => {
+      const e = prestationError(err);
+      if (e.code === "MISSION_HAS_ENCODING_DATA") {
+        setReassignOpen(false);
+        setEncodingDataConflict({ instrumentistId, message: e.message, confirmable: e.extra.confirmable === true });
+        return;
+      }
+      toast.error(err?.response?.data?.error?.message ?? (err?.response?.status === 403 ? "Accès interdit." : "Changement d'instrumentiste impossible."));
+    },
   });
 
   // Même clé que la lecture du tiroir : la fenêtre de correction réutilise l'encodage en cache.
@@ -275,7 +299,7 @@ export function useMissionManagerActions(
   const dialogOpen =
     openEdit || openPublish || rejectConfirmOpen || approveConfirmOpen || validateConfirmOpen ||
     rejectEncodingOpen || reopenOpen || cancelConfirmOpen || declareOpen || cancelDeclarationOpen ||
-    reassignOpen || hoursOpen || encodingEditOpen || completeValidateOpen;
+    reassignOpen || encodingDataConflict !== null || hoursOpen || encodingEditOpen || completeValidateOpen;
 
   const actions: MissionActionDescriptor[] = [];
   if (canDeclareWithoutInstrumentist) actions.push({ key: "declareWithoutInstrumentist", label: "Déclarer l'activité réalisée sans instrumentiste", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-declare-without-instrumentist", onClick: () => setDeclareOpen(true) });
@@ -512,7 +536,18 @@ export function useMissionManagerActions(
           loading={reassignMutation.isPending}
           missionId={missionId}
           onClose={() => setReassignOpen(false)}
-          onConfirm={(instrumentistId) => reassignMutation.mutate(instrumentistId)}
+          onConfirm={(instrumentistId) => reassignMutation.mutate({ instrumentistId })}
+        />
+      )}
+
+      {canReassign && (
+        <EncodingDataConfirmDialog
+          open={encodingDataConflict !== null}
+          message={encodingDataConflict?.message ?? ""}
+          confirmable={encodingDataConflict?.confirmable ?? false}
+          loading={reassignMutation.isPending}
+          onClose={() => setEncodingDataConflict(null)}
+          onConfirm={(reason) => encodingDataConflict && reassignMutation.mutate({ instrumentistId: encodingDataConflict.instrumentistId, encodingDataReason: reason })}
         />
       )}
 

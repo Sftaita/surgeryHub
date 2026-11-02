@@ -12,6 +12,7 @@ use App\Enum\DisputeReasonCode;
 use App\Enum\DisputeStatus;
 use App\Enum\EffectiveDurationSource;
 use App\Enum\HoursSource;
+use App\Exception\PrestationConflictException;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\Pagination\Paginator;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
@@ -57,6 +58,18 @@ final class MissionExecutionService
     public static function resolveDuration(Mission $mission): EffectiveDuration
     {
         $execution = $mission->getExecution();
+
+        // D-156 — mission liée à une présence partagée (prestation multi-salles) : sa durée
+        // effective est SA PART IMPUTÉE de la présence (écrite par WorkedPresenceService),
+        // jamais la présence entière — la somme des parts du groupe = la présence réelle.
+        // Présence encore incomplète : aucune part, repli planifié explicitement étiqueté
+        // (que la valorisation refuse — MISSING_ACTUAL_HOURS, D-144).
+        if ($execution !== null && $execution->getPresence() !== null) {
+            if ($execution->getActualDurationMinutes() !== null) {
+                return new EffectiveDuration($execution->getActualDurationMinutes(), EffectiveDurationSource::PRESENCE_SHARE);
+            }
+            $execution = null;
+        }
 
         if ($execution !== null) {
             $start = $execution->getActualStartAt();
@@ -138,6 +151,16 @@ final class MissionExecutionService
         ?int $actualDurationMinutes,
         ?HoursSource $hoursSource,
     ): MissionExecution {
+        // D-156 — une mission liée à une présence partagée n'a jamais ses propres heures :
+        // elles se corrigent sur la prestation (WorkedPresenceService), une seule fois.
+        if ($mission->getExecution()?->getPresence() !== null) {
+            throw new PrestationConflictException(
+                PrestationConflictException::PRESTATION_REQUIRES_COMMON_HOURS,
+                'Les heures de cette mission sont les heures communes de sa prestation multi-salles : corrigez-les sur la prestation.',
+                ['missionId' => $mission->getId(), 'presenceId' => $mission->getExecution()->getPresence()->getId()],
+            );
+        }
+
         $write = fn (): MissionExecution => $this->writeActuals($mission, $actor, $actualStartAt, $actualEndAt, $actualDurationMinutes, $hoursSource);
         if ($this->encodingLock === null) {
             return $write();

@@ -19,5 +19,7 @@ final readonly class ProposedSlot
         public ?int $surgeonId = null,
         public ?int $siteId = null,
         public bool $cancelled = false,
+        /** D-156 — the line's mission type: a simultaneous BLOC room of the same surgeon and site is one prestation. */
+        public ?\App\Enum\MissionType $missionType = null,
     ) {}
 }

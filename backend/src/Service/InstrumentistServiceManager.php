@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Dto\Request\AddInstrumentistSiteMembershipRequest;
 use App\Dto\Request\CreateInstrumentistRequest;
 use App\Dto\Request\UpdateInstrumentistRatesRequest;
@@ -129,8 +130,9 @@ class InstrumentistServiceManager
             ->andWhere('m.startAt < :to')
             ->andWhere('m.endAt > :from')
             ->setParameter('instrumentist', $instrumentist)
-            ->setParameter('from', $from)
-            ->setParameter('to', $to)
+            // D-156 lot 1 — Brussels wall-clock comparison (D-066), see MissionService::list().
+            ->setParameter('from', $from, BusinessDateTimeImmutableType::NAME)
+            ->setParameter('to', $to, BusinessDateTimeImmutableType::NAME)
             ->orderBy('m.startAt', 'ASC')
             ->getQuery()
             ->getResult();

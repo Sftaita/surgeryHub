@@ -108,10 +108,17 @@ export default function MissionCreatePage() {
           sites={sites}
           surgeons={surgeons}
           onCancel={() => navigate("/app/m/missions")}
-          onDone={({ mode, dispatchMode }) => {
+          onDone={({ missionId, mode, dispatchMode, dispatchError }) => {
             // D-125 — liste des missions ET planning opérationnel (calendrier, couverture),
             // sans rechargement ni régénération.
             invalidateOperationalPlanning(queryClient);
+
+            // D-156 lot 1 — created as DRAFT, dispatch refused: open it (no duplicate on retry).
+            if (dispatchError) {
+              toast.error(dispatchError);
+              navigate(`/app/m/missions/${missionId}`);
+              return;
+            }
 
             // Toast après succès (le ToastProvider étant global, il survit à la navigation)
             toast.success(
