@@ -2,6 +2,9 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\PrestationGrouping;
+use App\Service\Prestation\PrestationGroupResolver;
+
 use App\Dto\EncodingStateFacts;
 use App\Dto\EncodingTrackingItem;
 use App\Dto\EncodingTrackingSummary;
@@ -45,6 +48,7 @@ final class EncodingTrackingService
         private readonly FinancialCalculationAnomalyExplainer $anomalyExplainer,
         private readonly FinancialCalculationService $financialCalculationService,
         private readonly EntityManagerInterface $em,
+        private readonly PrestationGroupResolver $prestationGroups,
     ) {}
 
     /**
@@ -118,6 +122,8 @@ final class EncodingTrackingService
 
         $escalations = $this->escalationDates($ids);
         $submitters = $this->lastSubmitters($ids);
+        // D-156 — prestations of the page (one query), so planned totals never add simultaneous rooms.
+        $prestations = $this->prestationGroups->groupsFor(array_values($missions));
 
         $items = [];
         foreach ($ids as $id) {
@@ -143,6 +149,7 @@ final class EncodingTrackingService
                 $failures[$id]['anomalies'] ?? [],
                 EncodingReminderService::isEncodingPending($mission) ? ($escalations[$id] ?? null) : null,
                 $submitters[$id] ?? null,
+                $prestations[$id] ?? [$mission],
             );
         }
 
@@ -158,6 +165,7 @@ final class EncodingTrackingService
         array $rawFailureAnomalies = [],
         ?\DateTimeImmutable $escalatedAt = null,
         ?User $submittedBy = null,
+        array $prestation = [],
     ): EncodingTrackingItem {
         // Source canonique unique des heures — jamais recalculée ici (D-071).
         $effective = $this->executionService->resolveEffectiveDuration($mission);
@@ -209,6 +217,9 @@ final class EncodingTrackingService
                 ? $surgeon->getDrName()
                 : $this->displayName($submittedBy),
             submittedByRole: self::roleOnMission($mission, $submittedBy),
+            prestationKey: count($prestation) > 1 ? PrestationGrouping::key($prestation) : null,
+            prestationPlannedUnionMinutes: count($prestation) > 1 ? PrestationGrouping::plannedUnionMinutes($prestation) : null,
+            prestationMissionIds: count($prestation) > 1 ? PrestationGrouping::ids($prestation) : [],
         );
     }
 

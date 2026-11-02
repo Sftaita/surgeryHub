@@ -36,6 +36,8 @@ export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
   PLANNED: "Planifié",
   ACTUAL_TIMES: "Début et fin déclarés",
   ACTUAL_EXPLICIT: "Durée déclarée (sans début ni fin)",
+  // D-156 — part imputée de la présence commune d'une prestation multi-salles.
+  PRESENCE_SHARE: "Imputation financière de la présence commune",
 };
 
 /**

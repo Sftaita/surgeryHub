@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Box, Stack } from "@mui/material";
 
 import dayjs, { Dayjs } from "dayjs";
@@ -189,6 +189,7 @@ export default function DeclareMissionPage() {
   const endPlus = () => setEndMinutes(Math.min(1425, endMinutes + 15));
   const toggleNextDay = () => setNextDay((v) => !v);
 
+  const queryClient = useQueryClient();
   const mutation = useMutation({
     mutationFn: async () => {
       // docs/design/prototypes — declSave : un seul message toast, pas de bannière
@@ -207,6 +208,8 @@ export default function DeclareMissionPage() {
       });
     },
     onSuccess: (mission) => {
+      // D-156 lot 1 — the declared mission must appear in every personal list right away.
+      void queryClient.invalidateQueries({ queryKey: ["missions"] });
       requestMissionSync();
       closeAndNavigate(`/app/i/missions/${mission.id}`, { replace: true }, () => {
         toast.success("Mission déclarée. En cours de validation.");

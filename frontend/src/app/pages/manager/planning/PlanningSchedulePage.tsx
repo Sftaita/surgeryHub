@@ -4,20 +4,22 @@ import {
   Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
   MenuItem, Paper, Select, Stack, ToggleButton, ToggleButtonGroup,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField,
-  Typography,
+  Link, Typography,
 } from "@mui/material";
+import { Link as RouterLink } from "react-router-dom";
 import LockOpenIcon   from "@mui/icons-material/LockOpen";
 import BlockIcon      from "@mui/icons-material/Block";
 import SwapHorizIcon  from "@mui/icons-material/SwapHoriz";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAllMissions } from "../../../features/missions/api/missions.api";
-import { invalidateOperationalPlanning } from "../../../features/missions/dispatch/missionDispatch.api";
+import { dispatchMission, invalidateOperationalPlanning } from "../../../features/missions/dispatch/missionDispatch.api";
+import { prestationError } from "../../../features/prestations/api/prestations.api";
+import { EncodingDataConfirmDialog } from "../../../features/prestations/components/EncodingDataConfirmDialog";
 import type { Mission, MissionStatus } from "../../../features/missions/api/missions.types";
 import { fetchSites } from "../../../features/sites/api/sites.api";
 import { useToast } from "../../../ui/toast/useToast";
-import { apiClient } from "../../../api/apiClient";
 import {
-  releaseMission, cancelMission, reassignMission,
+  releaseMission, cancelMission, reassignMission, extractErrorV2,
 } from "../../../features/planning-v2/api/planningV2.api";
 import { CoverageBanner }      from "../../../features/planning-v2/components/CoverageBanner";
 import { MissionHistoryDrawer } from "../../../features/planning-v2/components/MissionHistoryDrawer";
@@ -25,6 +27,7 @@ import { CancelMissionDialog }  from "../../../features/planning-v2/components/C
 import { ReassignMissionDialog } from "../../../features/planning-v2/components/ReassignMissionDialog";
 import { useRosterEligibility, type RosterSlot } from "../../../features/planning-v2/api/useRosterEligibility";
 import { candidateGhostLabel } from "../../../features/planning-v2/api/eligibilityReasons";
+import { OPERATIONAL_LIVE_QUERY_OPTIONS } from "../../../features/missions/sync/liveQueryOptions";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -52,8 +55,11 @@ function getDayName(dateStr: string): string {
   const s = new Date(dateStr + "T00:00:00").toLocaleDateString("fr-BE", { weekday: "long" });
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-function getPeriod(startTime: string): string {
-  return parseInt(startTime.split(":")[0], 10) < 12 ? "Matin" : "Après-midi";
+function getPeriod(startTime: string, endTime: string): string {
+  const startsMorning = parseInt(startTime.split(":")[0], 10) < 12;
+  // Recette D-156 : une mission 07:45–18:00 n'est pas « Matin » — elle couvre la journée.
+  if (startsMorning && endTime > "13:30") return "Journée";
+  return startsMorning ? "Matin" : "Après-midi";
 }
 function displayName(u: { firstname?: string | null; lastname?: string | null; email?: string } | null | undefined): string {
   if (!u) return "—";
@@ -96,13 +102,28 @@ function toRow(m: Mission): ScheduleRow {
     instrumentistId:   m.instrumentist?.id ?? null,
     instrumentistName: m.instrumentist ? displayName(m.instrumentist) : null,
     siteId:            m.site?.id ?? null,
-    siteName:          m.site?.name ?? null,
+    // D-156 — libellé de salle facultatif affiché avec le site.
+    siteName:          m.site?.name ? `${m.site.name}${m.roomLabel ? ` · ${m.roomLabel}` : ""}` : null,
     status,
     canEdit:    status === "OPEN",
     canRelease: status === "ASSIGNED",
     canCancel:  status === "OPEN",
     canReassign: status === "ASSIGNED",
   };
+}
+
+// ── Dates ─────────────────────────────────────────────────────────────────────
+
+/** YYYY-MM-DD of the browser's local calendar day (never the UTC day). */
+function toLocalYmd(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** The calendar day after `ymd` — turns an inclusive "Au" date into the API's exclusive `to`. */
+function nextLocalYmd(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return toLocalYmd(new Date(y, m - 1, d + 1));
 }
 
 // ── Grouping ──────────────────────────────────────────────────────────────────
@@ -148,6 +169,9 @@ const STATUS_LABEL: Record<string, {
   DRAFT:       { label: "Brouillon",  color: "default"   },
   OPEN:        { label: "À réserver", color: "info"      },
   ASSIGNED:    { label: "Assigné",    color: "success"   },
+  // Recette D-156 — absents, ces statuts (désormais chargés, lot 1) retombaient sur « À réserver ».
+  IN_PROGRESS:          { label: "En cours",          color: "success" },
+  ENCODING_IN_PROGRESS: { label: "Encodage en cours", color: "warning" },
   DECLARED:    { label: "Déclaré",    color: "warning"   },
   REJECTED:    { label: "Rejeté",     color: "error"     },
   SUBMITTED:   { label: "Soumis",     color: "primary"   },
@@ -165,6 +189,7 @@ function ScheduleInstrumentistCell({
   onUpdated:      (missionId: number, instId: number | null, name: string | null) => void;
 }) {
   const toast = useToast();
+  const queryClient = useQueryClient();
 
   // D-102 — real-time eligibility for this mission's exact slot (STRICT_ASSIGNMENT: this
   // is a direct assign, same policy the backend guard applies on assign-instrumentist).
@@ -175,17 +200,20 @@ function ScheduleInstrumentistCell({
   const rosterQuery = useRosterEligibility(slot, "STRICT_ASSIGNMENT");
   const candidates = rosterQuery.data?.candidates ?? null;
 
+  // D-156 lot 1 — only OPEN rows are editable here (canEdit). An OPEN mission is published:
+  // assigning it is the DIRECT dispatch (POST /assign-directly — audit, notification,
+  // OPEN → ASSIGNED), never the DRAFT-only /assign-instrumentist, which always answered
+  // 409 MISSION_NOT_DRAFT on this screen.
   const assignMutation = useMutation({
-    mutationFn: ({ instrumentistId }: { instrumentistId: number | null }) =>
-      apiClient.post(`/api/missions/${row.missionId}/assign-instrumentist`, { instrumentistId }),
+    mutationFn: ({ instrumentistId }: { instrumentistId: number }) =>
+      dispatchMission(row.missionId, { mode: "DIRECT", instrumentistId }),
     onSuccess: (_d, { instrumentistId }) => {
-      const name = instrumentistId
-        ? (candidates?.find((c) => c.id === instrumentistId)?.name ?? null)
-        : null;
+      const name = candidates?.find((c) => c.id === instrumentistId)?.name ?? null;
       onUpdated(row.missionId, instrumentistId, name);
-      toast.success("Instrumentiste mis à jour");
+      void invalidateOperationalPlanning(queryClient, row.missionId);
+      toast.success("Instrumentiste affecté");
     },
-    onError: () => toast.error("Erreur lors de la modification"),
+    onError: (err) => toast.error(extractErrorV2(err)),
   });
 
   if (!row.canEdit) {
@@ -202,7 +230,8 @@ function ScheduleInstrumentistCell({
       value={row.instrumentistId ?? ""}
       onChange={(e) => {
         const val = e.target.value as number | "";
-        assignMutation.mutate({ instrumentistId: val === "" ? null : val });
+        if (val === "") return;
+        assignMutation.mutate({ instrumentistId: val });
       }}
       displayEmpty
       disabled={assignMutation.isPending}
@@ -252,11 +281,13 @@ export default function PlanningSchedulePage() {
   const queryClient = useQueryClient();
   const toast = useToast();
 
+  // D-156 lot 1 — local calendar dates (toISOString() gave the UTC date: one day off
+  // between midnight and 02:00 in Brussels).
   const [from,         setFrom]         = React.useState(() => {
-    const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setDate(d.getDate() - 7); return toLocalYmd(d);
   });
   const [to,           setTo]           = React.useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setMonth(d.getMonth() + 1); return toLocalYmd(d);
   });
   const [siteId,       setSiteId]       = React.useState<number | "">("");
   const [versionId,    setVersionId]    = React.useState<number | "">("");
@@ -281,20 +312,25 @@ export default function PlanningSchedulePage() {
     queryKey: ["planning-schedule", applied?.from, applied?.to, applied?.siteId],
     queryFn: async () => {
       // Every page — the API caps at 100 per call (D-125).
+      // D-156 lot 1 — "Au" is an inclusive calendar day for the manager, while the API's
+      // `to` is an exclusive bound: send the day after, or that whole day was missing.
       const items = await fetchAllMissions({
-        from: applied!.from, to: applied!.to,
+        from: applied!.from, to: nextLocalYmd(applied!.to),
         ...(applied!.siteId ? { siteId: applied!.siteId as number } : {}),
       });
       return items as Mission[];
     },
     enabled: applied !== null,
     staleTime: 0,
+    ...OPERATIONAL_LIVE_QUERY_OPTIONS,
   });
 
   // Server state → table rows (optimistic mutations below patch `rows` locally, then the
   // invalidation's refetch lands here and replaces them with the backend's truth).
   React.useEffect(() => {
     if (!missionsQuery.data) return;
+    // Published planning: DRAFT (never published) and REJECTED are intentionally absent —
+    // DRAFTs are counted in the banner below so the manager knows why they are not here.
     const filtered = missionsQuery.data.filter((m) => m.status !== "DRAFT" && m.status !== "REJECTED");
     setRows(filtered.map(toRow));
     setLoaded(true);
@@ -393,9 +429,15 @@ export default function PlanningSchedulePage() {
 
   // ── Reassign mutation ─────────────────────────────────────────────────────
 
+  // D-156 — 409 MISSION_HAS_ENCODING_DATA : la mission porte déjà des données d'encodage ;
+  // confirmation motivée si le serveur l'autorise, jamais un transfert implicite.
+  const [encodingDataConflict, setEncodingDataConflict] = React.useState<
+    { id: number; instrumentistId: number; instrumentistName: string; message: string; confirmable: boolean } | null
+  >(null);
+
   const reassignMut = useMutation({
-    mutationFn: ({ id, instrumentistId }: { id: number; instrumentistId: number; instrumentistName: string }) =>
-      reassignMission(id, instrumentistId),
+    mutationFn: ({ id, instrumentistId, encodingDataReason }: { id: number; instrumentistId: number; instrumentistName: string; encodingDataReason?: string }) =>
+      reassignMission(id, instrumentistId, encodingDataReason ? { encodingDataReason } : undefined),
     onMutate: ({ id, instrumentistId, instrumentistName }) => {
       const prev = rows.find((r) => r.missionId === id);
       setRows((r) =>
@@ -407,13 +449,19 @@ export default function PlanningSchedulePage() {
       );
       return { prev };
     },
-    onError: (_e, { id }, ctx) => {
+    onError: (e, { id, instrumentistId, instrumentistName }, ctx) => {
       if (ctx?.prev) {
         setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
       }
-      toast.error("Erreur lors de la réassignation");
+      const err = prestationError(e);
+      if (err.code === "MISSION_HAS_ENCODING_DATA") {
+        setEncodingDataConflict({ id, instrumentistId, instrumentistName, message: err.message, confirmable: err.extra.confirmable === true });
+        return;
+      }
+      toast.error(err.message || "Erreur lors de la réassignation");
     },
     onSuccess: () => {
+      setEncodingDataConflict(null);
       toast.success("Mission réassignée");
       invalidateCoverage();
     },
@@ -421,6 +469,7 @@ export default function PlanningSchedulePage() {
   });
 
   const filteredRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.status === statusFilter);
+  const draftCount = (missionsQuery.data ?? []).filter((m) => m.status === "DRAFT").length;
   const weeks = groupRows(filteredRows);
 
   return (
@@ -429,6 +478,17 @@ export default function PlanningSchedulePage() {
 
       {/* Coverage banner — shown when a versionId is provided */}
       {versionId !== "" && <CoverageBanner versionId={versionId as number} />}
+
+      {/* D-156 lot 1 — a manual mission saved as draft exists in Missions but is not part of
+          the published planning until it is published: say so instead of leaving it invisible. */}
+      {draftCount > 0 && (
+        <Alert severity="info" data-testid="schedule-draft-notice">
+          {draftCount === 1
+            ? "1 mission en brouillon sur cette période n'est pas encore publiée : elle n'apparaît pas dans ce planning."
+            : `${draftCount} missions en brouillon sur cette période ne sont pas encore publiées : elles n'apparaissent pas dans ce planning.`}{" "}
+          <Link component={RouterLink} to="/app/m/missions?status=DRAFT&period=all">Voir les brouillons dans Missions</Link>
+        </Alert>
+      )}
 
       {/* Filters */}
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
@@ -573,7 +633,13 @@ export default function PlanningSchedulePage() {
                         )}
 
                         <TableCell sx={{ fontWeight: 500 }}>{row.surgeonName}</TableCell>
-                        <TableCell sx={{ color: "text.secondary" }}>{getPeriod(row.startTime)}</TableCell>
+                        <TableCell sx={{ color: "text.secondary" }}>
+                          {getPeriod(row.startTime, row.endTime)}
+                          {/* D-156 — deux salles simultanées restent identifiables : l'horaire est affiché. */}
+                          <Box component="span" sx={{ display: "block", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+                            {row.startTime.replace(":", "h")}–{row.endTime.replace(":", "h")}
+                          </Box>
+                        </TableCell>
 
                         <TableCell sx={{ py: "2px !important" }} onClick={(e) => e.stopPropagation()}>
                           <ScheduleInstrumentistCell
@@ -684,6 +750,23 @@ export default function PlanningSchedulePage() {
       />
 
       {/* Reassign dialog */}
+      <EncodingDataConfirmDialog
+        open={encodingDataConflict !== null}
+        message={encodingDataConflict?.message ?? ""}
+        confirmable={encodingDataConflict?.confirmable ?? false}
+        loading={reassignMut.isPending}
+        onClose={() => setEncodingDataConflict(null)}
+        onConfirm={(reason) =>
+          encodingDataConflict !== null &&
+          reassignMut.mutate({
+            id: encodingDataConflict.id,
+            instrumentistId: encodingDataConflict.instrumentistId,
+            instrumentistName: encodingDataConflict.instrumentistName,
+            encodingDataReason: reason,
+          })
+        }
+      />
+
       <ReassignMissionDialog
         open={reassignTarget !== null}
         loading={reassignMut.isPending}

@@ -19,6 +19,7 @@ import { DateTile } from "../../ui/mobile/DateTile";
 import { StatusPill } from "../../ui/mobile/StatusPill";
 import { useToast } from "../../ui/toast/useToast";
 import { AVAILABLE_ROOM_PERIOD_LABELS, parseYmdToLocalDate } from "./planningPrimitives";
+import { invalidateOperationalPlanning } from "../missions/dispatch/missionDispatch.api";
 
 const BLUE_700 = "#1B5FD0";
 const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
@@ -59,8 +60,7 @@ export function ReleasedRoomCard({ slot }: { slot: ReleasedRoomSlotV2 }) {
   const [confirm, setConfirm] = React.useState<"takeOver" | "release" | null>(null);
 
   const refreshServerState = React.useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ["available-rooms"] });
-    void queryClient.invalidateQueries({ queryKey: ["missions"] });
+    void invalidateOperationalPlanning(queryClient);
   }, [queryClient]);
 
   const takeOver = useMutation({

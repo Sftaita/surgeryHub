@@ -349,6 +349,13 @@ final class FinancialCalculationAnomalyExplainer
                 $action = ['code' => 'OPEN_MISSION', 'label' => 'Faire déclarer les heures prestées'];
                 break;
 
+            case FirmBillingReason::SHARED_PRESENCE_STALE:
+            case FirmBillingReason::SHARED_PRESENCE_SETTLED:
+            case FirmBillingReason::OVERLAPPING_HOURS_IN_PRESTATION:
+                $firm = null;
+                $action = ['code' => 'OPEN_MISSION', 'label' => 'Corriger les heures communes de la prestation'];
+                break;
+
             default: // CALCULATION_FAILED — code moteur inconnu, jamais le message brut
                 $firm = null;
                 $action = ['code' => 'OPEN_MISSION', 'label' => 'Ouvrir la mission'];

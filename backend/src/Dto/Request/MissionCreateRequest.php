@@ -2,6 +2,7 @@
 
 namespace App\Dto\Request;
 
+use App\Enum\MissionDispatchMode;
 use App\Enum\MissionType;
 use App\Enum\SchedulePrecision;
 use Symfony\Component\Validator\Constraints as Assert;
@@ -38,4 +39,15 @@ class MissionCreateRequest
 
     #[Assert\Positive]
     public ?int $instrumentistUserId = null;
+
+    /**
+     * D-156 lot 1 — optional dispatch decided in the same creation (wizard « Publier »):
+     * POOL | TARGETED | DIRECT. Validated BEFORE the mission is created, applied right after,
+     * in the same request — never two independent calls that could leave an orphan DRAFT
+     * (or a duplicate on retry) when the second one fails. Null = stays DRAFT (unchanged).
+     */
+    public ?MissionDispatchMode $dispatchMode = null;
+
+    #[Assert\Positive]
+    public ?int $dispatchInstrumentistId = null;
 }

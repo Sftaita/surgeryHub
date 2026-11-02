@@ -15,8 +15,8 @@ use App\Entity\InstrumentistStatementLine;
 use App\Entity\InterventionTypeRequest;
 use App\Entity\MaterialItemRequest;
 use App\Entity\MaterialLine;
-use App\Entity\Mission;
 use App\Entity\MissingMaterialReport;
+use App\Entity\Mission;
 use App\Entity\MissionClaim;
 use App\Entity\MissionConflictWaiver;
 use App\Entity\MissionEncodingComment;
@@ -30,6 +30,7 @@ use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\SurgeonRatingByInstrumentist;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningDraftDeletionSource;
@@ -39,6 +40,8 @@ use App\Enum\SchedulePrecision;
 use App\Exception\PlanningDraftScopeAlreadyConfirmedException;
 use App\Exception\PlanningDraftScopeConfirmationRequiredException;
 use App\Exception\PlanningVersionNotDraftException;
+use App\Service\Prestation\MultiRoomConfirmationService;
+use App\Service\Prestation\PrestationGrouping;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 
@@ -63,6 +66,8 @@ final class PlanningDraftService
         private readonly PlanningGeneratorServiceV2 $generator,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly PlanningActivityRecorder $activity,
+        private readonly PlanningDraftRevalidationService $revalidation,
+        private readonly MultiRoomConfirmationService $multiRoom,
     ) {
     }
 
@@ -84,6 +89,11 @@ final class PlanningDraftService
 
         $this->normalizeForDraftEditing($lines);
         $this->appendAdHocMissions($version, $lines);
+        $this->flagBlockingConflicts($version, $lines);
+        // Statuses may have changed above (CONFLICT, UNCOVERED, ad-hoc lines): recompute,
+        // then read the draft's own multi-room confirmations (D-156).
+        PrestationGrouping::annotatePreviewLines($lines);
+        $this->multiRoom->annotateConfirmation($lines, $version);
 
         return [
             'lines'          => $lines,
@@ -147,6 +157,35 @@ final class PlanningDraftService
     }
 
     /**
+     * Recette D-156 (A10) — preview() never re-checks a slot already backed by a DRAFT
+     * Mission (it only compares instrumentists), so a reopened draft showed a real conflict
+     * (same instrumentist booked elsewhere, absent instrumentist) as COVERED while deploy()
+     * then refused it. The status now comes from the very check deploy() runs
+     * (PlanningDraftRevalidationService::revalidate(): same multi-room exception, same
+     * waivers), so the editor and the deploy gate can no longer disagree. Display only:
+     * update() ignores the status of a persisted line.
+     *
+     * @param array<int, array<string, mixed>> &$lines
+     */
+    private function flagBlockingConflicts(PlanningVersion $version, array &$lines): void
+    {
+        $conflicting = [];
+        foreach ($this->revalidation->revalidate($version)['blockingConflicts'] as $conflict) {
+            $conflicting[(int) $conflict['missionId']] = true;
+        }
+        if ($conflicting === []) {
+            return;
+        }
+
+        foreach ($lines as &$line) {
+            if ($line['existingMissionId'] !== null && isset($conflicting[(int) $line['existingMissionId']]) && $line['status'] !== 'SKIPPED') {
+                $line['status'] = 'CONFLICT';
+            }
+        }
+        unset($line);
+    }
+
+    /**
      * Applies the editor's current line set to this draft's real, persisted Missions —
      * the draft-editing equivalent of generate()'s override mode, minus creating a new
      * PlanningVersion. A line already backed by a DRAFT Mission of this exact version is
@@ -167,10 +206,16 @@ final class PlanningDraftService
         $removed = 0;
         $skipped = 0;
         $rejected = [];
+        // D-156 — multi-room confirmations decided in the editor (see generate()).
+        $confirmedKeys    = [];
+        $explicitMissions = [];
 
         foreach ($lines as $line) {
             $existingMissionId = $line['existingMissionId'] ?? null;
             $status            = $line['status'] ?? null;
+            if (is_string($line['multiRoomConfirmedKey'] ?? null) && $status !== 'SKIPPED') {
+                $confirmedKeys[$line['multiRoomConfirmedKey']] = true;
+            }
 
             if ($existingMissionId !== null) {
                 $mission = $this->em->find(Mission::class, $existingMissionId);
@@ -198,10 +243,27 @@ final class PlanningDraftService
                 }
 
                 $newInstrumentistId = $line['instrumentistId'] ?? null;
+                // Recette D-156 — an unchanged assignment is not a (re)assignment (D-101 guards
+                // those): re-guarding it dropped BOTH sides of a real conflict on any save,
+                // publishing them OPEN instead of letting deploy() block for the manager to
+                // decide. Kept as-is: reopen() shows it CONFLICT and deploy() still refuses it.
+                if ($newInstrumentistId !== null && $mission->getInstrumentist()?->getId() === (int) $newInstrumentistId) {
+                    $updated++;
+                    continue;
+                }
                 $newInstrumentist   = $newInstrumentistId !== null
                     ? $this->em->find(User::class, $newInstrumentistId)
                     : null;
-                $mission->setInstrumentist($this->guardInstrumentist($mission, $newInstrumentist, $rejected));
+                $accepted = $this->guardInstrumentist($mission, $newInstrumentist, $rejected);
+                $mission->setInstrumentist($accepted);
+                // Written at once: the next line's check reads the database, and would otherwise
+                // see this mission with its old instrumentist (recette D-156: Journée moved to
+                // Sophie, then Salve refused on the simultaneous Matin because of the Journée).
+                $this->em->flush();
+                // The manager changed this mission's instrumentist himself: an explicit choice.
+                if ($accepted !== null) {
+                    $explicitMissions[] = $mission;
+                }
                 $updated++;
                 continue;
             }
@@ -230,10 +292,14 @@ final class PlanningDraftService
                 continue;
             }
             $this->em->persist($mission);
+            if ($mission->getInstrumentist() !== null && $this->generator->isExplicitAssignment($line)) {
+                $explicitMissions[] = $mission;
+            }
             $created++;
         }
 
         $this->em->flush();
+        $this->multiRoom->recordFromSave($version, $confirmedKeys, $explicitMissions, $actor);
 
         return [
             'created'             => $created,
@@ -259,6 +325,30 @@ final class PlanningDraftService
      *
      * @var list<class-string>
      */
+    /**
+     * D-156 lot 1 — ids, among $missionIds, of missions created by hand (never generated):
+     * MissionService::create() always records MISSION_CREATED_MANUALLY, generate() never does.
+     *
+     * @param int[] $missionIds
+     * @return int[]
+     */
+    private function manuallyCreatedMissionIds(array $missionIds): array
+    {
+        if ($missionIds === []) {
+            return [];
+        }
+
+        $rows = $this->em->createQuery(sprintf(
+            'SELECT DISTINCT IDENTITY(a.mission) AS id FROM %s a WHERE a.mission IN (:ids) AND a.eventType = :type',
+            AuditEvent::class,
+        ))
+            ->setParameter('ids', $missionIds)
+            ->setParameter('type', AuditEventType::MISSION_CREATED_MANUALLY)
+            ->getScalarResult();
+
+        return array_map(static fn (array $r) => (int) $r['id'], $rows);
+    }
+
     private const CLEANUP_ON_MISSION_DELETE = [
         PlanningAlert::class,
         AuditEvent::class,
@@ -358,20 +448,39 @@ final class PlanningDraftService
             }
         }
 
-        $missionIds = array_map(static fn (Mission $m) => $m->getId(), $missions->toArray());
+        // D-156 lot 1 — generate() takes over existing DRAFT missions of the scope, including
+        // missions a manager created by hand (MissionService::create(), audited
+        // MISSION_CREATED_MANUALLY — also the accepted surgeon requests). Deleting the draft
+        // used to delete them physically with the generated ones: a mission created in
+        // Missions vanished from Missions. They were never this draft's to delete — they are
+        // detached (back to "no version", still DRAFT, untouched) and only the generated
+        // missions are deleted.
+        $manualIds = $this->manuallyCreatedMissionIds(array_map(static fn (Mission $m) => (int) $m->getId(), $missions->toArray()));
+        $generated = array_values(array_filter($missions->toArray(), static fn (Mission $m) => !in_array((int) $m->getId(), $manualIds, true)));
+        $missionIds = array_map(static fn (Mission $m) => $m->getId(), $generated);
 
         if ($missionIds !== []) {
             $this->assertNoProtectedArtifacts($missionIds);
         }
 
-        $this->em->wrapInTransaction(function () use ($version, $missionIds, $missions, $actor): void {
+        $manual = array_values(array_filter($missions->toArray(), static fn (Mission $m) => in_array((int) $m->getId(), $manualIds, true)));
+
+        $this->em->wrapInTransaction(function () use ($version, $missionIds, $generated, $manual, $actor): void {
+            // Detached first and flushed before the version row is removed (FK).
+            foreach ($manual as $mission) {
+                $mission->setPlanningVersion(null);
+            }
+            if ($manual !== []) {
+                $this->em->flush();
+            }
+
             // H1 (D-126) — the journal entry is written FIRST, inside this same transaction,
             // while every Mission (and its names) is still loaded: CLEANUP_ON_MISSION_DELETE
             // below physically removes these DRAFT missions together with their AuditEvent,
             // NotificationEvent and PlanningAlert rows (unchanged contract), so this
             // snapshot is what keeps the deletion explainable afterwards. No FK ties
             // activity_event to them, so it survives the DELETEs.
-            $this->activity->draftDeleted($version, $missions->toArray(), PlanningDraftDeletionSource::MANUAL, $actor);
+            $this->activity->draftDeleted($version, $generated, PlanningDraftDeletionSource::MANUAL, $actor);
 
             foreach (self::CLEANUP_ON_MISSION_DELETE as $entityClass) {
                 if ($missionIds === []) {

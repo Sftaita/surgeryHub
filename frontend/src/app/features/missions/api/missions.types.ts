@@ -71,6 +71,9 @@ export type CreateMissionBody = {
   startAt: string;
   endAt: string;
   surgeonUserId: number;
+  /** D-156 lot 1 — dispatch decided in the same request (validated before creation). */
+  dispatchMode?: "POOL" | "TARGETED" | "DIRECT";
+  dispatchInstrumentistId?: number | null;
 };
 
 export type CreateMissionResult = Mission;
@@ -289,6 +292,12 @@ export interface Mission {
   currentAssignment?: CurrentAssignment | null;
   /** D-151 — "ENDED" : l'instrumentiste qui consulte a eu une affectation à cette mission, terminée. */
   myAssignmentStatus?: "ENDED" | null;
+  /** D-156 — libellé de salle facultatif (manager). */
+  roomLabel?: string | null;
+  /** D-156 — prestation regroupée multi-salles (serveur), null si la mission est seule. */
+  prestation?: MissionPrestationSummary | null;
+  /** D-156 — vrais conflits d'horaire (serveur) : jamais recalculés côté client. */
+  scheduleConflictMissionIds?: number[];
 
   [key: string]: unknown;
 }
@@ -312,6 +321,15 @@ export type CurrentAssignment = {
     | "REFUSAL_REQUIRES_MANAGER"
     | null;
   reviewRequestedAt: string | null;
+};
+
+export type MissionPrestationSummary = {
+  key: string;
+  size: number;
+  missionIds: number[];
+  plannedStartAt: string;
+  plannedEndAt: string;
+  plannedUnionMinutes: number;
 };
 
 export type TargetedOffer = {

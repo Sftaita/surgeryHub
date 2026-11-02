@@ -2,6 +2,8 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\PrestationGrouping;
+
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningAlert;
@@ -96,8 +98,14 @@ class PlanningConflictDetectionService
      * hasConflictInPool() instead to stay within the project's fixed-query-budget
      * discipline (see PlanningGeneratorServiceV2).
      */
-    public function findConflict(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): ?Mission
+    public function findConflict(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): ?Mission
     {
+        // D-156 — the INSTRUMENTIST-role check of a mission ($multiRoomContext) skips the
+        // legitimate multi-room overlaps: filtered in PHP (findConflicts()), never in DQL.
+        if ($multiRoomContext !== null) {
+            return $this->findConflicts($person, $start, $end, $excludeMissionId, $doubleRoomSite, $multiRoomContext)[0] ?? null;
+        }
+
         return $this->conflictQuery($person, $start, $end, $excludeMissionId, $doubleRoomSite)
             ->setMaxResults(1)
             ->getQuery()
@@ -108,14 +116,34 @@ class PlanningConflictDetectionService
      * D-167 — every other active mission of $person overlapping [$start, $end), not just the
      * first: each conflicting pair is its own alert. Same rules as findConflict().
      *
+     * D-156 — with $multiRoomContext (the checked mission, INSTRUMENTIST role only), the
+     * legitimate multi-room overlaps (BLOC, same surgeon, same site, same local date —
+     * PrestationGrouping::isMultiRoomSlot()) are skipped. Filtered in PHP on the (few)
+     * overlapping rows, so the rule stays the single shared one, never re-encoded in DQL.
+     *
      * @return Mission[]
      */
-    public function findConflicts(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): array
+    public function findConflicts(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): array
     {
-        return $this->conflictQuery($person, $start, $end, $excludeMissionId, $doubleRoomSite)
+        /** @var Mission[] $conflicts */
+        $conflicts = $this->conflictQuery($person, $start, $end, $excludeMissionId, $doubleRoomSite)
             ->addOrderBy('m.id', 'ASC')
             ->getQuery()
             ->getResult();
+        if ($multiRoomContext === null) {
+            return $conflicts;
+        }
+
+        return array_values(array_filter(
+            $conflicts,
+            static fn (Mission $candidate) => !self::isMultiRoomOverlap($candidate, $person, $multiRoomContext, $start, $end),
+        ));
+    }
+
+    /** D-156 — $existing vs the slot [$start,$end) of $context, for $person as instrumentist. */
+    private static function isMultiRoomOverlap(Mission $existing, User $person, Mission $context, \DateTimeImmutable $start, \DateTimeImmutable $end): bool
+    {
+        return PrestationGrouping::isMultiRoomSlot($existing, $person, $context->getSurgeon(), $context->getSite(), $context->getType(), $start, $end);
     }
 
     private function conflictQuery(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId, ?Hospital $doubleRoomSite): QueryBuilder
@@ -164,7 +192,7 @@ class PlanningConflictDetectionService
                 ? $this->findConflict($surgeon, $start, $end, $mission->getId(), $mission->getSite())
                 : null,
             'instrumentist' => $instrumentist !== null
-                ? $this->findConflict($instrumentist, $start, $end, $mission->getId())
+                ? $this->findConflict($instrumentist, $start, $end, $mission->getId(), null, $mission)
                 : null,
         ];
     }
@@ -210,9 +238,9 @@ class PlanningConflictDetectionService
      * $doubleRoomSite carve-out as findConflict() — pass the checked mission's site only
      * when $personId is being checked in their SURGEON role, null for INSTRUMENTIST.
      */
-    public function hasConflictInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): ?Mission
+    public function hasConflictInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): ?Mission
     {
-        return $this->findConflictsInPool($personId, $start, $end, $pool, $excludeMissionId, $doubleRoomSite)[0] ?? null;
+        return $this->findConflictsInPool($personId, $start, $end, $pool, $excludeMissionId, $doubleRoomSite, $multiRoomContext)[0] ?? null;
     }
 
     /**
@@ -220,10 +248,15 @@ class PlanningConflictDetectionService
      *
      * @return Mission[]
      */
-    public function findConflictsInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): array
+    public function findConflictsInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): array
     {
         $conflicts = [];
         foreach ($pool[$personId] ?? [] as $mission) {
+            // D-156 — same multi-room exception as findConflict(), for the INSTRUMENTIST role.
+            if ($multiRoomContext !== null && $mission->getInstrumentist()?->getId() === $personId
+                && self::isMultiRoomOverlap($mission, $mission->getInstrumentist(), $multiRoomContext, $start, $end)) {
+                continue;
+            }
             if ($excludeMissionId !== null && $mission->getId() === $excludeMissionId) {
                 continue;
             }
@@ -280,7 +313,8 @@ class PlanningConflictDetectionService
         if (in_array($mission->getStatus(), self::ACTIVE_STATUSES, true)) {
             foreach ($this->personChecks($mission) as [$person, $type]) {
                 $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
-                foreach ($this->findConflicts($person, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), $doubleRoomSite) as $conflict) {
+                $multiRoom = $type === PlanningAlertType::INSTRUMENTIST_CONFLICT ? $mission : null;
+                foreach ($this->findConflicts($person, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), $doubleRoomSite, $multiRoom) as $conflict) {
                     if ($this->conflictWaiver->findActiveWaiver($mission, $conflict) === null) {
                         $this->raiseOrRefresh($mission, $person, $type, $conflict, $created);
                     }
@@ -326,7 +360,8 @@ class PlanningConflictDetectionService
         foreach ($missions as $mission) {
             foreach ($this->personChecks($mission) as [$person, $type]) {
                 $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
-                foreach ($this->findConflictsInPool($person->getId(), $mission->getStartAt(), $mission->getEndAt(), $pool, $mission->getId(), $doubleRoomSite) as $conflict) {
+                $multiRoom = $type === PlanningAlertType::INSTRUMENTIST_CONFLICT ? $mission : null;
+                foreach ($this->findConflictsInPool($person->getId(), $mission->getStartAt(), $mission->getEndAt(), $pool, $mission->getId(), $doubleRoomSite, $multiRoom) as $conflict) {
                     if ($this->conflictWaiver->findActiveWaiver($mission, $conflict) === null) {
                         $this->raiseOrRefresh($mission, $person, $type, $conflict, $created);
                     }
@@ -469,6 +504,10 @@ class PlanningConflictDetectionService
         }
 
         $type = $alert->getType();
+        if ($type === PlanningAlertType::INSTRUMENTIST_CONFLICT
+            && self::isMultiRoomOverlap($other, $person, $anchor, $anchor->getStartAt(), $anchor->getEndAt())) {
+            return sprintf('%s : les missions #%d et #%d forment une prestation multi-salles du même chirurgien (D-156).', $prefix, $anchor->getId(), $other->getId());
+        }
         if (!$this->pairConflicts($anchor, $other, $person, $type) && !$this->pairConflicts($other, $anchor, $person, $type)) {
             return sprintf('%s : les missions #%d et #%d ne se chevauchent plus.', $prefix, $anchor->getId(), $other->getId());
         }
@@ -492,10 +531,12 @@ class PlanningConflictDetectionService
             return false;
         }
         $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $checked->getSite() : null;
+        // D-156 — a legitimate multi-room pair is not (or no longer) a conflict.
+        $multiRoom = $type === PlanningAlertType::INSTRUMENTIST_CONFLICT ? $checked : null;
 
         return $this->hasConflictInPool(
             (int) $person->getId(), $checked->getStartAt(), $checked->getEndAt(),
-            [(int) $person->getId() => [$against]], $checked->getId(), $doubleRoomSite,
+            [(int) $person->getId() => [$against]], $checked->getId(), $doubleRoomSite, $multiRoom,
         ) !== null;
     }
 

@@ -37,6 +37,7 @@ use Doctrine\DBAL\LockMode;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
+use App\Service\Prestation\MissionEncodingDataGuard;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Clock\Clock;
 
@@ -111,6 +112,8 @@ class MissionPostDeployService
             if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
                 throw new ConflictHttpException('Mission must be ASSIGNED to release');
             }
+            // D-156 — never moves already-encoded data to the pool.
+            MissionEncodingDataGuard::assertNone($mission, 'remettre au pool');
 
             $previousStatusEnum = $mission->getStatus();
             $previousStatus     = $previousStatusEnum->value;
@@ -417,6 +420,8 @@ class MissionPostDeployService
         if (!in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
         }
+        // D-156 — a cancelled mission would hide already-encoded work from validation/billing.
+        MissionEncodingDataGuard::assertNone($mission, 'annuler');
 
         $previousStatusEnum = $mission->getStatus();
         $previousStatus     = $previousStatusEnum->value;
@@ -727,6 +732,10 @@ class MissionPostDeployService
         if (!in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             throw new ConflictHttpException('Mission must be OPEN or ASSIGNED to assign');
         }
+        // D-156 — replacing a current instrumentist never carries her encoded data along.
+        if ($mission->getInstrumentist() !== null && $mission->getInstrumentist()->getId() !== $newInstrumentistId) {
+            MissionEncodingDataGuard::assertNone($mission, 'réaffecter');
+        }
 
         $newInstrumentist = $this->em->find(User::class, $newInstrumentistId);
         if ($newInstrumentist === null) {
@@ -785,11 +794,13 @@ class MissionPostDeployService
         int $newInstrumentistId,
         bool $notify = true,
         EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
+        bool $confirmEncodingData = false,
+        ?string $encodingDataReason = null,
     ): void {
         // D-150 — under the mission row lock, re-checked against the committed state.
         $payload = $this->assignments->inLockedChange(
             $mission,
-            fn (): array => $this->applyReassign($mission, $actor, $newInstrumentistId, $policy),
+            fn (): array => $this->applyReassign($mission, $actor, $newInstrumentistId, $policy, $confirmEncodingData, $encodingDataReason),
         );
 
         if (!$notify) {
@@ -806,11 +817,28 @@ class MissionPostDeployService
     }
 
     /** reassign()'s mutation, run under the mission lock; returns the audit/lifecycle payload. */
-    private function applyReassign(Mission $mission, User $actor, int $newInstrumentistId, EligibilityEnforcementPolicy $policy): array
+    private function applyReassign(
+        Mission $mission,
+        User $actor,
+        int $newInstrumentistId,
+        EligibilityEnforcementPolicy $policy,
+        bool $confirmEncodingData,
+        ?string $encodingDataReason,
+    ): array
     {
         if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
             throw new ConflictHttpException('Mission must be ASSIGNED to reassign');
         }
+
+        // D-156 — controlled correction: interventions/material may stay on the mission only
+        // after an explicit, motivated confirmation (audited); hours never follow a mission.
+        $encodingFacts = MissionEncodingDataGuard::facts($mission);
+        $carriesContent = $encodingFacts['interventionCount'] > 0 || $encodingFacts['materialLineCount'] > 0 || $encodingFacts['interventionRequestCount'] > 0;
+        $encodingDataReason = $encodingDataReason !== null ? trim($encodingDataReason) : null;
+        if ($confirmEncodingData && $carriesContent && ($encodingDataReason === null || $encodingDataReason === '')) {
+            throw new UnprocessableEntityHttpException('Un motif est obligatoire pour réaffecter une mission qui porte déjà des interventions ou du matériel.');
+        }
+        MissionEncodingDataGuard::assertNone($mission, 'réaffecter', $confirmEncodingData);
 
         $newInstrumentist = $this->em->find(User::class, $newInstrumentistId);
         if ($newInstrumentist === null) {
@@ -844,6 +872,14 @@ class MissionPostDeployService
         // D-177 — a pending room take-over priority is answered by this assignment (ACCEPTED
         // if it went to its recipient, SUPERSEDED otherwise).
         $this->priorities?->closeActiveRequests($mission, $actor);
+        if ($confirmEncodingData && $carriesContent) {
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_REASSIGNED_WITH_ENCODING_DATA, $payload + [
+                'reason' => $encodingDataReason,
+                'interventionCount' => $encodingFacts['interventionCount'],
+                'materialLineCount' => $encodingFacts['materialLineCount'],
+                'interventionRequestCount' => $encodingFacts['interventionRequestCount'],
+            ]);
+        }
 
         $this->em->flush();  // R-05: flush before dispatch
 
@@ -887,6 +923,9 @@ class MissionPostDeployService
                 $mission->getId(), $effectiveEnd->format('H:i'), $effectiveStart->format('H:i'),
             ));
         }
+        // D-156 — the planned times drive how shared real hours are imputed: never moved
+        // silently once hours are recorded (interventions/material are unaffected by a time change).
+        MissionEncodingDataGuard::assertNone($mission, "modifier l'horaire de", contentConfirmed: true);
 
         $fromStartAt = $mission->getStartAt();
         $fromEndAt   = $mission->getEndAt();

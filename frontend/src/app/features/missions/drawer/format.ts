@@ -44,6 +44,18 @@ export function compareHours(planStart: string, planEnd: string, real: RealHours
   }
   const missing = { v: 'Non renseigné', ...NEUTRAL };
   const rD = real.minutes;
+  // D-156 — présence commune d'une prestation multi-salles : ses bornes ne se comparent pas au
+  // planifié d'UNE salle ; seule la part imputée est affichée (jamais colorée en dépassement).
+  if (real.kind === 'PRESENCE_SHARE') {
+    return {
+      ...base, started: true as const,
+      rStart: real.start ? { v: hh(real.start), ...NEUTRAL } : missing,
+      rEnd: real.end ? { v: hh(real.end), ...NEUTRAL } : missing,
+      rTotal: rD != null ? { v: `${fmtDur(rD)} · imputée`, ...NEUTRAL } : { v: '—', ...NEUTRAL },
+      label: 'Présence commune · imputation financière',
+      labelFg: 'var(--gray-600)',
+    };
+  }
   const durationOnly = real.kind === 'DURATION_ONLY';
   const over = rD != null && rD > pD;
   const label = real.kind === 'PARTIAL'

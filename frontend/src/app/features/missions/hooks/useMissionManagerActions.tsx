@@ -35,6 +35,7 @@ import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
 import EditMissionDialog from "../components/EditMissionDialog";
 import PublishMissionDialog from "../components/PublishMissionDialog";
 import { useToast } from "../../../ui/toast/useToast";
+import { invalidateOperationalPlanning } from "../dispatch/missionDispatch.api";
 
 /**
  * Actions manager d'une mission — tonalité visuelle seulement : la page détail la traduit
@@ -109,7 +110,9 @@ export function useMissionManagerActions(
     await queryClient.invalidateQueries({ queryKey: ["mission-audit", missionId] });
     await queryClient.invalidateQueries({ queryKey: ["mission-execution", missionId] });
     await queryClient.invalidateQueries({ queryKey: ["mission-financial-calculations", missionId] });
-    await queryClient.invalidateQueries({ queryKey: ["missions"], exact: false });
+    // D-156 lot 1 — every operational view (Missions, published planning, Planning V2,
+    // fiches, dashboard), not only the Missions list.
+    await invalidateOperationalPlanning(queryClient, missionId);
     await queryClient.refetchQueries({ queryKey: ["missions"], exact: false });
     // D-121 — validate/reject/reopen changent tous le nombre de missions SUBMITTED :
     // le badge de nav doit refléter l'action immédiatement, pas seulement au prochain
@@ -199,7 +202,10 @@ export function useMissionManagerActions(
       onLeave();
     },
     onError: (err: any) => {
-      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors de l'annulation.");
+      // D-156 — un refus métier (409, ex. MISSION_HAS_ENCODING_DATA) porte son explication.
+      const status = err?.response?.status;
+      const serverMessage: string | undefined = err?.response?.data?.error?.message;
+      toast.error(status === 403 ? "Accès interdit." : status === 409 && serverMessage ? serverMessage : "Erreur lors de l'annulation.");
     },
   });
 

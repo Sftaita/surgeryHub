@@ -16,6 +16,13 @@ enum EffectiveDurationSource: string
     /** actualDurationMinutes renseigné explicitement, sans horaires réels connus. */
     case ACTUAL_EXPLICIT = 'ACTUAL_EXPLICIT';
 
+    /**
+     * D-156 — part imputée à cette mission de la présence réelle partagée d'une prestation
+     * regroupée (WorkedPresence), selon la règle « le segment partagé revient à la mission
+     * qui termine le plus tôt ». La somme des parts du groupe = la durée réelle de la présence.
+     */
+    case PRESENCE_SHARE = 'PRESENCE_SHARE';
+
     /** Aucune donnée d'exécution disponible — repli sur Mission.startAt/endAt planifiés. */
     case PLANNED = 'PLANNED';
 }
