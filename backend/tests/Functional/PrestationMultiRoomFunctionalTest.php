@@ -497,6 +497,168 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         self::assertSame(1, $this->body($this->api($this->client, $this->managerToken, 'GET', "/api/missions/{$consult}/prestation"))['size']);
     }
 
+    /**
+     * D-156 (intégration) — le manager corrige la présence réelle commune depuis le tiroir :
+     * toute la prestation, motif obligatoire, historique avant/après, parts recalculées par le
+     * même service ; un calcul encore modifiable devient obsolète (seul « Recalculer » le
+     * remplace), un calcul approuvé bloque la correction et n'est jamais modifié.
+     */
+    #[WithoutErrorHandler]
+    public function test_manager_corrects_the_common_presence_with_reason_history_and_financial_guards(): void
+    {
+        $a = $this->createAssigned('07:45', '13:00', $this->sophie);
+        $b = $this->createAssigned('07:45', '18:00', $this->sophie);
+        $sophieToken = $this->login($this->client, $this->sophie);
+        $res = $this->api($this->client, $sophieToken, 'PUT', "/api/missions/{$a}/prestation/presence", [
+            'actualStartAt' => $this->at($this->day, '07:45'), 'actualEndAt' => $this->at($this->day, '18:00'),
+            'expectedMissionIds' => [$a, $b],
+        ]);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $view = $this->body($res);
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$a}/prestation/submit", ['fingerprint' => $view['fingerprint'], 'noMaterialComment' => 'Aucun implant.']);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+
+        // SUBMITTED: the manager may correct the common hours of the whole prestation.
+        $view = $this->body($this->api($this->client, $this->managerToken, 'GET', "/api/missions/{$b}/prestation"));
+        self::assertContains('edit_presence', $view['allowedActions']);
+        $revision = $view['presence']['revision'];
+        $correction = fn (array $extra) => $this->api($this->client, $this->managerToken, 'PUT', "/api/missions/{$b}/prestation/presence", [
+            'actualStartAt' => $this->at($this->day, '08:00'), 'actualEndAt' => $this->at($this->day, '17:00'),
+            'expectedMissionIds' => [$a, $b], 'expectedRevision' => $revision,
+        ] + $extra);
+
+        self::assertSame(422, $correction([])->getStatusCode(), 'A manager correction always carries a reason');
+        $res = $correction(['reason' => 'Fin réelle à 17h selon la feuille de salle.']);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $view = $this->body($res);
+        self::assertSame(540, $view['presence']['totalMinutes']);
+        $shares = array_column($view['missions'], 'imputedMinutes', 'id');
+        self::assertSame([$a => 300, $b => 240], [$a => $shares[$a], $b => $shares[$b]], 'EARLIEST_END_FIRST on the corrected presence');
+
+        $audit = $this->em->getConnection()->fetchAssociative(
+            "SELECT payload FROM audit_event WHERE mission_id = ? AND event_type = 'MISSION_EXECUTION_PRESENCE_UPDATED' ORDER BY id DESC LIMIT 1", [$a],
+        );
+        $payload = json_decode((string) $audit['payload'], true);
+        self::assertSame('Fin réelle à 17h selon la feuille de salle.', $payload['reason']);
+        self::assertStringContainsString('T07:45:00', $payload['before']['actualStartAt']);
+        self::assertStringContainsString('T18:00:00', $payload['before']['actualEndAt']);
+        self::assertStringContainsString('T08:00:00', $payload['after']['actualStartAt']);
+        self::assertStringContainsString('T17:00:00', $payload['after']['actualEndAt']);
+        self::assertSame([315, 300], [$payload['imputedMinutesBefore'], $payload['imputedMinutes']]);
+        self::assertSame('MANAGER', $payload['hoursSource']);
+
+        // Validated and valued: a CALCULATED calculation that the next correction makes obsolete.
+        foreach ([$a, $b] as $id) {
+            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate")->getStatusCode());
+            self::assertSame(201, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/financial-calculations")->getStatusCode());
+            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/reopen", ['comment' => 'Heures à revoir.'])->getStatusCode());
+        }
+        $conn = $this->em->getConnection();
+        $calcB = (int) $conn->fetchOne("SELECT id FROM financial_calculation WHERE mission_id = ? AND status = 'CALCULATED'", [$b]);
+        $amountB = (string) $conn->fetchOne("SELECT total_amount FROM financial_calculation_line WHERE financial_calculation_id = ? AND line_type = 'INSTRUMENTIST_HOURLY'", [$calcB]);
+        // Reopen already marks them obsolete (D-153); clear it to observe the correction's own guard.
+        $conn->executeStatement('UPDATE financial_calculation SET encoding_reopened_at = NULL WHERE mission_id IN (?, ?)', [$a, $b]);
+
+        $view = $this->body($this->api($this->client, $this->managerToken, 'GET', "/api/missions/{$b}/prestation"));
+        $revision = $view['presence']['revision'];
+        $res = $this->api($this->client, $this->managerToken, 'PUT', "/api/missions/{$b}/prestation/presence", [
+            'actualStartAt' => $this->at($this->day, '08:00'), 'actualEndAt' => $this->at($this->day, '18:00'),
+            'expectedMissionIds' => [$a, $b], 'expectedRevision' => $revision, 'reason' => 'Fin à 18h finalement.',
+        ]);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        self::assertNotNull($conn->fetchOne('SELECT encoding_reopened_at FROM financial_calculation WHERE id = ?', [$calcB]), 'Obsolete: never approved, locked nor invoiced as is');
+        self::assertSame('CALCULATED', $conn->fetchOne('SELECT status FROM financial_calculation WHERE id = ?', [$calcB]));
+        self::assertSame($amountB, (string) $conn->fetchOne("SELECT total_amount FROM financial_calculation_line WHERE financial_calculation_id = ? AND line_type = 'INSTRUMENTIST_HOURLY'", [$calcB]), 'Amount never changed silently');
+        $payload = json_decode((string) $conn->fetchOne(
+            "SELECT payload FROM audit_event WHERE mission_id = ? AND event_type = 'MISSION_EXECUTION_PRESENCE_UPDATED' ORDER BY id DESC LIMIT 1", [$b],
+        ), true);
+        self::assertSame([$calcB], $payload['obsoleteFinancialCalculationIds']);
+
+        // Resubmitted, revalidated, then the explicit recalculation values the corrected shares (300 + 300).
+        $view = $this->body($this->api($this->client, $sophieToken, 'GET', "/api/missions/{$a}/prestation"));
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$a}/prestation/submit", ['fingerprint' => $view['fingerprint'], 'noMaterialComment' => 'Aucun implant.']);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        foreach ([$a, $b] as $id) {
+            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate")->getStatusCode());
+            $calcId = (int) $conn->fetchOne("SELECT id FROM financial_calculation WHERE mission_id = ? AND status = 'CALCULATED'", [$id]);
+            $res = $this->api($this->client, $this->managerToken, 'POST', "/api/financial-calculations/{$calcId}/recalculate");
+            self::assertContains($res->getStatusCode(), [200, 201], (string) $res->getContent());
+        }
+        $active = static fn (int $id) => (int) $conn->fetchOne(
+            "SELECT l.duration_minutes FROM financial_calculation_line l JOIN financial_calculation c ON c.id = l.financial_calculation_id WHERE c.mission_id = ? AND c.status = 'CALCULATED' AND l.line_type = 'INSTRUMENTIST_HOURLY'", [$id],
+        );
+        self::assertSame([300, 300], [$active($a), $active($b)]);
+
+        // An approved calculation: the correction is refused and nothing moves.
+        $calcA = (int) $conn->fetchOne("SELECT id FROM financial_calculation WHERE mission_id = ? AND status = 'CALCULATED'", [$a]);
+        self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/financial-calculations/{$calcA}/approve")->getStatusCode());
+        foreach ([$a, $b] as $id) {
+            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/reopen", ['comment' => 'Encore une correction.'])->getStatusCode());
+        }
+        $view = $this->body($this->api($this->client, $this->managerToken, 'GET', "/api/missions/{$b}/prestation"));
+        $res = $this->api($this->client, $this->managerToken, 'PUT', "/api/missions/{$b}/prestation/presence", [
+            'actualStartAt' => $this->at($this->day, '07:00'), 'actualEndAt' => $this->at($this->day, '18:00'),
+            'expectedMissionIds' => [$a, $b], 'expectedRevision' => $view['presence']['revision'], 'reason' => 'Essai sur calcul approuvé.',
+        ]);
+        self::assertSame(409, $res->getStatusCode(), (string) $res->getContent());
+        self::assertSame('PRESENCE_FINANCIALLY_SETTLED', $this->body($res)['error']['code'] ?? $this->body($res)['code'] ?? null);
+        self::assertSame('APPROVED', $conn->fetchOne('SELECT status FROM financial_calculation WHERE id = ?', [$calcA]));
+        self::assertSame(600, (int) $this->em->getConnection()->fetchOne(
+            'SELECT TIMESTAMPDIFF(MINUTE, actual_start_at, actual_end_at) FROM worked_presence WHERE id = ?', [$view['presence']['id']],
+        ), 'Presence unchanged (08:00–18:00)');
+    }
+
+    /**
+     * D-156 — réaffectation contrôlée d'une mission qui porte déjà des interventions : 409
+     * confirmable, motif obligatoire, audit dédié, interventions conservées ; des heures réelles
+     * ne suivent jamais une réaffectation (409 non confirmable, même avec confirmation).
+     */
+    #[WithoutErrorHandler]
+    public function test_reassignment_with_encoded_content_needs_a_motivated_confirmation_and_never_moves_hours(): void
+    {
+        $m = $this->createAssigned('08:00', '12:00', $this->sophie);
+        $sophieToken = $this->login($this->client, $this->sophie);
+        $firm = $this->tracked('firms', (new Firm())->setName('D156-R-' . bin2hex(random_bytes(3)))->setActive(true));
+        $type = $this->tracked('types', (new InterventionType())->setCode('D156R-' . bin2hex(random_bytes(3)))->setLabel('Arthroscopie D156 R')->setActive(true));
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$m}/interventions", ['interventionTypeId' => $type->getId(), 'orderIndex' => 0, 'primaryFirmId' => $firm->getId()]);
+        self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
+
+        $reassign = fn (array $extra) => $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$m}/reassign", ['instrumentistId' => $this->salve->getId()] + $extra);
+
+        $res = $reassign([]);
+        self::assertSame(409, $res->getStatusCode(), (string) $res->getContent());
+        $error = $this->body($res)['error'];
+        self::assertSame('MISSION_HAS_ENCODING_DATA', $error['code']);
+        self::assertTrue($error['confirmable'] ?? $error['extra']['confirmable'] ?? false, 'Interventions only: a motivated confirmation is enough');
+
+        self::assertSame(422, $reassign(['confirmEncodingData' => true])->getStatusCode(), 'A reason is mandatory');
+
+        $res = $reassign(['confirmEncodingData' => true, 'encodingDataReason' => 'Salve a terminé la salle après le départ de Sophie.']);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $this->em->clear();
+        $mission = $this->em->find(Mission::class, $m);
+        self::assertSame($this->salve->getId(), $mission->getInstrumentist()?->getId());
+        self::assertCount(1, $mission->getInterventions(), 'The encoded intervention stays on the mission');
+        $payload = json_decode((string) $this->em->getConnection()->fetchOne(
+            "SELECT payload FROM audit_event WHERE mission_id = ? AND event_type = 'MISSION_REASSIGNED_WITH_ENCODING_DATA' ORDER BY id DESC LIMIT 1", [$m],
+        ), true);
+        self::assertSame('Salve a terminé la salle après le départ de Sophie.', $payload['reason']);
+        self::assertSame(1, $payload['interventionCount']);
+
+        // Real hours declared: never transferred, even with an explicit confirmation.
+        $salveToken = $this->login($this->client, $this->salve);
+        $res = $this->api($this->client, $salveToken, 'PATCH', "/api/missions/{$m}/service", ['hours' => 4]);
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$m}/reassign", [
+            'instrumentistId' => $this->sophie->getId(), 'confirmEncodingData' => true, 'encodingDataReason' => 'Retour à Sophie.',
+        ]);
+        self::assertSame(409, $res->getStatusCode(), (string) $res->getContent());
+        $error = $this->body($res)['error'];
+        self::assertFalse($error['confirmable'] ?? $error['extra']['confirmable'] ?? true, 'Hours: only a controlled correction');
+        $this->em->clear();
+        self::assertSame($this->salve->getId(), $this->em->find(Mission::class, $m)->getInstrumentist()?->getId(), 'Nothing moved');
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private function createAssigned(string $from, string $to, User $instrumentist): int

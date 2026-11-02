@@ -72,6 +72,8 @@ export async function savePrestationPresence(
     expectedMissionIds: number[];
     expectedRevision?: number;
     convertOwnHours?: boolean;
+    /** Obligatoire pour un manager : correction motivée des heures communes (historique). */
+    reason?: string;
   },
 ): Promise<PrestationView> {
   const { data } = await apiClient.put<PrestationView>(`/api/missions/${missionId}/prestation/presence`, body);

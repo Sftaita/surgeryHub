@@ -12,6 +12,7 @@ import { invalidateOperationalPlanning } from "../../missions/dispatch/missionDi
 import {
   detachPresence, fetchPrestation, formatImputation, formatMinutes, prestationError, updateRoomLabel,
 } from "../api/prestations.api";
+import PrestationHoursDialog from "./PrestationHoursDialog";
 
 type Props = {
   missionId: number;
@@ -30,6 +31,7 @@ export function ManagerPrestationCard({ missionId, roomLabel, canEditRoomLabel }
   const toast = useToast();
   const [label, setLabel] = React.useState(roomLabel ?? "");
   const [detachOpen, setDetachOpen] = React.useState(false);
+  const [hoursOpen, setHoursOpen] = React.useState(false);
   const [reason, setReason] = React.useState("");
 
   React.useEffect(() => setLabel(roomLabel ?? ""), [roomLabel]);
@@ -115,12 +117,35 @@ export function ManagerPrestationCard({ missionId, roomLabel, canEditRoomLabel }
               </Box>
             ))}
           </Stack>
+          {/* Servi par le serveur (Voters : statuts, verrous, calcul verrouillé) — jamais décidé ici. */}
+          {prestation.allowedActions.includes("edit_presence") && (
+            <Button size="small" variant="outlined" sx={{ mt: 1.5, mr: 1 }} onClick={() => setHoursOpen(true)} data-testid="correct-common-hours">
+              Corriger les heures communes
+            </Button>
+          )}
           {self?.linkedToPresence && (
             <Button size="small" color="warning" sx={{ mt: 1.5 }} onClick={() => setDetachOpen(true)}>
               Détacher cette mission de la présence commune
             </Button>
           )}
         </Box>
+      )}
+
+      {prestation && (
+        <PrestationHoursDialog
+          open={hoursOpen}
+          onClose={() => setHoursOpen(false)}
+          anchorMissionId={missionId}
+          prestation={prestation}
+          managerCorrection
+          onSaved={() => {
+            prestation.missionIds.forEach((id) => {
+              void queryClient.invalidateQueries({ queryKey: ["mission", id] });
+              void queryClient.invalidateQueries({ queryKey: ["mission-audit", id] });
+              void queryClient.invalidateQueries({ queryKey: ["mission-financial-calculations", id] });
+            });
+          }}
+        />
       )}
 
       <Dialog open={detachOpen} onClose={detachMutation.isPending ? undefined : () => setDetachOpen(false)} maxWidth="sm" fullWidth>

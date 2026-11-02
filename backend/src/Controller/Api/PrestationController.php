@@ -47,7 +47,8 @@ final class PrestationController extends AbstractController
     /**
      * Heures réelles de la prestation, saisies UNE fois. Corps : actualStartAt, actualEndAt
      * (ISO 8601, fin optionnelle = brouillon), expectedMissionIds, expectedRevision?,
-     * convertOwnHours? (confirmation explicite de reprendre des heures propres déjà saisies).
+     * convertOwnHours? (confirmation explicite de reprendre des heures propres déjà saisies),
+     * reason? (obligatoire pour un manager : correction motivée des heures communes).
      */
     #[Route('/prestation/presence', name: 'api_missions_prestation_presence', methods: ['PUT'])]
     public function presence(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
@@ -71,6 +72,7 @@ final class PrestationController extends AbstractController
             array_map('intval', $data['expectedMissionIds']),
             isset($data['expectedRevision']) ? (int) $data['expectedRevision'] : null,
             (bool) ($data['convertOwnHours'] ?? false),
+            is_string($data['reason'] ?? null) ? $data['reason'] : null,
         );
 
         $group = $this->prestations->groupOf($mission);

@@ -64,6 +64,8 @@ type Props = {
   prestation: PrestationView;
   onSaved?: () => void;
   helpTopicId?: string;
+  /** Correction par un manager : motif obligatoire, conservé dans l'historique avec l'avant/après. */
+  managerCorrection?: boolean;
 };
 
 /**
@@ -71,18 +73,20 @@ type Props = {
  * les missions simultanées. Le serveur ventile ensuite (part imputée par mission) ; aucune
  * ventilation n'est calculée ici.
  */
-export default function PrestationHoursDialog({ open, onClose, anchorMissionId, prestation, onSaved, helpTopicId }: Props) {
+export default function PrestationHoursDialog({ open, onClose, anchorMissionId, prestation, onSaved, helpTopicId, managerCorrection = false }: Props) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [draft, setDraft] = React.useState<Draft>(() => initialDraft(prestation));
   const [confirmReplace, setConfirmReplace] = React.useState(false);
   const [needsReplaceConfirmation, setNeedsReplaceConfirmation] = React.useState(false);
+  const [reason, setReason] = React.useState("");
 
   React.useEffect(() => {
     if (open) {
       setDraft(initialDraft(prestation));
       setConfirmReplace(false);
       setNeedsReplaceConfirmation(prestation.ownHoursMissionIds.length > 0);
+      setReason("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, prestation.key]);
@@ -99,13 +103,16 @@ export default function PrestationHoursDialog({ open, onClose, anchorMissionId, 
         expectedMissionIds: prestation.missionIds,
         ...(prestation.presence ? { expectedRevision: prestation.presence.revision } : {}),
         ...(confirmReplace ? { convertOwnHours: true } : {}),
+        ...(managerCorrection ? { reason: reason.trim() } : {}),
       });
     },
     onSuccess: (view) => {
       queryClient.setQueryData(["prestation", anchorMissionId], view);
       prestation.missionIds.forEach((id) => queryClient.invalidateQueries({ queryKey: ["mission-execution", id] }));
       void invalidateOperationalPlanning(queryClient);
-      toast.success(draft.endUnknown ? "Heure de début enregistrée pour la prestation." : "Heures de la prestation enregistrées.");
+      toast.success(managerCorrection
+        ? "Heures communes corrigées : parts imputées recalculées pour toute la prestation."
+        : draft.endUnknown ? "Heure de début enregistrée pour la prestation." : "Heures de la prestation enregistrées.");
       onSaved?.();
       onClose();
     },
@@ -121,10 +128,10 @@ export default function PrestationHoursDialog({ open, onClose, anchorMissionId, 
     },
   });
 
-  const blocked = needsReplaceConfirmation && !confirmReplace;
+  const blocked = (needsReplaceConfirmation && !confirmReplace) || (managerCorrection && reason.trim() === "");
 
   return (
-    <SheetModal open={open} title="Heures de la prestation" onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
+    <SheetModal open={open} title={managerCorrection ? "Corriger les heures communes" : "Heures de la prestation"} onClose={onClose} closeDisabled={mutation.isPending} helpTopicId={helpTopicId}>
       <Box sx={{ background: "#F5F7FA", borderRadius: "12px", padding: "12px 14px", mt: "14px", fontSize: 13.5, color: GRAY_600 }}>
         <Box>
           {prestation.size} missions simultanées · prévu{" "}
@@ -134,7 +141,9 @@ export default function PrestationHoursDialog({ open, onClose, anchorMissionId, 
           ({formatMinutes(prestation.planned.unionMinutes)})
         </Box>
         <Box sx={{ mt: "6px", fontSize: 12.5, color: GRAY_500 }}>
-          Saisissez une seule fois votre présence réelle : elle est répartie automatiquement entre les missions.
+          {managerCorrection
+            ? "La correction porte sur toute la prestation : les parts imputées de chaque mission sont recalculées par le serveur. Un calcul financier encore modifiable devient obsolète et sera à recalculer ; un calcul approuvé ou verrouillé empêche la correction."
+            : "Saisissez une seule fois votre présence réelle : elle est répartie automatiquement entre les missions."}
         </Box>
       </Box>
 
@@ -184,6 +193,25 @@ export default function PrestationHoursDialog({ open, onClose, anchorMissionId, 
         <Box sx={{ fontSize: 22, fontWeight: 800, color: GREEN_800, fontVariantNumeric: "tabular-nums" }}>{draft.endUnknown ? "—" : formatMinutes(total)}</Box>
       </Box>
 
+      {managerCorrection && (
+        <Box sx={{ mt: "14px" }}>
+          <Box component="label" htmlFor="presence-correction-reason" sx={{ display: "block", fontSize: 13.5, fontWeight: 700, color: GRAY_800, mb: "6px" }}>
+            Motif de la correction
+          </Box>
+          <Box
+            component="textarea"
+            id="presence-correction-reason"
+            data-testid="presence-correction-reason"
+            value={reason}
+            onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setReason(e.target.value)}
+            rows={3}
+            placeholder="Ex. fin réelle à 17h selon la feuille de salle"
+            sx={{ width: "100%", boxSizing: "border-box", border: "1px solid #D5DBE2", borderRadius: "10px", padding: "10px 12px", fontFamily: "inherit", fontSize: 14, resize: "vertical" }}
+          />
+          <Box sx={{ fontSize: 12, color: GRAY_500, mt: "4px" }}>Conservé dans l'historique avec les heures et les parts avant / après.</Box>
+        </Box>
+      )}
+
       {needsReplaceConfirmation && (
         <Box data-testid="prestation-own-hours" sx={{ mt: "12px", background: AMBER_50, borderRadius: "12px", padding: "12px 14px", fontSize: 13, color: AMBER_800 }}>
           Des heures ont déjà été saisies séparément sur une des missions. Elles seront remplacées par ces heures communes
@@ -210,7 +238,7 @@ export default function PrestationHoursDialog({ open, onClose, anchorMissionId, 
           "&:disabled": { opacity: 0.6, cursor: "default", boxShadow: "none" },
         }}
       >
-        {mutation.isPending ? "…" : "Enregistrer les heures"}
+        {mutation.isPending ? "…" : managerCorrection ? "Corriger les heures communes" : "Enregistrer les heures"}
       </Box>
       <Box
         component="button"

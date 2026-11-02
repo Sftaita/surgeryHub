@@ -53,6 +53,9 @@ final class WorkedPresenceService
      * @param list<int> $expectedMissionIds composition vue par le client
      * @param bool $convertOwnHours confirmation explicite de reprendre dans la présence
      *        commune les heures propres déjà saisies sur une mission du groupe
+     * @param string|null $reason motif — obligatoire quand un manager écrit les heures d'une
+     *        prestation regroupée (correction de la présence commune, toujours sur toute la
+     *        prestation) ; conservé dans l'historique avec les heures et parts avant/après
      */
     public function declare(
         Mission $anchor,
@@ -62,7 +65,9 @@ final class WorkedPresenceService
         array $expectedMissionIds,
         ?int $expectedRevision = null,
         bool $convertOwnHours = false,
+        ?string $reason = null,
     ): ?WorkedPresence {
+        $reason = $reason !== null ? trim($reason) : null;
         if ($actualStartAt === null && $actualEndAt === null) {
             throw new UnprocessableEntityHttpException('Au moins une heure réelle (début) est requise.');
         }
@@ -70,7 +75,7 @@ final class WorkedPresenceService
             throw new UnprocessableEntityHttpException("L'heure de fin doit être postérieure à l'heure de début.");
         }
 
-        return $this->em->wrapInTransaction(function () use ($anchor, $actor, $actualStartAt, $actualEndAt, $expectedMissionIds, $expectedRevision, $convertOwnHours): ?WorkedPresence {
+        return $this->em->wrapInTransaction(function () use ($anchor, $actor, $actualStartAt, $actualEndAt, $expectedMissionIds, $expectedRevision, $convertOwnHours, $reason): ?WorkedPresence {
             $group = $this->lockedGroup($anchor);
             $this->assertExpectedComposition($group, $expectedMissionIds);
 
@@ -79,6 +84,12 @@ final class WorkedPresenceService
             if (count($group) === 1 && $presence === null) {
                 $this->executions->updateActuals($anchor, $actor, $actualStartAt, $actualEndAt, null, $this->hoursSourceFor($actor));
                 return null;
+            }
+
+            // Correction manager des heures communes : toujours motivée (historique).
+            $managerCorrection = $this->hoursSourceFor($actor) === HoursSource::MANAGER;
+            if ($managerCorrection && ($reason === null || $reason === '')) {
+                throw new UnprocessableEntityHttpException('Un motif est obligatoire pour corriger les heures communes de la prestation.');
             }
 
             if ($presence !== null) {
@@ -106,6 +117,12 @@ final class WorkedPresenceService
             $this->handleOwnHours($group, $actor, $convertOwnHours);
 
             $before = $presence !== null ? self::snapshotTimes($presence) : null;
+            $sharesBefore = [];
+            foreach ($group as $mission) {
+                $sharesBefore[(int) $mission->getId()] = $mission->getExecution()?->getPresence() !== null
+                    ? $mission->getExecution()->getActualDurationMinutes()
+                    : null;
+            }
             $isNew = $presence === null;
             if ($isNew) {
                 $first = $group[0];
@@ -144,6 +161,11 @@ final class WorkedPresenceService
             $after = self::snapshotTimes($presence);
             $timesChanged = $before !== $after;
             $memberIds = PrestationGrouping::ids($group);
+            // Les calculs encore modifiables (CALCULATED) reflètent les anciennes parts : marqués
+            // obsolètes (D-153 — jamais approuvés, verrouillés ni facturés ensuite, montants
+            // inchangés, seul « Recalculer » les remplace). Approuvés / verrouillés : refusé plus
+            // haut (assertNotSettled), jamais modifiés.
+            $obsolete = ($timesChanged || $newlyLinked !== []) ? $this->markCalculationsObsolete($group) : [];
             foreach ($group as $mission) {
                 $payload = [
                     'presenceId' => $presence->getId(),
@@ -151,9 +173,19 @@ final class WorkedPresenceService
                     'memberMissionIds' => $memberIds,
                     'before' => $before,
                     'after' => $after,
+                    'imputedMinutesBefore' => $sharesBefore[(int) $mission->getId()] ?? null,
                     'imputedMinutes' => $mission->getExecution()?->getActualDurationMinutes(),
                     'allocationRule' => PresenceAllocator::RULE,
                 ];
+                if ($reason !== null && $reason !== '') {
+                    $payload['reason'] = $reason;
+                }
+                if ($managerCorrection) {
+                    $payload['hoursSource'] = HoursSource::MANAGER->value;
+                }
+                if (($obsolete[(int) $mission->getId()] ?? []) !== []) {
+                    $payload['obsoleteFinancialCalculationIds'] = $obsolete[(int) $mission->getId()];
+                }
                 if ($isNew) {
                     $this->audit->record($mission, $actor, AuditEventType::MISSION_EXECUTION_PRESENCE_DECLARED, $payload);
                 } elseif ($timesChanged) {
@@ -362,6 +394,27 @@ final class WorkedPresenceService
                 ['missionIds' => array_values(array_unique(array_map(static fn (array $r) => (int) $r['missionId'], $settled)))],
             );
         }
+    }
+
+    /**
+     * @param list<Mission> $missions
+     * @return array<int, list<int>> missionId => ids des calculs CALCULATED marqués obsolètes
+     */
+    private function markCalculationsObsolete(array $missions): array
+    {
+        $now = new \DateTimeImmutable();
+        $marked = [];
+        foreach ($this->em->getRepository(FinancialCalculation::class)->findBy([
+            'mission' => $missions,
+            'status' => FinancialCalculationStatus::CALCULATED,
+        ]) as $calculation) {
+            if (!$calculation->isObsolete()) {
+                $calculation->setEncodingReopenedAt($now);
+            }
+            $marked[(int) $calculation->getMission()->getId()][] = (int) $calculation->getId();
+        }
+
+        return $marked;
     }
 
     /** @param list<Mission> $group */
