@@ -146,9 +146,9 @@ final class MissionEncodingWorkflowService
 
     /**
      * D-156 — une mission d'une prestation multi-salles se soumet avec ses missions sœurs
-     * (completePrestation), jamais seule : aucune mission soumise et l'autre oubliée. Vaut
-     * aussi pour « Terminer et valider » (D-171) : le manager soumet la prestation complète,
-     * puis valide chaque mission.
+     * (completePrestation), jamais seule : aucune mission soumise et l'autre oubliée. Les
+     * décisions du manager (valider, renvoyer en correction, rouvrir, « Terminer et valider »)
+     * portent elles aussi sur toute la prestation (complément D-156, *Prestation() ci-dessous).
      */
     private function assertNotInPrestation(Mission $mission): void
     {
@@ -167,9 +167,11 @@ final class MissionEncodingWorkflowService
      * missions à soumettre sont contrôlées (mêmes règles que complete(), aucune exception)
      * avant qu'aucune ne change de statut, puis toutes passent SUBMITTED dans la même
      * transaction — jamais une mission soumise et l'autre oubliée. Idempotent : une mission
-     * déjà SUBMITTED est laissée telle quelle. La justification « sans matériel » unique
-     * n'est posée que sur les missions BLOC sans matériel actif (D-080). Les messages de
-     * cycle de vie partent après le commit, un par mission (traçabilité individuelle).
+     * déjà SUBMITTED est laissée telle quelle. Complément D-156 : le matériel est apprécié sur
+     * TOUTE la prestation — la justification « sans matériel » unique n'est exigée (et posée sur
+     * chaque mission) que si aucune mission ne porte de matériel actif ; sinon aucune mission
+     * n'est marquée « sans matériel ». Les messages de cycle de vie partent après le commit, un
+     * par mission (traçabilité individuelle), une seule notification par prestation.
      *
      * @param \Closure(): list<Mission> $lockAndResolve résout la prestation SOUS VERROU, dans
      *        cette même transaction (contrôles de composition/empreinte de l'appelant inclus)
@@ -180,16 +182,17 @@ final class MissionEncodingWorkflowService
         $submitted = $this->em->wrapInTransaction(function () use ($lockAndResolve, $actor, $noMaterialComment, $prestationKey): array {
             $missions = $lockAndResolve();
             $toSubmit = array_values(array_filter($missions, static fn (Mission $m) => $m->getStatus() !== MissionStatus::SUBMITTED));
+            // Complément D-156 — matériel apprécié sur TOUTE la prestation : une seule
+            // justification, exigée seulement si aucune mission ne porte de matériel actif.
+            $withoutMaterial = $this->prestationHasNoActiveMaterial($missions);
+            $justification = $withoutMaterial ? $noMaterialComment : null;
             foreach ($toSubmit as $mission) {
-                $this->assertCompletable($mission, $actor, $this->justificationFor($mission, $noMaterialComment));
+                $this->assertCompletable($mission, $actor, $justification, true, $withoutMaterial);
             }
 
             $applied = [];
             foreach ($toSubmit as $mission) {
-                $payload = $this->applyComplete($mission, $actor, $this->justificationFor($mission, $noMaterialComment), [
-                    'prestationKey' => $prestationKey,
-                    'prestationMissionIds' => array_map(static fn (Mission $m) => $m->getId(), $missions),
-                ]);
+                $payload = $this->applyComplete($mission, $actor, $justification, self::prestationPayload($missions), $withoutMaterial);
                 $applied[] = [$mission, $payload];
             }
             $this->em->flush();
@@ -197,23 +200,78 @@ final class MissionEncodingWorkflowService
             return $applied;
         });
 
-        foreach ($submitted as [$mission, $payload]) {
-            $this->dispatch($mission, MissionChangeType::ENCODING_COMPLETED, $actor, $payload);
+        $events = array_map(static fn (array $pair) => [$pair[0], MissionChangeType::ENCODING_COMPLETED, $pair[1]], $submitted);
+        foreach (self::notifyOncePerPrestation($events) as [$mission, $changeType, $payload]) {
+            $this->dispatch($mission, $changeType, $actor, $payload);
         }
 
         return array_map(static fn (array $pair) => $pair[0], $submitted);
     }
 
-    /** Justification « sans matériel » : uniquement sur une mission BLOC sans matériel actif. */
-    private function justificationFor(Mission $mission, ?string $comment): ?string
+    /** @param list<Mission> $missions */
+    private function prestationHasNoActiveMaterial(array $missions): bool
     {
-        return $mission->getType() === MissionType::BLOCK && $this->countActiveMaterialLines($mission) === 0
-            ? $comment
-            : null;
+        foreach ($missions as $mission) {
+            if ($this->countActiveMaterialLines($mission) > 0) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
-    /** Tous les contrôles de complete(), sans aucune écriture. */
-    private function assertCompletable(Mission $mission, User $actor, ?string $comment, bool $requireHours = true): void
+    /**
+     * Complément D-156 — contexte d'une transition appliquée à toute une prestation (audit).
+     *
+     * @param list<Mission> $missions
+     * @return array{prestationKey: string, prestationMissionIds: list<int>}
+     */
+    private static function prestationPayload(array $missions): array
+    {
+        return [
+            'prestationKey' => PrestationGrouping::key($missions),
+            'prestationMissionIds' => PrestationGrouping::ids($missions),
+        ];
+    }
+
+    /**
+     * Complément D-156 — une seule notification par prestation, jamais une par mission : chaque
+     * message garde sa mission (traçabilité), mais seul celui de la plus petite mission
+     * effectivement concernée, par type de notification, est notifié
+     * (`prestationNotifiedMissionId`, lu par MissionLifecycleChangedMessageHandler).
+     *
+     * @param list<array{0: Mission, 1: MissionChangeType, 2: array<string,mixed>}> $events
+     * @return list<array{0: Mission, 1: MissionChangeType, 2: array<string,mixed>}>
+     */
+    private static function notifyOncePerPrestation(array $events): array
+    {
+        $category = static fn (MissionChangeType $t): string => in_array($t, [MissionChangeType::ENCODING_REJECTED, MissionChangeType::ENCODING_REOPENED], true) ? 'correction' : $t->value;
+        $first = [];
+        foreach ($events as [$mission, $changeType, $payload]) {
+            if (!isset($payload['prestationKey'])) {
+                continue;
+            }
+            $c = $category($changeType);
+            $first[$c] = min($first[$c] ?? PHP_INT_MAX, (int) $mission->getId());
+        }
+
+        return array_map(static function (array $event) use ($category, $first): array {
+            [$mission, $changeType, $payload] = $event;
+            if (isset($first[$category($changeType)])) {
+                $payload['prestationNotifiedMissionId'] = $first[$category($changeType)];
+            }
+
+            return [$mission, $changeType, $payload];
+        }, $events);
+    }
+
+    /**
+     * Tous les contrôles de complete(), sans aucune écriture.
+     *
+     * $withoutMaterial (prestation multi-salles) : absence de matériel appréciée sur toute la
+     * prestation ; null = sur la seule mission (mission seule).
+     */
+    private function assertCompletable(Mission $mission, User $actor, ?string $comment, bool $requireHours = true, ?bool $withoutMaterial = null): void
     {
         $this->encodingGuard->assertEncodingAllowed($mission, $actor);
 
@@ -247,11 +305,13 @@ final class MissionEncodingWorkflowService
         );
 
         $trimmedComment = $comment !== null ? trim($comment) : null;
-        $requiresJustification = $mission->getType() === MissionType::BLOCK && $this->countActiveMaterialLines($mission) === 0;
+        $requiresJustification = $mission->getType() === MissionType::BLOCK
+            && ($withoutMaterial ?? $this->countActiveMaterialLines($mission) === 0);
 
         if ($requiresJustification && ($trimmedComment === null || $trimmedComment === '')) {
-            throw new UnprocessableEntityHttpException(
-                "Aucun matériel n'a été encodé pour cette mission : décrivez les interventions réalisées avant de clôturer.",
+            throw new UnprocessableEntityHttpException($withoutMaterial !== null
+                ? "Aucun matériel n'a été encodé pour cette prestation : décrivez les interventions réalisées avant de soumettre."
+                : "Aucun matériel n'a été encodé pour cette mission : décrivez les interventions réalisées avant de clôturer.",
             );
         }
     }
@@ -262,10 +322,10 @@ final class MissionEncodingWorkflowService
      * @param array<string,mixed> $extraPayload
      * @return array<string,mixed> payload de l'AuditEvent / du message
      */
-    private function applyComplete(Mission $mission, User $actor, ?string $comment, array $extraPayload = []): array
+    private function applyComplete(Mission $mission, User $actor, ?string $comment, array $extraPayload = [], ?bool $withoutMaterial = null): array
     {
         $trimmedComment = $comment !== null ? trim($comment) : null;
-        $hasNoActiveMaterial = $this->countActiveMaterialLines($mission) === 0;
+        $hasNoActiveMaterial = $withoutMaterial ?? $this->countActiveMaterialLines($mission) === 0;
 
         $mission->setSubmittedWithoutMaterial($hasNoActiveMaterial);
         if ($trimmedComment !== null && $trimmedComment !== '') {
@@ -334,8 +394,15 @@ final class MissionEncodingWorkflowService
             throw new \LogicException('completeAndValidate() requires EncodingTakeoverService and MissionEncodingLock.');
         }
 
+        // Complément D-156 — « Terminer et valider » porte sur toute la prestation multi-salles.
+        $group = $this->prestationGroups->groupOf($mission);
+        if (count($group) > 1) {
+            $this->completeAndValidatePrestation($mission, $group, $actor, $comment, $expectedRevision, $takeoverConfirmed);
+
+            return $mission;
+        }
+
         return $this->encodingLock->run($mission, function () use ($mission, $actor, $comment, $expectedRevision, $takeoverConfirmed): Mission {
-            $this->assertNotInPrestation($mission);
             $blocked = MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now());
             if ($blocked !== null) {
                 throw new ConflictHttpException($blocked);
@@ -414,6 +481,14 @@ final class MissionEncodingWorkflowService
      */
     public function validate(Mission $mission, User $actor, ?string $expectedRevision = null): Mission
     {
+        // Complément D-156 — une mission d'une prestation multi-salles se valide avec toute sa prestation.
+        $group = $this->prestationGroups->groupOf($mission);
+        if (count($group) > 1) {
+            $this->validatePrestation($mission, $group, $actor, $expectedRevision);
+
+            return $mission;
+        }
+
         return $this->locked($mission, function () use ($mission, $actor, $expectedRevision): Mission {
             $expectedRevision = $expectedRevision !== null ? trim($expectedRevision) : '';
             if ($expectedRevision !== '' && $this->takeovers !== null
@@ -427,6 +502,18 @@ final class MissionEncodingWorkflowService
 
     /** $requireHours = false only for a manager takeover (D-171): missing hours stay missing. */
     private function validateTransition(Mission $mission, User $actor, bool $requireHours): Mission
+    {
+        $this->assertValidatable($mission, $requireHours);
+        $payload = $this->applyValidate($mission, $actor);
+        $this->em->flush();
+
+        $this->dispatch($mission, MissionChangeType::ENCODING_VALIDATED, $actor, $payload);
+
+        return $mission;
+    }
+
+    /** Tous les contrôles de validate(), sans aucune écriture. */
+    private function assertValidatable(Mission $mission, bool $requireHours): void
     {
         if ($mission->getStatus() !== MissionStatus::SUBMITTED) {
             throw new ConflictHttpException('Mission must be SUBMITTED to validate its encoding');
@@ -452,17 +539,23 @@ final class MissionEncodingWorkflowService
             true,
             "Encodage incomplet : complétez les interventions et traitez les demandes en attente avant de valider.",
         );
+    }
 
+    /**
+     * Les écritures de validate() (statut, verrou, audit), sans flush.
+     *
+     * @param array<string,mixed> $extraPayload
+     * @return array<string,mixed>
+     */
+    private function applyValidate(Mission $mission, User $actor, array $extraPayload = []): array
+    {
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setEncodingLockedAt(new \DateTimeImmutable());
 
-        $payload = $this->actorPayload($actor);
+        $payload = $this->actorPayload($actor) + $extraPayload;
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_VALIDATED, $payload);
-        $this->em->flush();
 
-        $this->dispatch($mission, MissionChangeType::ENCODING_VALIDATED, $actor, $payload);
-
-        return $mission;
+        return $payload;
     }
 
     /**
@@ -476,27 +569,52 @@ final class MissionEncodingWorkflowService
      */
     public function reject(Mission $mission, User $actor, string $comment): Mission
     {
+        // Complément D-156 — renvoi en correction de toute la prestation multi-salles.
+        $group = $this->prestationGroups->groupOf($mission);
+        if (count($group) > 1) {
+            $this->rejectPrestation($mission, $group, $actor, $comment);
+
+            return $mission;
+        }
+
         return $this->locked($mission, fn (): Mission => $this->rejectTransition($mission, $actor, $comment));
     }
 
     private function rejectTransition(Mission $mission, User $actor, string $comment): Mission
     {
-        if ($mission->getStatus() !== MissionStatus::SUBMITTED) {
-            throw new ConflictHttpException('Mission must be SUBMITTED to reject its encoding');
-        }
-
+        $this->assertRejectable($mission);
         $comment = $this->requireReason($comment);
-        $from = $mission->getStatus();
-        $mission->setStatus(MissionStatus::ENCODING_IN_PROGRESS);
-        $this->addComment($mission, $actor, $comment);
-
-        $payload = array_merge($this->actorPayload($actor), ['comment' => $comment], $this->transitionPayload($from, $mission));
-        $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_REJECTED, $payload);
+        $payload = $this->applyReject($mission, $actor, $comment);
         $this->em->flush();
 
         $this->dispatch($mission, MissionChangeType::ENCODING_REJECTED, $actor, $payload);
 
         return $mission;
+    }
+
+    private function assertRejectable(Mission $mission): void
+    {
+        if ($mission->getStatus() !== MissionStatus::SUBMITTED) {
+            throw new ConflictHttpException('Mission must be SUBMITTED to reject its encoding');
+        }
+    }
+
+    /**
+     * Les écritures de reject() (statut, commentaire, audit), sans flush.
+     *
+     * @param array<string,mixed> $extraPayload
+     * @return array<string,mixed>
+     */
+    private function applyReject(Mission $mission, User $actor, string $comment, array $extraPayload = []): array
+    {
+        $from = $mission->getStatus();
+        $mission->setStatus(MissionStatus::ENCODING_IN_PROGRESS);
+        $this->addComment($mission, $actor, $comment);
+
+        $payload = array_merge($this->actorPayload($actor), ['comment' => $comment], $this->transitionPayload($from, $mission), $extraPayload);
+        $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_REJECTED, $payload);
+
+        return $payload;
     }
 
     /**
@@ -513,10 +631,32 @@ final class MissionEncodingWorkflowService
      */
     public function reopen(Mission $mission, User $actor, string $comment): Mission
     {
+        // Complément D-156 — réouverture de toute la prestation multi-salles.
+        $group = $this->prestationGroups->groupOf($mission);
+        if (count($group) > 1) {
+            $this->reopenPrestation($mission, $group, $actor, $comment);
+
+            return $mission;
+        }
+
         return $this->locked($mission, fn (): Mission => $this->reopenTransition($mission, $actor, $comment));
     }
 
     private function reopenTransition(Mission $mission, User $actor, string $comment): Mission
+    {
+        $this->assertReopenable($mission);
+        $comment = $this->requireReason($comment);
+        $payload = $this->applyReopen($mission, $actor, $comment);
+        $this->em->flush();
+
+        // D-148 — le handler prévient l'instrumentiste (ENCODING_CORRECTION_REQUESTED), après
+        // le flush : jamais de notification pour une transition qui n'a pas abouti.
+        $this->dispatch($mission, MissionChangeType::ENCODING_REOPENED, $actor, $payload);
+
+        return $mission;
+    }
+
+    private function assertReopenable(Mission $mission): void
     {
         if ($mission->getStatus() === MissionStatus::CLOSED) {
             throw new ConflictHttpException(MissionEncodingCorrectionPolicy::CLOSED_MESSAGE);
@@ -531,8 +671,17 @@ final class MissionEncodingWorkflowService
         if ($this->hasLockedFinancialCalculation($mission)) {
             throw new ConflictHttpException(MissionEncodingCorrectionPolicy::FINANCIAL_LOCK_MESSAGE);
         }
+    }
 
-        $comment = $this->requireReason($comment);
+    /**
+     * Les écritures de reopen() (statut, déverrouillage, commentaire, calculs obsolètes,
+     * audit), sans flush.
+     *
+     * @param array<string,mixed> $extraPayload
+     * @return array<string,mixed>
+     */
+    private function applyReopen(Mission $mission, User $actor, string $comment, array $extraPayload = []): array
+    {
         $from = $mission->getStatus();
         $mission->setStatus(MissionStatus::ENCODING_IN_PROGRESS);
         $mission->setEncodingLockedAt(null);
@@ -553,18 +702,280 @@ final class MissionEncodingWorkflowService
             $obsoleteIds[] = $calculation->getId();
         }
 
-        $payload = array_merge($this->actorPayload($actor), ['comment' => $comment], $this->transitionPayload($from, $mission));
+        $payload = array_merge($this->actorPayload($actor), ['comment' => $comment], $this->transitionPayload($from, $mission), $extraPayload);
         if ($obsoleteIds !== []) {
             $payload['obsoleteFinancialCalculationIds'] = $obsoleteIds;
         }
         $this->audit->record($mission, $actor, AuditEventType::MISSION_ENCODING_REOPENED, $payload);
-        $this->em->flush();
 
-        // D-148 — le handler prévient l'instrumentiste (ENCODING_CORRECTION_REQUESTED), après
-        // le flush : jamais de notification pour une transition qui n'a pas abouti.
-        $this->dispatch($mission, MissionChangeType::ENCODING_REOPENED, $actor, $payload);
+        return $payload;
+    }
 
-        return $mission;
+    // ── Complément D-156 — décisions du manager sur toute une prestation multi-salles ──────
+
+    /**
+     * Applique $decide à toute la prestation, tout ou rien : verrou de CHAQUE mission (ordre
+     * d'id, même verrou que les écritures d'encodage), composition revérifiée sous verrou
+     * (sinon 409 PRESTATION_CHANGED), tous les contrôles avant la première écriture (c'est le
+     * contrat de $decide), un seul flush. Les messages de cycle de vie partent après le commit,
+     * un par mission (traçabilité individuelle) ; une seule notification par prestation
+     * (prestationNotifiedMissionId).
+     *
+     * @param list<Mission> $group
+     * @param \Closure(list<Mission>): list<array{0: Mission, 1: MissionChangeType, 2: array<string,mixed>}> $decide
+     */
+    private function decideOnPrestation(Mission $anchor, array $group, User $actor, \Closure $decide): void
+    {
+        $expectedIds = PrestationGrouping::ids($group);
+        $run = function () use ($anchor, $expectedIds, $decide): array {
+            $current = $this->prestationGroups->groupOf($anchor);
+            if (PrestationGrouping::ids($current) !== $expectedIds) {
+                throw new PrestationConflictException(
+                    PrestationConflictException::PRESTATION_CHANGED,
+                    'La prestation a changé entre-temps (missions ajoutées, retirées ou déplacées). Rechargez-la avant de recommencer.',
+                    ['currentMissionIds' => PrestationGrouping::ids($current)],
+                );
+            }
+            PrestationGrouping::sort($current);
+            $events = $decide($current);
+            $this->em->flush();
+
+            return $events;
+        };
+
+        $byId = $group;
+        usort($byId, static fn (Mission $a, Mission $b) => (int) $a->getId() <=> (int) $b->getId());
+        foreach (array_reverse($byId) as $member) {
+            $inner = $run;
+            $run = fn (): array => $this->locked($member, $inner);
+        }
+        if ($this->encodingLock === null) {
+            $run = fn (): array => $this->em->wrapInTransaction($run);
+        }
+
+        foreach (self::notifyOncePerPrestation($run()) as [$mission, $changeType, $payload]) {
+            $this->dispatch($mission, $changeType, $actor, $payload);
+        }
+    }
+
+    /** @param list<Mission> $group */
+    private function assertPrestationRevision(array $group, ?string $expectedRevision, bool $required): void
+    {
+        $expectedRevision = $expectedRevision !== null ? trim($expectedRevision) : '';
+        if ($expectedRevision === '') {
+            if ($required) {
+                throw EncodingConcurrencyException::versionRequired();
+            }
+
+            return;
+        }
+        if ($this->takeovers !== null && !hash_equals($this->takeovers->prestationRevision($group), $expectedRevision)) {
+            throw EncodingConcurrencyException::modified(EncodingConcurrencyException::SUBJECT_ENCODING);
+        }
+    }
+
+    /**
+     * @param list<Mission> $group
+     * @param list<MissionStatus> $allowed
+     */
+    private static function assertPrestationStatuses(array $group, array $allowed, string $message): void
+    {
+        foreach ($group as $m) {
+            if (!in_array($m->getStatus(), $allowed, true)) {
+                throw self::statusMismatch($group, $message);
+            }
+        }
+    }
+
+    /** @param list<Mission> $group */
+    private static function statusMismatch(array $group, string $message): PrestationConflictException
+    {
+        $statuses = [];
+        foreach ($group as $m) {
+            $statuses[(int) $m->getId()] = $m->getStatus()?->value;
+        }
+
+        return new PrestationConflictException(PrestationConflictException::PRESTATION_STATUS_MISMATCH, $message, [
+            'prestationMissionIds' => PrestationGrouping::ids($group),
+            'statuses' => $statuses,
+        ]);
+    }
+
+    /**
+     * SUBMITTED → VALIDATED pour toutes les missions de la prestation qui ne sont pas déjà
+     * validées ou clôturées ; toutes doivent être soumises (soumission commune), sinon 409.
+     *
+     * @param list<Mission> $group
+     */
+    private function validatePrestation(Mission $anchor, array $group, User $actor, ?string $expectedRevision): void
+    {
+        $this->decideOnPrestation($anchor, $group, $actor, function (array $members) use ($actor, $expectedRevision): array {
+            $pending = array_values(array_filter($members, static fn (Mission $m) => !in_array($m->getStatus(), [MissionStatus::VALIDATED, MissionStatus::CLOSED], true)));
+            if ($pending === []) {
+                throw new ConflictHttpException('Mission must be SUBMITTED to validate its encoding');
+            }
+            self::assertPrestationStatuses($members, [MissionStatus::SUBMITTED, MissionStatus::VALIDATED, MissionStatus::CLOSED],
+                "La prestation multi-salles n'est pas entièrement soumise : elle se valide en une fois, après la soumission de toutes ses missions.");
+            $this->assertPrestationRevision($members, $expectedRevision, false);
+            foreach ($pending as $m) {
+                $this->assertValidatable($m, true);
+            }
+
+            $events = [];
+            foreach ($pending as $m) {
+                $events[] = [$m, MissionChangeType::ENCODING_VALIDATED, $this->applyValidate($m, $actor, self::prestationPayload($members))];
+            }
+
+            return $events;
+        });
+    }
+
+    /**
+     * Renvoi en correction de toute la prestation : chaque mission SUBMITTED repasse
+     * ENCODING_IN_PROGRESS avec le même motif. Une mission déjà validée → 409 (rouvrir la
+     * prestation à la place) : jamais une prestation à moitié validée, à moitié en correction.
+     *
+     * @param list<Mission> $group
+     */
+    private function rejectPrestation(Mission $anchor, array $group, User $actor, string $comment): void
+    {
+        $this->decideOnPrestation($anchor, $group, $actor, function (array $members) use ($actor, $comment): array {
+            $submitted = array_values(array_filter($members, static fn (Mission $m) => $m->getStatus() === MissionStatus::SUBMITTED));
+            if ($submitted === []) {
+                throw new ConflictHttpException('Mission must be SUBMITTED to reject its encoding');
+            }
+            foreach ($members as $m) {
+                if (in_array($m->getStatus(), [MissionStatus::VALIDATED, MissionStatus::CLOSED], true)) {
+                    throw self::statusMismatch($members, "Une partie de la prestation multi-salles est déjà validée : rouvrez la prestation pour la renvoyer en correction.");
+                }
+            }
+            $comment = $this->requireReason($comment);
+
+            $events = [];
+            foreach ($submitted as $m) {
+                $events[] = [$m, MissionChangeType::ENCODING_REJECTED, $this->applyReject($m, $actor, $comment, self::prestationPayload($members))];
+            }
+
+            return $events;
+        });
+    }
+
+    /**
+     * Réouverture de toute la prestation : chaque mission VALIDATED est rouverte (calculs
+     * actifs marqués obsolètes, D-153) ; une mission encore SUBMITTED est renvoyée en correction
+     * avec le même motif — toute la prestation repasse en correction. Clôturée ou calcul
+     * verrouillé sur l'une des missions → 409, rien n'est rouvert.
+     *
+     * @param list<Mission> $group
+     */
+    private function reopenPrestation(Mission $anchor, array $group, User $actor, string $comment): void
+    {
+        $this->decideOnPrestation($anchor, $group, $actor, function (array $members) use ($actor, $comment): array {
+            $validated = array_values(array_filter($members, static fn (Mission $m) => $m->getStatus() === MissionStatus::VALIDATED));
+            foreach ($members as $m) {
+                if ($m->getStatus() === MissionStatus::CLOSED) {
+                    throw new ConflictHttpException(MissionEncodingCorrectionPolicy::CLOSED_MESSAGE);
+                }
+            }
+            if ($validated === []) {
+                throw new ConflictHttpException('Mission must be VALIDATED to reopen its encoding');
+            }
+            foreach ($validated as $m) {
+                $this->assertReopenable($m);
+            }
+            $comment = $this->requireReason($comment);
+
+            $extra = self::prestationPayload($members);
+            $events = [];
+            foreach ($members as $m) {
+                if ($m->getStatus() === MissionStatus::VALIDATED) {
+                    $events[] = [$m, MissionChangeType::ENCODING_REOPENED, $this->applyReopen($m, $actor, $comment, $extra)];
+                } elseif ($m->getStatus() === MissionStatus::SUBMITTED) {
+                    $events[] = [$m, MissionChangeType::ENCODING_REJECTED, $this->applyReject($m, $actor, $comment, $extra)];
+                }
+            }
+
+            return $events;
+        });
+    }
+
+    /**
+     * « Terminer et valider » (D-171) de toute la prestation : chaque mission encore ouverte est
+     * terminée (justification « sans matériel » appréciée sur la prestation, heures jamais
+     * exigées), puis toutes sont validées. Révision attendue = celle de la prestation entière.
+     *
+     * @param list<Mission> $group
+     */
+    private function completeAndValidatePrestation(Mission $anchor, array $group, User $actor, ?string $comment, ?string $expectedRevision, bool $takeoverConfirmed): void
+    {
+        $now = Clock::get()->now();
+        $this->decideOnPrestation($anchor, $group, $actor, function (array $members) use ($actor, $comment, $expectedRevision, $takeoverConfirmed, $now): array {
+            $open = array_values(array_filter($members, static fn (Mission $m) => !in_array($m->getStatus(), [MissionStatus::SUBMITTED, MissionStatus::VALIDATED, MissionStatus::CLOSED], true)));
+            if ($open === []) {
+                throw new ConflictHttpException("L'encodage n'est pas en cours : il ne peut pas être terminé et validé depuis ce statut.");
+            }
+            foreach ($open as $m) {
+                $blocked = MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($m, $now);
+                if ($blocked !== null) {
+                    throw new ConflictHttpException($blocked);
+                }
+            }
+            $this->assertPrestationRevision($members, $expectedRevision, true);
+
+            $takeovers = array_values(array_filter($open, static fn (Mission $m) => MissionEncodingCorrectionPolicy::isTakeover($m)));
+            if ($takeovers !== [] && !$takeoverConfirmed) {
+                throw new UnprocessableEntityHttpException(sprintf(
+                    "Confirmez la reprise de l'encodage de %s : il n'a pas été soumis par l'instrumentiste.",
+                    $this->displayName($takeovers[0]->getInstrumentist()),
+                ));
+            }
+
+            $toValidate = array_values(array_filter($members, static fn (Mission $m) => !in_array($m->getStatus(), [MissionStatus::VALIDATED, MissionStatus::CLOSED], true)));
+            $withoutMaterial = $this->prestationHasNoActiveMaterial($members);
+            $justification = $withoutMaterial ? $comment : null;
+            foreach ($open as $m) {
+                $this->assertCompletable($m, $actor, $justification, false, $withoutMaterial);
+            }
+            foreach ($toValidate as $m) {
+                $this->contentCompleteness->assertComplete(
+                    $m,
+                    true,
+                    "Encodage incomplet : complétez les interventions et traitez les demandes en attente avant de valider.",
+                );
+            }
+
+            $extra = self::prestationPayload($members);
+            $events = [];
+            $takeoverEvents = [];
+            $hoursMissing = [];
+            foreach ($open as $m) {
+                $hoursMissing[(int) $m->getId()] = MissionEncodingCorrectionPolicy::hoursMissing($m);
+                if (MissionEncodingCorrectionPolicy::isTakeover($m)) {
+                    $instrumentist = $m->getInstrumentist();
+                    $takeoverPayload = array_merge($this->actorPayload($actor), [
+                        'instrumentistId'    => $instrumentist?->getId(),
+                        'instrumentistName'  => $this->displayName($instrumentist),
+                        'fromStatus'         => $m->getStatus()->value,
+                        'revision'           => $expectedRevision !== null ? trim($expectedRevision) : null,
+                        'hoursMissing'       => $hoursMissing[(int) $m->getId()],
+                        'interventionsCount' => $m->getInterventions()->count(),
+                        'materialLinesCount' => $m->getMaterialLines()->count(),
+                    ], $extra);
+                    $this->audit->record($m, $actor, AuditEventType::MISSION_ENCODING_TAKEN_OVER, $takeoverPayload);
+                    $takeoverEvents[] = [$m, MissionChangeType::ENCODING_TAKEN_OVER, $takeoverPayload];
+                }
+                $events[] = [$m, MissionChangeType::ENCODING_COMPLETED, $this->applyComplete($m, $actor, $justification, $extra, $withoutMaterial)];
+            }
+            foreach ($toValidate as $m) {
+                $events[] = [$m, MissionChangeType::ENCODING_VALIDATED, $this->applyValidate($m, $actor, $extra)];
+                if ($hoursMissing[(int) $m->getId()] ?? false) {
+                    $m->setEncodingValidatedWithoutHoursAt($now);
+                }
+            }
+
+            // Après la validation : jamais de notification de reprise pour une décision avortée.
+            return [...$events, ...$takeoverEvents];
+        });
     }
 
     /**

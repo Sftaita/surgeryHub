@@ -9,6 +9,7 @@ use App\Entity\WorkedPresence;
 use App\Exception\PrestationConflictException;
 use App\Service\MissionActionsService;
 use App\Service\MissionEncodingWorkflowService;
+use App\Repository\EncodingTrackingRepository;
 use App\Service\MissionExecutionService;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
@@ -33,6 +34,8 @@ final class PrestationEncodingService
         private readonly PrestationGroupResolver $groups,
         private readonly MissionActionsService $actions,
         private readonly MissionEncodingWorkflowService $workflow,
+        // Complément D-156 — compteurs de la prestation, même requête que le suivi manager (D-118).
+        private readonly EncodingTrackingRepository $trackingRepository,
     ) {}
 
     /** @return list<Mission> */
@@ -53,6 +56,15 @@ final class PrestationEncodingService
         $presence = $this->presenceOf($group);
         $tz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
         $count = count($group);
+
+        $reference = PrestationReference::of($group);
+        $facts = $this->trackingRepository->fetchFactsForIds(PrestationGrouping::ids($group));
+        $encoding = ['interventionCount' => 0, 'encodedInterventionCount' => 0, 'materialLineCount' => 0];
+        foreach ($facts as $fact) {
+            $encoding['interventionCount'] += $fact->interventionCount;
+            $encoding['encodedInterventionCount'] += $fact->encodedInterventionCount;
+            $encoding['materialLineCount'] += $fact->activeMaterialLineCount;
+        }
 
         $missions = [];
         foreach ($group as $i => $m) {
@@ -81,6 +93,8 @@ final class PrestationEncodingService
                 'interventionCount' => $m->getInterventions()->count(),
                 'activeMaterialLineCount' => $activeMaterial,
                 'noMaterialComment' => $m->getNoMaterialComment(),
+                'isReference' => $m->getId() === $reference->getId(),
+                'carriesContent' => PrestationReference::carriesContent($m),
                 'allowedActions' => $this->actions->allowedActions($m, $viewer),
             ];
         }
@@ -115,6 +129,14 @@ final class PrestationEncodingService
                 array_filter($group, static fn (Mission $m) => $m->getExecution()?->getPresence() === null),
             )),
             'ownHoursMissionIds' => array_values(array_map(static fn (Mission $m) => (int) $m->getId(), array_filter($group, [self::class, 'hasOwnHours']))),
+            // Complément D-156 — un seul encodage : la mission qui reçoit tout nouveau contenu
+            // (jamais choisie par le client), les autres missions portant du contenu historique
+            // (affiché regroupé, jamais déplacé), les compteurs de toute la prestation, et la
+            // justification « sans matériel » appréciée sur toute la prestation.
+            'referenceMissionId' => (int) $reference->getId(),
+            'otherEncodedMissionIds' => PrestationReference::otherEncodedMissionIds($group),
+            'encoding' => $encoding,
+            'noMaterialJustificationRequired' => $encoding['materialLineCount'] === 0,
             'statuses' => $statuses,
             'globalStatus' => count($statuses) === 1 ? $statuses[0] : 'MIXED',
             'fingerprint' => self::fingerprint($group),

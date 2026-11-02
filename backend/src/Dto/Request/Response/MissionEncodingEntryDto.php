@@ -65,5 +65,11 @@ final class MissionEncodingEntryDto
         public readonly ?int $version = null,
         /** D-178 — « Aucune firme » : intervention enregistrée sans firme, ou demande faite sans firme. */
         public readonly bool $withoutFirm = false,
+        /**
+         * Complément D-156 — mission qui porte l'élément. Dans la liste unifiée d'une
+         * prestation multi-salles, les éléments de plusieurs missions se côtoient : le client
+         * adresse chaque modification à la mission de l'élément, jamais à une autre.
+         */
+        public readonly ?int $missionId = null,
     ) {}
 }

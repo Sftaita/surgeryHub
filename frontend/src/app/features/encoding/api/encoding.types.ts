@@ -159,6 +159,8 @@ export type MissionEncodingInterventionEntry = {
   version?: number | null;
   /** D-178 — « Aucune firme » enregistré (légitimement sans firme), distinct d'une firme manquante. */
   withoutFirm?: boolean;
+  /** Complément D-156 — mission qui porte l'intervention (liste unifiée d'une prestation multi-salles). */
+  missionId?: number | null;
 };
 
 export type MissionEncodingDraftEntry = {
@@ -182,6 +184,8 @@ export type MissionEncodingDraftEntry = {
   readOnly: boolean;
   materialLines: EncodingEntryMaterialLine[];
   materialItemRequests: EncodingEntryMaterialItemRequest[];
+  /** Complément D-156 — mission qui porte la demande (liste unifiée d'une prestation multi-salles). */
+  missionId?: number | null;
 };
 
 export type MissionEncodingEntry = MissionEncodingInterventionEntry | MissionEncodingDraftEntry;
@@ -295,6 +299,12 @@ export type MissionEncodingResponse = {
   coherenceSummary: MissionEncodingCoherenceSummary;
   encodingComments: EncodingComment[];
   progress: MissionEncodingProgress;
+  /**
+   * Complément D-156 — null pour une mission seule. Dans une prestation multi-salles, le
+   * nouveau contenu ne s'ajoute que sur la mission de référence (acceptsNewContent) : décidé
+   * par le serveur, jamais déduit ici.
+   */
+  prestation?: { size: number; missionIds: number[]; referenceMissionId: number; acceptsNewContent: boolean } | null;
 };
 
 /**

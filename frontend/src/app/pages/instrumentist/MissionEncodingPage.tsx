@@ -17,7 +17,7 @@ import { MissionReadOnlyCard } from "../../features/encoding/components/MissionR
 import { WorkedHoursCard } from "../../features/encoding/components/WorkedHoursCard";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
-import { fetchPrestation } from "../../features/prestations/api/prestations.api";
+import { fetchPrestation, fetchPrestationEncoding } from "../../features/prestations/api/prestations.api";
 import { PrestationPanel } from "../../features/prestations/components/PrestationPanel";
 import PrestationHoursDialog from "../../features/prestations/components/PrestationHoursDialog";
 import PrestationSubmitDialog from "../../features/prestations/components/PrestationSubmitDialog";
@@ -61,9 +61,6 @@ export default function MissionEncodingPage() {
 
   const [openSubmit, setOpenSubmit] = React.useState(false);
   const [openEditHours, setOpenEditHours] = React.useState(false);
-  // D-156 — prestation multi-salles : mission dont on encode les interventions, choisie
-  // explicitement (jamais la première du groupe par défaut).
-  const [selectedMissionId, setSelectedMissionId] = React.useState<number | null>(null);
   // Aucun timestamp de sauvegarde n'existe côté backend (MissionEncodingResponse
   // n'en a pas) — reflète la dernière mutation réussie observée sur cet appareil,
   // pas une donnée serveur.
@@ -104,7 +101,15 @@ export default function MissionEncodingPage() {
     enabled: isValidId && !!mission,
   });
   const isPrestation = (prestation?.size ?? 1) > 1;
-  const encodingMissionId = isPrestation ? selectedMissionId : missionId;
+  // Complément D-156 — un seul encodage par prestation multi-salles : le serveur désigne la
+  // mission qui reçoit les nouvelles interventions (referenceMissionId) et sert toute la
+  // prestation en une liste (historique compris, chaque élément sur sa mission d'origine) ;
+  // l'instrumentiste ne choisit jamais de salle.
+  const encodingMissionId = isPrestation && prestation ? prestation.referenceMissionId : missionId;
+  const encodingQueryKey = React.useMemo(
+    () => (isPrestation ? ["prestationEncoding", missionId] : ["missionEncoding", missionId]),
+    [isPrestation, missionId],
+  );
 
   const canSubmit = isPrestation
     ? prestation?.allowedActions.includes("submit") ?? false
@@ -127,9 +132,9 @@ export default function MissionEncodingPage() {
     isLoading: isEncodingLoading,
     error: encodingError,
   } = useQuery({
-    queryKey: ["missionEncoding", encodingMissionId],
-    queryFn: () => fetchMissionEncoding(encodingMissionId as number),
-    enabled: isValidId && !!mission && !isPrestationLoading && encodingMissionId !== null && (!!canEncoding || canView),
+    queryKey: encodingQueryKey,
+    queryFn: () => (isPrestation ? fetchPrestationEncoding(missionId) : fetchMissionEncoding(missionId)),
+    enabled: isValidId && !!mission && !isPrestationLoading && (!!canEncoding || canView),
   });
 
   if (!isValidId) return <Typography>Identifiant invalide</Typography>;
@@ -161,7 +166,7 @@ export default function MissionEncodingPage() {
     );
   }
 
-  if (isPrestationLoading || (isEncodingLoading && encodingMissionId !== null)) return <CircularProgress />;
+  if (isPrestationLoading || isEncodingLoading) return <CircularProgress />;
 
   if (encodingError) {
     return (
@@ -174,7 +179,7 @@ export default function MissionEncodingPage() {
     );
   }
 
-  if (!encoding && !(isPrestation && encodingMissionId === null)) return <Typography>Données d'encodage introuvables</Typography>;
+  if (!encoding) return <Typography>Données d'encodage introuvables</Typography>;
 
   const canEdit =
     encoding?.mission?.allowedActions?.includes("encoding") ||
@@ -200,6 +205,7 @@ export default function MissionEncodingPage() {
         onBack={handleBack}
         helpTopicId="mission-encoding"
         savedAt={lastSavedAt}
+        title={isPrestation ? "Prestation multi-salles" : undefined}
       />
 
       <Box
@@ -220,7 +226,10 @@ export default function MissionEncodingPage() {
           siteName={mission.site?.name ?? "—"}
           siteAddress={mission.site?.address ?? null}
           dateLabel={dateLabel}
-          scheduledLabel={scheduledLabel}
+          // Complément D-156 — prestation : l'horaire de la journée, jamais celui d'une salle.
+          scheduledLabel={isPrestation && prestation
+            ? `${dayjs(prestation.planned.startAt).format("HH[h]mm")} → ${dayjs(prestation.planned.endAt).format("HH[h]mm")}`
+            : scheduledLabel}
         />
 
         {/* Anomalie écran d'encodage (commit dédié) — EncodingStatusPanel (statut +
@@ -244,8 +253,6 @@ export default function MissionEncodingPage() {
         {isPrestation && prestation ? (
           <PrestationPanel
             prestation={prestation}
-            selectedMissionId={selectedMissionId}
-            onSelectMission={setSelectedMissionId}
             canEditHours={canEditHours}
             onEditHours={() => setOpenEditHours(true)}
           />
@@ -276,29 +283,29 @@ export default function MissionEncodingPage() {
             pour l'enrichissement Lot 6 (suggestedMaterials/coherence), jamais pour
             construire la liste elle-même. Zone 2 (bac vert + progression + pied de
             validation) est entièrement rendue par InterventionsSection. */}
-        {encoding && encodingMissionId !== null ? (
-          <InterventionsSection
-            key={encodingMissionId}
-            missionId={encodingMissionId}
-            canEdit={canEdit}
-            entries={encoding.entries ?? []}
-            legacyInterventions={encoding.interventions ?? []}
-            catalog={encoding.catalog}
-            surgeonId={encoding.mission.surgeonId}
-            onSaved={() => {
-              setLastSavedAt(new Date());
-              if (isPrestation) void queryClient.invalidateQueries({ queryKey: ["prestation", missionId] });
-            }}
-            canSubmit={canSubmit}
-            onValidate={() => setOpenSubmit(true)}
-            progress={encoding.progress}
-            prestationSize={isPrestation ? prestation?.size : undefined}
-          />
-        ) : canSubmit ? (
-          <Button variant="contained" color="success" onClick={() => setOpenSubmit(true)} data-testid="prestation-submit-open">
-            Terminer la prestation
-          </Button>
-        ) : null}
+        <InterventionsSection
+          key={encodingMissionId}
+          missionId={encodingMissionId}
+          canEdit={canEdit}
+          entries={encoding.entries ?? []}
+          legacyInterventions={encoding.interventions ?? []}
+          catalog={encoding.catalog}
+          surgeonId={encoding.mission.surgeonId}
+          encodingQueryKey={encodingQueryKey}
+          onSaved={() => {
+            setLastSavedAt(new Date());
+            if (isPrestation) {
+              void queryClient.invalidateQueries({ queryKey: ["prestation", missionId] });
+              void queryClient.invalidateQueries({ queryKey: ["prestationEncoding", missionId] });
+            }
+          }}
+          canSubmit={canSubmit}
+          onValidate={() => setOpenSubmit(true)}
+          // Compteurs du serveur : exactement les interventions de la liste affichée.
+          progress={encoding.progress}
+          prestationSize={isPrestation ? prestation?.size : undefined}
+          submitLabel={isPrestation ? "Soumettre la prestation" : undefined}
+        />
       </Box>
 
       {isPrestation && prestation ? (

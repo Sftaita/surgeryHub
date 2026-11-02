@@ -74,6 +74,21 @@ type Props = {
   /** D-156 — prestation multi-salles : le pied de validation ouvre la soumission COMMUNE
    *  (toutes les missions de la prestation) ; le libellé le dit. Absent = mission seule. */
   prestationSize?: number;
+  /** Complément D-156 — false : aucun ajout ici (intervention, matériel, demande au catalogue),
+   *  décidé par le serveur (`prestation.acceptsNewContent`, `otherEncodedMissionIds`). Modifier
+   *  ou supprimer l'existant reste possible. */
+  allowAdd?: boolean;
+  /** Explication affichée quand l'ajout n'est pas proposé ici (null = rien). */
+  addNotice?: string | null;
+  /** Titre du bac (par défaut « Matériel par intervention »). */
+  heading?: string;
+  /**
+   * Complément D-156 — clé du cache qui porte `entries` (par défaut ["missionEncoding", missionId]).
+   * Liste unifiée d'une prestation multi-salles : ["prestationEncoding", …] ; chaque entrée y porte
+   * son `missionId`, et toute modification d'un élément existant (matériel compris) est adressée à
+   * la mission de cet élément. Les nouvelles interventions vont toujours à `missionId`.
+   */
+  encodingQueryKey?: readonly unknown[];
 };
 
 const GREEN_900 = "#144D38";
@@ -211,7 +226,8 @@ function WarnIcon() {
   );
 }
 
-export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress, managerCorrection = false, surgeonId = null, prestationSize }: Props) {
+export default function InterventionsSection({ missionId, canEdit, entries, legacyInterventions, catalog, onSaved, canSubmit, onValidate, submitLabel = "Valider", progress, managerCorrection = false, surgeonId = null, prestationSize, allowAdd = true, addNotice = null, heading = "Matériel par intervention", encodingQueryKey }: Props) {
+  const encodingKey = React.useMemo(() => encodingQueryKey ?? ["missionEncoding", missionId], [encodingQueryKey, missionId]);
   const toast = useToast();
   const queryClient = useQueryClient();
 
@@ -257,22 +273,24 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
     : `Tout est encodé. Vous pouvez ${submitLabel.charAt(0).toLowerCase()}${submitLabel.slice(1)} au manager.`;
 
   const invalidate = React.useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] });
+    queryClient.invalidateQueries({ queryKey: encodingKey });
+    // Complément D-156 — la liste unifiée et chaque mission qu'elle couvre.
+    queryClient.invalidateQueries({ queryKey: ["missionEncoding"], exact: false });
     queryClient.invalidateQueries({ queryKey: ["mission", missionId] });
     // D-172 — une écriture peut faire avancer l'état d'encodage (ex. « Aucun encodage » →
     // « En cours ») : la liste Missions et le suivi des encodages ne gardent jamais l'ancien.
     queryClient.invalidateQueries({ queryKey: ["missions"], exact: false });
     queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false });
-  }, [queryClient, missionId]);
+  }, [queryClient, missionId, encodingKey]);
 
   const setEncodingCache = React.useCallback(
     (updater: (current: MissionEncodingResponse) => MissionEncodingResponse) => {
-      queryClient.setQueryData(["missionEncoding", missionId], (old: any) => {
+      queryClient.setQueryData(encodingKey, (old: any) => {
         if (!old) return old;
         return updater(old as MissionEncodingResponse);
       });
     },
-    [queryClient, missionId],
+    [queryClient, encodingKey],
   );
 
   // D-154 — écrasements concurrents (instrumentiste / chirurgien / manager) : chaque
@@ -283,8 +301,27 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   const entriesRef = React.useRef(entries);
   entriesRef.current = entries;
   const currentEntries = React.useCallback(
-    () => queryClient.getQueryData<MissionEncodingResponse>(["missionEncoding", missionId])?.entries ?? entriesRef.current,
-    [queryClient, missionId],
+    () => queryClient.getQueryData<MissionEncodingResponse>(encodingKey)?.entries ?? entriesRef.current,
+    [queryClient, encodingKey],
+  );
+  // Complément D-156 — mission qui porte un élément existant (liste unifiée) : jamais une autre.
+  const missionOfEntry = React.useCallback(
+    (kind: "INTERVENTION" | "DRAFT", id: number | null | undefined): number =>
+      (id != null ? currentEntries().find((e) => e.kind === kind && e.id === id)?.missionId : null) ?? missionId,
+    [currentEntries, missionId],
+  );
+  const missionOfLine = React.useCallback((lineId: number): number => {
+    for (const e of currentEntries()) {
+      if ((e.materialLines ?? []).some((l) => l.id === lineId)) return e.missionId ?? missionId;
+    }
+    return missionId;
+  }, [currentEntries, missionId]);
+  const missionOfAttachment = React.useCallback(
+    (body: { missionInterventionId?: number; interventionDraftId?: number }): number =>
+      body.missionInterventionId != null ? missionOfEntry("INTERVENTION", body.missionInterventionId)
+        : body.interventionDraftId != null ? missionOfEntry("DRAFT", body.interventionDraftId)
+        : missionId,
+    [missionOfEntry, missionId],
   );
   const interventionVersion = React.useCallback(
     (interventionId: number) => currentEntries().find((e): e is MissionEncodingInterventionEntry => e.kind === "INTERVENTION" && e.id === interventionId)?.version ?? null,
@@ -305,13 +342,22 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
     return true;
   }, [toast, invalidate]);
 
+  // Complément D-156 — la mission de référence d'une prestation a changé depuis la lecture
+  // (autre onglet) : rien n'est enregistré ailleurs (409 explicite), la liste et la prestation
+  // sont relues pour que l'ajout suivant parte vers la bonne mission — jamais un blocage.
+  const refreshIfReferenceMoved = React.useCallback((err: any) => {
+    if (err?.response?.data?.error?.code !== "PRESTATION_REFERENCE_REQUIRED") return;
+    invalidate();
+    onSaved?.();
+  }, [invalidate, onSaved]);
+
   // ── Mutations: Interventions (réelles) ────────────────────────────
 
   const createInterventionMutation = useMutation({
     mutationFn: (body: CreateInterventionBody) => createMissionIntervention(missionId, body),
     onMutate: async (body) => {
-      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
-      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+      const previous = queryClient.getQueryData(encodingKey);
       setOpenAddIntervention(false);
       const tempId = -Date.now();
       const type = (catalog?.interventionTypes ?? []).find((t) => t.id === body.interventionTypeId) ?? null;
@@ -348,15 +394,16 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
       onSaved?.();
     },
     onError: (err: any, _body, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      if (ctx?.previous) queryClient.setQueryData(encodingKey, ctx.previous);
       toast.error(extractErrorMessage(err));
+      refreshIfReferenceMoved(err);
     },
   });
 
   const patchInterventionMutation = useMutation({
     scope: writeScope,
     mutationFn: (args: { interventionId: number; body: PatchInterventionBody }) =>
-      patchMissionIntervention(missionId, args.interventionId, args.body, interventionVersion(args.interventionId)),
+      patchMissionIntervention(missionOfEntry("INTERVENTION", args.interventionId), args.interventionId, args.body, interventionVersion(args.interventionId)),
     onSuccess: () => { toast.success("Intervention mise à jour"); setEditIntervention(null); setChoiceChangeConfirm(null); invalidate(); onSaved?.(); },
     onError: (err: any, args) => {
       if (handledConcurrentModification(err)) { setEditIntervention(null); setChoiceChangeConfirm(null); return; }
@@ -371,7 +418,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
 
   const deleteInterventionMutation = useMutation({
     scope: writeScope,
-    mutationFn: (interventionId: number) => deleteMissionIntervention(missionId, interventionId, interventionVersion(interventionId)),
+    mutationFn: (interventionId: number) => deleteMissionIntervention(missionOfEntry("INTERVENTION", interventionId), interventionId, interventionVersion(interventionId)),
     onSuccess: () => { toast.success("Intervention supprimée"); setDeleteInterventionTarget(null); invalidate(); onSaved?.(); },
     onError: (err: any) => {
       if (handledConcurrentModification(err)) { setDeleteInterventionTarget(null); return; }
@@ -384,8 +431,8 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   const createDraftMutation = useMutation({
     mutationFn: (body: CreateInterventionTypeRequestBody) => createMissionInterventionTypeRequest(missionId, body),
     onMutate: async (body) => {
-      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
-      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+      const previous = queryClient.getQueryData(encodingKey);
       setOpenAddIntervention(false);
       const tempId = -Date.now();
       const firm = body.requestedFirmId != null ? (catalog?.firms ?? []).find((f) => f.id === body.requestedFirmId) ?? null : null;
@@ -436,18 +483,19 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
       onSaved?.();
     },
     onError: (err: any, _body, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      if (ctx?.previous) queryClient.setQueryData(encodingKey, ctx.previous);
       toast.error(extractErrorMessage(err));
+      refreshIfReferenceMoved(err);
     },
   });
 
   // ── Mutations: Material lines (optimistic, cible intervention OU draft) ─────
 
   const createLineMutation = useMutation({
-    mutationFn: (body: CreateMaterialLineBody) => createMissionMaterialLine(missionId, body),
+    mutationFn: (body: CreateMaterialLineBody) => createMissionMaterialLine(missionOfAttachment(body), body),
     onMutate: async (body) => {
-      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
-      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+      const previous = queryClient.getQueryData(encodingKey);
       setOpenAddMaterial(false);
       setPreferredTarget(null);
       const targetKind: MaterialTarget["kind"] = body.missionInterventionId != null ? "INTERVENTION" : "DRAFT";
@@ -493,18 +541,19 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
       onSaved?.();
     },
     onError: (err: any, _body, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      if (ctx?.previous) queryClient.setQueryData(encodingKey, ctx.previous);
       toast.error(extractErrorMessage(err));
+      refreshIfReferenceMoved(err);
     },
   });
 
   const patchLineMutation = useMutation({
     scope: writeScope,
     mutationFn: (args: { lineId: number; body: PatchMaterialLineBody }) =>
-      patchMissionMaterialLine(missionId, args.lineId, args.body, lineVersion(args.lineId)),
+      patchMissionMaterialLine(missionOfLine(args.lineId), args.lineId, args.body, lineVersion(args.lineId)),
     onMutate: async (args) => {
-      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
-      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+      const previous = queryClient.getQueryData(encodingKey);
       setEditLineTarget(null);
       setEncodingCache((current) => ({
         ...current,
@@ -530,7 +579,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
       onSaved?.();
     },
     onError: (err: any, _args, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      if (ctx?.previous) queryClient.setQueryData(encodingKey, ctx.previous);
       if (handledConcurrentModification(err)) return;
       toast.error(extractErrorMessage(err));
     },
@@ -540,10 +589,10 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
   const deleteLineMutation = useMutation({
     scope: writeScope,
     mutationFn: ({ lineId, expectedVersion }: { lineId: number; expectedVersion: number | null }) =>
-      deleteMissionMaterialLine(missionId, lineId, expectedVersion),
+      deleteMissionMaterialLine(missionOfLine(lineId), lineId, expectedVersion),
     onMutate: async ({ lineId }) => {
-      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
-      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+      const previous = queryClient.getQueryData(encodingKey);
       setDeleteLineTarget(null);
       setEncodingCache((current) => ({
         ...current,
@@ -566,17 +615,17 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
       onSaved?.();
     },
     onError: (err: any, _args, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      if (ctx?.previous) queryClient.setQueryData(encodingKey, ctx.previous);
       if (handledConcurrentModification(err)) return;
       toast.error(extractErrorMessage(err));
     },
   });
 
   const createRequestMutation = useMutation({
-    mutationFn: (body: CreateMaterialItemRequestBody) => createMissionMaterialItemRequest(missionId, body),
+    mutationFn: (body: CreateMaterialItemRequestBody) => createMissionMaterialItemRequest(missionOfAttachment(body), body),
     onMutate: async (body) => {
-      await queryClient.cancelQueries({ queryKey: ["missionEncoding", missionId] });
-      const previous = queryClient.getQueryData(["missionEncoding", missionId]);
+      await queryClient.cancelQueries({ queryKey: encodingKey });
+      const previous = queryClient.getQueryData(encodingKey);
       setOpenRequestDialog(false);
       const targetKind: MaterialTarget["kind"] = body.missionInterventionId != null ? "INTERVENTION" : "DRAFT";
       const targetId = (body.missionInterventionId ?? body.interventionDraftId)!;
@@ -619,8 +668,9 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
       invalidate();
     },
     onError: (err: any, _body, ctx) => {
-      if (ctx?.previous) queryClient.setQueryData(["missionEncoding", missionId], ctx.previous);
+      if (ctx?.previous) queryClient.setQueryData(encodingKey, ctx.previous);
       toast.error(extractErrorMessage(err));
+      refreshIfReferenceMoved(err);
     },
   });
 
@@ -693,7 +743,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
             2
           </Box>
           <Box sx={{ flex: 1, fontSize: 11.5, fontWeight: 800, letterSpacing: ".1em", textTransform: "uppercase", color: GREEN_800 }}>
-            Matériel par intervention
+            {heading}
           </Box>
           <Box sx={{ flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: GREEN_700, fontVariantNumeric: "tabular-nums" }}>
             {doneCount} / {totalCount}
@@ -712,7 +762,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
           <Box sx={{ flex: 1, fontSize: 12, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
             {countsLabel}
           </Box>
-          {canEdit && (
+          {canEdit && allowAdd && (
             <Box
               component="button"
               type="button"
@@ -732,6 +782,12 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
             </Box>
           )}
         </Box>
+
+        {!allowAdd && addNotice && (
+          <Box data-testid="encoding-add-notice" sx={{ fontSize: 13, color: GRAY_500, padding: "0 3px" }}>
+            {addNotice}
+          </Box>
+        )}
 
         {/* Empty state — un seul point d'entrée pour ajouter (le bouton d'en-tête
             ci-dessus), jamais un second bouton concurrent en pied de liste. */}
@@ -755,6 +811,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
                     open={effectiveOpenKey === key}
                     onToggle={() => toggle(entry)}
                     editableHere={editableHere}
+                    canAdd={allowAdd}
                     readOnly={!!readOnly}
                     isBusy={isBusy}
                     newLineIds={newLineIds}
@@ -790,7 +847,7 @@ export default function InterventionsSection({ missionId, canEdit, entries, lega
               </Box>
               <Box sx={{ mt: "3px", fontSize: 12.5, fontWeight: 600, color: GREEN_300 }}>
                 {prestationSize && prestationSize > 1
-                  ? `Cette salle : ${totalCount === 0 ? "aucune intervention" : `${doneCount}/${totalCount} intervention(s) complète(s)`}. Les ${prestationSize} missions sont soumises ensemble.`
+                  ? `${totalCount === 0 ? "Aucune intervention" : `${doneCount}/${totalCount} intervention(s) complète(s)`} · une seule soumission pour la journée.`
                   : totalCount === 0
                   ? "Aucune intervention encodée."
                   : allDone
@@ -951,7 +1008,14 @@ function recentFirmIds(sorted: MissionEncodingEntry[]): number[] {
  *  d'égalité d'orderIndex anormale, l'ordre reste stable plutôt que dépendant de
  *  l'itération JS, sans jamais masquer l'incohérence. */
 function sortEntries(entries: MissionEncodingEntry[]): MissionEncodingEntry[] {
+  // Complément D-156 — liste unifiée d'une prestation : les missions gardent l'ordre servi par
+  // le serveur (historique d'abord), chacune dans son propre orderIndex — jamais entremêlées.
+  // Une entrée sans missionId (ajout optimiste en cours) se place après toutes les autres.
+  const rank = new Map<number | null | undefined, number>();
+  for (const e of entries) if (!rank.has(e.missionId)) rank.set(e.missionId, rank.size);
+  const rankOf = (e: MissionEncodingEntry) => (e.missionId == null ? rank.size : rank.get(e.missionId)!);
   return entries.slice().sort((a, b) => {
+    if (rankOf(a) !== rankOf(b)) return rankOf(a) - rankOf(b);
     if (a.orderIndex !== b.orderIndex) return (a.orderIndex ?? 0) - (b.orderIndex ?? 0);
     if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
     return a.id - b.id;
@@ -969,6 +1033,8 @@ type EntryCardProps = {
   open: boolean;
   onToggle: () => void;
   editableHere: boolean;
+  /** Complément D-156 — ajout de matériel proposé ici (sinon seulement modifier / supprimer). */
+  canAdd: boolean;
   readOnly: boolean;
   isBusy: boolean;
   newLineIds: Set<number>;
@@ -983,7 +1049,7 @@ type EntryCardProps = {
 };
 
 function EntryCard({
-  entry, index, open, onToggle, editableHere, readOnly, isBusy, newLineIds, legacy,
+  entry, index, open, onToggle, editableHere, canAdd, readOnly, isBusy, newLineIds, legacy,
   onBumpQty, onOpenEditLine, onDeleteLine, onAddMaterial, onAddSuggested, onEditIntervention, onDeleteIntervention,
 }: EntryCardProps) {
   const lines = entry.materialLines ?? [];
@@ -1018,7 +1084,7 @@ function EntryCard({
     return () => ro.disconnect();
   }, [lines.length, requests.length, open]);
 
-  const unusedSuggested = editableHere && legacy
+  const unusedSuggested = editableHere && canAdd && legacy
     ? (legacy.suggestedMaterials ?? []).filter((sm) => (legacy.coherence?.unusedSuggestedMaterialItemIds ?? []).includes(sm.id))
     : [];
 
@@ -1143,6 +1209,7 @@ function EntryCard({
               "@media (min-width:900px)": { padding: "12px 18px 15px" },
               "@media (min-width:1280px)": { padding: "14px 20px 16px" },
             }}>
+              {canAdd && (
               <Box
                 component="button"
                 type="button"
@@ -1160,6 +1227,7 @@ function EntryCard({
                 <PlusIcon size={17} stroke={2.6} />
                 Ajouter du matériel
               </Box>
+              )}
               {entry.kind === "INTERVENTION" && (
                 <Box
                   component="button"
