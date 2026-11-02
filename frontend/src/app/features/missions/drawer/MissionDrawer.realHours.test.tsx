@@ -153,3 +153,26 @@ describe("MissionDrawer — heures réelles", () => {
     expect(screen.queryByText("Heures réelles non déclarées")).toBeNull();
   });
 });
+
+describe("Tiroir — heures communes d'une prestation multi-salles (D-156)", () => {
+  const presenceExecution = execution({
+    actualDurationMinutes: 240, effectiveDurationMinutes: 240, effectiveDurationSource: "PRESENCE_SHARE",
+    presence: { id: 9, revision: 2, actualStartAt: "2026-10-02T08:00:00+02:00", actualEndAt: "2026-10-02T17:00:00+02:00", totalMinutes: 540, missionIds: [1218, 1219] },
+  });
+
+  it("l'historique montre la correction : heures et part avant → après, motif", () => {
+    const view = buildMissionDrawerView({
+      mission: mission(), execution: presenceExecution, entries: [], encodingError: false, calculation: undefined, calculationLoading: false,
+      audit: [{
+        eventType: "MISSION_EXECUTION_PRESENCE_UPDATED", occurredAt: "2026-11-02T10:55:00+01:00", actorId: 7, actorName: "Samy Ftaita",
+        payload: {
+          before: { actualStartAt: "2026-10-02T08:00:00+02:00", actualEndAt: "2026-10-02T18:00:00+02:00" },
+          after: { actualStartAt: "2026-10-02T08:00:00+02:00", actualEndAt: "2026-10-02T17:00:00+02:00" },
+          imputedMinutesBefore: 300, imputedMinutes: 240, reason: "Fin réelle à 17h.",
+        },
+      }],
+    });
+    expect(view.history[0].what).toBe("Heures communes modifiées — 08h00–18h00 → 08h00–17h00 · part 5h00 → 4h00 · motif : Fin réelle à 17h.");
+    expect(view.hours?.correctionHint).toContain("« Corriger les heures communes »");
+  });
+});

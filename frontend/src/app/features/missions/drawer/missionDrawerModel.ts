@@ -176,10 +176,31 @@ function buildFinance(calc: FinancialCalculation, mission: Mission, previous: Fi
   };
 }
 
+/**
+ * D-156 — détail lisible d'un événement servi par l'audit (aucune règle : lecture du payload) :
+ * heures communes avant → après, part imputée avant → après, motif d'une correction.
+ */
+function describeAuditEvent(e: MissionAuditEvent): string {
+  const label = formatAuditEventType(e.eventType);
+  const p = (e.payload ?? {}) as Record<string, any>;
+  const parts: string[] = [];
+  const hhmm = (iso: unknown) => (typeof iso === "string" && iso.length >= 16 ? `${iso.slice(11, 13)}h${iso.slice(14, 16)}` : "—");
+  const slot = (t: any) => (t ? `${hhmm(t.actualStartAt)}–${hhmm(t.actualEndAt)}` : "—");
+  const mins = (m: unknown) => (typeof m === "number" ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}` : "—");
+  if (e.eventType === "MISSION_EXECUTION_PRESENCE_UPDATED" || e.eventType === "MISSION_EXECUTION_PRESENCE_DECLARED") {
+    if (p.before) parts.push(`${slot(p.before)} → ${slot(p.after)}`);
+    else if (p.after) parts.push(slot(p.after));
+    if (typeof p.imputedMinutesBefore === "number" && p.imputedMinutesBefore !== p.imputedMinutes) parts.push(`part ${mins(p.imputedMinutesBefore)} → ${mins(p.imputedMinutes)}`);
+    else if (typeof p.imputedMinutes === "number") parts.push(`part ${mins(p.imputedMinutes)}`);
+  }
+  if (typeof p.reason === "string" && p.reason !== "") parts.push(`motif : ${p.reason}`);
+  return parts.length > 0 ? `${label} — ${parts.join(" · ")}` : label;
+}
+
 function buildHistory(audit: MissionAuditEvent[]): HistoryEvent[] {
   return [...audit]
     .sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : -1))
-    .map((e, i) => ({ id: `${e.occurredAt}-${i}`, when: shortDateTime(e.occurredAt), what: formatAuditEventType(e.eventType), who: e.actorName ?? "Système" }));
+    .map((e, i) => ({ id: `${e.occurredAt}-${i}`, when: shortDateTime(e.occurredAt), what: describeAuditEvent(e), who: e.actorName ?? "Système" }));
 }
 
 function buildReview(status: string, coherence: MissionEncodingCoherenceSummary | undefined, comments: EncodingComment[] | undefined): DrawerEncodingReview {
@@ -232,7 +253,7 @@ export function buildMissionDrawerView(input: {
       precision: `Planning : ${formatSchedulePrecision(mission.schedulePrecision).toLowerCase()}`,
       // D-156 — heures communes d'une prestation multi-salles : jamais corrigées mission par mission.
       correctionHint: execution?.presence
-        ? "Heures communes de la prestation multi-salles : elles se corrigent une seule fois sur la prestation (saisie de l'instrumentiste), ou après un détachement contrôlé."
+        ? "Heures communes de la prestation multi-salles : elles se corrigent une seule fois pour toute la prestation (« Corriger les heures communes » dans la carte de prestation, quand c'est encore permis)."
         : hoursCorrectionHint(mission),
       openDisputes: execution?.disputes.filter((d) => d.status === "OPEN").length ?? 0,
       disputes: (execution?.disputes ?? []).map((d) => ({
