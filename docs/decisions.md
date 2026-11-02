@@ -16459,3 +16459,42 @@ instrumentistes différents). Copie de production du 2026-11-02 : 3 migrations D
 `mission_execution`, calculs, lignes, interventions, matériel, affectations, postes) ;
 `app:mission:link-schedule-posts --from=2026-06 --to=2027-03` : 221 liens `CLEAR`, 0
 ambigu, 0 à arbitrer, idempotent.
+### Finalisation avant fusion (2026-11-02)
+
+**Correction des heures communes par le manager.** Tiroir manager, carte de prestation :
+« Corriger les heures communes », servi seulement si le serveur expose `edit_presence`
+(Voters inchangés : statuts DECLARED → SUBMITTED, encodage non verrouillé, aucun calcul
+verrouillé). Toujours sur toute la prestation, par `WorkedPresenceService::declare()` (mêmes
+verrous, contrôle de révision et de composition, même ventilation EARLIEST_END_FIRST) — aucun
+calcul parallèle. Motif obligatoire pour un manager (422 sinon) ; audit
+`MISSION_EXECUTION_PRESENCE_UPDATED` avec motif, heures avant/après, part avant/après,
+`hoursSource = MANAGER`, affiché lisiblement dans l'historique du tiroir. Finances : un calcul
+`CALCULATED` de la prestation devient obsolète (mécanisme D-153 : jamais approuvé, verrouillé
+ni facturé en l'état, montants inchangés, seul « Recalculer » le remplace après
+revalidation) ; un calcul approuvé ou verrouillé, ou une mission validée ou facturée, bloque
+la correction (409, rien ne bouge). Une mission validée se corrige après réouverture (D-148)
+de toutes les missions de la prestation.
+
+**Réaffectation depuis le tiroir.** Sur 409 `MISSION_HAS_ENCODING_DATA`, le tiroir rouvre le
+dialogue de confirmation motivée quand le serveur l'autorise (`confirmable` : interventions ou
+matériel seuls) ; aucune confirmation n'est possible quand des heures réelles existent (elles
+ne suivent jamais une réaffectation). Protections backend inchangées ; test du chemin confirmé
+ajouté (il n'en existait aucun).
+
+**Tarif de Salve (#18), lecture seule.** Deux versions de tarif horaire : 0,00 € du 2026-09-07
+au 2026-10-01 (créée à 0 le 2026-09-07 par le manager #7, audit
+`INSTRUMENTIST_RATE_CREATED`), puis 65,00 € depuis le 2026-10-01 (remplacement du 2026-10-10,
+date d'effet ramenée au 2026-10-01 le 2026-10-29, D-172). Les calculs d'octobre sont à 65 €
+(dont #1039 recalculé). Le 0 € ne vaut que pour septembre : il s'appliquerait aux missions de
+septembre de Salve encore à valoriser, dont les 9 paires multi-salles de juillet → septembre
+avec le Dr Deltour. Aucun élément ne dit s'il est volontaire ; valeur saisie explicitement à
+0, jamais modifiée depuis. Décision attendue avant de valoriser ces missions ; aucune donnée
+modifiée. Constat annexe : Salve est bloquée chez le Dr Deltour et le chirurgien #9 depuis le
+2026-10-27 (incompatibilités créées par le manager #7) — sans effet sur ces missions passées.
+
+**Rattachements.** Copie de production du 2026-11-02 (relevée deux fois) : les mêmes 221
+triplets mission / poste / occurrence, tous `CLEAR` ; contrôles de cohérence à 0 ; aucune
+mission ambiguë ne peut être liée arbitrairement (`TO_REVIEW` jamais écrit, `INTERCHANGEABLE`
+seulement entre missions que rien ne distingue — aucune dans les données actuelles).
+
+Plan de déploiement : `docs/deploy-plan-d156.md`.

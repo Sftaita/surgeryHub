@@ -9324,3 +9324,10 @@ aujourd'hui. Sans `--apply` : liste seule, code 1 s'il reste des liens à écrir
 `CLEAR`, `INTERCHANGEABLE` (missions équivalentes que rien ne distingue — rattachées),
 `TO_REVIEW` (missions équivalentes qui diffèrent — jamais rattachées). Écrit uniquement
 `mission.schedule_post_id` et `mission.schedule_occurrence_date`, en une transaction.
+### `PUT /api/missions/{id}/prestation/presence` — correction par un manager (2026-11-02)
+
+Champ `reason` obligatoire quand l'appelant est manager / admin (422 sinon) : correction
+motivée des heures communes de toute la prestation, historisée (motif, heures et parts
+avant/après). Les calculs `CALCULATED` des missions deviennent obsolètes
+(`obsoleteFinancialCalculationIds` dans l'audit) ; `409 PRESENCE_FINANCIALLY_SETTLED` si un
+calcul est approuvé ou verrouillé, `403` si une mission n'est plus corrigeable (Voters).
