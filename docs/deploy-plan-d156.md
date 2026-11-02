@@ -61,9 +61,11 @@ Les 9 paires (18 missions, toutes de Salve, affectation unique `LEGACY` ouverte,
 Au total, 41 missions de Salve de juillet à septembre (non annulées) : 23 sans tarif, 18 à
 0 €, aucune ligne financière instrumentiste déjà calculée avant octobre. Aucune valorisation
 n'est automatique (seulement sur action du manager : calcul d'une mission ou recalcul groupé
-de la facturation firmes) ; le déploiement n'en déclenche aucune. **Ne valoriser aucune de
-ces missions avant la décision sur le tarif de juillet → septembre.** Aucun tarif n'est
-modifié par ce plan.
+de la facturation firmes) ; le déploiement n'en déclenche aucune. **Décision (2026-11-02)** :
+65 €/h à partir du 01/10 uniquement, jamais rétroactif ; tarifs historiques inchangés ; aucune
+valorisation automatique ni régularisation des missions antérieures au 01/10 (régime de la
+période). Sujet séparé de D-156, sans effet sur le déploiement. Aucun tarif n'est modifié par
+ce plan.
 
 ## 3. Sauvegardes vérifiées (avant `activate`)
 

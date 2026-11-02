@@ -16512,3 +16512,12 @@ instantané (`deploy/rollback/d156/snapshot.sql`), verrous en base
 (`guard-install.sql` : missions liées gelées, présences en lecture seule), retour du code,
 puis `guard-uninstall.sql` au redéploiement. Cycle complet prouvé sur copie (données D-156
 identiques avant / pendant / après, relues et valorisées par le nouveau code).
+
+**Décision utilisateur — rémunération de Salve (2026-11-02).** Salve bénéficie d'une
+rémunération horaire de 65 €/h **à partir du 2026-10-01 uniquement**. Avant cette date, le
+tarif de 65 €/h ne s'applique pas rétroactivement ; les missions antérieures relèvent du régime
+applicable à cette période et ne sont pas des heures impayées par défaut. Les tarifs
+historiques de production (#8 à 0 € du 07/09 au 01/10, #12 à 65 € depuis le 01/10) ne sont pas
+modifiés ; les 41 missions antérieures au 01/10 ne sont pas valorisées automatiquement (aucune
+valorisation n'est d'ailleurs automatique) ; aucune régularisation financière sans
+autorisation. Sujet séparé de D-156, sans effet sur son déploiement.
