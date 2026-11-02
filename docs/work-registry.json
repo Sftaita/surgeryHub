@@ -227,7 +227,7 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Instrumentiste sur deux salles simultanées du même chirurgien : encodage et facturation en double aujourd'hui.",
-      "status": "pr-ouverte",
+      "status": "fusionne",
       "statusSince": "2026-11-02",
       "refs": {
         "decision": "D-156",
@@ -256,8 +256,8 @@
           "validation": "accord explicite"
         }
       ],
-      "validationNeeded": "Accord pour fusionner la PR #67, puis pour déployer (docs/deploy-plan-d156.md), puis pour app:mission:link-schedule-posts --apply.",
-      "nextAction": "Revue et accord de fusion de la PR #67 ; décision sur le tarif de Salve en septembre avant de valoriser ses missions de septembre.",
+      "validationNeeded": "Accord de déploiement (docs/deploy-plan-d156.md), puis simulation actualisée et accord séparé pour app:mission:link-schedule-posts --apply.",
+      "nextAction": "PR #67 fusionnée (main 1e45953). Archive préparée localement (SHA-256 d2aca04e…). Attente de l'accord de déploiement.",
       "lastReviewed": "2026-11-02",
       "notes": "Postes #3/#4/#5 du Dr Deltour inchangés. Tarif de Salve : 0 € du 07/09 au 01/10 (saisi explicitement), 65 € ensuite — décision attendue."
     },
