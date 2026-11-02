@@ -16498,3 +16498,17 @@ mission ambiguë ne peut être liée arbitrairement (`TO_REVIEW` jamais écrit, 
 seulement entre missions que rien ne distingue — aucune dans les données actuelles).
 
 Plan de déploiement : `docs/deploy-plan-d156.md`.
+
+**Tarif de Salve — précision (2026-11-02, lecture seule).** Les 9 paires ne relèvent pas toutes
+du tarif de septembre : 5 sont antérieures au 2026-09-07 et n'ont **aucun** tarif applicable
+(valorisation refusée, `MISSING_INSTRUMENTIST_RATE`), 4 tombent sous le tarif à 0 €. Détail et
+règle dans `docs/deploy-plan-d156.md` §2 bis. Aucune valorisation ni modification de tarif
+avant décision.
+
+**Retour arrière non destructif (2026-11-02).** Jamais de `down()` ni de suppression de
+table / colonne D-156 en production. Mesuré sur copie : sans protection, l'ancien code écrase
+en silence la part imputée d'une mission liée (saisie de durée seule). Retour protégé :
+instantané (`deploy/rollback/d156/snapshot.sql`), verrous en base
+(`guard-install.sql` : missions liées gelées, présences en lecture seule), retour du code,
+puis `guard-uninstall.sql` au redéploiement. Cycle complet prouvé sur copie (données D-156
+identiques avant / pendant / après, relues et valorisées par le nouveau code).
