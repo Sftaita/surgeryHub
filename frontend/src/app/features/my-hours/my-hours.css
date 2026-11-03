@@ -1,66 +1,8 @@
 /* D-179 — « Mes heures ». Reprise 1:1 de handoff-mes-heures/src/mes-heures.css (révision 3 figée).
    Tokens : copie de handoff-mes-heures/src/tokens.css (générée depuis docs/design/design-tokens.json),
-   PORTÉE SUR .mh et non :root — comme mission-drawer.css, aucune variable globale, aucun effet hors de cet écran. */
+   PORTÉE SUR .mh et non :root — comme mission-drawer.css, aucune variable globale, aucun effet hors de cet écran.
+   D-180 — tokens, piste, statut et étiquettes déplacés tels quels dans hours-shared/hours-shared.css. */
 
-.mh {
-  --gray-950: #0B1320;
-  --gray-900: #16202B;
-  --gray-800: #243240;
-  --gray-700: #3A4754;
-  --gray-600: #566270;
-  --gray-500: #727E8C;
-  --gray-400: #98A2AE;
-  --gray-300: #C2C9D1;
-  --gray-200: #DDE2E8;
-  --gray-150: #E7EBEF;
-  --gray-100: #EFF2F5;
-  --gray-75: #F1F4F7;
-  --gray-50: #F5F7FA;
-  --green-900: #144D38;
-  --green-800: #1F6B4F;
-  --green-700: #2C7D5F;
-  --green-600: #338F6E;
-  --green-500: #42A882;
-  --green-400: #63C9A3;
-  --green-300: #8FDABF;
-  --green-200: #BCE9D6;
-  --green-100: #DDF4EA;
-  --green-50: #EFFAF5;
-  --amber-800: #8A5A12;
-  --amber-700: #B7791F;
-  --amber-600: #D9920B;
-  --amber-500: #F0A91B;
-  --amber-100: #FBEACB;
-  --amber-50: #FEF6E7;
-  --red-700: #C62F36;
-  --red-600: #E5484D;
-  --red-500: #F0676B;
-  --red-100: #FAD7D8;
-  --red-50: #FDEEEE;
-  --blue-700: #1B5FD0;
-  --blue-600: #2D7FF9;
-  --blue-500: #5598FB;
-  --blue-100: #D6E6FE;
-  --blue-50: #EDF4FF;
-  --purple-700: #7C4FCC;
-  --purple-50: #F3EBFD;
-  --slate-700: #3B6296;
-  --slate-50: #EFF4FB;
-  --white: #FFFFFF;
-  --font-sans: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --shadow-xs: 0 1px 2px rgba(22,32,43,.05);
-  --shadow-sm: 0 1px 2px rgba(22,32,43,.05), 0 2px 6px rgba(22,32,43,.06);
-  --shadow-md: 0 2px 6px rgba(22,32,43,.06), 0 8px 20px rgba(22,32,43,.08);
-  --shadow-lg: 0 6px 16px rgba(22,32,43,.08), 0 16px 40px rgba(22,32,43,.12);
-  --border-subtle: #E7EBEF;
-  --border-default: #DDE2E8;
-  --border-strong: #C2C9D1;
-  --border-focus: #42A882;
-  --surface-page: #F5F7FA;
-  --surface-card: #FFFFFF;
-  --surface-sunken: #F1F4F7;
-  --focus-ring: 0 0 0 3px color-mix(in srgb, #42A882 32%, transparent);
-}
 
 
 .mh { font-family: var(--font-sans, Inter, system-ui, sans-serif); color: var(--gray-900); background: var(--surface-page); min-height: 100%; }
@@ -172,33 +114,10 @@
 .mh-row__surgeon { font-size: 14.5px; font-weight: 700; color: var(--gray-900); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mh-row__site { font-size: 13px; color: var(--gray-600); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mh-row__body .mh-status { margin-top: 4px; }
-.mh-fee-tag { align-self: flex-start; margin-top: 4px; padding: 1px 8px; border-radius: 999px; background: var(--gray-75); color: var(--gray-700); font-size: 11.5px; font-weight: 700; white-space: nowrap; }
 .mh-row__chev { flex: none; display: flex; color: var(--gray-300); }
 
-/* ---- Piste DÉBUT | DURÉE TOTALE | FIN (heures encodées seules, toujours neutre) ---- */
-.mh-tl-heads { display: flex; gap: 8px; padding: 0 6px; font-size: 10.5px; font-weight: 800; letter-spacing: .08em; color: var(--gray-600); }
-.mh-tl-heads > span { width: 54px; flex: none; text-align: center; }
-.mh-tl-heads > .mh-tl-heads__total { flex: 1; width: auto; color: var(--gray-800); }
-.mh-tl { display: flex; align-items: center; gap: 8px; min-width: 0; height: 30px; padding: 0 5px; border-radius: 8px; background: #fff; border: 1px solid var(--gray-200); }
-.mh-tl__val { flex: none; min-width: 54px; height: 22px; padding: 0 9px; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; gap: 3px; font-size: 11.5px; font-weight: 800; background: var(--gray-75); color: var(--gray-800); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.mh-tl__next { font-size: 10px; font-weight: 800; color: var(--gray-600); }
-/* D-179 — états du modèle réel absents du handoff, vocabulaire du Suivi des encodages (M1) :
-   durée déclarée seule (début/fin inconnus) et prestation validée sans heures (D-171). */
-.mh-tl__val--none { color: var(--gray-600); background: transparent; }
-.mh-tl--missing { justify-content: center; border-style: dashed; border-color: var(--gray-300); background: var(--gray-50); font-size: 12px; font-weight: 600; color: var(--gray-600); }
 .mh-table__row .mh-tl--missing { font-size: 12.5px; }
-.mh-tl__total { flex: 1; min-width: 0; height: 26px; border-radius: 7px; border: 1.5px solid currentColor; color: var(--gray-800); display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 12.5px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; }
 
-/* ---- Statut ---- */
-.mh-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; }
-.mh-status__dot { width: 7px; height: 7px; flex: none; border-radius: 999px; }
-.mh-status--warn { color: var(--amber-800); }
-.mh-status--warn .mh-status__dot { background: var(--amber-500); }
-.mh-status--ok { color: var(--green-700); }
-.mh-status--ok .mh-status__dot { background: var(--green-500); }
-.mh-status--pill { height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12.5px; }
-.mh-status--pill.mh-status--warn { background: var(--amber-50); }
-.mh-status--pill.mh-status--ok { background: var(--green-50); }
 
 /* ---- État vide ---- */
 .mh-empty { padding: 32px 22px 22px; display: flex; flex-direction: column; align-items: center; text-align: center; }

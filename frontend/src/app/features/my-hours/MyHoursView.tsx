@@ -1,8 +1,10 @@
 import React from "react";
+import "../hours-shared/hours-shared.css";
 import "./my-hours.css";
 import type { MyHoursEstimate, MyHoursItem, MyHoursSite, MyHoursStatement, MyHoursSummary } from "./api/myHours.types";
-import { clock, dateLong, dayOfMonth, dowShort, duration, euro, hourlyRate, monthLabel, monthName, prestationCount, rateRange } from "./format";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClockIcon, InfoIcon } from "./Icons";
+import { clock, dateLong, dayOfMonth, dowShort, duration, euro, hourlyRate, monthLabel, monthName, prestationCount, rateRange } from "../hours-shared/format";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClockIcon, InfoIcon } from "../hours-shared/Icons";
+import { isFlatFee, isPresenceShare, StatusLabel, Track, TrackHeads } from "../hours-shared/HoursTrack";
 
 // D-179 — écran « Mes heures », porté de handoff-mes-heures/src/MesHeures.tsx (révision 3
 // figée). Composant de présentation : toutes les valeurs (durées, totaux, montants, filtre
@@ -225,53 +227,6 @@ function EstimationCard({ estimate, encodedMinutes, open, onToggle }: { estimate
       <p className="mh-disclaimer">Montant brut estimé avec votre tarif personnel, appliqué à chaque prestation. Ce n'est ni un salaire net, ni une facture, ni un paiement.</p>
     </section>
   );
-}
-
-function StatusLabel({ status, pill }: { status: MyHoursItem["status"]; pill?: boolean }) {
-  const ok = status === "validated";
-  return (
-    <span className={`mh-status ${ok ? "mh-status--ok" : "mh-status--warn"} ${pill ? "mh-status--pill" : ""}`}>
-      <span className="mh-status__dot" />
-      {ok ? "Validé" : "En attente de validation"}
-    </span>
-  );
-}
-
-/** En-têtes de la piste : « DÉBUT · DURÉE TOTALE · FIN » (desktop) / « DÉBUT · TOTAL · FIN » (mobile). */
-function TrackHeads({ short }: { short?: boolean }) {
-  return (
-    <span className="mh-tl-heads" aria-hidden>
-      <span>DÉBUT</span><span className="mh-tl-heads__total">{short ? "TOTAL" : "DURÉE TOTALE"}</span><span>FIN</span>
-    </span>
-  );
-}
-
-/** Piste des heures ENCODÉES : début | durée totale | fin. Toujours neutre, jamais le planifié. */
-function Track({ p }: { p: MyHoursItem }) {
-  if (p.minutes === null) {
-    return <span className="mh-tl mh-tl--missing">Heures non renseignées</span>;
-  }
-  return (
-    <span className="mh-tl">
-      {p.start ? <span className="mh-tl__val">{clock(p.start)}</span> : <span className="mh-tl__val mh-tl__val--none">—</span>}
-      <span className="mh-tl__total"><ClockIcon size={13} strokeWidth={2.4} />{duration(p.minutes)}</span>
-      {p.end ? (
-        <span className="mh-tl__val">{clock(p.end)}{p.endsNextDay && <sup className="mh-tl__next">+1j</sup>}</span>
-      ) : (
-        <span className="mh-tl__val mh-tl__val--none">—</span>
-      )}
-    </span>
-  );
-}
-
-/** Consultation valorisée au forfait : jamais une estimation horaire, jamais d'heures fictives. */
-function isFlatFee(p: MyHoursItem): boolean {
-  return p.estimate?.rateType === "CONSULTATION_FEE";
-}
-
-/** D-156 — heures communes d'une prestation multi-salles : cette ligne porte la part imputée à la salle. */
-function isPresenceShare(p: MyHoursItem): boolean {
-  return p.durationSource === "PRESENCE_SHARE";
 }
 
 function rowLabel(p: MyHoursItem): string {
