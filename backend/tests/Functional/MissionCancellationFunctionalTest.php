@@ -369,8 +369,13 @@ final class MissionCancellationFunctionalTest extends WebTestCase
         // before any other request: each request reboots the kernel and its in-memory queue.)
         self::assertSame([], $this->sent(MissionLifecycleChangedMessage::class));
         $this->processNotifications(times: 2); // a Messenger retry sends nothing more
-        self::assertSame('SurgicalHub – Modification de votre planning', $this->only($this->emailsTo($this->jean))->subject);
-        self::assertSame('SurgicalHub – Mission confirmée', $this->only($this->emailsTo($this->ole))->subject);
+        $jeanEmail = $this->only($this->emailsTo($this->jean));
+        self::assertSame('SurgicalHub – Modification de votre planning', $jeanEmail->subject);
+        // The planned instrumentist reads HER mission's hours (08:00), never the replacement's (08:10).
+        self::assertSame(['08:00', '13:00'], [$jeanEmail->context['removed'][0]['startTime'], $jeanEmail->context['removed'][0]['endTime']]);
+        $oleEmail = $this->only($this->emailsTo($this->ole));
+        self::assertSame('SurgicalHub – Mission confirmée', $oleEmail->subject);
+        self::assertSame('08:10', $oleEmail->context['confirmed'][0]['startTime']);
         $surgeonEmail = $this->only($this->emailsTo($this->surgeon));
         self::assertSame("SurgicalHub – Changement d'instrumentiste pour votre programme", $surgeonEmail->subject);
         self::assertSame('Ole Salve', $surgeonEmail->context['surgeon'][0]['toInstrumentistName']);

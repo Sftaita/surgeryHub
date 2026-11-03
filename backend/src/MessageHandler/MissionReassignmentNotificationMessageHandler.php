@@ -79,10 +79,11 @@ final class MissionReassignmentNotificationMessageHandler
                 if ($recipient === null) {
                     continue;
                 }
+                $roleItem = $role === self::ROLE_PREVIOUS ? $this->previousItem($change, $item) : $item;
                 $intents[] = new NotificationIntent(
                     recipient: $recipient,
                     type: NotificationType::MISSION_REASSIGNMENT_NOTICE,
-                    inAppPayload: $item + ['role' => $role, 'sentence' => self::sentence($role, $item)],
+                    inAppPayload: $roleItem + ['role' => $role, 'sentence' => self::sentence($role, $roleItem)],
                     // The previous instrumentist of a relay keeps the original mission (her part).
                     mission: $role === self::ROLE_PREVIOUS ? ($this->em->find(Mission::class, (int) $change['originalMissionId']) ?? $mission) : $mission,
                     episodeRef: sprintf('reassignment:%s:%d:%s', $message->operationId, $change['missionId'], $role),
@@ -164,6 +165,28 @@ final class MissionReassignmentNotificationMessageHandler
             'fromInstrumentistName' => self::name($from),
             'toInstrumentistName'   => self::name($to),
         ];
+    }
+
+    /**
+     * What the previous instrumentist is told was taken off her planning. DIRECT / RELAY: the
+     * change's own slot (the whole mission, or the part taken over). REPLACED (D-182): her
+     * cancelled mission with its own hours, never the replacement's.
+     *
+     * @param array<string,mixed> $change
+     * @param array<string,mixed> $item
+     * @return array<string,mixed>
+     */
+    private function previousItem(array $change, array $item): array
+    {
+        if (($change['mode'] ?? null) !== MissionReplacementService::MODE_REPLACED) {
+            return $item;
+        }
+        $original = $this->em->find(Mission::class, (int) $change['originalMissionId']);
+        if ($original === null) {
+            return $item;
+        }
+
+        return $this->item(array_diff_key($change, ['startAt' => true, 'endAt' => true]), $original);
     }
 
     /** @param array<string,mixed> $item */
