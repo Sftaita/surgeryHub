@@ -35,10 +35,10 @@
 {% if showSurgeon %}<li style="margin:2px 0;"><strong>Chirurgien :</strong> Dr {{ item.surgeonName ?? '—' }}</li>{% endif %}
 </ul>
 {% if showChange %}
-<div style="margin-top:10px;font-weight:700;color:#16202B;">Modification de l'affectation :</div>
+<div style="margin-top:10px;font-weight:700;color:#16202B;">Changement d'instrumentiste :</div>
 <ul style="margin:4px 0 0 0;padding-left:18px;">
-<li style="margin:2px 0;"><strong>Instrumentiste initialement prévue :</strong> {{ item.fromInstrumentistName ?? '—' }}</li>
-<li style="margin:2px 0;"><strong>Nouvelle instrumentiste :</strong> {{ item.toInstrumentistName ?? '—' }}</li>
+<li style="margin:2px 0;"><strong>Initialement :</strong> {{ item.fromInstrumentistName ?? '—' }}</li>
+<li style="margin:2px 0;"><strong>Désormais :</strong> {{ item.toInstrumentistName ?? '—' }}</li>
 </ul>
 {% endif %}
 </td></tr>
@@ -93,7 +93,7 @@ Nous vous informons qu'une modification a été apportée à votre planning.
 {% for item in added %}{{ m.missionCard(item, true, false, font) }}{% endfor %}
 </td></tr>
 <tr><td class="sh-pad" style="padding:4px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
-{{ added|length > 1 ? 'Vous êtes désormais l\'instrumentiste affectée à ces missions.' : 'Vous êtes désormais l\'instrumentiste affectée à cette mission.' }}<br>
+{{ added|length > 1 ? 'Vous êtes désormais l\'instrumentiste de ces missions.' : 'Vous êtes désormais l\'instrumentiste de cette mission.' }}<br>
 Votre planning a été automatiquement mis à jour.
 </td></tr>
 {% endif %}

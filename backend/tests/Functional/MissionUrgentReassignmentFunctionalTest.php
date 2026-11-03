@@ -393,6 +393,8 @@ final class MissionUrgentReassignmentFunctionalTest extends WebTestCase
             self::assertStringNotContainsString('malade', json_encode($email->context, JSON_UNESCAPED_UNICODE));
             $html = static::getContainer()->get('twig')->render($email->htmlTemplate, $email->context);
             self::assertStringNotContainsString('malade', $html);
+            // Neutral wording, for male and female instrumentists alike.
+            self::assertDoesNotMatchRegularExpression('/instrumentiste (affectée|initialement prévue)|nouvelle instrumentiste/iu', $html);
         }
         self::assertNull($this->em->getRepository(NotificationDispatch::class)->findOneBy(['notificationType' => 'MISSION_REASSIGNMENT_NOTICE', 'recipient' => $otherSurgeon]),
             'the surgeon of the failed change is not told anything');
