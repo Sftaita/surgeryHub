@@ -71,13 +71,16 @@ final class MissionMapper
             status: (string) $m->getStatus()?->value,
             surgeon: $this->toUserSlim($m->getSurgeon()),
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
-            allowedActions: $this->actions->allowedActions($m, $viewer),
+            allowedActions: $this->actions->allowedActions($m, $viewer, (int) ($annotation['prestation']['size'] ?? 1)),
             covered: $this->coverage->isCovered($m),
             targetedOffer: $this->targetedOffer($m),
             encoding: $encoding,
             roomLabel: $m->getRoomLabel(),
             prestation: $annotation['prestation'] ?? null,
             scheduleConflictMissionIds: $annotation['scheduleConflictMissionIds'] ?? [],
+            // D-182 — why 'cancel' is missing from allowedActions: the planning shows the action
+            // disabled with this reason, never an operation refused afterwards.
+            cancellation: self::isManager($viewer) ? $this->cancellation($m, (int) ($annotation['prestation']['size'] ?? 1)) : null,
         );
     }
 
@@ -112,7 +115,7 @@ final class MissionMapper
             status: (string) $m->getStatus()?->value,
             surgeon: $this->toUserSlim($m->getSurgeon()),
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
-            allowedActions: $this->actions->allowedActions($m, $viewer),
+            allowedActions: $this->actions->allowedActions($m, $viewer, count($group)),
             noMaterialComment: $m->getNoMaterialComment(),
             submittedWithoutMaterial: $m->isSubmittedWithoutMaterial(),
             covered: $this->coverage->isCovered($m),
@@ -153,13 +156,29 @@ final class MissionMapper
             prestation: MissionListAnnotator::summary($group),
             reassignment: $isManagerViewer ? $this->reassignment($m) : null,
             relay: $this->relayLinks($m),
-            cancellation: $isManagerViewer ? [
-                // D-182 — with its multi-room prestation (D-156), as the guard does.
-                'blockedReason'   => MissionCancellationPolicy::blockedReason($m, count($group)),
+            // D-182 — with its multi-room prestation (D-156), as the guard does.
+            cancellation: $isManagerViewer ? $this->cancellation($m, count($group)) + [
                 'hasEncodingData' => MissionEncodingDataGuard::hasEncodingData($m),
             ] : null,
             replacement: $this->replacementLinks($m),
         );
+    }
+
+    /**
+     * D-182 — MissionCancellationPolicy as served to the manager: why the mission cannot be
+     * cancelled (the action is then disabled), else the encoding correction its cancellation
+     * performs first (submitted / validated).
+     *
+     * @return array{blockedReason: ?array{code: string, message: string}, correction: ?array{action: string, message: string}}
+     */
+    private function cancellation(Mission $m, int $prestationSize): array
+    {
+        $blocked = MissionCancellationPolicy::blockedReason($m, $prestationSize);
+
+        return [
+            'blockedReason' => $blocked,
+            'correction'    => $blocked === null ? MissionCancellationPolicy::correction($m) : null,
+        ];
     }
 
     /** D-181 — see MissionDetailDto::$reassignment. */

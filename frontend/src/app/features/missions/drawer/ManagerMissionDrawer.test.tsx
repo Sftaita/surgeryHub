@@ -148,17 +148,40 @@ describe("ManagerMissionDrawer — annulation de mission (Point 5)", () => {
     expect(await within(dialogPaper()).findByText(/archivé pour la traçabilité, sans aucune incidence financière/)).toBeInTheDocument();
   });
 
-  it("D-182 — encodage soumis : l'action reste visible et explique la correction, sans confirmation possible", async () => {
+  it("D-182 — annulation refusée par le serveur (mission facturée) : action désactivée, raison affichée, rien n'est engagé", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "VALIDATED",
+      instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
+      allowedActions: ["view"],
+      cancellation: { blockedReason: { code: "CANCELLATION_MISSION_BILLED", message: "Cette mission est déjà facturée." }, correction: null, hasEncodingData: true },
+    }));
+    const button = await screen.findByRole("button", { name: "Annuler la mission" });
+    expect(button).toBeDisabled();
+    expect(screen.getByTestId("manager-cancel-mission-reason")).toHaveTextContent("Annuler la mission — impossible : Cette mission est déjà facturée.");
+    await user.click(button);
+    expect(screen.queryByTestId("confirm-cancel-mission")).not.toBeInTheDocument();
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("D-182 — encodage soumis : renvoi en correction confirmé puis annulation, dans la même fenêtre et la même opération", async () => {
     const user = userEvent.setup();
     renderDrawer(baseMission({
       status: "SUBMITTED",
       instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
-      allowedActions: ["view", "validate", "reject"],
-      cancellation: { blockedReason: { code: "CANCELLATION_ENCODING_SUBMITTED", message: "Renvoyez d'abord l'encodage en correction." }, hasEncodingData: true },
+      allowedActions: ["view", "validate", "reject", "cancel"],
+      cancellation: { blockedReason: null, correction: { action: "REJECT", message: "L'encodage sera d'abord renvoyé en correction." }, hasEncodingData: true },
     }));
-    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
-    expect(await screen.findByTestId("cancel-mission-blocked")).toHaveTextContent("Renvoyez d'abord l'encodage en correction.");
-    expect(screen.queryByTestId("confirm-cancel-mission")).not.toBeInTheDocument();
+    const button = await screen.findByRole("button", { name: "Annuler la mission" });
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(await within(dialogPaper()).findByTestId("cancel-mission-correction")).toHaveTextContent("L'encodage sera d'abord renvoyé en correction.");
+    // Jamais sans la confirmation explicite de la correction.
+    expect(within(dialogPaper()).getByTestId("confirm-cancel-mission")).toBeDisabled();
+    await user.click(within(dialogPaper()).getByTestId("confirm-correction"));
+    await user.click(within(dialogPaper()).getByTestId("confirm-cancel-mission"));
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel", { reason: undefined, internalComment: undefined, correctionConfirmed: true }));
   });
 
   it("D-182 — mission remplacée : la mission déclarée est choisie, validée et la mission annulée en une seule opération", async () => {

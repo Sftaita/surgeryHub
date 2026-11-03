@@ -39,6 +39,11 @@ function serverMessage(err: unknown): string {
  *   la mission est annulée comme doublon en une seule opération, et le chirurgien est informé
  *   d'un changement d'instrumentiste, jamais d'une annulation.
  *
+ * Encodage soumis ou validé (non facturé) : la correction tracée (renvoi en correction,
+ * réouverture) est faite d'abord, dans la même opération, une fois cochée par le manager —
+ * jamais un aller-retour par le Suivi des encodages. Une mission que le serveur refuse
+ * d'annuler n'ouvre pas cette fenêtre : l'action est désactivée avec sa raison.
+ *
  * Tout ce qui est décidé vient du serveur : possibilité ou chemin de correction
  * (`cancellation`), missions compatibles, contrôle final, notifications et leur statut réel.
  */
@@ -49,6 +54,7 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
   const [comment, setComment] = React.useState("");
   const [replacementId, setReplacementId] = React.useState<number | null>(null);
   const [approve, setApprove] = React.useState(true);
+  const [correctionConfirmed, setCorrectionConfirmed] = React.useState(false);
   const [replacedResult, setReplacedResult] = React.useState<CancelAsReplacedResult | null>(null);
 
   React.useEffect(() => {
@@ -58,6 +64,7 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
       setComment("");
       setReplacementId(null);
       setApprove(true);
+      setCorrectionConfirmed(false);
       setReplacedResult(null);
     }
   }, [open, missionId]);
@@ -71,6 +78,8 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
   const done = replacedResult !== null;
   // Après l'opération, la mission rechargée est annulée : son refus n'a plus rien à expliquer.
   const blocked = done ? null : mission?.cancellation?.blockedReason ?? null;
+  // Encodage soumis / validé : corrigé d'abord, dans la même opération, une fois confirmé.
+  const correction = done || blocked ? null : mission?.cancellation?.correction ?? null;
 
   const candidatesQuery = useQuery({
     queryKey: ["mission-replacement-candidates", missionId],
@@ -91,7 +100,7 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
   };
 
   const simpleMutation = useMutation({
-    mutationFn: () => cancelMission(missionId!, message, comment),
+    mutationFn: () => cancelMission(missionId!, message, comment, correction !== null && correctionConfirmed),
     onSuccess: async () => {
       await refresh();
       onClose();
@@ -105,6 +114,7 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
       approveReplacement: replacement!.declared && approve,
       expectedReplacementStatus: replacement!.status,
       internalComment: comment,
+      correctionConfirmed: correction !== null && correctionConfirmed,
     }),
     onSuccess: async (res) => {
       setReplacedResult(res);
@@ -115,7 +125,8 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
   const pending = simpleMutation.isPending || replacedMutation.isPending;
   const error = simpleMutation.error ?? replacedMutation.error;
   const canConfirm = mission !== undefined && blocked === null && !pending && !done
-    && (reason === "PROGRAM_CANCELLED" || replacement !== null);
+    && (reason === "PROGRAM_CANCELLED" || replacement !== null)
+    && (correction === null || correctionConfirmed);
 
   const confirm = () => {
     simpleMutation.reset();
@@ -150,6 +161,20 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
 
             {!blocked && !done && (
               <>
+                {correction && (
+                  <Alert severity="warning" data-testid="cancel-mission-correction">
+                    <Typography variant="body2">{correction.message}</Typography>
+                    <FormControlLabel
+                      sx={{ mt: 0.5 }}
+                      control={<Checkbox size="small" checked={correctionConfirmed} onChange={(e) => setCorrectionConfirmed(e.target.checked)}
+                        inputProps={{ "data-testid": "confirm-correction" } as React.InputHTMLAttributes<HTMLInputElement>} />}
+                      label={correction.action === "REJECT"
+                        ? "Je confirme le renvoi de l'encodage en correction, puis l'annulation"
+                        : "Je confirme la réouverture de l'encodage, puis l'annulation"}
+                    />
+                  </Alert>
+                )}
+
                 <RadioGroup value={reason} onChange={(e) => setReason(e.target.value as Reason)} aria-label="Motif d'annulation">
                   <FormControlLabel value="PROGRAM_CANCELLED" control={<Radio size="small" />} data-testid="reason-program-cancelled"
                     label={<><strong>Programme annulé</strong> — la mission n'a pas eu lieu</>} />

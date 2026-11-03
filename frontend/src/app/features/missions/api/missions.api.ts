@@ -391,10 +391,13 @@ export async function cancelMission(
   id: number,
   reason?: string,
   internalComment?: string,
+  /** D-182 — confirme la correction de l'encodage soumis / validé faite avant l'annulation. */
+  correctionConfirmed?: boolean,
 ): Promise<Mission> {
   const { data } = await apiClient.post<Mission>(`/api/missions/${id}/cancel`, {
     reason: reason?.trim() || undefined,
     internalComment: internalComment?.trim() || undefined,
+    correctionConfirmed: correctionConfirmed || undefined,
   });
   return data;
 }

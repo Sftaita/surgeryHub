@@ -3,11 +3,14 @@
 namespace App\Tests\Functional;
 
 use App\Entity\AuditEvent;
+use App\Entity\FinancialCalculation;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\MissionExecution;
+use App\Entity\MissionIntervention;
 use App\Entity\User;
 use App\Enum\AuditEventType;
+use App\Enum\FinancialCalculationStatus;
 use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -30,8 +33,9 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 /**
  * D-182 — cancellation by a manager, end to end (HTTP → services → DB → Messenger →
  * NotificationDispatcher → queued emails, nothing really sent): a mission that did not take
- * place (also once started or encoded), the protection of submitted encodings, and the
- * cancellation of a duplicate in favour of an existing (declared) replacement mission.
+ * place (also once started or encoded), a submitted / validated one after the confirmed
+ * correction of its encoding in the same operation, the action disabled with its reason when
+ * the server would refuse it (billed, multi-room content), and the cancellation of a duplicate in favour of an existing (declared) replacement mission.
  *
  * "Now" is frozen on 2026-11-03 10:00 Europe/Brussels: the 08:00 missions have started.
  */
@@ -229,21 +233,94 @@ final class MissionCancellationFunctionalTest extends WebTestCase
         self::assertNotSame(200, $validate);
     }
 
-    public function test_submitted_mission_is_protected_with_its_correction_path_and_unchanged(): void
+    public function test_submitted_mission_is_cancelled_after_its_confirmed_correction_in_one_operation(): void
     {
         $m = $this->mission($this->jean, MissionStatus::SUBMITTED);
+        $this->encodeHours($m, 240);
 
         [, $detail] = $this->request('GET', "/api/missions/{$m->getId()}");
-        self::assertNotContains('cancel', $detail['allowedActions']);
-        self::assertSame('CANCELLATION_ENCODING_SUBMITTED', $detail['cancellation']['blockedReason']['code']);
+        self::assertContains('cancel', $detail['allowedActions']);
+        self::assertNull($detail['cancellation']['blockedReason']);
+        self::assertSame('REJECT', $detail['cancellation']['correction']['action']);
 
+        // Never silently: without the confirmation, nothing changes.
         [$status, $body] = $this->request('POST', "/api/missions/{$m->getId()}/cancel", []);
         self::assertSame(409, $status);
-        self::assertSame('CANCELLATION_ENCODING_SUBMITTED', $body['error']['code']);
+        self::assertSame('CANCELLATION_CORRECTION_REQUIRED', $body['error']['code']);
         $m = $this->reload($m);
         self::assertSame(MissionStatus::SUBMITTED, $m->getStatus());
         self::assertSame($this->jean->getId(), $m->getInstrumentist()?->getId());
+        self::assertSame([], $this->audits($m, AuditEventType::MISSION_ENCODING_REJECTED));
         self::assertSame([], $this->sent(MissionLifecycleChangedMessage::class));
+
+        [$status, $body] = $this->request('POST', "/api/missions/{$m->getId()}/cancel", ['reason' => 'Bloc fermé', 'correctionConfirmed' => true]);
+        self::assertSame(200, $status, json_encode($body));
+        self::assertSame('CANCELLED', $body['status']);
+        // One lifecycle message only: the cancellation, never a "correction requested".
+        self::assertSame(['CANCELLED'], array_map(static fn (MissionLifecycleChangedMessage $x) => $x->changeType->value, $this->sent(MissionLifecycleChangedMessage::class)));
+        $this->processNotifications();
+        self::assertCount(1, $this->emailsTo($this->jean));
+        self::assertCount(1, $this->emailsTo($this->surgeon));
+        self::assertEmailCount(0);
+
+        $m = $this->reload($m);
+        self::assertSame(MissionStatus::CANCELLED, $m->getStatus());
+        self::assertNull($m->getInstrumentist());
+        self::assertSame(240, $m->getExecution()?->getActualDurationMinutes(), 'archived, never deleted');
+        $rejected = $this->audits($m, AuditEventType::MISSION_ENCODING_REJECTED);
+        self::assertCount(1, $rejected);
+        self::assertTrue($rejected[0]->getPayload()['beforeCancellation']);
+        self::assertSame('Annulation de la mission : programme annulé. Bloc fermé', $m->getEncodingComments()->first()->getComment());
+        $payload = $this->audits($m, AuditEventType::MISSION_CANCELLED_POST_DEPLOY)[0]->getPayload();
+        self::assertSame('REJECT', $payload['encodingCorrection']['action']);
+        self::assertSame('SUBMITTED', $payload['encodingCorrection']['fromStatus']);
+    }
+
+    public function test_billed_mission_cannot_be_cancelled_and_the_action_says_why(): void
+    {
+        $m = $this->mission($this->jean, MissionStatus::VALIDATED, '2026-11-02');
+        $locked = (new FinancialCalculation())->setMission($m)->setStatus(FinancialCalculationStatus::LOCKED)
+            ->setEffectiveAt(new \DateTimeImmutable('2026-11-02'))->setCalculatedAt(new \DateTimeImmutable('2026-11-02 18:00'))
+            ->setLockedAt(new \DateTimeImmutable('2026-11-02 18:00'));
+        $m->getFinancialCalculations()->add($locked);
+        $this->em->persist($locked);
+        $this->em->flush();
+
+        [, $detail] = $this->request('GET', "/api/missions/{$m->getId()}");
+        self::assertNotContains('cancel', $detail['allowedActions']);
+        self::assertSame('CANCELLATION_MISSION_BILLED', $detail['cancellation']['blockedReason']['code']);
+        // The planning list serves the same reason for its disabled action.
+        [, $list] = $this->request('GET', "/api/missions?siteId={$this->site->getId()}");
+        $item = array_values(array_filter($list['items'], static fn (array $i) => $i['id'] === $m->getId()))[0];
+        self::assertNotContains('cancel', $item['allowedActions']);
+        self::assertSame('CANCELLATION_MISSION_BILLED', $item['cancellation']['blockedReason']['code']);
+
+        [$status, $body] = $this->request('POST', "/api/missions/{$m->getId()}/cancel", ['correctionConfirmed' => true]);
+        self::assertSame(409, $status);
+        self::assertSame(MissionStatus::VALIDATED, $this->reload($m)->getStatus());
+    }
+
+    public function test_the_room_carrying_a_multi_room_prestation_content_is_disabled_in_the_list_too(): void
+    {
+        // Same instrumentist, surgeon, site and day, overlapping: one prestation over two rooms.
+        $carrier = $this->mission($this->jean, MissionStatus::ENCODING_IN_PROGRESS, '2026-11-03', '08:00', '13:00');
+        $other = $this->mission($this->jean, MissionStatus::ENCODING_IN_PROGRESS, '2026-11-03', '09:00', '12:00');
+        $intervention = (new MissionIntervention())->setMission($carrier)->setCode('D182-PREST')->setLabel('Prestation');
+        $this->em->persist($intervention);
+        $this->em->flush();
+
+        [, $list] = $this->request('GET', "/api/missions?siteId={$this->site->getId()}");
+        $byId = array_column($list['items'], null, 'id');
+        self::assertSame(2, $byId[$carrier->getId()]['prestation']['size']);
+        self::assertNotContains('cancel', $byId[$carrier->getId()]['allowedActions']);
+        self::assertSame('CANCELLATION_PRESTATION_CONTENT', $byId[$carrier->getId()]['cancellation']['blockedReason']['code']);
+        // The other room, without content, stays cancellable.
+        self::assertContains('cancel', $byId[$other->getId()]['allowedActions']);
+        self::assertNull($byId[$other->getId()]['cancellation']['blockedReason']);
+
+        [, $detail] = $this->request('GET', "/api/missions/{$carrier->getId()}");
+        self::assertNotContains('cancel', $detail['allowedActions']);
+        self::assertSame('CANCELLATION_PRESTATION_CONTENT', $detail['cancellation']['blockedReason']['code']);
     }
 
     // ── Replacement by an existing mission ───────────────────────────────────
@@ -287,10 +364,9 @@ final class MissionCancellationFunctionalTest extends WebTestCase
         self::assertSame(260, $kept->getExecution()?->getActualDurationMinutes(), 'the replacement keeps all its encoding');
         self::assertCount(1, $this->audits($kept, AuditEventType::MISSION_DECLARED_APPROVED));
         self::assertCount(1, $this->audits($kept, AuditEventType::MISSION_KEPT_AS_REPLACEMENT));
-        self::assertSame(['replacedByMissionId' => $kept->getId(), 'replacesMissionIds' => []], $this->request('GET', "/api/missions/{$planned->getId()}")[1]['replacement']);
-        self::assertSame([$planned->getId()], $this->request('GET', "/api/missions/{$kept->getId()}")[1]['replacement']['replacesMissionIds']);
 
-        // Never a programme cancellation next to the change of instrumentist.
+        // Never a programme cancellation next to the change of instrumentist. (Processed
+        // before any other request: each request reboots the kernel and its in-memory queue.)
         self::assertSame([], $this->sent(MissionLifecycleChangedMessage::class));
         $this->processNotifications(times: 2); // a Messenger retry sends nothing more
         self::assertSame('SurgicalHub – Modification de votre planning', $this->only($this->emailsTo($this->jean))->subject);
@@ -300,6 +376,9 @@ final class MissionCancellationFunctionalTest extends WebTestCase
         self::assertSame('Ole Salve', $surgeonEmail->context['surgeon'][0]['toInstrumentistName']);
         self::assertStringNotContainsString('malade', json_encode($surgeonEmail->context, JSON_UNESCAPED_UNICODE));
         self::assertEmailCount(0);
+
+        self::assertSame(['replacedByMissionId' => $kept->getId(), 'replacesMissionIds' => []], $this->request('GET', "/api/missions/{$planned->getId()}")[1]['replacement']);
+        self::assertSame([$planned->getId()], $this->request('GET', "/api/missions/{$kept->getId()}")[1]['replacement']['replacesMissionIds']);
 
         // The manager reads the real delivery status of the operation.
         [, $operation] = $this->request('GET', "/api/missions/reassignment-operations/{$body['operationId']}");
@@ -354,9 +433,23 @@ final class MissionCancellationFunctionalTest extends WebTestCase
 
         [$status, $body] = $this->request('POST', "/api/missions/{$planned->getId()}/cancel-as-replaced", ['replacementMissionId' => $kept->getId(), 'approveReplacement' => true]);
 
+        // Refused after the approval was applied in the transaction: everything is rolled back.
         self::assertSame(409, $status);
-        self::assertSame('CANCELLATION_ENCODING_SUBMITTED', $body['error']['code']);
+        self::assertSame('CANCELLATION_CORRECTION_REQUIRED', $body['error']['code']);
         self::assertSame(MissionStatus::DECLARED, $this->reload($kept)->getStatus(), 'never approved without the cancellation');
+        self::assertSame(MissionStatus::SUBMITTED, $this->em->find(Mission::class, $planned->getId())->getStatus());
+        self::assertSame([], $this->audits($kept, AuditEventType::MISSION_DECLARED_APPROVED));
+        self::assertSame([], $this->audits($planned, AuditEventType::MISSION_ENCODING_REJECTED));
+
+        // Confirmed: sent back to correction, cancelled as a duplicate, the replacement validated.
+        [$status, $body] = $this->request('POST', "/api/missions/{$planned->getId()}/cancel-as-replaced", [
+            'replacementMissionId' => $kept->getId(), 'approveReplacement' => true, 'correctionConfirmed' => true,
+        ]);
+        self::assertSame(200, $status, json_encode($body));
+        self::assertSame(MissionStatus::CANCELLED, $this->reload($planned)->getStatus());
+        self::assertSame(MissionStatus::ASSIGNED, $this->em->find(Mission::class, $kept->getId())->getStatus());
+        self::assertCount(1, $this->audits($planned, AuditEventType::MISSION_ENCODING_REJECTED));
+        self::assertStringStartsWith('Annulation de la mission : remplacée par la mission #' . $kept->getId(), $this->em->find(Mission::class, $planned->getId())->getEncodingComments()->first()->getComment());
     }
 
     public function test_a_replacement_is_kept_for_one_duplicate_only(): void

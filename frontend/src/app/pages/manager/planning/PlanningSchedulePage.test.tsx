@@ -194,6 +194,19 @@ describe("PlanningSchedulePage — Cancel action (D-182)", () => {
     expect(screen.queryByRole("button", { name: /annuler la mission/i })).toBeNull();
   });
 
+  it("shows the action disabled, with the server's reason, when the mission cannot be cancelled", async () => {
+    const user = await loadMissions([makeMission({
+      status: "VALIDATED",
+      allowedActions: ["view"],
+      cancellation: { blockedReason: { code: "CANCELLATION_MISSION_BILLED", message: "Cette mission est déjà facturée." }, correction: null },
+    })]);
+    const button = await screen.findByRole("button", { name: /annuler la mission/i });
+    expect(button).toBeDisabled();
+    await user.hover(button.parentElement!);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Annulation impossible : Cette mission est déjà facturée.");
+    expect(missionsApi.fetchMissionById).not.toHaveBeenCalled();
+  });
+
   it("does not show Cancel button on CANCELLED missions", async () => {
     await loadMissions([makeMission({ status: "CANCELLED" })]);
     await waitFor(() => expect(screen.queryByRole("button", { name: /annuler la mission/i })).toBeNull());
@@ -212,7 +225,7 @@ describe("PlanningSchedulePage — Cancel action (D-182)", () => {
     await user.click(await screen.findByRole("button", { name: /annuler la mission/i }));
     await user.click(await screen.findByTestId("confirm-cancel-mission"));
 
-    await waitFor(() => expect(missionsApi.cancelMission).toHaveBeenCalledWith(1, "", ""));
+    await waitFor(() => expect(missionsApi.cancelMission).toHaveBeenCalledWith(1, "", "", false));
     expect(planningApi.releaseMission).not.toHaveBeenCalled();
   });
 });

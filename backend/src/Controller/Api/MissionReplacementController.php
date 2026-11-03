@@ -6,6 +6,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Security\Voter\MissionVoter;
+use App\Service\MissionCancellationPolicy;
 use App\Service\MissionReplacementService;
 use App\Service\MissionService;
 use App\Service\Prestation\MissionEncodingDataGuard;
@@ -84,6 +85,26 @@ final class MissionReplacementController extends AbstractController
             $approve,
             isset($data['expectedReplacementStatus']) && is_string($data['expectedReplacementStatus']) ? $data['expectedReplacementStatus'] : null,
             isset($data['internalComment']) && is_string($data['internalComment']) ? $data['internalComment'] : null,
+            $this->correctionConfirmed($mission, $data),
         ));
+    }
+
+    /**
+     * D-182 — the encoding correction that precedes the cancellation of a submitted / validated
+     * mission, confirmed by the manager: also authorised as the correction itself would be.
+     *
+     * @param array<string,mixed> $data
+     */
+    private function correctionConfirmed(Mission $mission, array $data): bool
+    {
+        $confirmed = ($data['correctionConfirmed'] ?? false) === true;
+        $correction = MissionCancellationPolicy::correction($mission);
+        if ($confirmed && $correction !== null) {
+            $this->denyAccessUnlessGranted($correction['action'] === MissionCancellationPolicy::CORRECTION_REJECT
+                ? MissionVoter::ENCODING_REJECT
+                : MissionVoter::ENCODING_REOPEN, $mission);
+        }
+
+        return $confirmed;
     }
 }

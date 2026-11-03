@@ -15,6 +15,8 @@ export interface DrawerFooterAction {
   tone: DrawerActionTone;
   icon?: 'reopen' | 'retry' | 'check';
   disabled?: boolean;
+  /** Action désactivée : pourquoi, affiché en clair dans le pied (jamais seulement au survol). */
+  disabledReason?: string;
   testId?: string;
   onClick: () => void;
 }
@@ -515,10 +517,16 @@ export function MissionDrawer({ open, missionId, view: m, placeholder, statusPil
           <div className="mdw-foot__text">
             <span className="mdw-foot__title">{footer.title}</span>
             {footer.sub && <span className="mdw-foot__sub">{footer.sub}</span>}
+            {footer.actions.filter((a) => a.disabled && a.disabledReason).map((a) => (
+              <span key={a.key} id={`mdw-reason-${a.key}`} className="mdw-foot__reason" data-testid={a.testId ? `${a.testId}-reason` : undefined}>
+                {a.label} — impossible : {a.disabledReason}
+              </span>
+            ))}
           </div>
           {footer.actions.map((a) => (
             <button key={a.key} type="button" className={`mdw-btn mdw-btn--${a.tone}`} onClick={a.onClick}
-              disabled={a.disabled} data-testid={a.testId}>
+              disabled={a.disabled} data-testid={a.testId} title={a.disabled ? a.disabledReason : undefined}
+              aria-describedby={a.disabled && a.disabledReason ? `mdw-reason-${a.key}` : undefined}>
               {a.icon && <Icon name={a.icon} stroke={a.icon === 'check' ? 2.8 : 2.2} />}{a.label}
             </button>
           ))}

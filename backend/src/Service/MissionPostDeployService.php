@@ -83,6 +83,8 @@ class MissionPostDeployService
         // D-182 — a manager's cancellation cancels the calculations a reopen left open.
         private readonly ?FinancialCalculationService $financialCalculations = null,
         private readonly ?PrestationGroupResolver $prestationGroups = null,
+        // D-182 — the encoding correction a submitted / validated mission's cancellation performs first.
+        private readonly ?MissionEncodingWorkflowService $encodingWorkflow = null,
     ) {
         // Always autowired; a plain unit test that omits it still gets the real writer (built
         // on the same EntityManager), never a shortcut that would skip the history.
@@ -425,7 +427,7 @@ class MissionPostDeployService
      *
      * @return array<string,mixed> the audit payload
      */
-    public function cancelByManager(Mission $mission, User $actor, string $cancellationReason, ?string $reason = null, bool $notify = true, ?Mission $replacement = null, ?string $internalComment = null): array
+    public function cancelByManager(Mission $mission, User $actor, string $cancellationReason, ?string $reason = null, bool $notify = true, ?Mission $replacement = null, ?string $internalComment = null, bool $correctionConfirmed = false): array
     {
         if (!in_array($cancellationReason, [MissionCancellationPolicy::REASON_PROGRAM_CANCELLED, MissionCancellationPolicy::REASON_REPLACED_BY_MISSION], true)
             || ($cancellationReason === MissionCancellationPolicy::REASON_REPLACED_BY_MISSION) !== ($replacement !== null)) {
@@ -436,6 +438,7 @@ class MissionPostDeployService
             'cancellationReason'   => $cancellationReason,
             'replacement'          => $replacement,
             'internalComment'      => self::cleanComment($internalComment),
+            'correctionConfirmed'  => $correctionConfirmed,
         ]));
 
         if ($notify) {
@@ -443,6 +446,22 @@ class MissionPostDeployService
         }
 
         return $payload;
+    }
+
+    /**
+     * D-182 — the comment historised with the correction that precedes a cancellation (the
+     * encoding history shows why it was sent back / reopened).
+     *
+     * @param array{cancellationReason: string, replacement: ?Mission} $byManager
+     */
+    private function correctionComment(array $byManager, ?string $reason): string
+    {
+        $comment = $byManager['cancellationReason'] === MissionCancellationPolicy::REASON_REPLACED_BY_MISSION
+            ? sprintf('Annulation de la mission : remplacée par la mission #%d.', (int) $byManager['replacement']?->getId())
+            : 'Annulation de la mission : programme annulé.';
+        $reason = self::cleanComment($reason);
+
+        return $reason !== null ? $comment . ' ' . $reason : $comment;
     }
 
     /** D-182 — missions of $mission's multi-room prestation (MissionCancellationPolicy). */
@@ -469,17 +488,29 @@ class MissionPostDeployService
     /**
      * cancel()'s mutation, run under the mission lock; returns the audit/lifecycle payload.
      *
-     * @param array{cancellationReason: string, replacement: ?Mission, internalComment: ?string}|null $byManager
+     * @param array{cancellationReason: string, replacement: ?Mission, internalComment: ?string, correctionConfirmed: bool}|null $byManager
      *        D-182 — a manager's cancellation (MissionCancellationPolicy) instead of the
      *        automatic callers' narrower rule (absence reaction, room release, planning edits)
      */
     private function applyCancel(Mission $mission, User $actor, ?string $reason, ?int $causedByAbsenceId, ?array $byManager = null): array
     {
         $archivedEncoding = null;
+        $encodingCorrection = null;
         if ($byManager !== null) {
             $blocked = MissionCancellationPolicy::blockedReason($mission, $this->prestationSize($mission));
             if ($blocked !== null) {
                 throw new MissionCancellationException($blocked['code'], $blocked['message'], ['missionId' => $mission->getId(), 'status' => $mission->getStatus()->value]);
+            }
+            // A submitted / validated encoding is first corrected explicitly (sent back to
+            // correction, reopened), in this same transaction, once the manager confirmed it.
+            $correction = MissionCancellationPolicy::correction($mission);
+            if ($correction !== null) {
+                if (!$byManager['correctionConfirmed'] || $this->encodingWorkflow === null) {
+                    throw new MissionCancellationException(MissionCancellationPolicy::CORRECTION_REQUIRED, $correction['message'], [
+                        'missionId' => $mission->getId(), 'status' => $mission->getStatus()->value, 'correction' => $correction['action'],
+                    ]);
+                }
+                $encodingCorrection = $this->encodingWorkflow->applyCorrectionBeforeCancellation($mission, $actor, $this->correctionComment($byManager, $reason));
             }
             // Archived as is, for traceability only: a CANCELLED mission is never validated
             // nor billed (billing reads VALIDATED missions only).
@@ -541,6 +572,11 @@ class MissionPostDeployService
                 'replacementMissionId' => $replacement?->getId(),
                 'archivedEncoding'     => $archivedEncoding,
                 'internalComment'      => $byManager['internalComment'],
+                'encodingCorrection'   => $encodingCorrection !== null ? [
+                    'action'                          => $encodingCorrection['action'],
+                    'fromStatus'                      => $encodingCorrection['fromStatus'],
+                    'obsoleteFinancialCalculationIds' => $encodingCorrection['obsoleteFinancialCalculationIds'] ?? [],
+                ] : null,
             ];
         }
 

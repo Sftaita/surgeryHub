@@ -504,7 +504,9 @@ désormais `{"scope": "DURABLE"}` (refus + blocage, D-152).
 
 **AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::CANCEL`)
 
-**Transition :** `DRAFT|OPEN|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS → CANCELLED` (D-182)
+**Transition :** `DRAFT|OPEN|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS → CANCELLED` (D-182) ;
+`SUBMITTED|VALIDATED → ENCODING_IN_PROGRESS → CANCELLED` dans la même opération, une fois la
+correction confirmée (`correctionConfirmed`)
 
 « Programme annulé » : la mission n'a pas eu lieu. Directement depuis `ASSIGNED` (aucune remise au
 pool préalable), et aussi quand l'heure de début est passée (`IN_PROGRESS`) ou l'encodage commencé
@@ -514,11 +516,23 @@ pool préalable), et aussi quand l'heure de début est passée (`IN_PROGRESS`) o
 **Body :**
 
 ```json
-{ "reason": "Chirurgien absent", "internalComment": "Appel du bloc à 9 h" }
+{ "reason": "Chirurgien absent", "internalComment": "Appel du bloc à 9 h", "correctionConfirmed": true }
 ```
 
-Les deux champs sont optionnels. `reason` est repris dans l'e-mail d'annulation ;
+Tous les champs sont optionnels. `reason` est repris dans l'e-mail d'annulation ;
 `internalComment` reste dans l'historique (managers seulement), jamais dans une notification.
+
+**Encodage soumis ou validé (non facturé)** : la correction explicite est faite d'abord, dans la
+même transaction et sous le même verrou, quand `correctionConfirmed: true` (sinon `409
+CANCELLATION_CORRECTION_REQUIRED`, rien n'est modifié) — `SUBMITTED` : renvoi en correction
+(mêmes écritures que `POST …/encoding/reject`, `MISSION_ENCODING_REJECTED`) ; `VALIDATED` :
+réouverture (mêmes écritures et contrôles que `POST …/encoding/reopen`, calcul verrouillé relu en
+base, `MISSION_ENCODING_REOPENED`, calculs ouverts marqués obsolètes). Motif historisé dans
+l'encodage : « Annulation de la mission : programme annulé. <reason> » (ou « remplacée par la
+mission #N »), payload `beforeCancellation: true`. AuthZ supplémentaire :
+`MissionVoter::ENCODING_REJECT` / `ENCODING_REOPEN`. Aucune notification de demande de
+correction : seule l'annulation est notifiée. Une mission d'une prestation multi-salles soumise
+ou validée reste refusée (correction de toute la prestation d'abord).
 
 **Réponse — 200 :** Mission complète avec `status: "CANCELLED"`
 
@@ -528,8 +542,9 @@ Les deux champs sont optionnels. `reason` est repris dans l'e-mail d'annulation 
 |---|---|
 | `403` | Non autorisé |
 | `404` | Mission introuvable |
-| `409` `CANCELLATION_ENCODING_SUBMITTED` | Encodage soumis : le renvoyer d'abord en correction |
-| `409` `CANCELLATION_ENCODING_VALIDATED` | Encodage validé : le rouvrir d'abord (correction tracée) |
+| `409` `CANCELLATION_CORRECTION_REQUIRED` | Encodage soumis / validé : `correctionConfirmed: true` requis (`error.correction` : `REJECT` \| `REOPEN`) |
+| `409` `CANCELLATION_ENCODING_SUBMITTED` | Encodage soumis d'une prestation multi-salles : renvoyer d'abord toute la prestation en correction |
+| `409` `CANCELLATION_ENCODING_VALIDATED` | Encodage validé d'une prestation multi-salles : rouvrir d'abord toute la prestation |
 | `409` `CANCELLATION_MISSION_BILLED` | Calcul financier verrouillé (facturée) : jamais annulée, correction financière explicite |
 | `409` `CANCELLATION_MISSION_CLOSED` | Mission clôturée |
 | `409` `CANCELLATION_SHARED_PRESENCE` | Mission d'une présence commune (multi-salles) : la détacher d'abord |
@@ -544,7 +559,8 @@ Les deux champs sont optionnels. `reason` est repris dans l'e-mail d'annulation 
 - calculs financiers `CALCULATED` / `APPROVED` laissés par une réouverture → `CANCELLED`
   (`FINANCIAL_CALCULATION_CANCELLED`) ;
 - `AuditEvent(MISSION_CANCELLED_POST_DEPLOY)` : `reason`, `previousStatus`, `cancellationReason:
-  PROGRAM_CANCELLED`, `archivedEncoding` (faits d'encodage ou `null`), `internalComment` ;
+  PROGRAM_CANCELLED`, `archivedEncoding` (faits d'encodage ou `null`), `internalComment`,
+  `encodingCorrection` (`{action, fromStatus, obsoleteFinancialCalculationIds}` ou `null`) ;
 - `MissionLifecycleChangedMessage(CANCELLED)` dispatché (async) → `PLANNING_MISSION_CANCELLED`
   (e-mail activé par défaut) à l'instrumentiste retirée et au chirurgien.
 
@@ -576,8 +592,12 @@ mission existante (ex. créée par la remplaçante), conservée intégralement a
 **Body :**
 
 ```json
-{ "replacementMissionId": 77, "approveReplacement": true, "expectedReplacementStatus": "DECLARED", "internalComment": "…" }
+{ "replacementMissionId": 77, "approveReplacement": true, "expectedReplacementStatus": "DECLARED", "internalComment": "…", "correctionConfirmed": true }
 ```
+
+`correctionConfirmed` : comme pour `POST …/cancel`, la mission annulée soumise / validée est
+d'abord corrigée dans la même transaction (sinon `409 CANCELLATION_CORRECTION_REQUIRED`, et la
+validation éventuelle de la mission conservée est annulée avec le reste).
 
 **Une seule transaction**, les deux missions verrouillées : contrôle de compatibilité (mêmes règles
 que les candidats), `expectedReplacementStatus` (sinon `409 CANCELLATION_REPLACEMENT_CHANGED`),
@@ -736,9 +756,14 @@ contient `reassign` aussi pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS` quand un m
 ### Détail mission — champs D-182
 
 `GET /api/missions/{id}` porte, pour les managers, `cancellation` : `{ blockedReason: {code,
-message}|null, hasEncodingData }` (`MissionCancellationPolicy`), et pour tous `replacement` :
-`{ replacedByMissionId, replacesMissionIds }` ou `null`. `allowedActions` contient `cancel` aussi
-pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS`, jamais quand `blockedReason` est servi.
+message}|null, correction: {action: "REJECT"|"REOPEN", message}|null, hasEncodingData }`
+(`MissionCancellationPolicy`), et pour tous `replacement` : `{ replacedByMissionId,
+replacesMissionIds }` ou `null`. Les éléments de `GET /api/missions` portent aussi, pour les
+managers, `cancellation` : `{ blockedReason, correction }`. `allowedActions` contient `cancel`
+aussi pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS`, `SUBMITTED` et `VALIDATED` non facturée,
+jamais quand `blockedReason` est servi — calculé avec la prestation multi-salles de la mission
+(liste et détail), exactement comme le contrôle serveur : le client affiche alors l'action
+désactivée avec `blockedReason.message`, jamais une opération engagée puis refusée.
 
 ---
 

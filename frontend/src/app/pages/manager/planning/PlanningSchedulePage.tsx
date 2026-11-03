@@ -4,7 +4,7 @@ import {
   Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
   MenuItem, Paper, Select, Stack, ToggleButton, ToggleButtonGroup,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField,
-  Link, Typography,
+  Link, Tooltip, Typography,
 } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
 import LockOpenIcon   from "@mui/icons-material/LockOpen";
@@ -83,6 +83,8 @@ interface ScheduleRow {
   canEdit:            boolean;
   canRelease:         boolean;
   canCancel:          boolean;
+  /** D-182 — annulation impossible : bouton désactivé avec cette raison (serveur). */
+  cancelBlockedReason: string | null;
   canReassign:        boolean;
 }
 
@@ -109,6 +111,12 @@ function toRow(m: Mission): ScheduleRow {
     // D-182 — servi par le backend (OPEN, ASSIGNED, mission du jour commencée…), jamais
     // déduit du statut : plus besoin de remettre la mission au pool avant de l'annuler.
     canCancel:  (m.allowedActions ?? []).includes("cancel"),
+    // D-182 — mission facturée, clôturée, prestation multi-salles… : jamais une opération
+    // engagée puis refusée, l'action est désactivée avec la raison du serveur.
+    cancelBlockedReason: !(m.allowedActions ?? []).includes("cancel") && m.cancellation?.blockedReason
+      && m.cancellation.blockedReason.code !== "CANCELLATION_NOT_POSSIBLE"
+      ? m.cancellation.blockedReason.message
+      : null,
     // D-181 — servi par le backend (y compris une mission du jour déjà commencée), jamais déduit du statut.
     canReassign: (m.allowedActions ?? []).includes("reassign"),
   };
@@ -382,7 +390,7 @@ export default function PlanningSchedulePage() {
         r.map((row) =>
           row.missionId === missionId
             ? { ...row, status: "OPEN" as MissionStatus, instrumentistId: null, instrumentistName: null,
-                canEdit: true, canRelease: false, canCancel: true, canReassign: false }
+                canEdit: true, canRelease: false, canCancel: true, cancelBlockedReason: null, canReassign: false }
             : row,
         ),
       );
@@ -639,18 +647,25 @@ export default function PlanningSchedulePage() {
                                 Pool
                               </Button>
                             )}
-                            {row.canCancel && (
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                color="error"
-                                startIcon={<BlockIcon fontSize="small" />}
-                                aria-label="Annuler la mission"
-                                onClick={() => setCancelTarget(row.missionId)}
-                                sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
-                              >
-                                Annuler
-                              </Button>
+                            {(row.canCancel || row.cancelBlockedReason) && (
+                              <Tooltip title={row.cancelBlockedReason ? `Annulation impossible : ${row.cancelBlockedReason}` : ""} arrow>
+                                {/* span : un bouton désactivé ne reçoit pas le survol de l'infobulle. */}
+                                <span>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="error"
+                                    startIcon={<BlockIcon fontSize="small" />}
+                                    aria-label="Annuler la mission"
+                                    disabled={!row.canCancel}
+                                    data-testid={`cancel-mission-${row.missionId}`}
+                                    onClick={() => setCancelTarget(row.missionId)}
+                                    sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
+                                  >
+                                    Annuler
+                                  </Button>
+                                </span>
+                              </Tooltip>
                             )}
                             {row.canReassign && (
                               <Button

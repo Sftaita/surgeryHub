@@ -224,9 +224,15 @@ export interface MissionReassignmentInfo {
  * maintenant ; sinon le chemin de correction à suivre. Jamais déduit du statut.
  */
 export interface MissionCancellationInfo {
+  /** Pourquoi la mission ne peut pas être annulée : l'action est affichée désactivée avec ce message. */
   blockedReason: { code: string; message: string } | null;
-  /** Encodage existant : archivé sans aucune incidence financière si la mission est annulée. */
-  hasEncodingData: boolean;
+  /**
+   * Encodage soumis (REJECT) ou validé non facturé (REOPEN) : correction tracée faite d'abord,
+   * dans la même opération, une fois confirmée par le manager (`correctionConfirmed`).
+   */
+  correction?: { action: "REJECT" | "REOPEN"; message: string } | null;
+  /** Encodage existant : archivé sans aucune incidence financière si la mission est annulée (détail seulement). */
+  hasEncodingData?: boolean;
 }
 
 export interface Mission {

@@ -21,10 +21,12 @@ use App\Service\FinancialCalculationService;
 use App\Service\MissionActionsService;
 use App\Service\MissionCancellationPolicy;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingWorkflowService;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionPostDeployService;
 use App\Service\MissionReplacementService;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\EntityRepository;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
@@ -33,8 +35,9 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
- * D-182 — a manager cancels a mission that did not take place (also once started or encoded),
- * never a submitted / validated / billed / closed one; a duplicate is cancelled in favour of an
+ * D-182 — a manager cancels a mission that did not take place (also once started or encoded;
+ * a submitted / validated one after the explicit correction of its encoding, in the same
+ * operation), never a billed / closed one; a duplicate is cancelled in favour of an
  * existing replacement mission, whose people are told of a change of instrumentist.
  */
 final class MissionCancellationTest extends TestCase
@@ -64,9 +67,33 @@ final class MissionCancellationTest extends TestCase
         $this->surgeon = $this->user('Paul', 'Chirurgien');
     }
 
-    private function service(?FinancialCalculationService $calculations = null): MissionPostDeployService
+    private function service(?FinancialCalculationService $calculations = null, ?MissionEncodingWorkflowService $workflow = null): MissionPostDeployService
     {
-        return new MissionPostDeployService($this->em, $this->bus, $this->audit, $this->createMock(MissionEligibilityService::class), financialCalculations: $calculations);
+        return new MissionPostDeployService($this->em, $this->bus, $this->audit, $this->createMock(MissionEligibilityService::class), financialCalculations: $calculations, encodingWorkflow: $workflow);
+    }
+
+    /** The real encoding workflow, built on the mocked EntityManager / audit (its other collaborators are unused by the correction). */
+    private function workflow(): MissionEncodingWorkflowService
+    {
+        $service = (new \ReflectionClass(MissionEncodingWorkflowService::class))->newInstanceWithoutConstructor();
+        $em = $this->em;
+        $audit = $this->audit;
+        \Closure::bind(function () use ($em, $audit) { $this->em = $em; $this->audit = $audit; }, $service, MissionEncodingWorkflowService::class)();
+
+        return $service;
+    }
+
+    /** The financial calculations "in the database" are those of $m (reopen() reads them there). */
+    private function calculationsInDatabaseOf(Mission $m): void
+    {
+        $byStatus = static fn (array $criteria): array => array_values(array_filter(
+            $m->getFinancialCalculations()->toArray(),
+            static fn (FinancialCalculation $c) => in_array($c->getStatus(), (array) $criteria['status'], true),
+        ));
+        $repository = $this->createMock(EntityRepository::class);
+        $repository->method('findBy')->willReturnCallback($byStatus);
+        $repository->method('findOneBy')->willReturnCallback(static fn (array $criteria) => $byStatus($criteria)[0] ?? null);
+        $this->em->method('getRepository')->willReturn($repository);
     }
 
     /** The real calculation service, built on the mocked EntityManager / audit (its other collaborators are unused by cancel()). */
@@ -143,7 +170,7 @@ final class MissionCancellationTest extends TestCase
     }
 
     #[DataProvider('protectedStatuses')]
-    public function test_policy_submitted_validated_closed_are_protected_with_their_correction_path(MissionStatus $status, string $code, string $path): void
+    public function test_policy_closed_declared_cancelled_are_protected(MissionStatus $status, string $code, string $path): void
     {
         $blocked = MissionCancellationPolicy::blockedReason($this->mission($status, $this->user('Ole', 'Salve')));
 
@@ -154,12 +181,26 @@ final class MissionCancellationTest extends TestCase
     public static function protectedStatuses(): array
     {
         return [
-            'submitted' => [MissionStatus::SUBMITTED, MissionCancellationPolicy::ENCODING_SUBMITTED, 'Renvoyez d\'abord l\'encodage en correction'],
-            'validated' => [MissionStatus::VALIDATED, MissionCancellationPolicy::ENCODING_VALIDATED, 'rouvrez d\'abord l\'encodage'],
             'closed'    => [MissionStatus::CLOSED, MissionCancellationPolicy::MISSION_CLOSED, 'clôturée'],
             'declared'  => [MissionStatus::DECLARED, MissionCancellationPolicy::NOT_CANCELLABLE, 'refusez la déclaration'],
             'cancelled' => [MissionStatus::CANCELLED, MissionCancellationPolicy::NOT_CANCELLABLE, 'déjà annulée'],
         ];
+    }
+
+    public function test_policy_submitted_and_validated_are_cancelled_after_their_correction(): void
+    {
+        $submitted = $this->mission(MissionStatus::SUBMITTED, $this->user('Ole', 'Salve'));
+        $validated = $this->mission(MissionStatus::VALIDATED, $this->user('Ole', 'Salve'));
+
+        self::assertNull(MissionCancellationPolicy::blockedReason($submitted));
+        self::assertSame(MissionCancellationPolicy::CORRECTION_REJECT, MissionCancellationPolicy::correction($submitted)['action']);
+        self::assertNull(MissionCancellationPolicy::blockedReason($validated));
+        self::assertSame(MissionCancellationPolicy::CORRECTION_REOPEN, MissionCancellationPolicy::correction($validated)['action']);
+        self::assertNull(MissionCancellationPolicy::correction($this->mission(MissionStatus::ENCODING_IN_PROGRESS, null)));
+
+        // A multi-room prestation is corrected as a whole first (Suivi des encodages).
+        self::assertSame(MissionCancellationPolicy::ENCODING_SUBMITTED, MissionCancellationPolicy::blockedReason($submitted, 2)['code']);
+        self::assertSame(MissionCancellationPolicy::ENCODING_VALIDATED, MissionCancellationPolicy::blockedReason($validated, 2)['code']);
     }
 
     public function test_policy_billed_mission_is_never_cancelled(): void
@@ -239,7 +280,7 @@ final class MissionCancellationTest extends TestCase
         self::assertArrayNotHasKey('internalComment', $this->dispatched[0]->payload);
     }
 
-    public function test_cancel_submitted_mission_is_refused_and_changes_nothing(): void
+    public function test_cancel_submitted_mission_without_confirmed_correction_is_refused_and_changes_nothing(): void
     {
         $sophie = $this->user('Sophie', 'Martin');
         $m = $this->mission(MissionStatus::SUBMITTED, $sophie);
@@ -248,12 +289,90 @@ final class MissionCancellationTest extends TestCase
             $this->service()->cancelByManager($m, $this->user('Mia', 'Manager'), MissionCancellationPolicy::REASON_PROGRAM_CANCELLED);
             self::fail('A submitted mission must not be cancelled.');
         } catch (MissionCancellationException $e) {
-            self::assertSame(MissionCancellationPolicy::ENCODING_SUBMITTED, $e->getErrorCode());
+            self::assertSame(MissionCancellationPolicy::CORRECTION_REQUIRED, $e->getErrorCode());
         }
         self::assertSame(MissionStatus::SUBMITTED, $m->getStatus());
         self::assertSame($sophie, $m->getInstrumentist());
         self::assertSame([], $this->audits);
         self::assertSame([], $this->dispatched);
+    }
+
+    public function test_cancel_submitted_mission_sends_it_back_to_correction_then_cancels_it_in_one_operation(): void
+    {
+        $sophie = $this->user('Sophie', 'Martin');
+        $m = $this->withHours($this->mission(MissionStatus::SUBMITTED, $sophie));
+        $m->getInterventions()->add(new MissionIntervention());
+        $calculated = (new FinancialCalculation())->setMission($m)->setStatus(FinancialCalculationStatus::CALCULATED);
+        $m->getFinancialCalculations()->add($calculated);
+        $this->calculationsInDatabaseOf($m);
+
+        $this->service($this->calculations(), $this->workflow())->cancelByManager(
+            $m, $this->user('Mia', 'Manager'), MissionCancellationPolicy::REASON_PROGRAM_CANCELLED, 'Patient décédé', correctionConfirmed: true,
+        );
+
+        self::assertSame(MissionStatus::CANCELLED, $m->getStatus());
+        self::assertNull($m->getInstrumentist());
+        // Traceability: the correction is audited and historised like « Renvoyer en correction ».
+        $rejected = $this->auditsOf(AuditEventType::MISSION_ENCODING_REJECTED);
+        self::assertCount(1, $rejected);
+        self::assertSame('SUBMITTED', $rejected[0][1]['fromStatus']);
+        self::assertTrue($rejected[0][1]['beforeCancellation']);
+        self::assertSame('Annulation de la mission : programme annulé. Patient décédé', $rejected[0][1]['comment']);
+        self::assertSame('Annulation de la mission : programme annulé. Patient décédé', $m->getEncodingComments()->first()->getComment());
+        // Then cancelled: encoding archived, open calculation cancelled.
+        $payload = $this->auditsOf(AuditEventType::MISSION_CANCELLED_POST_DEPLOY)[0][1];
+        self::assertSame(['action' => 'REJECT', 'fromStatus' => 'SUBMITTED', 'obsoleteFinancialCalculationIds' => []], $payload['encodingCorrection']);
+        self::assertSame(1, $payload['archivedEncoding']['interventionCount']);
+        self::assertSame(FinancialCalculationStatus::CANCELLED, $calculated->getStatus());
+        // One notification only: the cancellation, never a "correction requested".
+        self::assertCount(1, $this->dispatched);
+        self::assertSame('CANCELLED', $this->dispatched[0]->changeType->value);
+    }
+
+    public function test_cancel_validated_mission_reopens_it_then_cancels_it(): void
+    {
+        $m = $this->withHours($this->mission(MissionStatus::VALIDATED, $this->user('Sophie', 'Martin')));
+        $m->setEncodingLockedAt(new \DateTimeImmutable('2026-11-03 15:00'));
+        $approved = (new FinancialCalculation())->setMission($m)->setStatus(FinancialCalculationStatus::APPROVED);
+        $this->setId($approved, self::$nextId++);
+        $m->getFinancialCalculations()->add($approved);
+        $this->calculationsInDatabaseOf($m);
+
+        $this->service($this->calculations(), $this->workflow())->cancelByManager(
+            $m, $this->user('Mia', 'Manager'), MissionCancellationPolicy::REASON_PROGRAM_CANCELLED, correctionConfirmed: true,
+        );
+
+        self::assertSame(MissionStatus::CANCELLED, $m->getStatus());
+        self::assertNull($m->getEncodingLockedAt());
+        $reopened = $this->auditsOf(AuditEventType::MISSION_ENCODING_REOPENED);
+        self::assertCount(1, $reopened);
+        self::assertSame([$approved->getId()], $reopened[0][1]['obsoleteFinancialCalculationIds']);
+        // Never billed: the approved calculation is cancelled with the mission.
+        self::assertSame(FinancialCalculationStatus::CANCELLED, $approved->getStatus());
+        $payload = $this->auditsOf(AuditEventType::MISSION_CANCELLED_POST_DEPLOY)[0][1];
+        self::assertSame('REOPEN', $payload['encodingCorrection']['action']);
+        self::assertSame('VALIDATED', $payload['encodingCorrection']['fromStatus']);
+        self::assertCount(1, $this->dispatched);
+    }
+
+    public function test_cancel_validated_mission_billed_in_the_database_is_refused(): void
+    {
+        $m = $this->mission(MissionStatus::VALIDATED, $this->user('Sophie', 'Martin'));
+        // Locked meanwhile: only the database knows it (reopen()'s own check).
+        $locked = (new FinancialCalculation())->setMission($m)->setStatus(FinancialCalculationStatus::LOCKED);
+        $repository = $this->createMock(EntityRepository::class);
+        $repository->method('findOneBy')->willReturn($locked);
+        $this->em->method('getRepository')->willReturn($repository);
+
+        try {
+            $this->service($this->calculations(), $this->workflow())->cancelByManager(
+                $m, $this->user('Mia', 'Manager'), MissionCancellationPolicy::REASON_PROGRAM_CANCELLED, correctionConfirmed: true,
+            );
+            self::fail('A billed mission must never be cancelled.');
+        } catch (ConflictHttpException) {
+        }
+        self::assertSame([], $this->dispatched);
+        self::assertSame([], $this->auditsOf(AuditEventType::MISSION_CANCELLED_POST_DEPLOY));
     }
 
     public function test_replaced_reason_requires_the_replacement_and_the_reverse(): void
@@ -285,7 +404,18 @@ final class MissionCancellationTest extends TestCase
         $shared->setExecution((new MissionExecution())->setPresence(new WorkedPresence()));
         self::assertNotContains('cancel', $actions->allowedActions($shared, $manager));
 
-        self::assertNotContains('cancel', $actions->allowedActions($this->mission(MissionStatus::SUBMITTED, $this->user('Eva', 'X')), $manager));
+        // Submitted / validated (never billed): offered, corrected in the same operation.
+        self::assertContains('cancel', $actions->allowedActions($this->mission(MissionStatus::SUBMITTED, $this->user('Eva', 'X')), $manager));
+        self::assertContains('cancel', $actions->allowedActions($this->mission(MissionStatus::VALIDATED, $this->user('Eva', 'X')), $manager));
+        $billed = $this->mission(MissionStatus::VALIDATED, $this->user('Eva', 'X'));
+        $billed->getFinancialCalculations()->add((new FinancialCalculation())->setMission($billed)->setStatus(FinancialCalculationStatus::LOCKED));
+        self::assertNotContains('cancel', $actions->allowedActions($billed, $manager));
+
+        // With its multi-room prestation, exactly as the guard: never offered then refused.
+        $carrier = $this->mission(MissionStatus::ENCODING_IN_PROGRESS, $this->user('Eva', 'X'));
+        $carrier->getInterventions()->add(new MissionIntervention());
+        self::assertContains('cancel', $actions->allowedActions($carrier, $manager));
+        self::assertNotContains('cancel', $actions->allowedActions($carrier, $manager, 2));
     }
 
     // ── Replacement by an existing mission ───────────────────────────────────

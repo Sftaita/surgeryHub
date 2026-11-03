@@ -17,10 +17,11 @@ use App\Service\Prestation\MissionEncodingDataGuard;
  * encoded stays archived on the cancelled mission, for traceability only (never validated,
  * never billed — billing only ever reads VALIDATED missions).
  *
- * A submitted, validated or closed encoding is protected: blockedReason() explains the explicit
- * correction to make first (send back to correction, reopen), never a silent cancellation that
- * would leave validated figures behind. A mission whose financial calculation is locked
- * (billed) is never cancelled.
+ * A submitted or validated encoding is protected: its cancellation first performs the explicit,
+ * audited correction of correction() (send back to correction, reopen) in the same operation,
+ * once the manager confirmed it — never a silent cancellation that would leave validated
+ * figures behind. A closed mission, or one whose financial calculation is locked (billed), is
+ * never cancelled (blockedReason()).
  *
  * Reasons: PROGRAM_CANCELLED (the programme did not take place) or REPLACED_BY_MISSION (the
  * mission is a duplicate of an existing mission that is kept — MissionReplacementService).
@@ -59,30 +60,39 @@ final class MissionCancellationPolicy
     public const REASON_INVALID      = 'CANCELLATION_REASON_INVALID';
     public const REPLACEMENT_INVALID = 'CANCELLATION_REPLACEMENT_INCOMPATIBLE';
     public const REPLACEMENT_CHANGED = 'CANCELLATION_REPLACEMENT_CHANGED';
+    public const CORRECTION_REQUIRED = 'CANCELLATION_CORRECTION_REQUIRED';
+
+    /** correction() actions: « Renvoyer en correction » (SUBMITTED), « Rouvrir » (VALIDATED). */
+    public const CORRECTION_REJECT = 'REJECT';
+    public const CORRECTION_REOPEN = 'REOPEN';
 
     private const TZ = 'Europe/Brussels';
 
     /**
      * @param int $prestationSize missions of its multi-room prestation (D-156,
      *        PrestationGroupResolver), 1 when alone or unknown
-     * @return array{code: string, message: string}|null why a manager cannot cancel the mission right now
+     * @return array{code: string, message: string}|null why a manager cannot cancel the mission
+     *         right now, even with the correction of correction() — the cancel action is then
+     *         offered disabled, with this message (never an operation refused afterwards)
      */
     public static function blockedReason(Mission $mission, int $prestationSize = 1): ?array
     {
         $status = $mission->getStatus();
 
         $reason = match (true) {
-            $status === MissionStatus::SUBMITTED => [self::ENCODING_SUBMITTED,
-                "L'encodage de cette mission a déjà été soumis : elle ne peut pas être annulée telle quelle. Renvoyez d'abord l'encodage en correction ; l'annulation deviendra alors possible, sans aucune heure ni prestation comptabilisée."],
-            $status === MissionStatus::VALIDATED && MissionEncodingCorrectionPolicy::reopenBlockedReason($mission) !== null => [self::MISSION_BILLED,
-                "Cette mission est déjà facturée (calcul financier verrouillé) : elle ne peut plus être annulée. Une correction financière explicite est nécessaire."],
-            $status === MissionStatus::VALIDATED => [self::ENCODING_VALIDATED,
-                "L'encodage de cette mission est validé : elle ne peut pas être annulée après coup. Si la mission n'a réellement pas eu lieu, rouvrez d'abord l'encodage (correction contrôlée et tracée), puis annulez-la."],
             $status === MissionStatus::CLOSED => [self::MISSION_CLOSED,
                 "Cette mission est clôturée : elle ne peut plus être annulée."],
+            $status === MissionStatus::VALIDATED && MissionEncodingCorrectionPolicy::reopenBlockedReason($mission) !== null => [self::MISSION_BILLED,
+                "Cette mission est déjà facturée (calcul financier verrouillé) : elle ne peut plus être annulée. Une correction financière explicite est nécessaire."],
+            // Complément D-156 — a submitted / validated prestation is corrected as a whole
+            // (Suivi des encodages), never one of its rooms silently.
+            $status === MissionStatus::SUBMITTED && $prestationSize > 1 => [self::ENCODING_SUBMITTED,
+                "L'encodage de cette prestation multi-salles a été soumis : renvoyez d'abord toute la prestation en correction, puis annulez cette mission."],
+            $status === MissionStatus::VALIDATED && $prestationSize > 1 => [self::ENCODING_VALIDATED,
+                "L'encodage de cette prestation multi-salles est validé : rouvrez d'abord toute la prestation, puis annulez cette mission."],
             $status === MissionStatus::DECLARED => [self::NOT_CANCELLABLE,
                 "Cette mission est une déclaration en attente : refusez la déclaration plutôt que de l'annuler."],
-            !in_array($status, self::CANCELLABLE_STATUSES, true) => [self::NOT_CANCELLABLE,
+            !in_array($status, self::CANCELLABLE_STATUSES, true) && self::correction($mission) === null => [self::NOT_CANCELLABLE,
                 $status === MissionStatus::CANCELLED ? 'Cette mission est déjà annulée.' : "Cette mission ne peut pas être annulée."],
             $mission->getExecution()?->getPresence() !== null => [self::SHARED_PRESENCE,
                 "Cette mission partage des heures communes avec d'autres salles de la prestation : détachez-la d'abord de la présence commune (correction contrôlée), puis annulez-la."],
@@ -94,6 +104,27 @@ final class MissionCancellationPolicy
         };
 
         return $reason !== null ? ['code' => $reason[0], 'message' => $reason[1]] : null;
+    }
+
+    /**
+     * The explicit encoding correction a cancellation performs first, in the same operation
+     * (MissionPostDeployService::cancelByManager(), correctionConfirmed): a submitted encoding
+     * is sent back to correction, a validated one (never billed) is reopened — the same
+     * transitions, audit and comment as « Renvoyer en correction » / « Rouvrir l'encodage »,
+     * without their "correction requested" notification (the mission is cancelled). Null
+     * when no correction is needed. Only meaningful when blockedReason() is null.
+     *
+     * @return array{action: string, message: string}|null
+     */
+    public static function correction(Mission $mission): ?array
+    {
+        return match ($mission->getStatus()) {
+            MissionStatus::SUBMITTED => ['action' => self::CORRECTION_REJECT, 'message' =>
+                "L'encodage de cette mission a été soumis. Il sera d'abord renvoyé en correction (tracé dans l'historique de l'encodage), puis la mission sera annulée : aucune heure ni prestation comptabilisée, l'encodage reste archivé."],
+            MissionStatus::VALIDATED => ['action' => self::CORRECTION_REOPEN, 'message' =>
+                "L'encodage de cette mission est validé (non facturé). Il sera d'abord rouvert (correction tracée dans l'historique de l'encodage, calcul financier en cours annulé), puis la mission sera annulée : aucune heure ni prestation comptabilisée, l'encodage reste archivé."],
+            default => null,
+        };
     }
 
     private static function carriesContent(Mission $mission): bool

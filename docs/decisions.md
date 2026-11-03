@@ -16282,13 +16282,39 @@ programme porte deux missions et la mission prévue doit disparaître sans doubl
    motif « Programme annulé » par défaut (deux clics) ou « Mission remplacée » (missions
    compatibles du serveur, case « Valider la déclaration »), commentaire interne, personnes
    prévenues, statut des notifications. Le planning lit `allowedActions` (plus de déduction du
-   statut). Une mission soumise / validée / facturée garde l'action, qui explique la correction.
+   statut). Voir l'ajustement 6 (action désactivée, correction dans la même opération).
+
+6. **Ajustements validés (2026-11-03).**
+   - *Action désactivée plutôt que refusée.* Quand le serveur refuserait l'annulation
+     (facturée, clôturée, présence commune, contenu d'une prestation multi-salles), l'action
+     reste affichée **désactivée** avec la raison du serveur (pied du tiroir en clair, infobulle
+     dans le planning) : aucune fenêtre ouverte, aucune opération engagée. `allowedActions`
+     reçoit la taille de la prestation (annotation de liste D-156, regroupement du détail) et
+     suit exactement le contrôle serveur ; la liste sert aussi `cancellation`.
+   - *Correction et annulation en une opération.* Une mission `SUBMITTED` ou `VALIDATED` non
+     facturée est annulable depuis la même fenêtre : le manager coche la correction annoncée
+     (`cancellation.correction`) et la confirme (`correctionConfirmed`). Dans la transaction et
+     sous le verrou de l'annulation : renvoi en correction ou réouverture — mêmes écritures,
+     contrôles et audits que les endpoints dédiés
+     (`MissionEncodingWorkflowService::applyCorrectionBeforeCancellation()`, motif historisé
+     dans l'encodage, `beforeCancellation`), puis annulation (calculs ouverts annulés). Aucune
+     notification de correction : seule l'annulation est notifiée. Traçabilité complète :
+     `MISSION_ENCODING_REJECTED` / `_REOPENED`, `FINANCIAL_CALCULATION_CANCELLED`,
+     `MISSION_CANCELLED_POST_DEPLOY.encodingCorrection`. Une mission facturée (`LOCKED`, relu en
+     base) ou clôturée reste exclue ; une prestation multi-salles soumise / validée se corrige
+     d'abord en entier (Suivi des encodages).
+   - *Statistiques.* Le détail « Calculs » des statistiques financières exclut aussi les calculs
+     d'une mission annulée (comme le détail « Missions »). Vérifié de bout en bout : avec une
+     mission validée, valorisée et approuvée puis annulée, chaque vue (vue d'ensemble, série
+     temporelle, pipeline, classements firme / instrumentiste / chirurgien / intervention, top
+     matériel, détails missions / calculs / documents, liste de travail de facturation firmes,
+     « Mes heures ») est identique à la vue sans cette mission ; son détail, son audit, son
+     historique d'encodage et son encodage archivé restent lisibles.
 
 **Limites.** Une mission d'une prestation multi-salles qui porte une présence commune ou
-l'encodage commun (interventions, matériel) n'est pas annulable seule : la correction de
-l'encodage de la prestation vient d'abord. `allowedActions` ne connaît pas le regroupement
-(calculé sans base) : l'action peut s'afficher, la fenêtre explique alors le refus servi par le
-détail (`cancellation.blockedReason`), et le serveur refuse. La validation d'une déclaration dans l'opération ne valide pas son encodage :
+l'encodage commun (interventions, matériel), ou dont l'encodage est soumis / validé, n'est pas
+annulable seule : la correction de l'encodage de la prestation vient d'abord (action désactivée
+avec cette raison). La validation d'une déclaration dans l'opération ne valide pas son encodage :
 la mission conservée suit ensuite le workflow d'encodage habituel.
 ---
 

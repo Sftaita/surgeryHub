@@ -93,6 +93,8 @@ class MissionReplacementService
     /**
      * @param string|null $expectedReplacementStatus the replacement's status the manager saw:
      *        when it changed meanwhile, nothing is done (409 CANCELLATION_REPLACEMENT_CHANGED)
+     * @param bool $correctionConfirmed the planned mission's submitted / validated encoding is
+     *        first corrected (MissionCancellationPolicy::correction()), in this same transaction
      * @return array{operationId: string, cancelledMissionId: int, replacementMissionId: int, approved: bool, recipients: list<array<string,mixed>>}
      */
     public function cancelAsReplaced(
@@ -102,6 +104,7 @@ class MissionReplacementService
         bool $approveReplacement,
         ?string $expectedReplacementStatus = null,
         ?string $internalComment = null,
+        bool $correctionConfirmed = false,
     ): array {
         $replacement = $this->em->find(Mission::class, $replacementId);
         if ($replacement === null) {
@@ -116,7 +119,7 @@ class MissionReplacementService
         try {
             [$first, $second] = (int) $cancelled->getId() < (int) $replacement->getId() ? [$cancelled, $replacement] : [$replacement, $cancelled];
             $approved = $this->assignments->inLockedChange($first, fn (): bool => $this->assignments->inLockedChange($second,
-                fn (): bool => $this->apply($actor, $cancelled, $replacement, $approveReplacement, $expectedReplacementStatus, $internalComment)));
+                fn (): bool => $this->apply($actor, $cancelled, $replacement, $approveReplacement, $expectedReplacementStatus, $internalComment, $correctionConfirmed)));
             $connection->commit();
         } catch (\Throwable $e) {
             if ($connection->isTransactionActive()) {
@@ -155,7 +158,7 @@ class MissionReplacementService
     }
 
     /** Runs with both rows locked, in the caller's transaction; returns whether an approval happened. */
-    private function apply(User $actor, Mission $cancelled, Mission $replacement, bool $approveReplacement, ?string $expectedReplacementStatus, ?string $internalComment): bool
+    private function apply(User $actor, Mission $cancelled, Mission $replacement, bool $approveReplacement, ?string $expectedReplacementStatus, ?string $internalComment, bool $correctionConfirmed): bool
     {
         $context = ['missionId' => $cancelled->getId(), 'replacementMissionId' => $replacement->getId()];
 
@@ -202,6 +205,7 @@ class MissionReplacementService
             notify: false,
             replacement: $replacement,
             internalComment: $comment,
+            correctionConfirmed: $correctionConfirmed,
         );
 
         return $approved;

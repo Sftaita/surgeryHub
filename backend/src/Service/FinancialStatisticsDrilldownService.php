@@ -71,6 +71,7 @@ final class FinancialStatisticsDrilldownService
     }
 
     /** @return array{items: FinancialStatisticsDrilldownItemDto[], total: int, page: int, limit: int} */
+    /** D-182 — never the calculations of a cancelled mission (it did not take place). */
     public function calculations(FinancialStatisticsFilter $filter, int $page, int $limit, string $sortDirection): array
     {
         [$missionWhere, $missionParams, $missionTypes] = $this->missionPopulationClause($filter, 'm');
@@ -79,14 +80,14 @@ final class FinancialStatisticsDrilldownService
 
         $countSql = "SELECT COUNT(*) FROM financial_calculation fc
                      INNER JOIN mission m ON m.id = fc.mission_id
-                     WHERE fc.effective_at >= :fDate AND fc.effective_at < :tDate $missionWhere";
+                     WHERE fc.effective_at >= :fDate AND fc.effective_at < :tDate AND m.status <> 'CANCELLED' $missionWhere";
         $total = (int) $this->connection->fetchOne($countSql, $params, $types);
 
         $sql = "SELECT fc.id, fc.effective_at AS date, fc.status, u.firstname, u.lastname, u.email
                 FROM financial_calculation fc
                 INNER JOIN mission m ON m.id = fc.mission_id
                 LEFT JOIN `user` u ON u.id = m.surgeon_id
-                WHERE fc.effective_at >= :fDate AND fc.effective_at < :tDate $missionWhere
+                WHERE fc.effective_at >= :fDate AND fc.effective_at < :tDate AND m.status <> 'CANCELLED' $missionWhere
                 ORDER BY date " . ($sortDirection === 'ASC' ? 'ASC' : 'DESC') . "
                 LIMIT :limit OFFSET :offset";
 

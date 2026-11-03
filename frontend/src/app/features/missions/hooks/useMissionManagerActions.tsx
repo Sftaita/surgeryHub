@@ -63,6 +63,8 @@ export interface MissionActionDescriptor {
   tone: MissionActionTone;
   contained: boolean;
   disabled: boolean;
+  /** D-182 — action affichée désactivée : pourquoi (message du serveur), affiché en clair. */
+  disabledReason?: string;
   testId?: string;
   onClick: () => void;
 }
@@ -242,10 +244,13 @@ export function useMissionManagerActions(
   const canCompleteAndValidate = allowed.includes("complete_and_validate");
   const canReopenEncoding = allowed.includes("reopen");
   const canCancel = allowed.includes("cancel");
-  // D-182 — encodage soumis / validé, mission facturée ou présence commune : l'action reste
-  // visible pour expliquer le chemin de correction (message du serveur), sans permettre l'annulation.
-  const cancelExplained = !canCancel && data?.cancellation?.blockedReason != null
-    && data.cancellation.blockedReason.code !== "CANCELLATION_NOT_POSSIBLE";
+  // D-182 — mission facturée, clôturée, présence commune, contenu d'une prestation multi-salles :
+  // l'action reste visible mais désactivée, avec la raison du serveur — jamais une opération
+  // engagée puis refusée. (Encodage soumis / validé : annulable, corrigé dans la même opération.)
+  const cancelBlockedReason = !canCancel && data?.cancellation?.blockedReason != null
+    && data.cancellation.blockedReason.code !== "CANCELLATION_NOT_POSSIBLE"
+    ? data.cancellation.blockedReason.message
+    : null;
   const canDeclareWithoutInstrumentist = allowed.includes("declare_executed_without_instrumentist");
   const canCancelDeclaration = allowed.includes("cancel_executed_without_instrumentist");
   const canReassign = allowed.includes("reassign");
@@ -272,7 +277,7 @@ export function useMissionManagerActions(
   const actions: MissionActionDescriptor[] = [];
   if (canDeclareWithoutInstrumentist) actions.push({ key: "declareWithoutInstrumentist", label: "Déclarer l'activité réalisée sans instrumentiste", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-declare-without-instrumentist", onClick: () => setDeclareOpen(true) });
   if (canCancelDeclaration) actions.push({ key: "cancelDeclaration", label: "Annuler la déclaration", tone: "warning", contained: false, disabled: anyLoading, testId: "manager-cancel-declaration", onClick: () => setCancelDeclarationOpen(true) });
-  if (canCancel || cancelExplained) actions.push({ key: "cancel", label: "Annuler la mission", tone: "danger", contained: false, disabled: anyLoading, onClick: () => setCancelConfirmOpen(true) });
+  if (canCancel || cancelBlockedReason) actions.push({ key: "cancel", label: "Annuler la mission", tone: "danger", contained: false, disabled: anyLoading || cancelBlockedReason !== null, disabledReason: cancelBlockedReason ?? undefined, testId: "manager-cancel-mission", onClick: () => setCancelConfirmOpen(true) });
   if (canReject) actions.push({ key: "reject", label: "Rejeter", tone: "danger", contained: false, disabled: anyLoading, onClick: () => setRejectConfirmOpen(true) });
   if (canApprove) actions.push({ key: "approve", label: "Approuver", tone: "success", contained: true, disabled: anyLoading, onClick: () => setApproveConfirmOpen(true) });
   if (canRejectEncoding) actions.push({ key: "rejectEncoding", label: "Rejeter l'encodage", tone: "danger", contained: false, disabled: anyLoading, onClick: () => setRejectEncodingOpen(true) });
@@ -468,7 +473,7 @@ export function useMissionManagerActions(
       </Dialog>
 
       {/* Reste monté tant qu'il est ouvert : le résultat (notifications) survit au rafraîchissement. */}
-      {(canCancel || cancelExplained || cancelConfirmOpen) && (
+      {(canCancel || cancelConfirmOpen) && (
         <CancelMissionDialog
           missionId={missionId}
           open={cancelConfirmOpen}

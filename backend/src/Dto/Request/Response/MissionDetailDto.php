@@ -126,7 +126,9 @@ final class MissionDetailDto
         public readonly ?array $relay = null,
         /**
          * D-182 — managers only: whether the mission may be cancelled now
-         * (MissionCancellationPolicy): {blockedReason: {code, message}|null,
+         * (MissionCancellationPolicy): {blockedReason: {code, message}|null (the action is
+         * then disabled with this reason), correction: {action: REJECT|REOPEN, message}|null
+         * (the encoding correction the cancellation performs first, once confirmed),
          * hasEncodingData: bool (archived without any financial effect if cancelled)}.
          */
         public readonly ?array $cancellation = null,

@@ -42,11 +42,14 @@ export async function cancelAsReplaced(
     /** Le statut vu à l'écran : le serveur refuse si la mission conservée a changé entre-temps. */
     expectedReplacementStatus: MissionStatus;
     internalComment?: string;
+    /** Confirme la correction de l'encodage soumis / validé de la mission annulée, faite d'abord. */
+    correctionConfirmed?: boolean;
   },
 ): Promise<CancelAsReplacedResult> {
   const { data } = await apiClient.post<CancelAsReplacedResult>(`/api/missions/${missionId}/cancel-as-replaced`, {
     ...payload,
     internalComment: payload.internalComment?.trim() || undefined,
+    correctionConfirmed: payload.correctionConfirmed || undefined,
   });
   return data;
 }

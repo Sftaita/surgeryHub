@@ -401,9 +401,30 @@ class MissionController extends AbstractController
             MissionCancellationPolicy::REASON_PROGRAM_CANCELLED,
             $reason,
             internalComment: isset($data['internalComment']) && is_string($data['internalComment']) ? $data['internalComment'] : null,
+            correctionConfirmed: $this->cancellationCorrectionConfirmed($mission, $data),
         );
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /**
+     * D-182 — a submitted / validated mission is cancelled after the explicit correction of its
+     * encoding (MissionCancellationPolicy::correction()), confirmed by the manager: also
+     * authorised as that correction itself would be (MissionVoter::ENCODING_REJECT / _REOPEN).
+     *
+     * @param array<string,mixed> $data
+     */
+    private function cancellationCorrectionConfirmed(Mission $mission, array $data): bool
+    {
+        $confirmed = ($data['correctionConfirmed'] ?? false) === true;
+        $correction = MissionCancellationPolicy::correction($mission);
+        if ($confirmed && $correction !== null) {
+            $this->denyAccessUnlessGranted($correction['action'] === MissionCancellationPolicy::CORRECTION_REJECT
+                ? MissionVoter::ENCODING_REJECT
+                : MissionVoter::ENCODING_REOPEN, $mission);
+        }
+
+        return $confirmed;
     }
 
     /**
