@@ -7,8 +7,10 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Security\Voter\MissionExecutionVoter;
 use App\Security\Voter\MissionVoter;
+use App\Service\MissionEncodingService;
 use App\Service\MissionService;
 use App\Service\Prestation\PrestationEncodingService;
+use App\Service\Prestation\PrestationReference;
 use App\Service\Prestation\WorkedPresenceService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -16,6 +18,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
+use Symfony\Component\Serializer\Normalizer\AbstractObjectNormalizer;
 
 /**
  * D-156 — prestation regroupée multi-salles (encodage commun). Toujours adressée par
@@ -33,6 +36,7 @@ final class PrestationController extends AbstractController
         private readonly MissionService $missionService,
         private readonly PrestationEncodingService $prestations,
         private readonly WorkedPresenceService $presences,
+        private readonly MissionEncodingService $encodingService,
     ) {}
 
     #[Route('/prestation', name: 'api_missions_prestation_get', methods: ['GET'])]
@@ -42,6 +46,31 @@ final class PrestationController extends AbstractController
         $group = $this->viewableGroup($mission);
 
         return $this->json($this->prestations->view($group, $user, $this->groupRights($group)));
+    }
+
+    /**
+     * Complément D-156 — l'encodage de toute la prestation en une liste (contrat de
+     * GET /api/missions/{id}/encoding, chaque entrée portant son `missionId`) : celui de la
+     * mission de référence et le contenu historique des autres missions. Droit :
+     * MISSION_VIEW_ENCODING sur chaque mission dont le contenu est servi.
+     */
+    #[Route('/prestation/encoding', name: 'api_missions_prestation_encoding', methods: ['GET'])]
+    public function encoding(int $missionId, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($missionId);
+        $group = $this->viewableGroup($mission);
+        $reference = PrestationReference::of($group);
+        $otherIds = PrestationReference::otherEncodedMissionIds($group);
+        $others = array_values(array_filter($group, static fn (Mission $m) => in_array((int) $m->getId(), $otherIds, true)));
+        foreach ([$reference, ...$others] as $member) {
+            $this->denyAccessUnlessGranted(MissionVoter::VIEW_ENCODING, $member);
+        }
+
+        $dto = $this->encodingService->buildPrestationEncodingDto($reference, $others, $user);
+        // Comme GET …/encoding : rien de nul n'est servi au chirurgien de la mission (aucun état de facturation).
+        $isSurgeonViewer = in_array('ROLE_SURGEON', $user->getRoles(), true) && $reference->getSurgeon()?->getId() === $user->getId();
+
+        return $this->json($dto, 200, [], $isSurgeonViewer ? [AbstractObjectNormalizer::SKIP_NULL_VALUES => true] : []);
     }
 
     /**

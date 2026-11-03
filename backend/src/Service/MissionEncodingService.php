@@ -27,6 +27,7 @@ use App\Entity\MissionIntervention;
 use App\Entity\MissionInterventionDraft;
 use App\Entity\User;
 use App\Enum\MaterialLineBillingState;
+use App\Service\Prestation\PrestationContentGuard;
 use Doctrine\ORM\EntityManagerInterface;
 
 final class MissionEncodingService
@@ -38,6 +39,8 @@ final class MissionEncodingService
         private readonly MissionActionsService $actionsService,
         private readonly MissionInterventionCoherenceService $coherenceService,
         private readonly EncodingTrackingRepository $trackingRepository,
+        // Complément D-156 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?PrestationContentGuard $prestationContent = null,
     ) {}
 
     public function buildEncodingDto(Mission $mission, User $viewer): MissionEncodingDto
@@ -135,6 +138,60 @@ final class MissionEncodingService
             coherenceSummary: $coherenceSummary,
             encodingComments: $encodingComments,
             progress: $this->buildProgress((int) $mission->getId()),
+            prestation: $this->prestationContent?->describe($mission),
+        );
+    }
+
+    /**
+     * Complément D-156 — l'encodage d'une prestation multi-salles en UNE liste : celui de la
+     * mission de référence, plus le contenu historique encodé sur d'autres missions de la
+     * prestation (jamais déplacé : chaque entrée porte son `missionId`, le client y adresse ses
+     * modifications). Les entrées historiques précèdent celles de la référence (encodées
+     * avant), chacune dans son ordre ; la progression compte toutes les entrées affichées
+     * (même requête que le suivi). Mission, catalogue, signaux et commentaires : ceux de la
+     * référence, qui reçoit tout nouveau contenu.
+     *
+     * @param list<Mission> $others missions de la prestation portant du contenu historique
+     */
+    public function buildPrestationEncodingDto(Mission $reference, array $others, User $viewer): MissionEncodingDto
+    {
+        $base = $this->buildEncodingDto($reference, $viewer);
+        if ($others === []) {
+            return $base;
+        }
+
+        usort($others, static fn (Mission $a, Mission $b) => (int) $a->getId() <=> (int) $b->getId());
+        $entries = [];
+        $interventions = [];
+        $requests = [];
+        foreach ($others as $other) {
+            $dto = $this->buildEncodingDto($other, $viewer);
+            array_push($entries, ...$dto->entries);
+            array_push($interventions, ...$dto->interventions);
+            array_push($requests, ...$dto->interventionTypeRequests);
+        }
+        array_push($entries, ...$base->entries);
+        array_push($interventions, ...$base->interventions);
+        array_push($requests, ...$base->interventionTypeRequests);
+
+        $ids = array_map(static fn (Mission $m) => (int) $m->getId(), [$reference, ...$others]);
+        $progress = ['interventionCount' => 0, 'encodedInterventionCount' => 0, 'materialLineCount' => 0];
+        foreach ($this->trackingRepository->fetchFactsForIds($ids) as $facts) {
+            $progress['interventionCount'] += $facts->interventionCount;
+            $progress['encodedInterventionCount'] += $facts->encodedInterventionCount;
+            $progress['materialLineCount'] += $facts->activeMaterialLineCount;
+        }
+
+        return new MissionEncodingDto(
+            mission: $base->mission,
+            interventions: $interventions,
+            entries: $entries,
+            interventionTypeRequests: $requests,
+            catalog: $base->catalog,
+            coherenceSummary: $base->coherenceSummary,
+            encodingComments: $base->encodingComments,
+            progress: $progress,
+            prestation: $base->prestation,
         );
     }
 
@@ -461,6 +518,7 @@ final class MissionEncodingService
             selectedChoiceOptionLabel: $dto->selectedChoiceOptionLabel,
             version: $i->getVersion(),
             withoutFirm: $dto->withoutFirm,
+            missionId: $i->getMission()?->getId(),
         );
     }
 
@@ -523,6 +581,7 @@ final class MissionEncodingService
             materialLines: $lines,
             materialItemRequests: $requests,
             withoutFirm: $draft->isWithoutFirm(),
+            missionId: $draft->getMission()->getId(),
         );
     }
 

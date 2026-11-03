@@ -14,6 +14,7 @@ use App\Service\InterventionService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingLock;
 use App\Service\SurgeonEncodingChangeNotifier;
+use App\Service\Prestation\PrestationContentGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -37,6 +38,7 @@ class InterventionController extends AbstractController
         private readonly SurgeonEncodingChangeNotifier $surgeonChanges,
         // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
         private readonly MissionEncodingLock $encodingLock,
+        private readonly PrestationContentGuard $prestationContent,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -49,6 +51,8 @@ class InterventionController extends AbstractController
 
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
+        // Complément D-156 — nouveau contenu d'une prestation multi-salles : mission de référence uniquement.
+        $this->prestationContent->assertAcceptsNewContent($mission);
 
         /** @var MissionInterventionCreateRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionInterventionCreateRequest::class);

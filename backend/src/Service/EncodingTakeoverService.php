@@ -40,6 +40,28 @@ final class EncodingTakeoverService
     }
 
     /**
+     * Complément D-156 — empreinte d'une prestation multi-salles : la décision du manager porte
+     * sur TOUTE la prestation (contenu de la mission de référence compris, quelle que soit la
+     * mission ouverte). Une seule mission : revision() à l'identique.
+     *
+     * @param list<Mission> $missions
+     */
+    public function prestationRevision(array $missions): string
+    {
+        if (count($missions) === 1) {
+            return $this->revision($missions[0]);
+        }
+
+        $parts = [];
+        foreach ($missions as $mission) {
+            $parts[(int) $mission->getId()] = $mission->getId() . '=' . $this->revision($mission);
+        }
+        ksort($parts);
+
+        return substr(hash('sha256', implode(';', $parts)), 0, 16);
+    }
+
+    /**
      * Dernière reprise de l'encodage de cette mission (audit MISSION_ENCODING_TAKEN_OVER), null
      * si aucune : affichée à l'instrumentiste (qui a repris son encodage, quand) et au manager.
      *

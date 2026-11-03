@@ -210,7 +210,8 @@ final class CatalogueRequestFiabilisationTest extends WebTestCase
         return $json['error']['code'] ?? $json['code'] ?? null;
     }
 
-    private function mission(MissionStatus $status = MissionStatus::ASSIGNED): Mission
+    /** $hoursEarlier : décale le créneau (deux missions simultanées formeraient une prestation multi-salles, D-156). */
+    private function mission(MissionStatus $status = MissionStatus::ASSIGNED, int $hoursEarlier = 0): Mission
     {
         $em = $this->em();
         $m = new Mission();
@@ -222,8 +223,8 @@ final class CatalogueRequestFiabilisationTest extends WebTestCase
         $m->setSite($em->find(Hospital::class, $this->site->getId()));
         $m->setCreatedBy($em->find(User::class, $this->manager->getId()));
         $now = new \DateTimeImmutable('now', new \DateTimeZone(self::TZ));
-        $m->setStartAt($now->modify('-3 hours'));
-        $m->setEndAt($now->modify('-1 hour'));
+        $m->setStartAt($now->modify(sprintf('-%d hours', 3 + $hoursEarlier)));
+        $m->setEndAt($now->modify(sprintf('-%d hours', 1 + $hoursEarlier)));
         $em->persist($m);
         $em->flush();
         $this->created['missions'][] = $m->getId();
@@ -912,7 +913,7 @@ final class CatalogueRequestFiabilisationTest extends WebTestCase
         self::assertSame('MISSION_LOCKED_FOR_CATALOGUE_RESOLUTION', $this->errorCode($json));
         self::assertFalse($json['error']['reopenAvailable']);
 
-        $m2 = $this->mission();
+        $m2 = $this->mission(hoursEarlier: 3);
         $i2 = $this->addIntervention($m2->getId(), $this->type()->getId(), $firm->getId());
         $matReq2 = $this->materialRequestOk($m2->getId(), ['firmId' => $firm->getId(), 'quantity' => '1', 'missionInterventionId' => $i2]);
         $this->setMissionState($m2->getId(), MissionStatus::SUBMITTED, invoiced: true);

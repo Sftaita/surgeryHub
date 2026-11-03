@@ -1,4 +1,5 @@
 import { apiClient } from "../../../api/apiClient";
+import type { MissionEncodingResponse } from "../../encoding/api/encoding.types";
 
 /**
  * D-156 — prestation regroupée multi-salles. Toujours calculée par le serveur à partir des
@@ -24,6 +25,10 @@ export type PrestationMission = {
   interventionCount: number;
   activeMaterialLineCount: number;
   noMaterialComment: string | null;
+  /** Complément D-156 — mission qui reçoit tout nouvel encodage de la prestation (décidée par le serveur). */
+  isReference: boolean;
+  /** Porte des interventions, du matériel ou des demandes au catalogue. */
+  carriesContent: boolean;
   allowedActions: string[];
 };
 
@@ -57,7 +62,26 @@ export type PrestationView = {
   allowedActions: string[];
   /** Missions qui empêchent le lecteur de modifier les heures communes (soumise, validée…). */
   hoursLockedByMissionIds?: number[];
+  /**
+   * Complément D-156 — un seul encodage par prestation : la mission qui reçoit tout nouveau
+   * contenu (jamais choisie ici), les autres missions qui portent du contenu historique
+   * (affiché regroupé, jamais déplacé), les compteurs de toute la prestation et la
+   * justification « sans matériel » unique, appréciée sur toute la prestation.
+   */
+  referenceMissionId: number;
+  otherEncodedMissionIds: number[];
+  encoding: { interventionCount: number; encodedInterventionCount: number; materialLineCount: number };
+  noMaterialJustificationRequired: boolean;
 };
+
+/**
+ * Complément D-156 — l'encodage de toute la prestation en une liste (même contrat que
+ * GET /api/missions/{id}/encoding, chaque entrée portant son `missionId`).
+ */
+export async function fetchPrestationEncoding(missionId: number): Promise<MissionEncodingResponse> {
+  const { data } = await apiClient.get<MissionEncodingResponse>(`/api/missions/${missionId}/prestation/encoding`);
+  return data;
+}
 
 export async function fetchPrestation(missionId: number): Promise<PrestationView> {
   const { data } = await apiClient.get<PrestationView>(`/api/missions/${missionId}/prestation`);

@@ -32,6 +32,7 @@ import { reassignMission } from "../../planning-v2/api/planningV2.api";
 import { ReassignMissionDialog } from "../../planning-v2/components/ReassignMissionDialog";
 import { EncodingDataConfirmDialog } from "../../prestations/components/EncodingDataConfirmDialog";
 import { prestationError } from "../../prestations/api/prestations.api";
+import { PrestationDecisionNotice, prestationDecisionErrorText, referenceNotice } from "../../prestations/components/PrestationDecisionNotice";
 import EditServiceHoursDialog from "../components/EditServiceHoursDialog";
 import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
 import EditMissionDialog from "../components/EditMissionDialog";
@@ -158,7 +159,7 @@ export function useMissionManagerActions(
     mutationFn: async () => validateMissionEncoding(missionId, data?.encodingRevision ?? null),
     onSuccess: async () => {
       await refreshAfterAction();
-      toast.success("Encodage validé.");
+      toast.success(data?.prestation ? `Prestation validée (${data.prestation.size} missions).` : "Encodage validé.");
     },
     onError: async (err: any) => {
       // D-171 — révision obsolète : jamais validée ; la mission est relue avant toute nouvelle tentative.
@@ -168,7 +169,7 @@ export function useMissionManagerActions(
         await refreshAfterAction();
         return;
       }
-      toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? "Erreur lors de la validation.");
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? prestationDecisionErrorText(err) ?? "Erreur lors de la validation.");
     },
   });
 
@@ -176,11 +177,11 @@ export function useMissionManagerActions(
     mutationFn: async (comment: string) => rejectMissionEncoding(missionId, comment),
     onSuccess: async () => {
       await refreshAfterAction();
-      toast.success("Encodage rejeté, renvoyé à l'instrumentiste.");
+      toast.success(data?.prestation ? "Prestation renvoyée en correction à l'instrumentiste." : "Encodage rejeté, renvoyé à l'instrumentiste.");
       setRejectEncodingComment("");
     },
     onError: (err: any) => {
-      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors du rejet de l'encodage.");
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : prestationDecisionErrorText(err) ?? "Erreur lors du rejet de l'encodage.");
     },
   });
 
@@ -188,11 +189,11 @@ export function useMissionManagerActions(
     mutationFn: async (comment: string) => reopenMissionEncoding(missionId, comment),
     onSuccess: async () => {
       await refreshAfterAction();
-      toast.success("Encodage rouvert.");
+      toast.success(data?.prestation ? "Prestation rouverte." : "Encodage rouvert.");
       setReopenComment("");
     },
     onError: (err: any) => {
-      toast.error(err?.response?.status === 403 ? "Accès interdit." : "Erreur lors de la réouverture.");
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : prestationDecisionErrorText(err) ?? "Erreur lors de la réouverture.");
     },
   });
 
@@ -335,6 +336,7 @@ export function useMissionManagerActions(
           missionId={missionId}
           revision={data.encodingRevision ?? null}
           takeover={data.encodingTakeover ?? null}
+          prestation={data.prestation ?? null}
           onClose={() => setCompleteValidateOpen(false)}
           onDone={async () => {
             setCompleteValidateOpen(false);
@@ -388,6 +390,7 @@ export function useMissionManagerActions(
       <Dialog open={validateConfirmOpen} onClose={() => setValidateConfirmOpen(false)}>
         <DialogTitle>Valider l'encodage</DialogTitle>
         <DialogContent dividers>
+          <PrestationDecisionNotice prestation={data.prestation} />
           <Typography>
             Voulez-vous valider cet encodage ? Il sera définitivement verrouillé — plus aucune
             modification possible, sauf réouverture explicite ensuite.
@@ -405,6 +408,7 @@ export function useMissionManagerActions(
       <Dialog open={rejectEncodingOpen} onClose={() => setRejectEncodingOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Rejeter l'encodage</DialogTitle>
         <DialogContent dividers>
+          <PrestationDecisionNotice prestation={data.prestation} />
           <Typography variant="body2" color="text.secondary" mb={1.5} data-testid="reject-encoding-intro">
             {data.executedWithoutInstrumentist
               ? "Activité réalisée sans instrumentiste : l'encodage est renvoyé au chirurgien pour correction. Le commentaire est obligatoire (ex : intervention manquante, matériel incorrect, quantité à vérifier, mauvaise firme…)."
@@ -477,6 +481,7 @@ export function useMissionManagerActions(
       <Dialog open={reopenOpen} onClose={() => setReopenOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Rouvrir l'encodage</DialogTitle>
         <DialogContent dividers>
+          <PrestationDecisionNotice prestation={data.prestation} />
           <Typography variant="body2" color="text.secondary" mb={1.5} data-testid="reopen-encoding-intro">
             {data.executedWithoutInstrumentist
               ? "Activité réalisée sans instrumentiste : la mission repasse en encodage modifiable par le chirurgien. Motif obligatoire (D-148)."
@@ -582,6 +587,8 @@ export function useMissionManagerActions(
                 onValidate={() => undefined}
                 progress={encodingQuery.data.progress}
                 managerCorrection
+                allowAdd={encodingQuery.data.prestation?.acceptsNewContent ?? true}
+                addNotice={referenceNotice(encodingQuery.data.prestation)}
               />
             ) : (
               <Typography variant="body2" color="text.secondary">

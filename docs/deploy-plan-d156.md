@@ -1,10 +1,16 @@
 # Plan de déploiement — D-156 (prestations regroupées multi-salles)
 
-Préparé le 2026-11-02. **Rien n'est exécuté sans l'accord explicite de l'utilisateur**, à
+Préparé le 2026-11-02. Actualisé le 2026-11-03 après la fusion de la PR #69.
+**Rien n'est exécuté sans l'accord explicite de l'utilisateur**, à
 chaque étape marquée « accord ». Suit `docs/production-checklist.md` et `deploy/deploy.sh`
 (D-163) ; ce document ne précise que ce qui est propre à D-156.
 
-## 0. État de départ (relevé en lecture seule le 2026-11-02)
+> **État historique** : les §§ 0–6 décrivent le premier déploiement D-156 du 02/11/2026
+> (`1e45953`, trois migrations exécutées : 97 au total). Le complément « encodage unique »
+> (`366627f`, PR #69 fusionnée) est un déploiement distinct, non encore autorisé au dernier
+> contrôle, sans nouvelle migration ; voir §9. Ne pas rejouer les procédures initiales.
+
+## 0. État de départ (relevé en lecture seule le 2026-11-02, avant premier déploiement)
 
 | Élément | Valeur |
 |---|---|
@@ -80,7 +86,7 @@ ce plan.
    `financial_calculation`, `financial_calculation_line`, `mission_intervention`,
    `material_line`, `mission_assignment`, `surgeon_schedule_post` → fichier `fp_before`.
 
-## 4. Exécution (accord : déploiement)
+## 4. Première mise en production (déjà exécutée le 2026-11-02 ; historique)
 
 ```
 deploy/deploy.sh paths $SHA && deploy/deploy.sh prepare $SHA && deploy/deploy.sh upload $SHA
@@ -187,3 +193,30 @@ Tag `vYYYY.MM.DD-prod`, `deploy/deploy.sh mark`, `docs/production.md`, registre 
 aucune action sans décision.
 
 Jamais de tag `*-prod` pour un état restauré ; incident documenté.
+
+## 9. Complément « encodage unique » — PR #69, fusionnée sur main
+
+- Commit applicatif `366627f2451020c6e4a4cf6a6e7bf98ba44eb86b` (PR #69),
+  **non déployé** lors de la rédaction de cette mise à jour. La production exécute
+  `1e45953` en `PENDING_VALIDATION` au dernier contrôle ; à revérifier avant toute action.
+- La PR #69 supprime le choix de salle côté instrumentiste (une liste unique d'interventions
+  et de matériel, une seule présence, une soumission globale et décisions manager communes).
+  Aucune nouvelle migration ni modification des tarifs. Recette visuelle sur copie isolée,
+  tests métier et CI rapportés conformes, validation de la production encore distincte.
+- Sur accord de déploiement : vérifier d'abord le commit actif, le registre des travaux,
+  l'intégrité des données, créer et vérifier une sauvegarde récente de la base `surgicalhub`,
+  préparer la release `366627f`, confirmer **0 migration** en simulation, activer, vérifier
+  API, frontend, worker, journaux et empreinte des données historiques.
+- **Retour arrière du seul complément** : de `366627f` vers `1e45953`, rollback **du code
+  uniquement**, sans `down()`, les tables et présences D-156 restant compatibles. L'ancien
+  formulaire instrumentiste redemande alors de choisir une salle.
+- **Retour arrière complet pré-D-156** : vers `d9e6ee9`, appliquer le retour protégé du §7
+  si des présences communes existent : snapshot, sauvegarde, verrous SQL, puis retour du code.
+  Ne jamais supprimer les tables D-156 ni leurs données.
+- **Traçabilité** : ne pas marquer rétroactivement `1e45953` comme version officielle si le
+  complément la remplace. Après activation **et validation fonctionnelle** de `366627f`,
+  attribuer un tag daté au commit effectivement actif puis exécuter `deploy.sh mark`.
+- **Rattachement historique** : `app:mission:link-schedule-posts --apply` reste interdit
+  jusqu'à accord distinct, après une nouvelle simulation en lecture seule.
+- Aucun changement de tarif de Salve, ni des postes #3/#4/#5 du Dr Deltour, ni des alertes
+  historiques n'est autorisé dans cette opération.

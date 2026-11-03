@@ -132,11 +132,16 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
         self::assertSame(['SUBMITTED'], $this->body($res)['statuses']);
 
-        // Manager validation stays per mission; valuation per mission, pay computed once.
+        // Complément D-156 — one manager validation for the whole prestation; valuation per
+        // mission, pay computed once.
+        $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$a}/encoding/validate");
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        $this->em->clear();
         foreach ([$a, $b] as $id) {
-            $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate");
-            self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+            self::assertSame(MissionStatus::VALIDATED, $this->em->find(Mission::class, $id)->getStatus());
         }
+        // Already validated with its prestation: nothing left to validate on the other room.
+        self::assertSame(403, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$b}/encoding/validate")->getStatusCode());
         $lines = [];
         foreach ([$a, $b] as $id) {
             $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/financial-calculations");
@@ -190,14 +195,12 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
 
         $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$a}/prestation/submit", ['fingerprint' => $view['fingerprint'], 'noMaterialComment' => 'Aucun implant posé.']);
         self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        // Complément D-156 — validated together: the common hours are locked by both missions.
+        self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$a}/encoding/validate")->getStatusCode());
+        $view = $this->body($this->api($this->client, $sophieToken, 'GET', "/api/missions/{$b}/prestation"));
+        self::assertNotContains('edit_presence', $view['allowedActions']);
+        self::assertSame([$a, $b], $view['hoursLockedByMissionIds']);
         foreach ([$a, $b] as $id) {
-            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate")->getStatusCode());
-            if ($id === $a) {
-                // One room validated: the common hours are locked, and the view says by which mission.
-                $view = $this->body($this->api($this->client, $sophieToken, 'GET', "/api/missions/{$b}/prestation"));
-                self::assertNotContains('edit_presence', $view['allowedActions']);
-                self::assertContains($a, $view['hoursLockedByMissionIds']);
-            }
             $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/financial-calculations");
             self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
         }
@@ -243,7 +246,8 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         $this->em->clear();
         self::assertCount(1, $this->em->getRepository(WorkedPresence::class)->findBy(['instrumentist' => $this->sophie->getId()]));
 
-        // The 0-minute mission stays fully encodable: intervention + material on it.
+        // Complément D-156 — one encoding for the prestation: new content goes on the reference
+        // mission (lowest id, nothing encoded yet), never on another room — explicit 409.
         $firm = $this->tracked('firms', (new Firm())->setName('D156-Firm-' . bin2hex(random_bytes(3)))->setActive(true));
         $type = $this->tracked('types', (new InterventionType())->setCode('D156-' . bin2hex(random_bytes(3)))->setLabel('Arthroscopie D156')->setActive(true));
         $item = $this->tracked('items', (new MaterialItem())->setFirm($firm)->setLabel('Ancre D156')->setUnit('pièce')->setReferenceCode(bin2hex(random_bytes(4)))->setActive(true));
@@ -251,41 +255,49 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         $this->tracked('rules', (new PricingRule())->setFirm($firm)->setRuleType(PricingRuleType::MATERIAL_FEE)->setMaterialItem($item)->setUnitPrice('42.00'));
 
         $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$apm}/interventions", ['interventionTypeId' => $type->getId(), 'orderIndex' => 0, 'primaryFirmId' => $firm->getId()]);
+        self::assertSame(409, $res->getStatusCode(), (string) $res->getContent());
+        self::assertSame('PRESTATION_REFERENCE_REQUIRED', $this->body($res)['error']['code']);
+        self::assertSame($journee, $this->body($res)['error']['referenceMissionId']);
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$journee}/interventions", ['interventionTypeId' => $type->getId(), 'orderIndex' => 0, 'primaryFirmId' => $firm->getId()]);
         self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
         $interventionId = (int) $this->body($res)['id'];
-        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$apm}/material-lines", ['itemId' => $item->getId(), 'missionInterventionId' => $interventionId, 'quantity' => 2]);
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$journee}/material-lines", ['itemId' => $item->getId(), 'missionInterventionId' => $interventionId, 'quantity' => 2]);
         self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
 
-        // Not "incomplete": the hours come from the shared presence, nothing is missing.
+        // Not "incomplete": the hours come from the shared presence, nothing is missing; the
+        // other rooms carry nothing and are not asked for anything.
         $view = $this->body($this->api($this->client, $sophieToken, 'GET', "/api/missions/{$apm}/prestation"));
         self::assertContains('submit', $view['allowedActions']);
-        $apmRow = array_column($view['missions'], null, 'id')[$apm];
-        self::assertSame(0, $apmRow['imputedMinutes']);
-        self::assertSame(1, $apmRow['interventionCount']);
-        self::assertSame(1, $apmRow['activeMaterialLineCount']);
+        self::assertSame($journee, $view['referenceMissionId']);
+        self::assertSame([], $view['otherEncodedMissionIds']);
+        self::assertSame(['interventionCount' => 1, 'encodedInterventionCount' => 1, 'materialLineCount' => 1], $view['encoding']);
+        self::assertFalse($view['noMaterialJustificationRequired']);
+        $journeeRow = array_column($view['missions'], null, 'id')[$journee];
+        self::assertTrue($journeeRow['isReference']);
+        self::assertSame(1, $journeeRow['interventionCount']);
+        self::assertSame(0, array_column($view['missions'], null, 'id')[$apm]['imputedMinutes']);
 
-        // One common submit; the justification only lands on the two missions without material.
-        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$apm}/prestation/submit", ['fingerprint' => $view['fingerprint'], 'noMaterialComment' => 'Aucun implant en salle 1.']);
+        // One common submit, no justification: material exists in the prestation, so no
+        // mission is marked « sans matériel ».
+        $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$apm}/prestation/submit", ['fingerprint' => $view['fingerprint']]);
         self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
         $this->em->clear();
         foreach ([$journee, $matin, $apm] as $id) {
-            self::assertSame(MissionStatus::SUBMITTED, $this->em->find(Mission::class, $id)->getStatus());
+            $m = $this->em->find(Mission::class, $id);
+            self::assertSame(MissionStatus::SUBMITTED, $m->getStatus());
+            self::assertFalse($m->isSubmittedWithoutMaterial());
+            self::assertNull($m->getNoMaterialComment());
         }
-        self::assertNull($this->em->find(Mission::class, $apm)->getNoMaterialComment());
-        self::assertSame('Aucun implant en salle 1.', $this->em->find(Mission::class, $journee)->getNoMaterialComment());
-        self::assertSame('Aucun implant en salle 1.', $this->em->find(Mission::class, $matin)->getNoMaterialComment());
         // Recette 2026-11-02 : jamais « Corriger les heures » mission par mission sur des heures
         // communes (le dialogue reconstituait des horaires depuis la part imputée, refusés en 409).
         $detail = $this->body($this->api($this->client, $this->managerToken, 'GET', "/api/missions/{$matin}"));
         self::assertNotContains('edit_hours', $detail['allowedActions']);
         self::assertContains('edit_encoding', $detail['allowedActions'], 'SUBMITTED: the manager may still correct the encoding');
 
-        // Validation per mission, then valuation per mission.
+        // One validation for the prestation, then valuation per mission.
         $calcs = [];
-        foreach ([$journee, $matin, $apm] as $id) {
-            $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate");
-            self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
-        }
+        $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$matin}/encoding/validate");
+        self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
         foreach ([$journee, $matin, $apm] as $id) {
             $res = $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/financial-calculations");
             self::assertSame(201, $res->getStatusCode(), (string) $res->getContent());
@@ -301,12 +313,14 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         self::assertSame('387.14', $this->hourlyLine($matin)->getSnapshot()['presenceTotalAmount']);
         self::assertSame(0, $this->hourlyLine($matin)->getSnapshot()['imputedMinutesByMission'][$apm]);
 
-        // The 0-minute mission is billed normally: intervention fee + material, no hourly line.
-        $apmTypes = array_column($calcs[$apm]['lines'], 'lineType');
-        sort($apmTypes);
-        self::assertSame(['FIRM_INTERVENTION_FEE', 'FIRM_MATERIAL_FEE'], $apmTypes);
-        self::assertSame('234.00', $calcs[$apm]['totalsByCurrency']['EUR']['FIRM'], '150.00 + 2 × 42.00');
-        self::assertArrayNotHasKey('INSTRUMENTIST', $calcs[$apm]['totalsByCurrency']['EUR']);
+        // Firms billed once, on the reference mission: intervention fee + material; the other
+        // rooms carry no firm line (never billed twice), the 0-minute one no line at all.
+        $journeeTypes = array_column($calcs[$journee]['lines'], 'lineType');
+        sort($journeeTypes);
+        self::assertSame(['FIRM_INTERVENTION_FEE', 'FIRM_MATERIAL_FEE', 'INSTRUMENTIST_HOURLY'], $journeeTypes);
+        self::assertSame('234.00', $calcs[$journee]['totalsByCurrency']['EUR']['FIRM'], '150.00 + 2 × 42.00');
+        self::assertSame(['INSTRUMENTIST_HOURLY'], array_column($calcs[$matin]['lines'], 'lineType'));
+        self::assertSame([], $calcs[$apm]['lines']);
 
         // Encoding tracking: validated, valued, with real hours — never shown as unworked.
         $from = $this->day->format('Y-m-d');
@@ -548,11 +562,12 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         self::assertSame('MANAGER', $payload['hoursSource']);
 
         // Validated and valued: a CALCULATED calculation that the next correction makes obsolete.
+        // Complément D-156 — validation and reopening apply to the whole prestation at once.
+        self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$a}/encoding/validate")->getStatusCode());
         foreach ([$a, $b] as $id) {
-            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate")->getStatusCode());
             self::assertSame(201, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/financial-calculations")->getStatusCode());
-            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/reopen", ['comment' => 'Heures à revoir.'])->getStatusCode());
         }
+        self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$b}/encoding/reopen", ['comment' => 'Heures à revoir.'])->getStatusCode());
         $conn = $this->em->getConnection();
         $calcB = (int) $conn->fetchOne("SELECT id FROM financial_calculation WHERE mission_id = ? AND status = 'CALCULATED'", [$b]);
         $amountB = (string) $conn->fetchOne("SELECT total_amount FROM financial_calculation_line WHERE financial_calculation_id = ? AND line_type = 'INSTRUMENTIST_HOURLY'", [$calcB]);
@@ -578,8 +593,8 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         $view = $this->body($this->api($this->client, $sophieToken, 'GET', "/api/missions/{$a}/prestation"));
         $res = $this->api($this->client, $sophieToken, 'POST', "/api/missions/{$a}/prestation/submit", ['fingerprint' => $view['fingerprint'], 'noMaterialComment' => 'Aucun implant.']);
         self::assertSame(200, $res->getStatusCode(), (string) $res->getContent());
+        self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$a}/encoding/validate")->getStatusCode());
         foreach ([$a, $b] as $id) {
-            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/validate")->getStatusCode());
             $calcId = (int) $conn->fetchOne("SELECT id FROM financial_calculation WHERE mission_id = ? AND status = 'CALCULATED'", [$id]);
             $res = $this->api($this->client, $this->managerToken, 'POST', "/api/financial-calculations/{$calcId}/recalculate");
             self::assertContains($res->getStatusCode(), [200, 201], (string) $res->getContent());
@@ -592,9 +607,7 @@ final class PrestationMultiRoomFunctionalTest extends WebTestCase
         // An approved calculation: the correction is refused and nothing moves.
         $calcA = (int) $conn->fetchOne("SELECT id FROM financial_calculation WHERE mission_id = ? AND status = 'CALCULATED'", [$a]);
         self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/financial-calculations/{$calcA}/approve")->getStatusCode());
-        foreach ([$a, $b] as $id) {
-            self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$id}/encoding/reopen", ['comment' => 'Encore une correction.'])->getStatusCode());
-        }
+        self::assertSame(200, $this->api($this->client, $this->managerToken, 'POST', "/api/missions/{$a}/encoding/reopen", ['comment' => 'Encore une correction.'])->getStatusCode());
         $view = $this->body($this->api($this->client, $this->managerToken, 'GET', "/api/missions/{$b}/prestation"));
         $res = $this->api($this->client, $this->managerToken, 'PUT', "/api/missions/{$b}/prestation/presence", [
             'actualStartAt' => $this->at($this->day, '07:00'), 'actualEndAt' => $this->at($this->day, '18:00'),

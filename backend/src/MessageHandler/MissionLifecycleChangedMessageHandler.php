@@ -137,6 +137,20 @@ final class MissionLifecycleChangedMessageHandler
             'occurredAt' => $message->occurredAt->format(\DateTimeInterface::ATOM),
         ]);
 
+        // Complément D-156 — une transition appliquée à toute une prestation multi-salles produit
+        // un message par mission (traçabilité) mais une seule notification : celle de la mission
+        // désignée par le workflow (prestationNotifiedMissionId).
+        $notifiedMissionId = $message->payload['prestationNotifiedMissionId'] ?? null;
+        if ($notifiedMissionId !== null && (int) $notifiedMissionId !== $message->missionId) {
+            $this->logger->info('MissionLifecycleChanged: notified once for the whole prestation', [
+                'missionId'         => $message->missionId,
+                'changeType'        => $message->changeType->value,
+                'notifiedMissionId' => (int) $notifiedMissionId,
+            ]);
+
+            return;
+        }
+
         match ($message->changeType) {
             // D-125 — manager dispatch (MissionDispatchService / assignDirectly()).
             MissionChangeType::OFFERED           => $this->handleOffered($message),

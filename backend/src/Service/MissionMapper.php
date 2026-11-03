@@ -9,6 +9,8 @@ use App\Dto\Request\Response\UserSlimDto;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Service\Prestation\MissionListAnnotator;
+use App\Service\Prestation\PrestationGroupResolver;
 use Symfony\Component\Clock\Clock;
 
 final class MissionMapper
@@ -23,6 +25,8 @@ final class MissionMapper
         private readonly ?EncodingTakeoverService $takeovers = null,
         // D-172 — optional for the same reason.
         private readonly ?MissionEncodingOverviewService $encodingOverview = null,
+        // Complément D-156 — optional for the same reason.
+        private readonly ?PrestationGroupResolver $prestationGroups = null,
     ) {}
 
     /**
@@ -90,6 +94,8 @@ final class MissionMapper
         $completeAndValidate = $isManagerViewer
             && MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($m, Clock::get()->now()) === null;
         $seesTakeover = $isManagerViewer || ($m->getInstrumentist() !== null && $m->getInstrumentist()->getId() === $viewer->getId());
+        // Complément D-156 — la prestation multi-salles de la mission (une requête) : révision et résumé.
+        $group = $this->prestationGroups?->groupOf($m) ?? [$m];
 
         return new MissionDetailDto(
             id: (int) $m->getId(),
@@ -129,7 +135,10 @@ final class MissionMapper
             ] : null,
             encodingValidationBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::validationBlockedReason($m, Clock::get()->now()) : null,
             // Aussi pour « Valider l'encodage » (SUBMITTED) : la validation porte sur ce que le manager a relu.
-            encodingRevision: $completeAndValidate || ($isManagerViewer && $m->getStatus() === \App\Enum\MissionStatus::SUBMITTED) ? $this->takeovers?->revision($m) : null,
+            // Complément D-156 — d'une prestation multi-salles : la révision de TOUTE la prestation.
+            encodingRevision: $completeAndValidate || ($isManagerViewer && $m->getStatus() === \App\Enum\MissionStatus::SUBMITTED)
+                ? $this->takeovers?->prestationRevision($group)
+                : null,
             encodingTakeover: $completeAndValidate && MissionEncodingCorrectionPolicy::isTakeover($m) ? [
                 'instrumentistName' => trim(($m->getInstrumentist()?->getFirstname() ?? '') . ' ' . ($m->getInstrumentist()?->getLastname() ?? '')),
                 'hoursMissing'      => MissionEncodingCorrectionPolicy::hoursMissing($m),
@@ -138,6 +147,7 @@ final class MissionMapper
             hoursPendingAfterValidation: $seesTakeover && MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($m),
             encoding: $isManagerViewer ? $this->encodingOverview?->overviewOfMission($m, Clock::get()->now()) : null,
             roomLabel: $m->getRoomLabel(),
+            prestation: MissionListAnnotator::summary($group),
         );
     }
 

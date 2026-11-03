@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, TextField } from "@mui/material";
+import { PrestationDecisionNotice } from "../../prestations/components/PrestationDecisionNotice";
 
 export type EncodingCorrectionKind = "RETURN" | "REOPEN";
 
@@ -19,6 +20,8 @@ interface Props {
   error: string | null;
   onConfirm: (reason: string) => void;
   onCancel: () => void;
+  /** Complément D-156 — prestation multi-salles (serveur) : la décision porte sur toute la prestation. */
+  prestation?: { missionIds: number[] } | null;
 }
 
 const TITLES: Record<EncodingCorrectionKind, { title: string; confirm: string }> = {
@@ -51,7 +54,7 @@ const COPY: Record<EncodingCorrectionRecipient["role"], { label: string; intro: 
  * ouverte pendant l'enregistrement et en cas d'erreur (motif conservé, nouvelle tentative
  * possible) — c'est le parent qui la ferme, sur succès confirmé par le serveur.
  */
-export function EncodingCorrectionDialog({ kind, missionLabel, recipient, statusLabel, pending, error, onConfirm, onCancel }: Props) {
+export function EncodingCorrectionDialog({ kind, missionLabel, recipient, statusLabel, pending, error, onConfirm, onCancel, prestation }: Props) {
   const [reason, setReason] = React.useState("");
   React.useEffect(() => { if (kind !== null) setReason(""); }, [kind]);
 
@@ -63,6 +66,7 @@ export function EncodingCorrectionDialog({ kind, missionLabel, recipient, status
     <Dialog open onClose={pending ? undefined : onCancel} maxWidth="sm" fullWidth>
       <DialogTitle>{copy.title}</DialogTitle>
       <DialogContent dividers>
+        <PrestationDecisionNotice prestation={prestation} />
         <Box component="dl" sx={{ m: 0, mb: 1.5, display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 2, rowGap: 0.5, fontSize: 14 }}>
           <Box component="dt" sx={{ color: "text.secondary" }}>Mission</Box>
           <Box component="dd" sx={{ m: 0, fontWeight: 600 }}>{missionLabel}</Box>
