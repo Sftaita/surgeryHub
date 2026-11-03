@@ -209,6 +209,16 @@ export interface InstrumentistService {
   [key: string]: unknown;
 }
 
+/**
+ * D-181 — servi par le backend (MissionReassignmentPolicy) : `modes` vide = impossible, le
+ * premier mode est celui à proposer ; `blockedReason` explique pourquoi. Jamais déduit du statut.
+ */
+export interface MissionReassignmentInfo {
+  modes: Array<"DIRECT" | "RELAY">;
+  blockedReason: { code: string; message: string } | null;
+  relayWindow: { from: string; to: string } | null;
+}
+
 export interface Mission {
   id: number;
 
@@ -298,6 +308,10 @@ export interface Mission {
   prestation?: MissionPrestationSummary | null;
   /** D-156 — vrais conflits d'horaire (serveur) : jamais recalculés côté client. */
   scheduleConflictMissionIds?: number[];
+  /** D-181 — managers : comment l'instrumentiste peut être changée maintenant (serveur seul). */
+  reassignment?: MissionReassignmentInfo | null;
+  /** D-181 — relais : mission poursuivie / missions de relais. */
+  relay?: { relayOfMissionId: number | null; relayMissionIds: number[] } | null;
 
   [key: string]: unknown;
 }

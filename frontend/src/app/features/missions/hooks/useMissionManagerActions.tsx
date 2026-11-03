@@ -28,10 +28,7 @@ import {
 } from "../../encoding/api/encoding.api";
 import InterventionsSection from "../../encoding/components/InterventionsSection";
 import CompleteAndValidateEncodingDialog from "../../encoding/components/CompleteAndValidateEncodingDialog";
-import { reassignMission } from "../../planning-v2/api/planningV2.api";
-import { ReassignMissionDialog } from "../../planning-v2/components/ReassignMissionDialog";
-import { EncodingDataConfirmDialog } from "../../prestations/components/EncodingDataConfirmDialog";
-import { prestationError } from "../../prestations/api/prestations.api";
+import { ChangeInstrumentistDialog } from "../reassignment/ChangeInstrumentistDialog";
 import { PrestationDecisionNotice, prestationDecisionErrorText, referenceNotice } from "../../prestations/components/PrestationDecisionNotice";
 import EditServiceHoursDialog from "../components/EditServiceHoursDialog";
 import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
@@ -103,13 +100,9 @@ export function useMissionManagerActions(
   const [cancelDeclarationOpen, setCancelDeclarationOpen] = React.useState(false);
   const [cancelDeclarationReason, setCancelDeclarationReason] = React.useState("");
   // Corrections ponctuelles servies par le backend (reassign, D-153 edit_hours / edit_encoding).
+  // D-181 — « Changer d'instrumentiste » : remplacement direct ou relais (encodage existant :
+  // il reste à l'instrumentiste qui l'a saisi), décidé par le serveur (`reassignment`).
   const [reassignOpen, setReassignOpen] = React.useState(false);
-  // D-156 — 409 MISSION_HAS_ENCODING_DATA : la mission porte déjà des interventions ou du
-  // matériel ; confirmation motivée seulement si le serveur l'autorise (`confirmable`), jamais
-  // un transfert implicite (les heures réelles ne suivent jamais une réaffectation).
-  const [encodingDataConflict, setEncodingDataConflict] = React.useState<
-    { instrumentistId: number; message: string; confirmable: boolean } | null
-  >(null);
   const [hoursOpen, setHoursOpen] = React.useState(false);
   const [encodingEditOpen, setEncodingEditOpen] = React.useState(false);
 
@@ -239,26 +232,6 @@ export function useMissionManagerActions(
     onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? (err?.response?.status === 403 ? "Accès interdit." : "Annulation impossible.")),
   });
 
-  const reassignMutation = useMutation({
-    mutationFn: async ({ instrumentistId, encodingDataReason }: { instrumentistId: number; encodingDataReason?: string }) =>
-      reassignMission(missionId, instrumentistId, encodingDataReason ? { encodingDataReason } : undefined),
-    onSuccess: async () => {
-      setReassignOpen(false);
-      setEncodingDataConflict(null);
-      await refreshAfterAction();
-      toast.success("Instrumentiste changé.");
-    },
-    onError: (err: any, { instrumentistId }) => {
-      const e = prestationError(err);
-      if (e.code === "MISSION_HAS_ENCODING_DATA") {
-        setReassignOpen(false);
-        setEncodingDataConflict({ instrumentistId, message: e.message, confirmable: e.extra.confirmable === true });
-        return;
-      }
-      toast.error(err?.response?.data?.error?.message ?? (err?.response?.status === 403 ? "Accès interdit." : "Changement d'instrumentiste impossible."));
-    },
-  });
-
   // Même clé que la lecture du tiroir : la fenêtre de correction réutilise l'encodage en cache.
   const encodingQuery = useQuery({
     queryKey: ["missionEncoding", missionId],
@@ -283,6 +256,9 @@ export function useMissionManagerActions(
   const canDeclareWithoutInstrumentist = allowed.includes("declare_executed_without_instrumentist");
   const canCancelDeclaration = allowed.includes("cancel_executed_without_instrumentist");
   const canReassign = allowed.includes("reassign");
+  // D-181 — encodage soumis / validé, mission clôturée, présence commune : l'action reste
+  // visible pour expliquer le chemin de correction (message du serveur), sans permettre le changement.
+  const reassignExplained = !canReassign && data?.instrumentist != null && data?.reassignment?.blockedReason != null;
   const canEditHours = allowed.includes("edit_hours");
   const canEditEncoding = allowed.includes("edit_encoding");
 
@@ -294,13 +270,12 @@ export function useMissionManagerActions(
     reopenEncodingMutation.isPending ||
     cancelMutation.isPending ||
     declareMutation.isPending ||
-    cancelDeclarationMutation.isPending ||
-    reassignMutation.isPending;
+    cancelDeclarationMutation.isPending;
 
   const dialogOpen =
     openEdit || openPublish || rejectConfirmOpen || approveConfirmOpen || validateConfirmOpen ||
     rejectEncodingOpen || reopenOpen || cancelConfirmOpen || declareOpen || cancelDeclarationOpen ||
-    reassignOpen || encodingDataConflict !== null || hoursOpen || encodingEditOpen || completeValidateOpen;
+    reassignOpen || hoursOpen || encodingEditOpen || completeValidateOpen;
 
   const actions: MissionActionDescriptor[] = [];
   if (canDeclareWithoutInstrumentist) actions.push({ key: "declareWithoutInstrumentist", label: "Déclarer l'activité réalisée sans instrumentiste", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-declare-without-instrumentist", onClick: () => setDeclareOpen(true) });
@@ -317,7 +292,7 @@ export function useMissionManagerActions(
 
   /** Corrections posées à côté de ce qu'elles modifient (personne, heures, encodage), pas dans le pied. */
   const corrections: Partial<Record<"reassign" | "editHours" | "editEncoding", MissionActionDescriptor>> = {};
-  if (canReassign) corrections.reassign = { key: "reassign", label: "Changer", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-reassign", onClick: () => setReassignOpen(true) };
+  if (canReassign || reassignExplained) corrections.reassign = { key: "reassign", label: "Changer", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-reassign", onClick: () => setReassignOpen(true) };
   if (canEditHours) corrections.editHours = { key: "editHours", label: "Corriger les heures", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-edit-hours", onClick: () => setHoursOpen(true) };
   if (canEditEncoding) corrections.editEncoding = { key: "editEncoding", label: "Corriger l'encodage", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-edit-encoding", onClick: () => setEncodingEditOpen(true) };
 
@@ -535,24 +510,11 @@ export function useMissionManagerActions(
         </DialogActions>
       </Dialog>
 
-      {canReassign && (
-        <ReassignMissionDialog
+      {(canReassign || reassignExplained) && (
+        <ChangeInstrumentistDialog
           open={reassignOpen}
-          loading={reassignMutation.isPending}
           missionId={missionId}
-          onClose={() => setReassignOpen(false)}
-          onConfirm={(instrumentistId) => reassignMutation.mutate({ instrumentistId })}
-        />
-      )}
-
-      {canReassign && (
-        <EncodingDataConfirmDialog
-          open={encodingDataConflict !== null}
-          message={encodingDataConflict?.message ?? ""}
-          confirmable={encodingDataConflict?.confirmable ?? false}
-          loading={reassignMutation.isPending}
-          onClose={() => setEncodingDataConflict(null)}
-          onConfirm={(reason) => encodingDataConflict && reassignMutation.mutate({ instrumentistId: encodingDataConflict.instrumentistId, encodingDataReason: reason })}
+          onClose={() => { setReassignOpen(false); void refreshAfterAction(); }}
         />
       )}
 

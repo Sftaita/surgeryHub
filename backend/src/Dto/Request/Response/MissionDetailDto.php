@@ -116,5 +116,13 @@ final class MissionDetailDto
         public readonly ?string $roomLabel = null,
         /** Complément D-156 — prestation multi-salles (MissionListAnnotator::summary()), null si la mission est seule : les décisions du manager portent sur toute la prestation. */
         public readonly ?array $prestation = null,
+        /**
+         * D-181 — managers only: how the instrumentist may be changed now
+         * (MissionReassignmentPolicy): {modes: ['DIRECT'|'RELAY'…] (first = suggested),
+         * blockedReason: {code, message}|null, relayWindow: {from, to}|null}. Null for other viewers.
+         */
+        public readonly ?array $reassignment = null,
+        /** D-181 — relay links: {relayOfMissionId, relayMissionIds}, null when the mission has none. */
+        public readonly ?array $relay = null,
     ) {}
 }

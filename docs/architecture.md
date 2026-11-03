@@ -1823,6 +1823,26 @@ EntityManager::flush()            — chaque effet de bord isolé dans try/catch
 
 **Traçabilité** : chaque action post-deploy crée un `AuditEvent` (acteur, type, payload snapshot) et déclenche les `NotificationEvent` appropriés via `NotificationPreferenceResolver`. Les noms des personnes sont snapshotés dans le payload pour préserver la lisibilité à long terme.
 
+**Changement d'instrumentiste par un manager (D-181)** :
+
+```
+/reassign · /reassignments · alerte /reassign
+        │  (MissionVoter::REASSIGN par mission)
+        ▼
+MissionReassignmentService        — une opération : chaque mission contrôlée et validée seule,
+        │                           résultat mission par mission (DONE / FAILED + code)
+        ▼
+MissionPostDeployService::reassign()  (DIRECT)  ou  ::relay()  (RELAY : mission de relais liée)
+        │  verrou mission, MissionReassignmentPolicy, expectedInstrumentistId, éligibilité, audit
+        ▼
+MissionReassignmentNotificationMessage (async, un par opération, changements réels seulement)
+        ▼
+MissionReassignmentNotificationMessageHandler → NotificationDispatcher::dispatchBatch
+        MISSION_REASSIGNMENT_NOTICE : un e-mail par destinataire et par opération
+        (ancienne / nouvelle instrumentiste, chirurgien), statut lu par
+        GET /api/missions/reassignment-operations/{operationId}
+```
+
 ### Vérification manuelle des conflits — filet de sécurité (Lot 6, D-106)
 
 Trois niveaux de sécurité coexistent sur Planning V2 : **prévention** (D-101, revalidation

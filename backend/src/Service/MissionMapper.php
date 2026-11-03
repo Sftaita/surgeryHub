@@ -27,6 +27,8 @@ final class MissionMapper
         private readonly ?MissionEncodingOverviewService $encodingOverview = null,
         // Complément D-156 — optional for the same reason.
         private readonly ?PrestationGroupResolver $prestationGroups = null,
+        // D-181 — optional for the same reason.
+        private readonly ?MissionReassignmentService $relays = null,
     ) {}
 
     /**
@@ -148,7 +150,35 @@ final class MissionMapper
             encoding: $isManagerViewer ? $this->encodingOverview?->overviewOfMission($m, Clock::get()->now()) : null,
             roomLabel: $m->getRoomLabel(),
             prestation: MissionListAnnotator::summary($group),
+            reassignment: $isManagerViewer ? $this->reassignment($m) : null,
+            relay: $this->relayLinks($m),
         );
+    }
+
+    /** D-181 — see MissionDetailDto::$reassignment. */
+    private function reassignment(Mission $m): array
+    {
+        $window = MissionReassignmentPolicy::relayWindow($m);
+
+        return [
+            'modes'         => MissionReassignmentPolicy::modes($m, Clock::get()->now()),
+            'blockedReason' => MissionReassignmentPolicy::blockedReason($m),
+            'relayWindow'   => $window !== null ? [
+                'from' => $window['from']->format(\DateTimeInterface::ATOM),
+                'to'   => $window['to']->format(\DateTimeInterface::ATOM),
+            ] : null,
+        ];
+    }
+
+    /** D-181 — see MissionDetailDto::$relay (one query, detail only). */
+    private function relayLinks(Mission $m): ?array
+    {
+        $relayIds = $this->relays?->relayMissionIdsOf($m) ?? [];
+        if ($m->getRelayOf() === null && $relayIds === []) {
+            return null;
+        }
+
+        return ['relayOfMissionId' => $m->getRelayOf()?->getId(), 'relayMissionIds' => $relayIds];
     }
 
     /**

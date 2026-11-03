@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>SurgicalHub — Planning</title>
+<!--[if mso]>
+<style>table{border-collapse:collapse;} div,td{font-family:Arial,sans-serif;}</style>
+<noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+<![endif]-->
+<style>
+  @media (max-width:620px){
+    .sh-container{width:100% !important;}
+    .sh-pad{padding-left:20px !important;padding-right:20px !important;}
+  }
+</style>
+</head>
+{# D-181 — réaffectation par un manager. Jamais de donnée patient, de montant, de motif ni le
+   commentaire interne du manager : seulement date, horaire, site, chirurgien, instrumentistes. #}
+{% set font = "Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" %}
+{% set onlyRemoved = removed|length > 0 and added|length == 0 and surgeon|length == 0 %}
+{% set onlyAdded = added|length > 0 and removed|length == 0 and surgeon|length == 0 %}
+{% set onlySurgeon = surgeon|length > 0 and removed|length == 0 and added|length == 0 %}
+
+{% macro missionCard(item, showSurgeon, showChange, font) %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E7EBEF;border-left:4px solid #42A882;border-radius:10px;margin-bottom:10px;">
+<tr><td style="padding:14px 18px;font-family:{{ font }};font-size:14px;color:#3A4754;line-height:1.6;">
+<ul style="margin:0;padding-left:18px;">
+<li style="margin:2px 0;"><strong>Date :</strong> {{ item.missionDate }}</li>
+<li style="margin:2px 0;"><strong>Horaire :</strong> {{ item.startTime }} – {{ item.endTime }}</li>
+<li style="margin:2px 0;"><strong>Site :</strong> {{ item.siteName ?? '—' }}</li>
+{% if showSurgeon %}<li style="margin:2px 0;"><strong>Chirurgien :</strong> Dr {{ item.surgeonName ?? '—' }}</li>{% endif %}
+</ul>
+{% if showChange %}
+<div style="margin-top:10px;font-weight:700;color:#16202B;">Modification de l'affectation :</div>
+<ul style="margin:4px 0 0 0;padding-left:18px;">
+<li style="margin:2px 0;"><strong>Instrumentiste initialement prévue :</strong> {{ item.fromInstrumentistName ?? '—' }}</li>
+<li style="margin:2px 0;"><strong>Nouvelle instrumentiste :</strong> {{ item.toInstrumentistName ?? '—' }}</li>
+</ul>
+{% endif %}
+</td></tr>
+</table>
+{% endmacro %}
+{% import _self as m %}
+
+<body style="margin:0;padding:0;background-color:#F5F7FA;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F5F7FA;">
+<tr><td align="center" style="padding:40px 16px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" class="sh-container" style="width:600px;max-width:600px;background-color:#FFFFFF;border-radius:12px;border:1px solid #E7EBEF;">
+
+<tr><td class="sh-pad" style="padding:26px 32px;border-bottom:1px solid #E7EBEF;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+<td style="font-family:{{ font }};font-size:18px;font-weight:800;color:#144D38;letter-spacing:-0.2px;">
+<span style="display:inline-block;width:9px;height:9px;border-radius:3px;background-color:#42A882;margin-right:9px;"></span><span>SurgicalHub</span>
+</td>
+<td align="right" style="font-family:{{ font }};font-size:11px;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;color:#727E8C;">Planning</td>
+</tr></table>
+</td></tr>
+
+<tr><td class="sh-pad" style="padding:26px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
+{{ greeting }}<br><br>
+{% if onlyAdded %}
+{{ added|length > 1 ? 'De nouvelles missions viennent de vous être attribuées dans SurgicalHub.' : 'Une nouvelle mission vient de vous être attribuée dans SurgicalHub.' }}
+{% elseif onlySurgeon %}
+Nous vous informons qu'une modification a été apportée à votre planning opératoire.
+{% else %}
+Nous vous informons qu'une modification a été apportée à votre planning.
+{% endif %}
+</td></tr>
+
+{% if removed|length > 0 %}
+<tr><td class="sh-pad" style="padding:10px 32px 4px 32px;font-family:{{ font }};font-size:15px;line-height:1.6;color:#16202B;">
+<strong>{{ removed|length > 1 ? 'Les missions suivantes vous ont été retirées :' : 'La mission suivante vous a été retirée :' }}</strong>
+</td></tr>
+<tr><td class="sh-pad" style="padding:6px 32px 0 32px;">
+{% for item in removed %}{{ m.missionCard(item, true, false, font) }}{% endfor %}
+</td></tr>
+<tr><td class="sh-pad" style="padding:4px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
+{{ removed|length > 1 ? 'Ces missions ne figurent désormais plus dans votre planning.' : 'Cette mission ne figure désormais plus dans votre planning.' }}
+</td></tr>
+{% endif %}
+
+{% if added|length > 0 %}
+<tr><td class="sh-pad" style="padding:10px 32px 4px 32px;font-family:{{ font }};font-size:15px;line-height:1.6;color:#16202B;">
+<strong>{{ added|length > 1 ? 'Détails de vos nouvelles missions :' : 'Détails de votre nouvelle mission :' }}</strong>
+</td></tr>
+<tr><td class="sh-pad" style="padding:6px 32px 0 32px;">
+{% for item in added %}{{ m.missionCard(item, true, false, font) }}{% endfor %}
+</td></tr>
+<tr><td class="sh-pad" style="padding:4px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
+{{ added|length > 1 ? 'Vous êtes désormais l\'instrumentiste affectée à ces missions.' : 'Vous êtes désormais l\'instrumentiste affectée à cette mission.' }}<br>
+Votre planning a été automatiquement mis à jour.
+</td></tr>
+{% endif %}
+
+{% if surgeon|length > 0 %}
+<tr><td class="sh-pad" style="padding:10px 32px 4px 32px;font-family:{{ font }};font-size:15px;line-height:1.6;color:#16202B;">
+<strong>{{ surgeon|length > 1 ? 'Programmes concernés :' : 'Programme concerné :' }}</strong>
+</td></tr>
+<tr><td class="sh-pad" style="padding:6px 32px 0 32px;">
+{% for item in surgeon %}{{ m.missionCard(item, false, true, font) }}{% endfor %}
+</td></tr>
+<tr><td class="sh-pad" style="padding:4px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
+{{ surgeon|length > 1 ? 'Vos programmes restent inchangés.' : 'Votre programme reste inchangé.' }} Seule l'affectation de l'instrumentiste a été modifiée.
+</td></tr>
+{% endif %}
+
+<tr><td class="sh-pad" style="padding:8px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
+{% if onlyAdded %}
+Vous pouvez consulter les détails de {{ added|length > 1 ? 'ces missions' : 'cette mission' }} sur SurgicalHub.
+{% else %}
+Vous pouvez consulter votre planning actualisé sur SurgicalHub.
+{% endif %}
+{% if planningUrl %}<br><a href="{{ planningUrl }}" style="color:#2C7D5F;font-weight:700;">Ouvrir SurgicalHub</a>{% endif %}
+</td></tr>
+
+{% if removed|length > 0 %}
+<tr><td class="sh-pad" style="padding:8px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
+<strong>Si cette modification vous semble inhabituelle ou si vous pensez qu'il s'agit d'une erreur, nous vous invitons à contacter un manager afin d'obtenir des précisions.</strong>
+</td></tr>
+{% endif %}
+
+<tr><td class="sh-pad" style="padding:8px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
+Cordialement,<br><strong>L'équipe SurgicalHub</strong>
+</td></tr>
+
+<tr><td class="sh-pad" style="padding:18px 32px 30px 32px;">
+<div style="border-top:1px solid #E7EBEF;padding-top:18px;font-family:{{ font }};font-size:12px;color:#98A2AE;line-height:1.7;">
+{% include 'emails/_notification_preferences_cta.html.twig' %}
+Cet e-mail est généré automatiquement, merci de ne pas y répondre.
+</div>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

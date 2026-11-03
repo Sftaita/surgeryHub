@@ -537,17 +537,29 @@ Annule une mission ouverte qui ne peut pas être couverte.
 
 **AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::REASSIGN`)
 
-**Transition :** `ASSIGNED → ASSIGNED` (nouvel instrumentiste)
+**Transition :** `ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS →` même statut (nouvel instrumentiste) — D-181
 
-Réassigne une mission à un autre instrumentiste. Le statut reste `ASSIGNED`.
+Réassigne une mission à un autre instrumentiste. Le statut ne change pas. Depuis D-181, c'est
+la même opération que `POST /api/missions/reassignments` avec une seule mission (voir
+ci-dessous) : la date du jour ou une heure de début dépassée ne bloquent pas, les trois
+personnes concernées sont informées (`MISSION_REASSIGNMENT_NOTICE`).
 
 **Body :**
 
 ```json
-{ "instrumentistId": 12 }
+{
+  "instrumentistId": 12,
+  "expectedInstrumentistId": 7,
+  "mode": "DIRECT",
+  "relayAt": null,
+  "comment": "facultatif — commentaire interne, jamais transmis"
+}
 ```
 
-**Réponse — 200 :** Mission complète avec `status: "ASSIGNED"` et le nouvel instrumentiste
+`expectedInstrumentistId`, `mode` (`DIRECT` par défaut | `RELAY`), `relayAt` et `comment` sont
+facultatifs (D-181). `confirmEncodingData` / `encodingDataReason` (D-156) restent acceptés.
+
+**Réponse — 200 :** Mission complète avec le nouvel instrumentiste
 
 **Erreurs :**
 
@@ -555,14 +567,100 @@ Réassigne une mission à un autre instrumentiste. Le statut reste `ASSIGNED`.
 |---|---|
 | `403` | Non autorisé |
 | `404` | Mission introuvable / instrumentiste cible introuvable |
-| `409` | Mission non `ASSIGNED` |
+| `409` `REASSIGNMENT_ENCODING_SUBMITTED`, `REASSIGNMENT_ENCODING_VALIDATED`, `REASSIGNMENT_MISSION_CLOSED` | D-181 — encodage soumis / validé, mission clôturée : message expliquant la correction à appliquer |
+| `409` `REASSIGNMENT_SHARED_PRESENCE` | D-181 — mission d'une présence commune (prestation multi-salles) : la détacher d'abord |
+| `409` `REASSIGNMENT_NOT_POSSIBLE` | Mission sans instrumentiste à remplacer (`OPEN`, `DRAFT`, `CANCELLED`…) |
+| `409` `REASSIGNMENT_ASSIGNMENT_CHANGED` | D-181 — `expectedInstrumentistId` ne correspond plus (mission modifiée entre-temps) |
+| `409` `REASSIGNMENT_NO_CHANGE` | Même instrumentiste : aucune modification, aucun e-mail |
+| `409` `MISSION_HAS_ENCODING_DATA` | D-156 — encodage existant : utiliser le relais (`mode: RELAY`) |
 | `409` `INSTRUMENTIST_INCOMPATIBLE` | D-101 — voir encadré sous `/assign-instrumentist` |
 | `422` | `instrumentistId` manquant ou invalide |
 
 **Effets backend :**
-- `mission.instrumentist → newInstrumentist`
-- `AuditEvent(MISSION_REASSIGNED_POST_DEPLOY)` avec snapshot `fromInstrumentistName` + `toInstrumentistName`
-- `MissionLifecycleChangedMessage(REASSIGNED)` dispatché (async)
+- `mission.instrumentist → newInstrumentist` (historique `MissionAssignment`, D-150)
+- `AuditEvent(MISSION_REASSIGNED_POST_DEPLOY)` avec `fromInstrumentistId/Name`, `toInstrumentistId/Name`, `actorId/Name`, `missionStatus`, `internalComment` éventuel
+- `MissionReassignmentNotificationMessage` dispatché (async) après commit — ce chemin ne dispatche plus `MissionLifecycleChangedMessage(REASSIGNED)`
+
+---
+
+### `POST /api/missions/reassignments` (D-181)
+
+**AuthZ :** `MissionVoter::REASSIGN` vérifié **pour chaque mission** (refus = résultat `FORBIDDEN`).
+
+Change l'instrumentiste d'une ou plusieurs missions publiées en une seule opération (absence
+imprévue sur une journée…). Chaque mission est contrôlée, verrouillée et enregistrée **seule**
+(`MissionPostDeployService::reassign()` ou `::relay()`) : un refus n'annule ni ne masque les
+autres ; aucune mission n'est laissée à moitié modifiée.
+
+**Body :**
+
+```json
+{
+  "items": [
+    { "missionId": 101, "instrumentistId": 12, "expectedInstrumentistId": 7, "mode": "DIRECT" },
+    { "missionId": 102, "instrumentistId": 15, "expectedInstrumentistId": 7, "mode": "RELAY", "relayAt": "2026-11-03T10:30:00+01:00" }
+  ],
+  "comment": "facultatif — commentaire interne (audit uniquement)"
+}
+```
+
+- `items` : 1 à 50 missions, chacune au plus une fois (`422` sinon).
+- `mode` : `DIRECT` (défaut) — toute la mission change de mains ; `RELAY` — la mission s'arrête
+  à `relayAt` avec la première instrumentiste et une mission de relais liée continue avec la
+  remplaçante. Le mode doit figurer dans `reassignment.modes` du détail de la mission.
+- `expectedInstrumentistId` : l'instrumentiste vue à l'écran (protection contre deux managers).
+
+**Réponse — 200 :**
+
+```json
+{
+  "operationId": "01a1a10c-8f95-7388-bf2e-9304293a241d",
+  "results": [
+    { "missionId": 101, "status": "DONE", "mode": "DIRECT", "relayMissionId": null },
+    { "missionId": 102, "status": "FAILED", "error": { "status": 409, "code": "INSTRUMENTIST_INCOMPATIBLE", "message": "…", "reasons": ["SCHEDULE_CONFLICT"] } }
+  ],
+  "recipients": [ { "userId": 7, "name": "Ole Salve", "roles": ["PREVIOUS_INSTRUMENTIST"] } ]
+}
+```
+
+`error.code` : ceux de `/reassign` ci-dessus, plus `REASSIGNMENT_RELAY_TIME_INVALID` (`relayAt`
+absent ou hors de ]début, fin prévue[), `REASSIGNMENT_MODE_NOT_AVAILABLE`, `FORBIDDEN`,
+`NOT_FOUND`, `VALIDATION_FAILED`. `recipients` : les personnes qui seront informées
+(dédupliquées, avec leurs rôles).
+
+**Effets backend :** voir `/reassign` ; pour un relais, `AuditEvent(MISSION_RELAYED)` sur la
+mission d'origine (`role: ORIGINAL`) et sur la mission de relais (`role: RELAY`) avec
+`originalMissionId`, `relayMissionId`, `relayAt`, `previousEndAt`, `from/to`, `actor`,
+`internalComment`. Un seul `MissionReassignmentNotificationMessage` par opération, et
+seulement s'il y a eu au moins un changement réel.
+
+### `GET /api/missions/reassignment-operations/{operationId}` (D-181)
+
+**AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::VIEW_REASSIGNMENT_OPERATION`).
+
+Statut **réel** des notifications d'une opération, lu dans les traces du `NotificationDispatcher` :
+
+```json
+{
+  "operationId": "…",
+  "recipients": [
+    { "userId": 15, "name": "Jean Martin", "missionIds": [101],
+      "email": { "status": "SENT", "skipReason": null, "at": "…" },
+      "inApp": { "status": "SENT", "skipReason": null, "at": "…" } }
+  ]
+}
+```
+
+`email.status` : `QUEUED` | `SENT` (accepté par le transport, jamais « lu ») | `FAILED` |
+`SKIPPED` (`skipReason` : `DISABLED_BY_PREFERENCE`, `NO_EMAIL_ADDRESS`…). Un destinataire absent
+de la liste n'a pas encore été traité par le worker.
+
+### Détail mission — champs D-181
+
+`GET /api/missions/{id}` porte, pour les managers, `reassignment` :
+`{ modes: ["DIRECT"|"RELAY"…] (le premier est à proposer ; vide = impossible), blockedReason: {code, message}|null, relayWindow: {from, to}|null }`,
+et pour tous `relay` : `{ relayOfMissionId, relayMissionIds }` ou `null`. `allowedActions`
+contient `reassign` aussi pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS` quand un mode existe.
 
 ---
 
@@ -4834,7 +4932,7 @@ créer/modifier une exception avec `source = SURGEON_ABSENCE`.
 | `POST /api/planning/alerts/{id}/acknowledge` | OPEN → ACKNOWLEDGED |
 | `POST /api/planning/alerts/{id}/resolve` | OPEN/ACKNOWLEDGED → RESOLVED |
 | `POST /api/planning/alerts/{id}/ignore` | OPEN/ACKNOWLEDGED → IGNORED |
-| `POST /api/planning/alerts/{id}/reassign` | `{instrumentistId, note?}` — change l'instrumentiste de la mission, résout l'alerte |
+| `POST /api/planning/alerts/{id}/reassign` | `{instrumentistId, note?}` — change l'instrumentiste de la mission, résout l'alerte. D-181 : une mission qui a déjà une instrumentiste (`ASSIGNED`, `IN_PROGRESS`, `ENCODING_IN_PROGRESS`) passe par la même opération que `POST /api/missions/reassignments` (statut conservé, encodage protégé, audit, e-mails aux trois personnes ; `note` = commentaire interne) |
 | `POST /api/planning/alerts/{id}/open-as-available` | Vide l'instrumentiste, mission → `OPEN`, résout l'alerte |
 | `GET /api/planning/alerts/{id}/eligible-instrumentists` | D-102 (Lot 2) — roster complet du site, annoté d'éligibilité (jamais filtré) : `{missionId, policy, candidates: CandidateEligibility[]}`, chaque candidat portant `sites: string[]` en plus (ajouté Batch 12, conservé). Toujours `STRICT_ASSIGNMENT`. Délègue à `evaluateAllCandidates()`/`serializeCandidate()`, plus de logique dupliquée dans `PlanningAlertActionService` |
 | `GET /api/planning/v2/eligible-instrumentists` | D-102 (Lot 2, nouveau) — roster éligibilité pour un créneau hypothétique/sans mission persistée (Preview Editor : ligne éditée, bulk-assign, création de mission en Mode Modification). Query : `siteId?`, `date`, `startTime`, `endTime` (requis), `excludeMissionId?`, `policy?`. Réponse : `{policy, candidates: CandidateEligibility[]}`. Délègue à `evaluateRoster()` (4 requêtes DB) |
@@ -7958,6 +8056,21 @@ l'architecture de consolidation complète. H4 (D-130) : quatre compartiments de 
 (`draftsToCover`, `managerDecisions` en « Action requise », `draftsNeutralizedAtDeploy` en
 « Impact automatique », `usualOccurrencesToCover` en « À anticiper ») ; envoyé par
 `NotificationDispatcher`.
+
+### `NotificationType::MISSION_REASSIGNMENT_NOTICE` (D-181)
+
+Changement d'instrumentiste d'une mission publiée par un manager (`/reassign`,
+`/reassignments`, alerte). Destinataires : l'ancienne instrumentiste (mission retirée — pour un
+relais, la partie restante), la nouvelle (mission attribuée), le chirurgien (instrumentiste
+initialement prévue → nouvelle). In-app : un élément par mission et par rôle (`payload.role`,
+`payload.sentence`). E-mail (et push) : **un seul par destinataire et par opération**
+(`dispatchBatch`), qui regroupe ses missions et tous ses rôles ; objets « SurgicalHub –
+Modification de votre planning » / « – Nouvelle mission attribuée » / « – Changement
+d'instrumentiste pour votre programme ». E-mail activé par défaut, configurable ; un refus par
+préférence est tracé `SKIPPED / DISABLED_BY_PREFERENCE` et visible du manager
+(`GET /api/missions/reassignment-operations/{operationId}`). Jamais de donnée patient, de
+montant, de motif ni le commentaire interne. Idempotent : `episodeRef =
+reassignment:{operationId}:{missionId}:{role}`, `groupKey` par corrélation.
 
 ## 43. Activité chirurgien + podium personnel (Lot 4, D-098)
 

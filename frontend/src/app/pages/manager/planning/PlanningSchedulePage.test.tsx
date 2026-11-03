@@ -15,6 +15,7 @@ vi.setConfig({ testTimeout: 30_000 });
 vi.mock("../../../features/missions/api/missions.api", () => ({
   fetchMissions: vi.fn(),
   fetchAllMissions: vi.fn(),
+  fetchMissionById: vi.fn(),
 }));
 vi.mock("../../../features/sites/api/sites.api", () => ({
   fetchSites: vi.fn().mockResolvedValue([{ id: 1, name: "Alpha" }]),
@@ -238,92 +239,81 @@ describe("PlanningSchedulePage — optimistic updates", () => {
   });
 });
 
-describe("PlanningSchedulePage — Reassign action", () => {
-  it("shows Reassign button on ASSIGNED missions", async () => {
-    await loadMissions([makeAssignedMission()]);
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /réassigner la mission/i })).toBeInTheDocument();
-    });
+describe("PlanningSchedulePage — Changer d'instrumentiste (D-181)", () => {
+  const REASSIGNABLE = { allowedActions: ["view", "cancel", "reassign"], reassignment: { modes: ["DIRECT"], blockedReason: null, relayWindow: null } };
+  const done = (ids: number[], failed: number[] = []) => ({ data: {
+    operationId: "01a1a10c-8f95-7388-bf2e-9304293a241d",
+    results: [
+      ...ids.map((id) => ({ missionId: id, status: "DONE", mode: "DIRECT", relayMissionId: null })),
+      ...failed.map((id) => ({ missionId: id, status: "FAILED", error: { status: 409, code: "INSTRUMENTIST_INCOMPATIBLE", message: "Instrumentiste indisponible", reasons: ["SCHEDULE_CONFLICT"] } })),
+    ],
+    recipients: [{ userId: 5, name: "Marie Martin", roles: ["PREVIOUS_INSTRUMENTIST"] }],
+  } });
+
+  function missionsById(missions: Array<Record<string, unknown>>) {
+    vi.mocked(missionsApi.fetchMissionById).mockImplementation(async (id: number) => missions.find((m) => m.id === id) as any);
+  }
+
+  it("the action follows allowedActions — also on a mission of the day already started", async () => {
+    const started = makeAssignedMission({ id: 1, status: "IN_PROGRESS", ...REASSIGNABLE });
+    const locked = makeAssignedMission({ id: 2, status: "SUBMITTED", allowedActions: ["view", "validate", "reject"] });
+    await loadMissions([started, locked]);
+
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /changer d'instrumentiste/i })).toHaveLength(1));
+    expect(screen.getByTestId("schedule-select-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("schedule-select-2")).toBeNull();
   });
 
-  it("does not show Reassign button on OPEN missions", async () => {
-    await loadMissions([makeMission({ status: "OPEN" })]);
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: /réassigner la mission/i })).toBeNull(),
-    );
+  it("opens the mission's dialog and sends one reassignment operation", async () => {
+    const mission = makeAssignedMission({ id: 1, ...REASSIGNABLE });
+    missionsById([mission]);
+    vi.mocked(apiClient.post).mockResolvedValueOnce(done([1]));
+    const user = await loadMissions([mission]);
+
+    await user.click(await screen.findByRole("button", { name: /changer d'instrumentiste/i }));
+    expect(await screen.findByTestId("change-instrumentist-summary")).toHaveTextContent("Marie Martin");
+    expect(await screen.findByTestId("candidate-21")).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(screen.getByTestId("candidate-20"));
+    await user.click(screen.getByTestId("confirm-reassignment"));
+
+    await waitFor(() => expect(apiClient.post).toHaveBeenCalledWith("/api/missions/reassignments", {
+      items: [{ missionId: 1, instrumentistId: 20, mode: "DIRECT", expectedInstrumentistId: 5 }],
+    }));
+    expect(await screen.findByTestId("change-instrumentist-done")).toBeInTheDocument();
   });
 
-  it("opens reassign dialog with eligible candidates on click", async () => {
-    const user = await loadMissions([makeAssignedMission()]);
+  it("réaffectation multiple : un choix par mission, récapitulatif, puis résultat mission par mission", async () => {
+    const morning = makeAssignedMission({ id: 1, ...REASSIGNABLE });
+    const afternoon = makeAssignedMission({ id: 2, startAt: "2026-07-01T13:00:00", endAt: "2026-07-01T17:00:00", ...REASSIGNABLE });
+    missionsById([morning, afternoon]);
+    vi.mocked(apiClient.post).mockClear();
+    vi.mocked(apiClient.post).mockResolvedValueOnce(done([1], [2]));
+    const user = await loadMissions([morning, afternoon]);
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /réassigner la mission/i })).toBeInTheDocument(),
-    );
+    await user.click(await screen.findByTestId("schedule-select-1"));
+    await user.click(screen.getByTestId("schedule-select-2"));
+    await user.click(screen.getByTestId("schedule-batch-reassign"));
 
-    await user.click(screen.getByRole("button", { name: /réassigner la mission/i }));
+    for (const id of [1, 2]) {
+      const row = await screen.findByTestId(`batch-row-${id}`);
+      fireEvent.mouseDown(within(row).getByRole("combobox"));
+      fireEvent.click(await screen.findByTestId(`batch-option-${id}-20`));
+    }
+    await user.click(screen.getByTestId("batch-to-recap"));
+    const recap = await screen.findByTestId("batch-recap");
+    expect(within(recap).getAllByText(/Marie Martin/)).toHaveLength(2);
+    expect(within(recap).getAllByText(/Claire Dubois/)).toHaveLength(2);
+    expect(apiClient.post).not.toHaveBeenCalledWith("/api/missions/reassignments", expect.anything());
 
-    // Dialog should open
-    await waitFor(() =>
-      expect(screen.getByRole("dialog")).toBeInTheDocument(),
-    );
-    expect(await screen.findByText("Réassigner la mission")).toBeInTheDocument();
-  });
-
-  it("shows eligible and ineligible candidates in reassign dialog", async () => {
-    const user = await loadMissions([makeAssignedMission()]);
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /réassigner la mission/i })).toBeInTheDocument(),
-    );
-    await user.click(screen.getByRole("button", { name: /réassigner la mission/i }));
-
-    // Wait for eligibility data to load in dialog
-    await waitFor(() => expect(screen.getByTestId("reassign-candidate-list")).toBeInTheDocument());
-    expect(screen.getByText("Marc Leroy")).toBeInTheDocument();
-    expect(screen.getByTestId("reassign-candidate-21")).toHaveAttribute("aria-disabled", "true");
-  });
-
-  it("calls reassignMission API on reassign confirm", async () => {
-    const user = await loadMissions([makeAssignedMission()]);
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /réassigner la mission/i })).toBeInTheDocument(),
-    );
-    await user.click(screen.getByRole("button", { name: /réassigner la mission/i }));
-
-    await waitFor(() => screen.getByTestId("reassign-candidate-list"));
-
-    // Select eligible candidate
-    fireEvent.click(screen.getByTestId("reassign-candidate-20"));
-
-    // Confirm
-    const dialog = screen.getByRole("dialog");
-    const confirmBtn = within(dialog).getByRole("button", { name: /Réassigner/i });
-    fireEvent.click(confirmBtn);
-
-    await waitFor(() => {
-      expect(planningApi.reassignMission).toHaveBeenCalledWith(1, 20, undefined);
-    });
-  });
-
-  // D-156 — a mission that already carries encoded interventions/material is never reassigned
-  // implicitly: the server says whether a motivated confirmation is enough.
-  it("demande une confirmation motivée quand la mission porte déjà des données d'encodage", async () => {
-    vi.mocked(planningApi.reassignMission)
-      .mockRejectedValueOnce({ response: { status: 409, data: { error: { code: "MISSION_HAS_ENCODING_DATA", message: "Impossible de réaffecter cette mission sans confirmation.", confirmable: true } } } })
-      .mockResolvedValueOnce(undefined);
-    const user = await loadMissions([makeAssignedMission()]);
-
-    await user.click(await screen.findByRole("button", { name: /réassigner la mission/i }));
-    await waitFor(() => screen.getByTestId("reassign-candidate-list"));
-    fireEvent.click(screen.getByTestId("reassign-candidate-20"));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Réassigner/i }));
-
-    expect(await screen.findByText("Données d'encodage déjà enregistrées")).toBeInTheDocument();
-    await user.type(screen.getByTestId("encoding-data-reason"), "Salle reprise par Claire.");
-    await user.click(screen.getByRole("button", { name: "Confirmer la réaffectation" }));
-
-    await waitFor(() => expect(planningApi.reassignMission).toHaveBeenLastCalledWith(1, 20, { encodingDataReason: "Salle reprise par Claire." }));
+    await user.click(screen.getByTestId("batch-confirm"));
+    await waitFor(() => expect(apiClient.post).toHaveBeenCalledWith("/api/missions/reassignments", {
+      items: [
+        { missionId: 1, instrumentistId: 20, mode: "DIRECT", expectedInstrumentistId: 5 },
+        { missionId: 2, instrumentistId: 20, mode: "DIRECT", expectedInstrumentistId: 5 },
+      ],
+    }));
+    expect(await screen.findByTestId("batch-result-1")).toHaveTextContent("réaffectée");
+    expect(screen.getByTestId("batch-result-2")).toHaveTextContent("Instrumentiste indisponible");
   });
 });
 

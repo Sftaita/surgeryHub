@@ -73,6 +73,7 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
   MISSION_EXECUTION_PRESENCE_DETACHED: "Mission détachée des heures communes",
   MISSION_EXECUTION_OWN_HOURS_CONVERTED: "Heures propres reprises dans les heures communes",
   MISSION_REASSIGNED_WITH_ENCODING_DATA: "Réaffectation confirmée (données d'encodage conservées)",
+  MISSION_RELAYED: "Relais par une autre instrumentiste",
   MISSION_EXECUTION_DISPUTE_OPENED: "Contestation ouverte",
   MISSION_EXECUTION_DISPUTE_RESOLVED: "Contestation résolue",
   MISSION_EXECUTION_DISPUTE_REJECTED: "Contestation rejetée",

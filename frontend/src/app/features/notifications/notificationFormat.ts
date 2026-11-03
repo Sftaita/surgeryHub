@@ -30,6 +30,8 @@ const TITLES: Record<string, string> = {
   ABSENCE_INSTRUMENTIST_REASSIGNED: "Mission réaffectée (absence)",
   PLANNING_RESENT_MANUAL: "Planning renvoyé",
   ROOM_TAKEOVER_MISSION_OFFER: "Salle reprise — mission disponible",
+  // D-181 — réaffectation par un manager (mission retirée / attribuée / instrumentiste changée).
+  MISSION_REASSIGNMENT_NOTICE: "Changement d'instrumentiste",
   // D-161 — une salle opératoire vient de se libérer et peut être reprise.
   ROOM_SLOT_AVAILABLE: "Salle opératoire disponible",
   // H4 (D-130) — absences, niveaux N1 (créneau habituel) / N2 (planning en préparation).
@@ -181,6 +183,12 @@ export function formatNotificationBody(n: Pick<NotificationItem, "payload" | "ev
   // H4 (D-130) — N1 / N2 absence information: the server already wrote the exact D-127
   // sentence for the level (never "mission annulée" before publication) — shown as is.
   if (n.eventType === "ABSENCE_OCCURRENCE_CANCELLED" || n.eventType === "ABSENCE_OCCURRENCE_UNCOVERED") {
+    if (typeof payload.sentence === "string" && payload.sentence !== "") return payload.sentence;
+  }
+
+  // D-181 — the server writes the exact sentence for the recipient's role (removed / added /
+  // surgeon), never the manager's internal comment.
+  if (n.eventType === "MISSION_REASSIGNMENT_NOTICE") {
     if (typeof payload.sentence === "string" && payload.sentence !== "") return payload.sentence;
   }
 

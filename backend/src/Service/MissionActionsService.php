@@ -70,7 +70,13 @@ final class MissionActionsService
                     ? ['view', 'view_publications', 'cancel', 'dispatch']
                     : ['view', 'view_publications', 'cancel'],
                 MissionStatus::ASSIGNED => [...['view', 'cancel', 'reassign', 'view_claim'], ...$remind],
-                MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [...['view'], ...$remind],
+                // D-181 — a started mission still changes hands (directly, or by a relay once
+                // encoding exists): same rule exactly as MissionReassignmentPolicy::modes().
+                MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [
+                    ...['view'],
+                    ...(MissionReassignmentPolicy::modes($mission, Clock::get()->now()) !== [] ? ['reassign'] : []),
+                    ...$remind,
+                ],
                 // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED
                 // (une mission SUBMITTED n'a jamais été validée, donc rien à "rouvrir").
                 MissionStatus::SUBMITTED => ['view', 'validate', 'reject'],
