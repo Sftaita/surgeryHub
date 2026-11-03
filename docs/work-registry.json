@@ -983,6 +983,36 @@
       ],
       "nextAction": "Rapport d'écart branche / main / production, puis décision utilisateur de fusion de la PR #65 et de mise en production.",
       "lastReviewed": "2026-11-01"
+    },
+    {
+      "id": "D-180",
+      "title": "Suivi manager des heures instrumentistes : Top 5, page et tiroir",
+      "description": "Carte « Top 5 des instrumentistes » (Dashboard › Classements), page Facturation › Heures instrumentistes (/app/m/billing/hours) et tiroir individuel ; endpoints GET /api/manager/instrumentist-hours et GET /api/manager/instrumentists/{id}/hours (MANAGER / ADMIN). Mêmes règles que D-179 (heures réelles, parts imputées D-156, estimation au tarif personnel, forfaits consultation distincts) ; comparaisons vs mois précédent et moyenne personnelle sur l'historique observable (première prestation connue, sans migration). Aucune migration.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Le manager n'avait aucune vue des heures encodées et validées par instrumentiste ni de leur coût estimé.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-11-03",
+      "refs": {
+        "branches": [
+          "feat/heures-instrumentistes-manager"
+        ],
+        "decision": "D-180",
+        "worktrees": [
+          "SurgicalHub-heures-instrumentistes"
+        ],
+        "prs": [],
+        "commits": []
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Validation utilisateur de la PR, puis décision de fusion et de mise en production."
+        }
+      ],
+      "nextAction": "Validation utilisateur de la PR, puis décision de fusion et de mise en production.",
+      "lastReviewed": "2026-11-03"
     }
   ]
 }

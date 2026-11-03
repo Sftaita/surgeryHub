@@ -16599,3 +16599,41 @@ déjà une par prestation (D-156).
 a été fusionnée sur `main` au commit `366627f` ; son déploiement reste soumis à un accord
 distinct. La première release D-156 (`1e45953`) a été déployée sans être officialisée ;
 ne pas lui attribuer rétroactivement le tag du complément.
+
+## D-180 — Suivi manager des heures instrumentistes : Top 5, page et tiroir (2026-11-03)
+
+**Contexte.** Le manager n'avait aucune vue des heures encodées et validées par instrumentiste
+ni de leur coût estimé ; « Mes heures » (D-179) ne montre que les siennes à l'instrumentiste.
+Conception figée : `docs/design/Instruction design/handoff-heures-instrumentistes/`
+(révision 3, validée par l'utilisateur le 2026-11-03).
+
+**Décision.**
+1. Deux endpoints en lecture seule (`docs/api.md` § 51), gardés par
+   `InstrumentistHoursVoter::VIEW` (MANAGER, ADMIN actifs). `MyHoursVoter` reste inchangé.
+2. **Aucun moteur parallèle** : `MyHoursService` expose `loadMissions()`, `prestationRow()`,
+   `summarize()`, `estimateOf()` et `isUnrated()` ; `InstrumentistHoursService` les réutilise
+   pour chaque prestation. Le tiroir renvoie `MyHoursService::statement()` tel quel. Une ligne
+   manager = le tiroir = « Mes heures » de la même instrumentiste (mois, site), à la minute et
+   au centime — prouvé par les tests fonctionnels, multi-salles D-156 compris (parts imputées,
+   aucun double comptage).
+3. Liste : instrumentistes actives (même à 0h00) + inactives ayant presté dans le mois et le
+   site. Totaux = périmètre filtré (site + recherche), sans évolution globale. Top 5 = heures
+   validées décroissantes uniquement.
+4. **Convention d'historique observable (option B, sans migration).** Le modèle n'a aucune date
+   d'entrée en activité fiable (`User` sans `createdAt` ; audit `USER_CREATED` seulement depuis
+   le 2026-06-16 ; `instrumentistOnboardingCompletedAt` partiel). La moyenne personnelle porte
+   sur M-6 … M-1 restreints aux mois postérieurs ou égaux au mois de la première prestation
+   connue (périmètre D-179, tous sites) ; mois vides = 0 h ; M exclu ; « — » sans référence.
+   **Limite** : une première prestation connue ne prouve pas la date réelle d'entrée en
+   activité ; elle n'est jamais présentée comme telle.
+5. Pourcentages calculés et arrondis exclusivement par le serveur ; mois en cours comparé à
+   date équivalente et marqué provisoire.
+6. Front : carte Top 5 en tête de « Classements » (Dashboard), page
+   `/app/m/billing/hours` (Facturation → Heures instrumentistes), tiroir individuel ;
+   piste DÉBUT | DURÉE TOTALE | FIN, statut et formats partagés avec « Mes heures »
+   (`features/hours-shared`), sans changement visuel de l'écran instrumentiste.
+
+**Limites.** Comme D-179 : mois d'appartenance = `startAt` planifié ; estimation recalculée à la
+volée, indicative, jamais un calcul approuvé ni un paiement. L'interface manager n'a pas de
+shell mobile : les écrans sont adaptatifs, la navigation mobile manager reste un chantier séparé.
+
