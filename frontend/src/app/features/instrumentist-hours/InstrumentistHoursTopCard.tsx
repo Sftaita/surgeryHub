@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Box, Button, Paper, Skeleton, Stack, Typography, useMediaQuery } from "@mui/material";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { currentMonth, duration, monthName, monthShort, shiftMonth } from "../hours-shared/format";
 import { fetchInstrumentistHours } from "./api/instrumentistHours.api";
@@ -26,8 +26,9 @@ export function InstrumentistHoursTopCard() {
   const query = useQuery({
     queryKey: ["instrumentist-hours", "top5", month],
     queryFn: () => fetchInstrumentistHours({ month, limit: 5 }),
-    placeholderData: keepPreviousData,
   });
+  // Jamais le classement d'un autre mois : chargement explicite tant que la réponse ne
+  // correspond pas au mois affiché.
   const data = query.data && query.data.month === month ? query.data : null;
 
   return (
@@ -58,7 +59,7 @@ export function InstrumentistHoursTopCard() {
       ) : data.items.length === 0 ? (
         <EmptyRanking data={data} isCurrentMonth={isCurrentMonth} onCurrent={() => setMonth(thisMonth)} />
       ) : (
-        <Box sx={{ opacity: query.isFetching ? 0.6 : 1, transition: "opacity 120ms" }}>
+        <Box>
           {wide && (
             <Box aria-hidden sx={{ display: "grid", gridTemplateColumns: DESKTOP_COLS, columnGap: "14px", px: "2px", pb: 0.75, fontSize: 11, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: HOURS_COLOR.gray600, whiteSpace: "nowrap" }}>
               <span>#</span><span>Instrumentiste</span><span>Heures validées</span><span />

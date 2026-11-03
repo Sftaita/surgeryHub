@@ -37,7 +37,9 @@ export function InstrumentistHoursDrawer({ instrumentistId, month, siteId, siteN
     queryFn: () => fetchInstrumentistHoursDetail(instrumentistId!, month, siteId),
     enabled: open,
   });
-  const data = query.data;
+  // Jamais le relevé d'une autre instrumentiste, d'un autre mois ou d'un autre site.
+  const data = query.data && query.data.instrumentist.id === instrumentistId && query.data.month === month && query.data.siteId === siteId
+    ? query.data : undefined;
 
   return (
     <>

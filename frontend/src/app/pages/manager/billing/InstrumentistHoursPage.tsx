@@ -5,7 +5,7 @@ import {
 } from "@mui/material";
 import ScheduleOutlinedIcon from "@mui/icons-material/ScheduleOutlined";
 import SearchIcon from "@mui/icons-material/Search";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../../ui/PageHeader";
 import { currentMonth, duration, monthLabel, monthName, monthShort, prestationCount, shiftMonth } from "../../../features/hours-shared/format";
@@ -69,13 +69,22 @@ export default function InstrumentistHoursPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
+  // Aucune donnée de remplacement : une autre sélection (mois, site, recherche, tri) ne doit
+  // jamais afficher les chiffres de la précédente. La réponse n'est en plus affichée que si
+  // le périmètre renvoyé par le serveur est exactement celui demandé, et pas pendant la
+  // saisie d'une recherche pas encore appliquée.
   const query = useQuery({
     queryKey: ["instrumentist-hours", "list", month, siteId, q, sort, direction],
     queryFn: () => fetchInstrumentistHours({ month, siteId, q: q || null, sort, direction }),
-    placeholderData: keepPreviousData,
   });
-  const data = query.data ?? null;
-  const sites = data?.sites ?? [];
+  const searchPending = search.trim() !== q;
+  const data = query.data && !searchPending && isSameScope(query.data, { month, siteId, q, sort, direction }) ? query.data : null;
+
+  // Libellés des sites pour le sélecteur seulement (jamais pour des chiffres) : gardés le
+  // temps que la réponse de la nouvelle sélection arrive.
+  const knownSites = React.useRef<{ id: number; name: string }[]>([]);
+  if (data) knownSites.current = data.sites;
+  const sites = data?.sites ?? knownSites.current;
   const siteName = siteId === null ? null : sites.find((s) => s.id === siteId)?.name ?? null;
   const filtered = siteId !== null || q !== "";
 
@@ -139,7 +148,7 @@ export default function InstrumentistHoursPage() {
           </Stack>
         )}
 
-        {query.isError && !data ? (
+        {query.isError && !searchPending ? (
           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 2, borderRadius: 2, bgcolor: "#FDEEEE" }}>
             <Typography sx={{ fontSize: 13.5, fontWeight: 600, color: "#C62F36" }}>Impossible de charger le suivi des heures.</Typography>
             <Button onClick={() => void query.refetch()} sx={{ color: "#C62F36" }}>Réessayer</Button>
@@ -152,7 +161,7 @@ export default function InstrumentistHoursPage() {
             {[0, 1, 2, 3, 4].map((i) => <Skeleton key={i} variant="rounded" height={52} />)}
           </Stack>
         ) : (
-          <Box sx={{ opacity: query.isFetching && query.isPlaceholderData ? 0.6 : 1, transition: "opacity 120ms", display: "flex", flexDirection: "column", gap: 3 }} aria-busy={query.isFetching}>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }} aria-busy={query.isFetching}>
             <Kpis data={data} wide={wide} />
             <Content data={data} wide={wide} month={month} siteName={siteName} q={q} isCurrentMonth={isCurrentMonth}
               sort={sort} direction={direction} onSort={toggleSort} onOpen={(id) => update({ instrumentist: String(id) }, true)}
@@ -164,6 +173,11 @@ export default function InstrumentistHoursPage() {
       <InstrumentistHoursDrawer instrumentistId={instrumentistId} month={month} siteId={siteId} siteName={siteName} onClose={() => update({ instrumentist: null })} />
     </Box>
   );
+}
+
+/** La réponse correspond-elle exactement à la sélection affichée ? */
+function isSameScope(data: InstrumentistHoursList, s: { month: string; siteId: number | null; q: string; sort: HoursSort; direction: SortDirection }): boolean {
+  return data.month === s.month && data.siteId === s.siteId && (data.q ?? "") === s.q && data.sort === s.sort && data.direction === s.direction;
 }
 
 function Kpis({ data, wide }: { data: InstrumentistHoursList; wide: boolean }) {

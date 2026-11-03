@@ -7,6 +7,23 @@ import { useMediaQuery } from "@mui/material";
 import InstrumentistHoursPage from "./InstrumentistHoursPage";
 import { fetchInstrumentistHours, fetchInstrumentistHoursDetail } from "../../../features/instrumentist-hours/api/instrumentistHours.api";
 import { detailFixture, listFixture } from "../../../features/instrumentist-hours/testFixtures";
+import type { InstrumentistHoursList, InstrumentistHoursQuery } from "../../../features/instrumentist-hours/api/instrumentistHours.types";
+import { shiftMonth } from "../../../features/hours-shared/format";
+
+/** Réponse au format du serveur : le périmètre renvoyé est celui demandé. */
+function answer(query: InstrumentistHoursQuery, patch: Partial<InstrumentistHoursList> = {}): InstrumentistHoursList {
+  return {
+    ...listFixture(query.month, shiftMonth(query.month, -1)),
+    siteId: query.siteId ?? null, q: query.q ?? null, sort: query.sort ?? "validatedMinutes", direction: query.direction ?? "desc",
+    ...patch,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
 
 vi.mock("../../../features/instrumentist-hours/api/instrumentistHours.api", () => ({
   fetchInstrumentistHours: vi.fn(),
@@ -38,7 +55,7 @@ function renderPage(url = "/app/m/billing/hours?month=2026-10") {
 }
 
 beforeEach(() => {
-  (fetchInstrumentistHours as Mock).mockReset().mockResolvedValue(listFixture());
+  (fetchInstrumentistHours as Mock).mockReset().mockImplementation((query: InstrumentistHoursQuery) => Promise.resolve(answer(query)));
   (fetchInstrumentistHoursDetail as Mock).mockReset().mockResolvedValue(detailFixture());
   (useMediaQuery as unknown as Mock).mockReturnValue(true);
 });
@@ -117,12 +134,12 @@ describe("D-180 — page Heures instrumentistes", () => {
   });
 
   it("affiche le bandeau provisoire, le mois vide et l'erreur", async () => {
-    (fetchInstrumentistHours as Mock).mockResolvedValueOnce({ ...listFixture(), provisional: true, asOfDay: 3 });
+    (fetchInstrumentistHours as Mock).mockImplementationOnce((query: InstrumentistHoursQuery) => Promise.resolve(answer(query, { provisional: true, asOfDay: 3 })));
     const { unmount } = renderPage();
     expect(await screen.findByText(/provisoire au 3/)).toBeInTheDocument();
     unmount();
 
-    const empty = listFixture();
+    const empty = answer({ month: "2026-08" });
     empty.totals = { ...empty.totals, count: 0, encodedMinutes: 0, validatedMinutes: 0, pendingMinutes: 0, encodedAmount: null, validatedAmount: null, currency: null };
     (fetchInstrumentistHours as Mock).mockResolvedValueOnce(empty);
     const second = renderPage("/app/m/billing/hours?month=2026-08");
@@ -133,6 +150,60 @@ describe("D-180 — page Heures instrumentistes", () => {
     (fetchInstrumentistHours as Mock).mockRejectedValueOnce(new Error("boom"));
     renderPage();
     expect(await screen.findByText("Impossible de charger le suivi des heures.")).toBeInTheDocument();
+  });
+
+  it("n'affiche jamais les chiffres d'une autre sélection lors de changements rapides de mois et de site", async () => {
+    renderPage();
+    await screen.findByText("Claire Dubois");
+    expect(screen.getAllByText("538h00")).toHaveLength(2);
+
+    // Septembre puis, avant toute réponse, CHU Brugmann : deux requêtes en attente.
+    const september = deferred<InstrumentistHoursList>();
+    const septemberBrugmann = deferred<InstrumentistHoursList>();
+    (fetchInstrumentistHours as Mock)
+      .mockImplementationOnce(() => september.promise)
+      .mockImplementationOnce(() => septemberBrugmann.promise);
+
+    await userEvent.click(screen.getByRole("button", { name: "Mois précédent" }));
+    expect(await screen.findByTestId("hours-page-loading")).toBeInTheDocument();
+    expect(screen.queryByText("538h00")).toBeNull();
+    expect(screen.queryByText("Claire Dubois")).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+
+    await userEvent.click(screen.getByRole("combobox", { name: "Site" }));
+    await userEvent.click(await screen.findByRole("option", { name: "CHU Brugmann" }));
+    await waitFor(() => expect(fetchInstrumentistHours).toHaveBeenLastCalledWith(expect.objectContaining({ month: "2026-09", siteId: 3 })));
+
+    // La réponse de la sélection abandonnée arrive en dernier : jamais affichée.
+    september.resolve(answer({ month: "2026-09" }, { totals: { ...listFixture().totals, encodedMinutes: 6000 } }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("100h00")).toBeNull();
+    expect(screen.getByTestId("hours-page-loading")).toBeInTheDocument();
+
+    septemberBrugmann.resolve(answer({ month: "2026-09", siteId: 3 }, { totals: { ...listFixture().totals, encodedMinutes: 12000 } }));
+    expect(await screen.findAllByText("200h00")).toHaveLength(2); // indicateur + total
+    expect(screen.queryByText("100h00")).toBeNull();
+    expect(screen.queryByTestId("hours-page-loading")).toBeNull();
+    expect(screen.getByText(/· CHU Brugmann/)).toBeInTheDocument();
+  });
+
+  it("n'affiche pas une réponse dont le périmètre diffère de la sélection, ni pendant une recherche non appliquée", async () => {
+    (fetchInstrumentistHours as Mock).mockImplementation((query: InstrumentistHoursQuery) => Promise.resolve(answer({ ...query, month: "2026-09" })));
+    renderPage();
+    await waitFor(() => expect(fetchInstrumentistHours).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("Claire Dubois")).toBeNull();
+    expect(screen.getByTestId("hours-page-loading")).toBeInTheDocument();
+  });
+
+  it("masque les chiffres pendant la saisie d'une recherche pas encore appliquée", async () => {
+    renderPage();
+    await screen.findByText("Claire Dubois");
+    await userEvent.type(screen.getByRole("textbox", { name: "Rechercher un instrumentiste" }), "x");
+    expect(screen.getByTestId("hours-page-loading")).toBeInTheDocument();
+    expect(screen.queryByText("538h00")).toBeNull();
+    await waitFor(() => expect(fetchInstrumentistHours).toHaveBeenLastCalledWith(expect.objectContaining({ q: "x" })));
+    expect(await screen.findByText("Claire Dubois")).toBeInTheDocument();
   });
 
   it("présente une liste de cartes sur mobile, avec tri par sélection", async () => {
