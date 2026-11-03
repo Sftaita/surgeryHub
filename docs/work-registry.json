@@ -245,7 +245,8 @@
           "Version20261102090000"
         ],
         "prs": [
-          67
+          67,
+          68
         ]
       },
       "pendingOps": [
@@ -259,7 +260,7 @@
       "validationNeeded": "Validation fonctionnelle accordée par l'utilisateur le 2026-11-02 sur le périmètre testé de D-156 (présence commune, Planning V2 multi-salles, liens poste ↔ mission, missions distinctes), À L'EXCLUSION de l'écran d'encodage instrumentiste multi-salles (choix « Choisissez la mission (salle) »), remplacé par D-156-ENCODAGE-UNIQUE. Ne pas passer D-156 en « valide-production » tant que ce complément n'est pas livré et validé. Accords encore séparés : tag + deploy.sh mark, app:mission:link-schedule-posts --apply.",
       "nextAction": "Sur accord : tag v2026.11.02-prod + deploy.sh mark (avec la réserve ci-dessus) ; puis link --apply sur accord distinct.",
       "lastReviewed": "2026-11-02",
-      "notes": "Déployé le 2026-11-02 (release 1e45953, PR #67, 97 migrations), statut de release PENDING_VALIDATION au 2026-11-02. RÉSERVE : l'écran d'encodage instrumentiste multi-salles n'est pas validé (complément D-156-ENCODAGE-UNIQUE, livraison séparée). Postes #3/#4/#5 du Dr Deltour inchangés. Tarif de Salve tranché (65 €/h à partir du 01/10, jamais rétroactif)."
+      "notes": "Déployé le 2026-11-02 (release 1e45953, PR #67, 97 migrations), statut de release PENDING_VALIDATION au 2026-11-02. RÉSERVE : l'écran d'encodage instrumentiste multi-salles n'est pas validé (complément D-156-ENCODAGE-UNIQUE, livraison séparée). Postes #3/#4/#5 du Dr Deltour inchangés. Tarif de Salve tranché (65 €/h à partir du 01/10, jamais rétroactif).\nRetour arrière non destructif documenté et scripts SQL versionnés via PR #68 ; pour un rollback de 366627f vers 1e45953, code seul ; pour un retour vers d9e6ee9 après création de présences, verrous SQL obligatoires."
     },
     {
       "id": "D-156-ENCODAGE-UNIQUE",
@@ -268,7 +269,7 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Instrumentiste sur deux salles du même chirurgien : devait choisir une salle pour chaque intervention et chaque matériel.",
-      "status": "developpe",
+      "status": "fusionne",
       "statusSince": "2026-11-02",
       "refs": {
         "decision": "D-156",
@@ -277,12 +278,19 @@
         ],
         "worktrees": [
           "SurgicalHub-prestation-unique"
+        ],
+        "prs": [
+          69
+        ],
+        "commits": [
+          "9327cb8",
+          "366627f"
         ]
       },
-      "validationNeeded": "Revue du code et des résultats de recette, puis accord de fusion ; déploiement dans une release séparée, sur accord.",
-      "nextAction": "Présenter les résultats (tests + recette navigateur sur copie de production) à l'utilisateur.",
+      "validationNeeded": "PR #69 fusionnée ; recette visuelle sur copie isolée conforme. Déploiement distinct de 366627f et validation fonctionnelle en production toujours soumis à accord explicite.",
+      "nextAction": "Sur accord explicite : déployer 366627f dans une release distincte sans migration, contrôler la production, puis tag et deploy.sh mark après validation fonctionnelle. Rattachement des 221 missions toujours séparé.",
       "lastReviewed": "2026-11-02",
-      "notes": "Décisions utilisateur du 2026-11-02 : référence décidée par le serveur, refus explicite hors référence (jamais de redirection), décisions manager sur toute la prestation, livraison séparée de D-156. Décisions du 2026-11-02 (2) : liste réellement unifiée, matériel autorisé sur intervention historique, stabilité de la référence vérifiée."
+      "notes": "Décisions utilisateur du 2026-11-02 : référence décidée par le serveur, refus explicite hors référence (jamais de redirection), décisions manager sur toute la prestation, livraison séparée de D-156. Décisions du 2026-11-02 (2) : liste réellement unifiée, matériel autorisé sur intervention historique, stabilité de la référence vérifiée.\nPR #69 fusionnée (main 366627f, arbre testé 9327cb8). Frontend 2040/2040 en CI, recette visuelle isolée complète. Non déployé au 2026-11-03."
     },
     {
       "id": "D-139",

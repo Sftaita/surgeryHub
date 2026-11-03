@@ -16499,6 +16499,30 @@ seulement entre missions que rien ne distingue — aucune dans les données actu
 
 Plan de déploiement : `docs/deploy-plan-d156.md`.
 
+**Tarif de Salve — précision (2026-11-02, lecture seule).** Les 9 paires ne relèvent pas toutes
+du tarif de septembre : 5 sont antérieures au 2026-09-07 et n'ont **aucun** tarif applicable
+(valorisation refusée, `MISSING_INSTRUMENTIST_RATE`), 4 tombent sous le tarif à 0 €. Détail et
+règle dans `docs/deploy-plan-d156.md` §2 bis. Aucune valorisation ni modification de tarif
+avant décision.
+
+**Retour arrière non destructif (2026-11-02).** Jamais de `down()` ni de suppression de
+table / colonne D-156 en production. Mesuré sur copie : sans protection, l'ancien code écrase
+en silence la part imputée d'une mission liée (saisie de durée seule). Retour protégé :
+instantané (`deploy/rollback/d156/snapshot.sql`), verrous en base
+(`guard-install.sql` : missions liées gelées, présences en lecture seule), retour du code,
+puis `guard-uninstall.sql` au redéploiement. Cycle complet prouvé sur copie (données D-156
+identiques avant / pendant / après, relues et valorisées par le nouveau code).
+
+**Décision utilisateur — rémunération de Salve (2026-11-02).** Salve bénéficie d'une
+rémunération horaire de 65 €/h **à partir du 2026-10-01 uniquement**. Avant cette date, le
+tarif de 65 €/h ne s'applique pas rétroactivement ; les missions antérieures relèvent du régime
+applicable à cette période et ne sont pas des heures impayées par défaut. Les tarifs
+historiques de production (#8 à 0 € du 07/09 au 01/10, #12 à 65 € depuis le 01/10) ne sont pas
+modifiés ; les 41 missions antérieures au 01/10 ne sont pas valorisées automatiquement (aucune
+valorisation n'est d'ailleurs automatique) ; aucune régularisation financière sans
+autorisation. Sujet séparé de D-156, sans effet sur son déploiement.
+
+
 ### Validation partielle et complément « encodage unique » (2026-11-02)
 
 **Validation.** Après le déploiement (release `1e45953`), l'utilisateur valide D-156 sur son
@@ -16571,5 +16595,7 @@ notification par prestation (`prestationNotifiedMissionId`) — aussi pour la so
 commune, qui notifiait jusqu'ici le chirurgien une fois par salle. Les relances restaient
 déjà une par prestation (D-156).
 
-**Livraison.** Branche `feat/d156-prestation-encodage-unique`, release séparée de D-156 ; rien
-fusionné ni déployé sans accord.
+**Livraison (état Git au 2026-11-03).** La PR #69 (`feat/d156-prestation-encodage-unique`)
+a été fusionnée sur `main` au commit `366627f` ; son déploiement reste soumis à un accord
+distinct. La première release D-156 (`1e45953`) a été déployée sans être officialisée ;
+ne pas lui attribuer rétroactivement le tag du complément.
