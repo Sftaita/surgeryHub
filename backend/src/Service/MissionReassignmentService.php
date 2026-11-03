@@ -12,6 +12,7 @@ use App\Exception\InstrumentistIneligibleException;
 use App\Exception\MissionReassignmentException;
 use App\Exception\PrestationConflictException;
 use App\Message\MissionReassignmentNotificationMessage;
+use App\MessageHandler\MissionReassignmentNotificationMessageHandler;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Clock\Clock;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
@@ -160,19 +161,16 @@ class MissionReassignmentService
 
     /**
      * Who will be informed (deduplicated per person, with every role she has in the operation).
+     * Same roles exactly as MissionReassignmentNotificationMessageHandler::roles().
      *
      * @param list<array<string,mixed>> $changes
      * @return list<array{userId: int, name: string, roles: list<string>}>
      */
-    private function recipients(array $changes): array
+    public function recipients(array $changes): array
     {
         $byUser = [];
         foreach ($changes as $c) {
-            foreach (['fromInstrumentistId' => 'PREVIOUS_INSTRUMENTIST', 'toInstrumentistId' => 'NEW_INSTRUMENTIST', 'surgeonId' => 'SURGEON'] as $key => $role) {
-                $id = $c[$key] ?? null;
-                if ($id === null) {
-                    continue;
-                }
+            foreach (MissionReassignmentNotificationMessageHandler::roles($c) as $role => $id) {
                 $byUser[(int) $id]['roles'][$role] = $role;
             }
         }
@@ -251,6 +249,19 @@ class MissionReassignmentService
 
         return array_map('intval', $this->em->getConnection()->fetchFirstColumn(
             'SELECT id FROM mission WHERE relay_of_mission_id = ? ORDER BY start_at, id',
+            [$mission->getId()],
+        ));
+    }
+
+    /** @return list<int> D-182 — the cancelled duplicates $mission was kept in place of (MissionMapper). */
+    public function replacedMissionIdsOf(Mission $mission): array
+    {
+        if ($mission->getId() === null) {
+            return [];
+        }
+
+        return array_map('intval', $this->em->getConnection()->fetchFirstColumn(
+            'SELECT id FROM mission WHERE replaced_by_mission_id = ? ORDER BY id',
             [$mission->getId()],
         ));
     }

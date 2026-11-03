@@ -86,6 +86,7 @@ final class AuditEventActivityMapper
         'MISSION_ROOM_LABEL_CHANGED' => 'Libellé de salle modifié',
         'MISSION_REASSIGNED_WITH_ENCODING_DATA' => "Mission réaffectée avec ses données d'encodage",
         'MISSION_RELAYED' => 'Relais de la mission par une autre instrumentiste',
+        'MISSION_KEPT_AS_REPLACEMENT' => "Mission conservée à la place d'une mission annulée",
         'PRICING_RULE_CREATED' => 'Règle tarifaire créée',
         'PRICING_RULE_SCHEDULED' => 'Règle tarifaire planifiée',
         'PRICING_RULE_REPLACED' => 'Règle tarifaire remplacée',

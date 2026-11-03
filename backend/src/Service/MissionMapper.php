@@ -9,6 +9,7 @@ use App\Dto\Request\Response\UserSlimDto;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Service\Prestation\MissionEncodingDataGuard;
 use App\Service\Prestation\MissionListAnnotator;
 use App\Service\Prestation\PrestationGroupResolver;
 use Symfony\Component\Clock\Clock;
@@ -152,6 +153,12 @@ final class MissionMapper
             prestation: MissionListAnnotator::summary($group),
             reassignment: $isManagerViewer ? $this->reassignment($m) : null,
             relay: $this->relayLinks($m),
+            cancellation: $isManagerViewer ? [
+                // D-182 — with its multi-room prestation (D-156), as the guard does.
+                'blockedReason'   => MissionCancellationPolicy::blockedReason($m, count($group)),
+                'hasEncodingData' => MissionEncodingDataGuard::hasEncodingData($m),
+            ] : null,
+            replacement: $this->replacementLinks($m),
         );
     }
 
@@ -168,6 +175,17 @@ final class MissionMapper
                 'to'   => $window['to']->format(\DateTimeInterface::ATOM),
             ] : null,
         ];
+    }
+
+    /** D-182 — see MissionDetailDto::$replacement (one query, detail only). */
+    private function replacementLinks(Mission $m): ?array
+    {
+        $replaces = $this->relays?->replacedMissionIdsOf($m) ?? [];
+        if ($m->getReplacedBy() === null && $replaces === []) {
+            return null;
+        }
+
+        return ['replacedByMissionId' => $m->getReplacedBy()?->getId(), 'replacesMissionIds' => $replaces];
     }
 
     /** D-181 — see MissionDetailDto::$relay (one query, detail only). */

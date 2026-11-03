@@ -12,7 +12,6 @@ import {
 
 import {
   approveDeclaredMission,
-  cancelMission,
   cancelExecutedWithoutInstrumentist,
   declareExecutedWithoutInstrumentist,
   rejectDeclaredMission,
@@ -29,6 +28,7 @@ import {
 import InterventionsSection from "../../encoding/components/InterventionsSection";
 import CompleteAndValidateEncodingDialog from "../../encoding/components/CompleteAndValidateEncodingDialog";
 import { ChangeInstrumentistDialog } from "../reassignment/ChangeInstrumentistDialog";
+import { CancelMissionDialog } from "../cancellation/CancelMissionDialog";
 import { PrestationDecisionNotice, prestationDecisionErrorText, referenceNotice } from "../../prestations/components/PrestationDecisionNotice";
 import EditServiceHoursDialog from "../components/EditServiceHoursDialog";
 import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
@@ -93,7 +93,6 @@ export function useMissionManagerActions(
   const [reopenOpen, setReopenOpen] = React.useState(false);
   const [reopenComment, setReopenComment] = React.useState("");
   const [cancelConfirmOpen, setCancelConfirmOpen] = React.useState(false);
-  const [cancelReason, setCancelReason] = React.useState("");
   // D-155 — activité exécutée sans instrumentiste : déclarer / annuler une déclaration erronée.
   const [declareOpen, setDeclareOpen] = React.useState(false);
   const [completeValidateOpen, setCompleteValidateOpen] = React.useState(false);
@@ -192,24 +191,14 @@ export function useMissionManagerActions(
 
   /**
    * Point 5 (audit UX manager) — annulation, jamais une suppression physique (D-055/
-   * D-056 : historique auditable). Couvre DRAFT/OPEN/ASSIGNED, toujours conditionné à
-   * allowedActions.includes("cancel") — voir MissionActionsService côté backend.
+   * D-056 : historique auditable), toujours conditionnée à allowedActions.includes("cancel").
+   * D-182 — CancelMissionDialog : programme annulé ou mission remplacée par une mission
+   * existante ; le serveur décide et rafraîchit les plannings (invalidateOperationalPlanning).
    */
-  const cancelMutation = useMutation({
-    mutationFn: async (reason: string) => cancelMission(missionId, reason),
-    onSuccess: async () => {
-      await refreshAfterAction();
-      toast.success("Mission annulée.");
-      setCancelReason("");
-      onLeave();
-    },
-    onError: (err: any) => {
-      // D-156 — un refus métier (409, ex. MISSION_HAS_ENCODING_DATA) porte son explication.
-      const status = err?.response?.status;
-      const serverMessage: string | undefined = err?.response?.data?.error?.message;
-      toast.error(status === 403 ? "Accès interdit." : status === 409 && serverMessage ? serverMessage : "Erreur lors de l'annulation.");
-    },
-  });
+  const onMissionCancelled = () => {
+    toast.success("Mission annulée.");
+    onLeave();
+  };
 
   const declareMutation = useMutation({
     mutationFn: async () => declareExecutedWithoutInstrumentist(missionId),
@@ -253,6 +242,10 @@ export function useMissionManagerActions(
   const canCompleteAndValidate = allowed.includes("complete_and_validate");
   const canReopenEncoding = allowed.includes("reopen");
   const canCancel = allowed.includes("cancel");
+  // D-182 — encodage soumis / validé, mission facturée ou présence commune : l'action reste
+  // visible pour expliquer le chemin de correction (message du serveur), sans permettre l'annulation.
+  const cancelExplained = !canCancel && data?.cancellation?.blockedReason != null
+    && data.cancellation.blockedReason.code !== "CANCELLATION_NOT_POSSIBLE";
   const canDeclareWithoutInstrumentist = allowed.includes("declare_executed_without_instrumentist");
   const canCancelDeclaration = allowed.includes("cancel_executed_without_instrumentist");
   const canReassign = allowed.includes("reassign");
@@ -268,7 +261,6 @@ export function useMissionManagerActions(
     validateEncodingMutation.isPending ||
     rejectEncodingMutation.isPending ||
     reopenEncodingMutation.isPending ||
-    cancelMutation.isPending ||
     declareMutation.isPending ||
     cancelDeclarationMutation.isPending;
 
@@ -280,7 +272,7 @@ export function useMissionManagerActions(
   const actions: MissionActionDescriptor[] = [];
   if (canDeclareWithoutInstrumentist) actions.push({ key: "declareWithoutInstrumentist", label: "Déclarer l'activité réalisée sans instrumentiste", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-declare-without-instrumentist", onClick: () => setDeclareOpen(true) });
   if (canCancelDeclaration) actions.push({ key: "cancelDeclaration", label: "Annuler la déclaration", tone: "warning", contained: false, disabled: anyLoading, testId: "manager-cancel-declaration", onClick: () => setCancelDeclarationOpen(true) });
-  if (canCancel) actions.push({ key: "cancel", label: "Annuler la mission", tone: "danger", contained: false, disabled: anyLoading, onClick: () => setCancelConfirmOpen(true) });
+  if (canCancel || cancelExplained) actions.push({ key: "cancel", label: "Annuler la mission", tone: "danger", contained: false, disabled: anyLoading, onClick: () => setCancelConfirmOpen(true) });
   if (canReject) actions.push({ key: "reject", label: "Rejeter", tone: "danger", contained: false, disabled: anyLoading, onClick: () => setRejectConfirmOpen(true) });
   if (canApprove) actions.push({ key: "approve", label: "Approuver", tone: "success", contained: true, disabled: anyLoading, onClick: () => setApproveConfirmOpen(true) });
   if (canRejectEncoding) actions.push({ key: "rejectEncoding", label: "Rejeter l'encodage", tone: "danger", contained: false, disabled: anyLoading, onClick: () => setRejectEncodingOpen(true) });
@@ -295,13 +287,6 @@ export function useMissionManagerActions(
   if (canReassign || reassignExplained) corrections.reassign = { key: "reassign", label: "Changer", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-reassign", onClick: () => setReassignOpen(true) };
   if (canEditHours) corrections.editHours = { key: "editHours", label: "Corriger les heures", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-edit-hours", onClick: () => setHoursOpen(true) };
   if (canEditEncoding) corrections.editEncoding = { key: "editEncoding", label: "Corriger l'encodage", tone: "neutral", contained: false, disabled: anyLoading, testId: "manager-edit-encoding", onClick: () => setEncodingEditOpen(true) };
-
-  const cancelEffectMessage =
-    data?.status === "DRAFT"
-      ? "Ce brouillon n'a jamais été publié — l'annuler ne notifie personne."
-      : data?.status === "ASSIGNED"
-      ? "Un instrumentiste est assigné à cette mission. L'annuler le retire de la mission et l'en informe."
-      : "Cette mission est proposée au pool d'instrumentistes. L'annuler retire l'offre — plus personne ne pourra la revendiquer.";
 
   const dialogs = data ? (
     <>
@@ -482,33 +467,15 @@ export function useMissionManagerActions(
         </DialogActions>
       </Dialog>
 
-      <Dialog open={cancelConfirmOpen} onClose={() => setCancelConfirmOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Annuler la mission</DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body2" color="text.secondary" mb={1.5}>
-            {cancelEffectMessage}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" mb={1.5}>
-            La mission reste consultable dans l'historique — elle n'est jamais supprimée.
-          </Typography>
-          <TextField
-            autoFocus
-            fullWidth
-            multiline
-            minRows={2}
-            label="Motif (optionnel)"
-            value={cancelReason}
-            onChange={(e) => setCancelReason(e.target.value)}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setCancelConfirmOpen(false)} disabled={anyLoading}>Retour</Button>
-          <Button color="error" variant="contained" disabled={anyLoading}
-            onClick={() => { setCancelConfirmOpen(false); cancelMutation.mutate(cancelReason); }}>
-            Annuler la mission
-          </Button>
-        </DialogActions>
-      </Dialog>
+      {/* Reste monté tant qu'il est ouvert : le résultat (notifications) survit au rafraîchissement. */}
+      {(canCancel || cancelExplained || cancelConfirmOpen) && (
+        <CancelMissionDialog
+          missionId={missionId}
+          open={cancelConfirmOpen}
+          onClose={() => setCancelConfirmOpen(false)}
+          onCancelled={onMissionCancelled}
+        />
+      )}
 
       {(canReassign || reassignExplained) && (
         <ChangeInstrumentistDialog

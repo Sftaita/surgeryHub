@@ -15,7 +15,12 @@ namespace App\Message;
  *   mode: string, missionId: int, originalMissionId: int,
  *   fromInstrumentistId: int|null, toInstrumentistId: int, surgeonId: int|null,
  *   startAt: string|null, endAt: string|null,
+ *   approved?: bool,
  * }
+ *
+ * D-182 — mode REPLACED (MissionReplacementService): missionId is the existing mission kept,
+ * originalMissionId the planned mission cancelled as its duplicate, approved whether the kept
+ * mission's declaration was approved by the same operation.
  */
 final class MissionReassignmentNotificationMessage
 {

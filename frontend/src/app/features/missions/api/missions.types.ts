@@ -219,6 +219,16 @@ export interface MissionReassignmentInfo {
   relayWindow: { from: string; to: string } | null;
 }
 
+/**
+ * D-182 — servi par le backend (MissionCancellationPolicy) : `blockedReason` null = annulable
+ * maintenant ; sinon le chemin de correction à suivre. Jamais déduit du statut.
+ */
+export interface MissionCancellationInfo {
+  blockedReason: { code: string; message: string } | null;
+  /** Encodage existant : archivé sans aucune incidence financière si la mission est annulée. */
+  hasEncodingData: boolean;
+}
+
 export interface Mission {
   id: number;
 
@@ -312,6 +322,10 @@ export interface Mission {
   reassignment?: MissionReassignmentInfo | null;
   /** D-181 — relais : mission poursuivie / missions de relais. */
   relay?: { relayOfMissionId: number | null; relayMissionIds: number[] } | null;
+  /** D-182 — managers : l'annulation est-elle possible maintenant (serveur seul). */
+  cancellation?: MissionCancellationInfo | null;
+  /** D-182 — doublon : mission conservée à la place / missions annulées remplacées par celle-ci. */
+  replacement?: { replacedByMissionId: number | null; replacesMissionIds: number[] } | null;
 
   [key: string]: unknown;
 }

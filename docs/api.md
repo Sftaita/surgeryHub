@@ -504,17 +504,21 @@ désormais `{"scope": "DURABLE"}` (refus + blocage, D-152).
 
 **AuthZ :** `MANAGER` / `ADMIN` (`MissionVoter::CANCEL`)
 
-**Transition :** `OPEN → CANCELLED`
+**Transition :** `DRAFT|OPEN|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS → CANCELLED` (D-182)
 
-Annule une mission ouverte qui ne peut pas être couverte.
+« Programme annulé » : la mission n'a pas eu lieu. Directement depuis `ASSIGNED` (aucune remise au
+pool préalable), et aussi quand l'heure de début est passée (`IN_PROGRESS`) ou l'encodage commencé
+(`ENCODING_IN_PROGRESS`). Règle unique : `MissionCancellationPolicy` (servie dans le détail,
+`cancellation`, et `allowedActions`).
 
 **Body :**
 
 ```json
-{ "reason": "Chirurgien absent" }
+{ "reason": "Chirurgien absent", "internalComment": "Appel du bloc à 9 h" }
 ```
 
-`reason` est optionnel.
+Les deux champs sont optionnels. `reason` est repris dans l'e-mail d'annulation ;
+`internalComment` reste dans l'historique (managers seulement), jamais dans une notification.
 
 **Réponse — 200 :** Mission complète avec `status: "CANCELLED"`
 
@@ -524,12 +528,79 @@ Annule une mission ouverte qui ne peut pas être couverte.
 |---|---|
 | `403` | Non autorisé |
 | `404` | Mission introuvable |
-| `409` | Mission non `OPEN` |
+| `409` `CANCELLATION_ENCODING_SUBMITTED` | Encodage soumis : le renvoyer d'abord en correction |
+| `409` `CANCELLATION_ENCODING_VALIDATED` | Encodage validé : le rouvrir d'abord (correction tracée) |
+| `409` `CANCELLATION_MISSION_BILLED` | Calcul financier verrouillé (facturée) : jamais annulée, correction financière explicite |
+| `409` `CANCELLATION_MISSION_CLOSED` | Mission clôturée |
+| `409` `CANCELLATION_SHARED_PRESENCE` | Mission d'une présence commune (multi-salles) : la détacher d'abord |
+| `409` `CANCELLATION_PRESTATION_CONTENT` | Mission qui porte les interventions / le matériel d'une prestation multi-salles (D-156) : corriger d'abord l'encodage de la prestation |
+| `409` `CANCELLATION_NOT_POSSIBLE` | Déjà annulée, déclaration en attente (la refuser), refusée |
 
 **Effets backend :**
-- `status → CANCELLED`
-- `AuditEvent(MISSION_CANCELLED_POST_DEPLOY)` créé avec snapshot `reason` + `actorName`
-- `MissionLifecycleChangedMessage(CANCELLED)` dispatché (async)
+- `status → CANCELLED`, instrumentiste retirée (affectation close `CANCELLED`, D-150)
+- encodage existant (heures, interventions, matériel) **conservé tel quel sur la mission annulée**,
+  pour la traçabilité seulement : jamais validé (une mission annulée n'est plus encodable), jamais
+  facturé (`isBillable()` = `VALIDATED`), exclu des statistiques d'activité ;
+- calculs financiers `CALCULATED` / `APPROVED` laissés par une réouverture → `CANCELLED`
+  (`FINANCIAL_CALCULATION_CANCELLED`) ;
+- `AuditEvent(MISSION_CANCELLED_POST_DEPLOY)` : `reason`, `previousStatus`, `cancellationReason:
+  PROGRAM_CANCELLED`, `archivedEncoding` (faits d'encodage ou `null`), `internalComment` ;
+- `MissionLifecycleChangedMessage(CANCELLED)` dispatché (async) → `PLANNING_MISSION_CANCELLED`
+  (e-mail activé par défaut) à l'instrumentiste retirée et au chirurgien.
+
+Les appelants automatiques (réaction aux absences, salle libérée, modifications de planning)
+gardent leur règle étroite (`DRAFT|OPEN|ASSIGNED`, sans encodage).
+
+---
+
+### `GET /api/missions/{id}/replacement-candidates` (D-182)
+
+**AuthZ :** `MissionVoter::CANCEL` sur la mission à annuler.
+
+Les missions existantes qui peuvent être conservées à sa place : même jour (Europe/Brussels),
+même site, même chirurgien, horaires qui se recouvrent, une instrumentiste dessus, statut
+`DECLARED|ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS|SUBMITTED|VALIDATED|CLOSED`, pas déjà conservée
+à la place d'une autre mission annulée.
+
+**Réponse — 200 :** `{ items: [{ id, status, startAt, endAt, siteName, roomLabel, instrumentist:
+{id, firstname, lastname}, declared, hasEncodingData }] }`
+
+### `POST /api/missions/{id}/cancel-as-replaced` (D-182)
+
+**AuthZ :** `MissionVoter::CANCEL` sur la mission annulée ; `MissionVoter::APPROVE_DECLARED` sur la
+mission conservée quand sa déclaration est validée par la même opération.
+
+« Mission remplacée par une autre mission » : la mission `{id}` est annulée comme doublon d'une
+mission existante (ex. créée par la remplaçante), conservée intégralement avec son encodage.
+
+**Body :**
+
+```json
+{ "replacementMissionId": 77, "approveReplacement": true, "expectedReplacementStatus": "DECLARED", "internalComment": "…" }
+```
+
+**Une seule transaction**, les deux missions verrouillées : contrôle de compatibilité (mêmes règles
+que les candidats), `expectedReplacementStatus` (sinon `409 CANCELLATION_REPLACEMENT_CHANGED`),
+règle d'annulation de `{id}` ; puis, si demandé et la mission conservée `DECLARED`, validation de
+sa déclaration (`DECLARED → ASSIGNED`, `MISSION_DECLARED_APPROVED`) ; audit
+`MISSION_KEPT_AS_REPLACEMENT` sur la mission conservée ; annulation de `{id}`
+(`cancellationReason: REPLACED_BY_MISSION`, `replacementMissionId`, `mission.replaced_by_mission_id`).
+Tout refus annule tout : jamais une validation sans l'annulation, ni l'inverse.
+
+**Réponse — 200 :** `{ operationId, cancelledMissionId, replacementMissionId, approved, recipients:
+[{userId, name, roles}] }` — statut réel des envois :
+`GET /api/missions/reassignment-operations/{operationId}`.
+
+**Notifications** (`MISSION_REASSIGNMENT_NOTICE`, une seule par personne) : l'instrumentiste de la
+mission annulée (mission retirée de son planning), la remplaçante **seulement si la validation a eu
+lieu** (« SurgicalHub – Mission confirmée »), le chirurgien (changement d'instrumentiste, jamais
+une annulation du programme). Aucun `PLANNING_MISSION_CANCELLED` ni `MISSION_DECLARED_APPROVED`
+en plus.
+
+**Erreurs :** `409 CANCELLATION_REPLACEMENT_INCOMPATIBLE` (autre jour / site / chirurgien,
+horaires disjoints, statut, déjà conservée pour une autre mission), `409
+CANCELLATION_REPLACEMENT_CHANGED`, les `409` de `/cancel`, `422` (`replacementMissionId` absent),
+`403`, `404`.
 
 ---
 
@@ -661,6 +732,13 @@ de la liste n'a pas encore été traité par le worker.
 `{ modes: ["DIRECT"|"RELAY"…] (le premier est à proposer ; vide = impossible), blockedReason: {code, message}|null, relayWindow: {from, to}|null }`,
 et pour tous `relay` : `{ relayOfMissionId, relayMissionIds }` ou `null`. `allowedActions`
 contient `reassign` aussi pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS` quand un mode existe.
+
+### Détail mission — champs D-182
+
+`GET /api/missions/{id}` porte, pour les managers, `cancellation` : `{ blockedReason: {code,
+message}|null, hasEncodingData }` (`MissionCancellationPolicy`), et pour tous `replacement` :
+`{ replacedByMissionId, replacesMissionIds }` ou `null`. `allowedActions` contient `cancel` aussi
+pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS`, jamais quand `blockedReason` est servi.
 
 ---
 
@@ -8071,6 +8149,10 @@ préférence est tracé `SKIPPED / DISABLED_BY_PREFERENCE` et visible du manager
 (`GET /api/missions/reassignment-operations/{operationId}`). Jamais de donnée patient, de
 montant, de motif ni le commentaire interne. Idempotent : `episodeRef =
 reassignment:{operationId}:{missionId}:{role}`, `groupKey` par corrélation.
+
+D-182 — aussi pour une mission annulée comme doublon (`POST /api/missions/{id}/cancel-as-replaced`) :
+rôle supplémentaire `CONFIRMED_INSTRUMENTIST` (mission conservée et validée, objet « SurgicalHub –
+Mission confirmée »), envoyé seulement quand la déclaration a réellement été validée par l'opération.
 
 ## 43. Activité chirurgien + podium personnel (Lot 4, D-098)
 

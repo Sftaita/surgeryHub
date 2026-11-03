@@ -195,6 +195,15 @@ class Mission
     #[ORM\JoinColumn(name: 'relay_of_mission_id', nullable: true, onDelete: 'SET NULL')]
     private ?Mission $relayOf = null;
 
+    /**
+     * D-182 — this CANCELLED mission was a duplicate: the existing mission kept in its place
+     * for the same programme (MissionReplacementService). Traceability only — the kept mission
+     * is never changed by the link.
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'replaced_by_mission_id', nullable: true, onDelete: 'SET NULL')]
+    private ?Mission $replacedBy = null;
+
     #[ORM\ManyToOne(inversedBy: 'missions')]
     #[ORM\JoinColumn(nullable: true)]
     private ?PlanningVersion $planningVersion = null;
@@ -331,6 +340,9 @@ class Mission
 
     public function getRelayOf(): ?Mission { return $this->relayOf; }
     public function setRelayOf(?Mission $relayOf): static { $this->relayOf = $relayOf; return $this; }
+
+    public function getReplacedBy(): ?Mission { return $this->replacedBy; }
+    public function setReplacedBy(?Mission $replacedBy): static { $this->replacedBy = $replacedBy; return $this; }
 
     public function getSchedulePost(): ?SurgeonSchedulePost { return $this->schedulePost; }
     public function getScheduleOccurrenceDate(): ?\DateTimeImmutable { return $this->scheduleOccurrenceDate; }

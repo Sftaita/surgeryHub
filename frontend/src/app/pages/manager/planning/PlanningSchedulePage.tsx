@@ -17,11 +17,11 @@ import type { Mission, MissionStatus } from "../../../features/missions/api/miss
 import { fetchSites } from "../../../features/sites/api/sites.api";
 import { useToast } from "../../../ui/toast/useToast";
 import {
-  releaseMission, cancelMission, extractErrorV2,
+  releaseMission, extractErrorV2,
 } from "../../../features/planning-v2/api/planningV2.api";
 import { CoverageBanner }      from "../../../features/planning-v2/components/CoverageBanner";
 import { MissionHistoryDrawer } from "../../../features/planning-v2/components/MissionHistoryDrawer";
-import { CancelMissionDialog }  from "../../../features/planning-v2/components/CancelMissionDialog";
+import { CancelMissionDialog }  from "../../../features/missions/cancellation/CancelMissionDialog";
 import { ChangeInstrumentistDialog } from "../../../features/missions/reassignment/ChangeInstrumentistDialog";
 import { BatchReassignmentDialog } from "../../../features/missions/reassignment/BatchReassignmentDialog";
 import { useRosterEligibility, type RosterSlot } from "../../../features/planning-v2/api/useRosterEligibility";
@@ -106,7 +106,9 @@ function toRow(m: Mission): ScheduleRow {
     status,
     canEdit:    status === "OPEN",
     canRelease: status === "ASSIGNED",
-    canCancel:  status === "OPEN",
+    // D-182 — servi par le backend (OPEN, ASSIGNED, mission du jour commencée…), jamais
+    // déduit du statut : plus besoin de remettre la mission au pool avant de l'annuler.
+    canCancel:  (m.allowedActions ?? []).includes("cancel"),
     // D-181 — servi par le backend (y compris une mission du jour déjà commencée), jamais déduit du statut.
     canReassign: (m.allowedActions ?? []).includes("reassign"),
   };
@@ -400,35 +402,6 @@ export default function PlanningSchedulePage() {
       invalidateCoverage();
     },
     onSettled: () => setReleaseTarget(null),
-  });
-
-  // ── Cancel mutation ───────────────────────────────────────────────────────
-
-  const cancelMut = useMutation({
-    mutationFn: ({ id, reason }: { id: number; reason?: string }) => cancelMission(id, reason),
-    onMutate: ({ id }) => {
-      const prev = rows.find((r) => r.missionId === id);
-      setRows((r) =>
-        r.map((row) =>
-          row.missionId === id
-            ? { ...row, status: "CANCELLED" as MissionStatus,
-                canEdit: false, canRelease: false, canCancel: false, canReassign: false }
-            : row,
-        ),
-      );
-      return { prev };
-    },
-    onError: (_e, { id }, ctx) => {
-      if (ctx?.prev) {
-        setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
-      }
-      toast.error("Erreur lors de l'annulation");
-    },
-    onSuccess: () => {
-      toast.success("Mission annulée");
-      invalidateCoverage();
-    },
-    onSettled: () => setCancelTarget(null),
   });
 
   const filteredRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.status === statusFilter);
@@ -729,14 +702,12 @@ export default function PlanningSchedulePage() {
         </DialogActions>
       </Dialog>
 
-      {/* Cancel dialog */}
+      {/* D-182 — annulation : programme annulé ou mission remplacée par une mission existante */}
       <CancelMissionDialog
         open={cancelTarget !== null}
-        loading={cancelMut.isPending}
-        onClose={() => setCancelTarget(null)}
-        onConfirm={(reason) =>
-          cancelTarget !== null && cancelMut.mutate({ id: cancelTarget, reason })
-        }
+        missionId={cancelTarget}
+        onClose={() => { setCancelTarget(null); invalidateCoverage(); }}
+        onCancelled={() => toast.success("Mission annulée")}
       />
 
       {/* D-181 — « Changer d'instrumentiste » (une mission) et réaffectation multiple */}

@@ -19,9 +19,11 @@
 {# D-181 — réaffectation par un manager. Jamais de donnée patient, de montant, de motif ni le
    commentaire interne du manager : seulement date, horaire, site, chirurgien, instrumentistes. #}
 {% set font = "Inter,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" %}
-{% set onlyRemoved = removed|length > 0 and added|length == 0 and surgeon|length == 0 %}
-{% set onlyAdded = added|length > 0 and removed|length == 0 and surgeon|length == 0 %}
-{% set onlySurgeon = surgeon|length > 0 and removed|length == 0 and added|length == 0 %}
+{% set confirmed = confirmed ?? [] %}
+{% set onlyRemoved = removed|length > 0 and added|length == 0 and surgeon|length == 0 and confirmed|length == 0 %}
+{% set onlyAdded = added|length > 0 and removed|length == 0 and surgeon|length == 0 and confirmed|length == 0 %}
+{% set onlySurgeon = surgeon|length > 0 and removed|length == 0 and added|length == 0 and confirmed|length == 0 %}
+{% set onlyConfirmed = confirmed|length > 0 and removed|length == 0 and added|length == 0 and surgeon|length == 0 %}
 
 {% macro missionCard(item, showSurgeon, showChange, font) %}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E7EBEF;border-left:4px solid #42A882;border-radius:10px;margin-bottom:10px;">
@@ -64,6 +66,8 @@
 {{ added|length > 1 ? 'De nouvelles missions viennent de vous être attribuées dans SurgicalHub.' : 'Une nouvelle mission vient de vous être attribuée dans SurgicalHub.' }}
 {% elseif onlySurgeon %}
 Nous vous informons qu'une modification a été apportée à votre planning opératoire.
+{% elseif onlyConfirmed %}
+{{ confirmed|length > 1 ? 'Vos missions ont été conservées et validées dans SurgicalHub.' : 'Votre mission a été conservée et validée dans SurgicalHub.' }}
 {% else %}
 Nous vous informons qu'une modification a été apportée à votre planning.
 {% endif %}
@@ -91,6 +95,18 @@ Nous vous informons qu'une modification a été apportée à votre planning.
 <tr><td class="sh-pad" style="padding:4px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
 {{ added|length > 1 ? 'Vous êtes désormais l\'instrumentiste affectée à ces missions.' : 'Vous êtes désormais l\'instrumentiste affectée à cette mission.' }}<br>
 Votre planning a été automatiquement mis à jour.
+</td></tr>
+{% endif %}
+
+{% if confirmed|length > 0 %}
+<tr><td class="sh-pad" style="padding:10px 32px 4px 32px;font-family:{{ font }};font-size:15px;line-height:1.6;color:#16202B;">
+<strong>{{ confirmed|length > 1 ? 'Missions confirmées :' : 'Mission confirmée :' }}</strong>
+</td></tr>
+<tr><td class="sh-pad" style="padding:6px 32px 0 32px;">
+{% for item in confirmed %}{{ m.missionCard(item, true, false, font) }}{% endfor %}
+</td></tr>
+<tr><td class="sh-pad" style="padding:4px 32px 8px 32px;font-family:{{ font }};font-size:15px;line-height:1.65;color:#3A4754;">
+{{ confirmed|length > 1 ? 'Ces missions figurent dans votre planning ; vous en êtes l\'instrumentiste.' : 'Cette mission figure dans votre planning ; vous en êtes l\'instrumentiste.' }}
 </td></tr>
 {% endif %}
 

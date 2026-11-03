@@ -25,7 +25,7 @@ final class FinancialStatisticsDrilldownService
         $this->connection = $em->getConnection();
     }
 
-    /** @return array{items: FinancialStatisticsDrilldownItemDto[], total: int, page: int, limit: int} */
+    /** @return array{items: FinancialStatisticsDrilldownItemDto[], total: int, page: int, limit: int} — D-182: never a cancelled mission */
     public function missions(FinancialStatisticsFilter $filter, int $page, int $limit, string $sortDirection): array
     {
         [$missionWhere, $missionParams, $missionTypes] = $this->missionPopulationClause($filter, 'm');
@@ -34,6 +34,7 @@ final class FinancialStatisticsDrilldownService
                      LEFT JOIN mission_execution me ON me.mission_id = m.id
                      WHERE COALESCE(me.actual_start_at, m.start_at) >= :fBusiness
                        AND COALESCE(me.actual_start_at, m.start_at) < :tBusiness
+                       AND m.status <> 'CANCELLED'
                        $missionWhere";
 
         $params = $missionParams + ['fBusiness' => $this->businessDateTimeParam($filter->from), 'tBusiness' => $this->businessDateTimeParam($filter->to)];
@@ -48,6 +49,7 @@ final class FinancialStatisticsDrilldownService
                 LEFT JOIN `user` u ON u.id = m.surgeon_id
                 WHERE COALESCE(me.actual_start_at, m.start_at) >= :fBusiness
                   AND COALESCE(me.actual_start_at, m.start_at) < :tBusiness
+                  AND m.status <> 'CANCELLED'
                   $missionWhere
                 ORDER BY date " . ($sortDirection === 'ASC' ? 'ASC' : 'DESC') . "
                 LIMIT :limit OFFSET :offset";

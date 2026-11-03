@@ -16231,6 +16231,65 @@ relais (le serveur revérifie la fenêtre exacte à l'enregistrement). Comme ava
 l'affiliation au site n'est pas une raison bloquante d'une réaffectation manager : la liste ne
 propose que les instrumentistes du site. Une mission de relais compte comme une mission de
 plus dans les décomptes « nombre de missions » (les heures, elles, ne sont pas doublées).
+
+## D-182 — Annulation d'une mission par le manager : mission non réalisée, et doublon remplacé par une mission existante (2026-11-03)
+
+Même branche que D-181 (`feat/urgent-reassignment`). Non fusionnée, non déployée.
+
+**Contexte.** Le manager ne pouvait annuler qu'une mission `DRAFT` / `OPEN` / `ASSIGNED` sans
+aucun encodage (D-156) ; le planning publié ne proposait « Annuler » que sur une mission `OPEN`
+(règle déduite du statut côté client) : une mission assignée devait d'abord être remise au pool.
+Dès l'heure de début (`IN_PROGRESS`, D-064) l'annulation était refusée. Cas réel : faute de
+réaffectation, la remplaçante d'une instrumentiste malade a déclaré sa propre mission ; le
+programme porte deux missions et la mission prévue doit disparaître sans double comptage.
+
+**Décision.**
+1. **Une mission annulée est une mission non réalisée.** Pas de statut `INTERRUPTED`, pas de
+   conservation d'heures partielles. Règle unique `MissionCancellationPolicy` (fonctions pures,
+   servie au client dans `cancellation` du détail et dans `allowedActions`) : annulable en
+   `DRAFT`, `OPEN`, `ASSIGNED`, `IN_PROGRESS`, `ENCODING_IN_PROGRESS` — l'heure de début dépassée
+   ne bloque jamais. Protégé avec le chemin de correction : `SUBMITTED` (renvoyer en correction),
+   `VALIDATED` (rouvrir), facturée (calcul `LOCKED` : jamais, correction financière explicite),
+   `CLOSED`, présence commune D-156 (détacher d'abord : ses heures appartiennent à toute la
+   prestation et une mission annulée en garderait une part), mission qui porte les interventions
+   et le matériel d'une prestation multi-salles (encodés une seule fois, D-156 : l'annuler les
+   retirerait de la facturation des autres salles).
+2. **Effets** (`MissionPostDeployService::cancelByManager()`, `POST /api/missions/{id}/cancel`) :
+   `CANCELLED`, instrumentiste retirée ; l'encodage existant reste sur la mission annulée,
+   archivé pour la traçabilité (faits dans l'audit `archivedEncoding`), jamais validable ni
+   facturable (la facturation ne lit que `VALIDATED`, aucun chemin de correction n'accepte
+   `CANCELLED`) ; les calculs `CALCULATED` / `APPROVED` laissés par une réouverture sont annulés
+   (audités) ; les statistiques d'activité (nombre de missions, missions exécutées, durée
+   moyenne, détail) excluent désormais les missions annulées. E-mail d'annulation
+   (`PLANNING_MISSION_CANCELLED`, activé par défaut) à l'instrumentiste et au chirurgien. Les
+   appelants automatiques (absences, salle libérée, modifications de planning) gardent leur
+   règle étroite.
+3. **Doublon remplacé par une mission existante** (`MissionReplacementService`,
+   `GET …/replacement-candidates`, `POST …/cancel-as-replaced`) : même programme exigé (même jour
+   Europe/Brussels, site, chirurgien, horaires qui se recouvrent, une instrumentiste) ; une mission
+   n'est conservée que pour un seul doublon. **Une transaction**, les deux missions verrouillées
+   (ordre d'id) : contrôles, validation de la déclaration si demandée (`DECLARED → ASSIGNED`, même
+   mutation et même audit que `approveDeclared()`), `MISSION_KEPT_AS_REPLACEMENT`, annulation
+   (`REPLACED_BY_MISSION`, `mission.replaced_by_mission_id`, migration additive
+   `Version20261103120000`). Tout refus annule tout. La mission conservée garde intégralement
+   son encodage et produit seule les prestations.
+4. **Notifications du doublon** : jamais l'e-mail d'annulation du programme. Un seul
+   `MissionReassignmentNotificationMessage` (mode `REPLACED`, type `MISSION_REASSIGNMENT_NOTICE`
+   de D-181) : instrumentiste prévue (mission retirée), remplaçante seulement si la validation a
+   eu lieu (« Mission confirmée »), chirurgien (changement d'instrumentiste). Pas de
+   `MISSION_DECLARED_APPROVED` en plus. Statut réel servi comme pour D-181.
+5. **Front** : `CancelMissionDialog` unique (tiroir mission et planning publié) — récapitulatif,
+   motif « Programme annulé » par défaut (deux clics) ou « Mission remplacée » (missions
+   compatibles du serveur, case « Valider la déclaration »), commentaire interne, personnes
+   prévenues, statut des notifications. Le planning lit `allowedActions` (plus de déduction du
+   statut). Une mission soumise / validée / facturée garde l'action, qui explique la correction.
+
+**Limites.** Une mission d'une prestation multi-salles qui porte une présence commune ou
+l'encodage commun (interventions, matériel) n'est pas annulable seule : la correction de
+l'encodage de la prestation vient d'abord. `allowedActions` ne connaît pas le regroupement
+(calculé sans base) : l'action peut s'afficher, la fenêtre explique alors le refus servi par le
+détail (`cancellation.blockedReason`), et le serveur refuse. La validation d'une déclaration dans l'opération ne valide pas son encodage :
+la mission conservée suit ensuite le workflow d'encodage habituel.
 ---
 
 ## D-156 — Une seule réalité opérationnelle (Missions ↔ Planning V2) et prestations regroupées multi-salles (2026-10-18)

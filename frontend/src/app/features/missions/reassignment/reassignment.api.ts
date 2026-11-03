@@ -32,7 +32,8 @@ export interface ReassignmentResultItem {
   error?: ReassignmentError;
 }
 
-export type ReassignmentRecipientRole = "PREVIOUS_INSTRUMENTIST" | "NEW_INSTRUMENTIST" | "SURGEON";
+/** CONFIRMED_INSTRUMENTIST — D-182 : mission de remplacement conservée et validée. */
+export type ReassignmentRecipientRole = "PREVIOUS_INSTRUMENTIST" | "NEW_INSTRUMENTIST" | "CONFIRMED_INSTRUMENTIST" | "SURGEON";
 
 export interface ReassignmentResult {
   operationId: string;
@@ -78,6 +79,7 @@ export function relayInstant(missionStartAt: string, hhmm: string): string {
 export const ROLE_LABEL: Record<ReassignmentRecipientRole, string> = {
   PREVIOUS_INSTRUMENTIST: "ancienne instrumentiste",
   NEW_INSTRUMENTIST: "nouvelle instrumentiste",
+  CONFIRMED_INSTRUMENTIST: "mission confirmée",
   SURGEON: "chirurgien",
 };
 

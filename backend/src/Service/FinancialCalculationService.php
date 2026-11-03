@@ -262,6 +262,25 @@ final class FinancialCalculationService
         return $calculation;
     }
 
+    /**
+     * D-182 — a mission cancelled by a manager did not take place: the calculations a reopen
+     * left CALCULATED / APPROVED (obsolete) are cancelled, each one audited, so that no
+     * statistic, worklist or rate check ever reads them again. A LOCKED calculation never
+     * reaches here (MissionCancellationPolicy refuses a billed mission).
+     */
+    public function cancelOpenCalculationsOfCancelledMission(Mission $mission, User $actor): int
+    {
+        $count = 0;
+        foreach ($mission->getFinancialCalculations() as $calculation) {
+            if (in_array($calculation->getStatus(), [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED], true)) {
+                $this->cancel($calculation, $actor, 'Mission annulée : aucune prestation à facturer.');
+                ++$count;
+            }
+        }
+
+        return $count;
+    }
+
     public const OBSOLETE_MESSAGE = "Ce calcul est obsolète : l'encodage de la mission a été rouvert depuis. Recalculez-le après revalidation de l'encodage.";
 
     /** D-153 — un calcul rendu obsolète par une réouverture n'avance plus dans le workflow. */

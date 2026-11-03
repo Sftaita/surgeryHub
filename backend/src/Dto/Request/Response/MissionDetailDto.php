@@ -124,5 +124,13 @@ final class MissionDetailDto
         public readonly ?array $reassignment = null,
         /** D-181 — relay links: {relayOfMissionId, relayMissionIds}, null when the mission has none. */
         public readonly ?array $relay = null,
+        /**
+         * D-182 — managers only: whether the mission may be cancelled now
+         * (MissionCancellationPolicy): {blockedReason: {code, message}|null,
+         * hasEncodingData: bool (archived without any financial effect if cancelled)}.
+         */
+        public readonly ?array $cancellation = null,
+        /** D-182 — duplicate links: {replacedByMissionId, replacesMissionIds}, null when none. */
+        public readonly ?array $replacement = null,
     ) {}
 }

@@ -264,6 +264,7 @@ final class FinancialStatisticsQueryService
 
     // ── Activité (§2/§4) ─────────────────────────────────────────────────
 
+    /** D-182 — a cancelled mission did not take place: never counted (archived encoding included). */
     private function activityRow(FinancialStatisticsFilter $filter): FinancialOverviewActivityDto
     {
         [$missionWhere, $missionParams, $missionTypes] = $this->missionPopulationClause($filter, 'm');
@@ -277,6 +278,7 @@ final class FinancialStatisticsQueryService
                 LEFT JOIN mission_execution me ON me.mission_id = m.id
                 WHERE COALESCE(me.actual_start_at, m.start_at) >= :fBusiness
                   AND COALESCE(me.actual_start_at, m.start_at) < :tBusiness
+                  AND m.status <> 'CANCELLED'
                   $missionWhere";
 
         $row = $this->connection->fetchAssociative($sql, $missionParams + [
@@ -660,6 +662,7 @@ final class FinancialStatisticsQueryService
                 LEFT JOIN mission_execution me ON me.mission_id = m.id
                 WHERE COALESCE(me.actual_start_at, m.start_at) >= :fBusiness
                   AND COALESCE(me.actual_start_at, m.start_at) < :tBusiness
+                  AND m.status <> 'CANCELLED'
                   $missionWhere
                 GROUP BY bucket";
 

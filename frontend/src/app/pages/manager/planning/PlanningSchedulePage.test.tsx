@@ -16,6 +16,7 @@ vi.mock("../../../features/missions/api/missions.api", () => ({
   fetchMissions: vi.fn(),
   fetchAllMissions: vi.fn(),
   fetchMissionById: vi.fn(),
+  cancelMission: vi.fn(),
 }));
 vi.mock("../../../features/sites/api/sites.api", () => ({
   fetchSites: vi.fn().mockResolvedValue([{ id: 1, name: "Alpha" }]),
@@ -34,7 +35,6 @@ vi.mock("../../../features/planning-v2/api/planningV2.api", () => ({
     versionId: 1, total: 10, covered: 8, open: 2, cancelled: 0, coveragePercent: 80,
   }),
   releaseMission:  vi.fn().mockResolvedValue(undefined),
-  cancelMission:   vi.fn().mockResolvedValue(undefined),
   reassignMission: vi.fn().mockResolvedValue(undefined),
   extractErrorV2: (err: any) => err?.response?.data?.error?.message ?? "Erreur",
   fetchMissionAudit: vi.fn().mockResolvedValue([]),
@@ -180,17 +180,18 @@ describe("PlanningSchedulePage — Release action", () => {
   });
 });
 
-describe("PlanningSchedulePage — Cancel action", () => {
-  it("shows Cancel button only on OPEN missions", async () => {
-    await loadMissions([makeMission({ status: "OPEN" })]);
+describe("PlanningSchedulePage — Cancel action (D-182)", () => {
+  it("shows the Cancel button when the server allows it (allowedActions)", async () => {
+    await loadMissions([makeMission({ status: "OPEN", allowedActions: ["view", "cancel"] })]);
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /annuler la mission/i })).toBeInTheDocument();
     });
   });
 
-  it("does not show Cancel button on ASSIGNED missions", async () => {
-    await loadMissions([makeAssignedMission()]);
-    await waitFor(() => expect(screen.queryByRole("button", { name: /annuler la mission/i })).toBeNull());
+  it("never deduces it from the status: no Cancel button without the server's 'cancel'", async () => {
+    await loadMissions([makeAssignedMission({ allowedActions: ["view", "reassign"] })]);
+    await waitFor(() => expect(screen.getByText("Marie Martin")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /annuler la mission/i })).toBeNull();
   });
 
   it("does not show Cancel button on CANCELLED missions", async () => {
@@ -198,22 +199,21 @@ describe("PlanningSchedulePage — Cancel action", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: /annuler la mission/i })).toBeNull());
   });
 
-  it("opens cancel dialog and calls API on confirm", async () => {
-    const user = await loadMissions([makeMission({ status: "OPEN" })]);
-
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /annuler la mission/i })).toBeInTheDocument(),
-    );
-
-    await user.click(screen.getByRole("button", { name: /annuler la mission/i }));
-    expect(await screen.findByText(/annuler la mission \?/i)).toBeInTheDocument();
-
-    const dialog = screen.getByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: /confirmer l'annulation/i }));
-
-    await waitFor(() => {
-      expect(planningApi.cancelMission).toHaveBeenCalledWith(1, undefined);
+  it("cancels an ASSIGNED mission directly, without releasing it to the pool first (two clicks)", async () => {
+    const assigned = makeAssignedMission({
+      allowedActions: ["view", "cancel", "reassign"],
+      cancellation: { blockedReason: null, hasEncodingData: false },
     });
+    vi.mocked(planningApi.releaseMission).mockClear();
+    vi.mocked(missionsApi.fetchMissionById).mockResolvedValue(assigned as any);
+    vi.mocked(missionsApi.cancelMission).mockResolvedValue({ ...assigned, status: "CANCELLED" } as any);
+    const user = await loadMissions([assigned]);
+
+    await user.click(await screen.findByRole("button", { name: /annuler la mission/i }));
+    await user.click(await screen.findByTestId("confirm-cancel-mission"));
+
+    await waitFor(() => expect(missionsApi.cancelMission).toHaveBeenCalledWith(1, "", ""));
+    expect(planningApi.releaseMission).not.toHaveBeenCalled();
   });
 });
 

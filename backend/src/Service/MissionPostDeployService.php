@@ -31,6 +31,7 @@ use App\Exception\AssignmentRefusalException;
 use App\Exception\InstrumentistIneligibleException;
 use App\Exception\MissionClaimIneligibleException;
 use App\Exception\MissionReassignmentException;
+use App\Exception\MissionCancellationException;
 use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
@@ -39,6 +40,7 @@ use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use App\Service\Prestation\MissionEncodingDataGuard;
+use App\Service\Prestation\PrestationGroupResolver;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Clock\Clock;
 
@@ -78,6 +80,9 @@ class MissionPostDeployService
         private readonly ?SurgeonInstrumentistIncompatibilityService $incompatibilities = null,
         // D-177 — closes / reopens room take-over priorities (never an ordinary D-125 request).
         private readonly ?RoomTakeoverPriorityService $priorities = null,
+        // D-182 — a manager's cancellation cancels the calculations a reopen left open.
+        private readonly ?FinancialCalculationService $financialCalculations = null,
+        private readonly ?PrestationGroupResolver $prestationGroups = null,
     ) {
         // Always autowired; a plain unit test that omits it still gets the real writer (built
         // on the same EntityManager), never a shortcut that would skip the history.
@@ -402,9 +407,55 @@ class MissionPostDeployService
         // D-150 — under the mission row lock, re-checked against the committed state.
         $payload = $this->assignments->inLockedChange($mission, fn (): array => $this->applyCancel($mission, $actor, $reason, $causedByAbsenceId));
 
-        if (!$notify) {
-            return;
+        if ($notify) {
+            $this->dispatchCancelled($mission, $actor, $payload);
         }
+    }
+
+    /**
+     * D-182 — a manager cancels a mission that did not take place (MissionCancellationPolicy):
+     * also once its start time has passed (IN_PROGRESS) or its encoding has started
+     * (ENCODING_IN_PROGRESS). Whatever was encoded stays archived on the cancelled mission
+     * (never deleted, never validated, never billed); the instrumentist is taken off it.
+     *
+     * $replacement — REPLACED_BY_MISSION: the existing mission kept instead (already locked by
+     * MissionReplacementService, same transaction); recorded on the cancelled one.
+     * $notify — false for a replacement: MissionReplacementService sends a change of
+     * instrumentist instead, never a programme cancellation.
+     *
+     * @return array<string,mixed> the audit payload
+     */
+    public function cancelByManager(Mission $mission, User $actor, string $cancellationReason, ?string $reason = null, bool $notify = true, ?Mission $replacement = null, ?string $internalComment = null): array
+    {
+        if (!in_array($cancellationReason, [MissionCancellationPolicy::REASON_PROGRAM_CANCELLED, MissionCancellationPolicy::REASON_REPLACED_BY_MISSION], true)
+            || ($cancellationReason === MissionCancellationPolicy::REASON_REPLACED_BY_MISSION) !== ($replacement !== null)) {
+            throw new MissionCancellationException(MissionCancellationPolicy::REASON_INVALID, "Motif d'annulation invalide.", ['missionId' => $mission->getId()]);
+        }
+
+        $payload = $this->assignments->inLockedChange($mission, fn (): array => $this->applyCancel($mission, $actor, $reason, null, [
+            'cancellationReason'   => $cancellationReason,
+            'replacement'          => $replacement,
+            'internalComment'      => self::cleanComment($internalComment),
+        ]));
+
+        if ($notify) {
+            $this->dispatchCancelled($mission, $actor, $payload);
+        }
+
+        return $payload;
+    }
+
+    /** D-182 — missions of $mission's multi-room prestation (MissionCancellationPolicy). */
+    public function prestationSize(Mission $mission): int
+    {
+        return $this->prestationGroups !== null ? count($this->prestationGroups->groupOf($mission)) : 1;
+    }
+
+    /** @param array<string,mixed> $payload */
+    private function dispatchCancelled(Mission $mission, User $actor, array $payload): void
+    {
+        // The manager's internal comment never leaves the audit (no notification carries it).
+        unset($payload['internalComment']);
 
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
@@ -415,14 +466,32 @@ class MissionPostDeployService
         ));
     }
 
-    /** cancel()'s mutation, run under the mission lock; returns the audit/lifecycle payload. */
-    private function applyCancel(Mission $mission, User $actor, ?string $reason, ?int $causedByAbsenceId): array
+    /**
+     * cancel()'s mutation, run under the mission lock; returns the audit/lifecycle payload.
+     *
+     * @param array{cancellationReason: string, replacement: ?Mission, internalComment: ?string}|null $byManager
+     *        D-182 — a manager's cancellation (MissionCancellationPolicy) instead of the
+     *        automatic callers' narrower rule (absence reaction, room release, planning edits)
+     */
+    private function applyCancel(Mission $mission, User $actor, ?string $reason, ?int $causedByAbsenceId, ?array $byManager = null): array
     {
-        if (!in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
-            throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
+        $archivedEncoding = null;
+        if ($byManager !== null) {
+            $blocked = MissionCancellationPolicy::blockedReason($mission, $this->prestationSize($mission));
+            if ($blocked !== null) {
+                throw new MissionCancellationException($blocked['code'], $blocked['message'], ['missionId' => $mission->getId(), 'status' => $mission->getStatus()->value]);
+            }
+            // Archived as is, for traceability only: a CANCELLED mission is never validated
+            // nor billed (billing reads VALIDATED missions only).
+            $archivedEncoding = MissionEncodingDataGuard::hasEncodingData($mission) ? MissionEncodingDataGuard::facts($mission) : null;
+            $this->financialCalculations?->cancelOpenCalculationsOfCancelledMission($mission, $actor);
+        } else {
+            if (!in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+                throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
+            }
+            // D-156 — a cancelled mission would hide already-encoded work from validation/billing.
+            MissionEncodingDataGuard::assertNone($mission, 'annuler');
         }
-        // D-156 — a cancelled mission would hide already-encoded work from validation/billing.
-        MissionEncodingDataGuard::assertNone($mission, 'annuler');
 
         $previousStatusEnum = $mission->getStatus();
         $previousStatus     = $previousStatusEnum->value;
@@ -462,6 +531,18 @@ class MissionPostDeployService
             'actorId'               => $actor->getId(),
             'actorName'             => $this->displayName($actor),
         ] + $snapshot;
+
+        if ($byManager !== null) {
+            $replacement = $byManager['replacement'];
+            // D-182 — the duplicate keeps a reference to the mission kept in its place.
+            $mission->setReplacedBy($replacement);
+            $payload += [
+                'cancellationReason'   => $byManager['cancellationReason'],
+                'replacementMissionId' => $replacement?->getId(),
+                'archivedEncoding'     => $archivedEncoding,
+                'internalComment'      => $byManager['internalComment'],
+            ];
+        }
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_CANCELLED_POST_DEPLOY, $payload);
 
@@ -1022,7 +1103,8 @@ class MissionPostDeployService
         }
     }
 
-    private static function cleanComment(?string $comment): ?string
+    /** D-181 — a manager's internal comment, trimmed and bounded (audit only, never notified). */
+    public static function cleanComment(?string $comment): ?string
     {
         $comment = $comment !== null ? trim($comment) : '';
 

@@ -72,9 +72,11 @@ final class MissionActionsService
                 MissionStatus::ASSIGNED => [...['view', 'cancel', 'reassign', 'view_claim'], ...$remind],
                 // D-181 — a started mission still changes hands (directly, or by a relay once
                 // encoding exists): same rule exactly as MissionReassignmentPolicy::modes().
+                // D-182 — and cancelled when it did not take place (filtered below).
                 MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [
                     ...['view'],
                     ...(MissionReassignmentPolicy::modes($mission, Clock::get()->now()) !== [] ? ['reassign'] : []),
+                    'cancel',
                     ...$remind,
                 ],
                 // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED
@@ -87,6 +89,12 @@ final class MissionActionsService
                 MissionStatus::DECLARED => [...['view', 'approve', 'reject', 'edit'], ...$remind],
                 default => ['view'],
             };
+
+            // D-182 — 'cancel' : même règle exactement que MissionPostDeployService::cancelByManager()
+            // (MissionCancellationPolicy — ex. jamais une mission d'une présence commune).
+            if (MissionCancellationPolicy::blockedReason($mission) !== null) {
+                $actions = array_values(array_diff($actions, ['cancel']));
+            }
 
             // D-177 — lever la priorité d'une reprise de salle : même règle que MissionVoter::LIFT_PRIORITY.
             if (RoomTakeoverPriorityService::pendingPriority($mission) !== null) {

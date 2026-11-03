@@ -61,6 +61,7 @@ use Symfony\Component\HttpKernel\Event\ExceptionEvent;
 use App\Exception\MissionCreatedNotDispatchedException;
 use App\Exception\PrestationConflictException;
 use App\Exception\MissionReassignmentException;
+use App\Exception\MissionCancellationException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\HttpKernel\KernelInterface;
@@ -335,6 +336,12 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $message = $e->getMessage();
         } elseif ($e instanceof MissionReassignmentException) {
             // D-181 — changement d'instrumentiste refusé, avec un code stable et son contexte.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+        } elseif ($e instanceof MissionCancellationException) {
+            // D-182 — annulation refusée par un manager, avec un code stable et son contexte.
             $status = 409;
             $code = $e->getErrorCode();
             $message = $e->getMessage();

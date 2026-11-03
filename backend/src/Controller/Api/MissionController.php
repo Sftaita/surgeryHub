@@ -17,6 +17,7 @@ use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\MissionAssignmentRefusalScope;
 use App\Enum\MissionDispatchMode;
 use App\Security\Voter\MissionVoter;
+use App\Service\MissionCancellationPolicy;
 use App\Service\MissionDispatchService;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionEncodingService;
@@ -393,7 +394,14 @@ class MissionController extends AbstractController
         $data   = json_decode($request->getContent(), true) ?? [];
         $reason = isset($data['reason']) && is_string($data['reason']) ? $data['reason'] : null;
 
-        $this->missionPostDeployService->cancel($mission, $user, $reason);
+        // D-182 — a manager's cancellation: the programme did not take place (also once
+        // started or encoded; a duplicate goes through /cancel-as-replaced instead).
+        $this->missionPostDeployService->cancelByManager(
+            $mission, $user,
+            MissionCancellationPolicy::REASON_PROGRAM_CANCELLED,
+            $reason,
+            internalComment: isset($data['internalComment']) && is_string($data['internalComment']) ? $data['internalComment'] : null,
+        );
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }

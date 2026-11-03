@@ -12,6 +12,7 @@ use App\Notification\MissionCommunicationSpec;
 use App\Notification\NotificationDispatcher;
 use App\Notification\NotificationIntent;
 use App\Notification\PushContent;
+use App\Service\MissionReplacementService;
 use App\Service\NotificationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -26,7 +27,9 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
  *     off her planning;
  *   - the new instrumentist: the mission was attributed to her (it then counts as
  *     communicated to her, H4);
- *   - the surgeon: who was planned, who is now — his programme itself is unchanged.
+ *   - the surgeon: who was planned, who is now — his programme itself is unchanged;
+ *   - D-182 (mode REPLACED, MissionReplacementService): the replacement whose own declared
+ *     mission was kept and approved instead of the cancelled duplicate (see roles()).
  *
  * One in-app item per mission and role; ONE email (and push) per recipient for the whole
  * operation, listing only her missions, with every role she has in it (a person who loses one
@@ -45,6 +48,8 @@ final class MissionReassignmentNotificationMessageHandler
     public const ROLE_PREVIOUS = 'PREVIOUS_INSTRUMENTIST';
     public const ROLE_NEW      = 'NEW_INSTRUMENTIST';
     public const ROLE_SURGEON  = 'SURGEON';
+    /** D-182 — the replacement instrumentist whose own (declared) mission was kept AND approved. */
+    public const ROLE_CONFIRMED = 'CONFIRMED_INSTRUMENTIST';
 
     private const TZ = 'Europe/Brussels';
 
@@ -69,8 +74,8 @@ final class MissionReassignmentNotificationMessageHandler
             }
             $item = $this->item($change, $mission);
 
-            foreach ([self::ROLE_PREVIOUS => 'fromInstrumentistId', self::ROLE_NEW => 'toInstrumentistId', self::ROLE_SURGEON => 'surgeonId'] as $role => $key) {
-                $recipient = ($change[$key] ?? null) !== null ? $this->em->find(User::class, (int) $change[$key]) : null;
+            foreach (self::roles($change) as $role => $recipientId) {
+                $recipient = $this->em->find(User::class, $recipientId);
                 if ($recipient === null) {
                     continue;
                 }
@@ -102,6 +107,37 @@ final class MissionReassignmentNotificationMessageHandler
             // The reassignment itself is committed: a notification failure never undoes it.
             $this->logger->error('MissionReassignmentNotification: dispatch failed', ['operationId' => $message->operationId, 'error' => $e->getMessage()]);
         }
+    }
+
+    /**
+     * Who is told what about one change (role => user id).
+     *
+     * DIRECT / RELAY (D-181): previous instrumentist, new instrumentist, surgeon.
+     * REPLACED (D-182): the planned mission was cancelled as a duplicate of the replacement's
+     * own mission — the planned instrumentist (mission taken off her planning), the replacement
+     * only when her declaration was really approved now (« conservée et validée »), the surgeon
+     * (change of instrumentist). Same person on both missions: only the confirmation.
+     *
+     * @param array<string,mixed> $change
+     * @return array<string,int>
+     */
+    public static function roles(array $change): array
+    {
+        $from    = ($change['fromInstrumentistId'] ?? null) !== null ? (int) $change['fromInstrumentistId'] : null;
+        $to      = ($change['toInstrumentistId'] ?? null) !== null ? (int) $change['toInstrumentistId'] : null;
+        $surgeon = ($change['surgeonId'] ?? null) !== null ? (int) $change['surgeonId'] : null;
+
+        if (($change['mode'] ?? null) !== MissionReplacementService::MODE_REPLACED) {
+            return array_filter([self::ROLE_PREVIOUS => $from, self::ROLE_NEW => $to, self::ROLE_SURGEON => $surgeon], static fn (?int $id) => $id !== null);
+        }
+
+        $samePerson = $from !== null && $from === $to;
+
+        return array_filter([
+            self::ROLE_PREVIOUS  => $samePerson ? null : $from,
+            self::ROLE_CONFIRMED => ($change['approved'] ?? false) === true ? $to : null,
+            self::ROLE_SURGEON   => $samePerson ? null : $surgeon,
+        ], static fn (?int $id) => $id !== null);
     }
 
     /**
@@ -138,6 +174,7 @@ final class MissionReassignmentNotificationMessageHandler
         return match ($role) {
             self::ROLE_PREVIOUS => sprintf('Mission retirée de votre planning : %s (Dr %s).', $when, $item['surgeonName'] ?? ''),
             self::ROLE_NEW      => sprintf('Nouvelle mission attribuée : %s (Dr %s).', $when, $item['surgeonName'] ?? ''),
+            self::ROLE_CONFIRMED => sprintf('Mission conservée et validée : %s (Dr %s).', $when, $item['surgeonName'] ?? ''),
             default             => sprintf("Changement d'instrumentiste le %s : %s remplace %s.", $when, $item['toInstrumentistName'] ?? '—', $item['fromInstrumentistName'] ?? '—'),
         };
     }
@@ -145,7 +182,7 @@ final class MissionReassignmentNotificationMessageHandler
     /** @param list<NotificationIntent> $intents */
     private function email(User $recipient, array $intents): EmailContent
     {
-        $sections = [self::ROLE_PREVIOUS => [], self::ROLE_NEW => [], self::ROLE_SURGEON => []];
+        $sections = [self::ROLE_PREVIOUS => [], self::ROLE_NEW => [], self::ROLE_CONFIRMED => [], self::ROLE_SURGEON => []];
         foreach ($intents as $intent) {
             $sections[$intent->inAppPayload['role']][] = $intent->inAppPayload;
         }
@@ -153,6 +190,7 @@ final class MissionReassignmentNotificationMessageHandler
 
         $subject = match (true) {
             $roles === [self::ROLE_NEW]     => 'SurgicalHub – Nouvelle mission attribuée',
+            $roles === [self::ROLE_CONFIRMED] => 'SurgicalHub – Mission confirmée',
             $roles === [self::ROLE_SURGEON] => "SurgicalHub – Changement d'instrumentiste pour votre programme",
             default                         => 'SurgicalHub – Modification de votre planning',
         };
@@ -176,6 +214,7 @@ final class MissionReassignmentNotificationMessageHandler
                 'greeting'   => preg_replace('/\s+,$/', ',', $greeting),
                 'removed'    => $sections[self::ROLE_PREVIOUS],
                 'added'      => $sections[self::ROLE_NEW],
+                'confirmed'  => $sections[self::ROLE_CONFIRMED],
                 'surgeon'    => $sections[self::ROLE_SURGEON],
                 'planningUrl' => $link,
                 'notificationPreferencesUrl' => $this->notificationService->notificationPreferencesUrl($recipient),
@@ -189,8 +228,10 @@ final class MissionReassignmentNotificationMessageHandler
         $count = count($intents);
         $first = $intents[0]->inAppPayload;
 
+        $onlyConfirmed = array_unique(array_map(static fn (NotificationIntent $i) => $i->inAppPayload['role'], $intents)) === [self::ROLE_CONFIRMED];
+
         return new PushContent(
-            "Changement d'instrumentiste",
+            $onlyConfirmed ? 'Mission confirmée' : "Changement d'instrumentiste",
             $count > 1 ? sprintf('%d changements concernent votre planning.', $count) : (string) $first['sentence'],
             ['type' => NotificationType::MISSION_REASSIGNMENT_NOTICE->value, 'missionId' => $count === 1 ? $first['missionId'] : null],
         );
