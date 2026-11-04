@@ -16808,3 +16808,32 @@ tarif existant n'est modifié.
 **Limites.** Le flux « Ajouter une prestation » depuis une firme garde son fonctionnement
 (création de l'intervention puis de la prestation en deux appels). Les 8 interventions
 historiques sans firme (antérieures à D-146 bis) restent `without_firm = false` (D-178).
+
+## D-184 — Suivi des encodages : missions annulées exclues du suivi actif (2026-11-04)
+
+**Constat (production, après D-182).** Une mission annulée depuis le planning passait bien à
+`CANCELLED` mais restait dans Facturation › Suivi des encodages, classée « Sans objet » et comptée :
+le 3 novembre, deux missions annulées gonflaient le total à quatre. Causes : (1) la population du
+suivi (`EncodingTrackingRepository`) ne filtrait aucun statut ; (2) `EncodingStateResolver` rangeait
+`CANCELLED` avec `DRAFT`/`OPEN`/`REJECTED` en `NOT_APPLICABLE` ; (3) une annulation n'invalidait pas
+les requêtes du suivi côté écran (seul le badge l'était, pour les validations).
+
+**Décision.**
+- Le suivi actif exclut par défaut toute mission `CANCELLED` : « Toutes les missions », « À traiter »
+  et « Par instrumentiste » (même endpoint), le total, l'avancement de la période, les compteurs par
+  état, les heures planifiées et prestées, les retards et relances. Filtre propre à ce module :
+  `MissionPopulationClauseBuilder` reste partagé et inchangé pour les statistiques financières, qui
+  excluent déjà l'annulé (D-182).
+- Nouvel état d'encodage `CANCELLED` (« Annulée »), hors encodage attendu, jamais confondu avec
+  `NOT_APPLICABLE`. Les missions réellement « Sans objet » (non annulées) sont inchangées et restent
+  affichées et comptées.
+- « Afficher les missions annulées » (vue « Toutes les missions ») : `includeCancelled=1`, consultation
+  seule, badge « Annulée » ; les indicateurs et le sous-total du jour ne les comptent jamais.
+  `cancelledCount` annonce les annulées masquées.
+- Toute action opérationnelle (annulation comprise) invalide `["encoding-tracking"]`
+  (`OPERATIONAL_PLANNING_QUERY_KEYS`) : liste, indicateurs et badge se mettent à jour sans
+  rechargement.
+- Badge du menu (`pending-validation-count`, missions `SUBMITTED`) : inchangé — une mission annulée
+  n'est jamais `SUBMITTED` (D-182 renvoie d'abord l'encodage en correction).
+- Aucune donnée modifiée : les missions annulées restent en base, avec leurs heures, encodages
+  archivés et audits.

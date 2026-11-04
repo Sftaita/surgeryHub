@@ -43,6 +43,7 @@ const STATE_TONE: Record<EncodingState, { bg: string; fg: string }> = {
   VALIDATED: { bg: GREEN_100, fg: GREEN_800 },
   LOCKED: { bg: GREEN_100, fg: GREEN_800 },
   NOT_APPLICABLE: { bg: GRAY_100, fg: GRAY_500 },
+  CANCELLED: { bg: "#FDECEC", fg: "#B42318" },
   NOT_DECLARED: { bg: AMBER_100, fg: AMBER_700 },
 };
 
@@ -183,7 +184,10 @@ export function EncodingTrackingTable({
 
       <Box sx={{ maxHeight: 560, overflowY: "auto" }}>
         {order.map((key) => {
-          const list = byDay.get(key)!;
+          const all = byDay.get(key)!;
+          // D-184 — annulées affichées sur demande seulement, jamais comptées (état servi par le backend).
+          const list = all.filter((i) => i.encodingState !== "CANCELLED");
+          const cancelledCount = all.length - list.length;
           const late = list.filter((i) => i.encoding.isStale).length;
           const planned = Math.round(plannedMinutesOf(list) / 60);
           return (
@@ -195,6 +199,7 @@ export function EncodingTrackingTable({
                 <Box sx={{ fontSize: 12, fontWeight: 800, color: GRAY_800 }}>{dayLabel(key)}</Box>
                 <Box sx={{ fontSize: 11.5, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
                   {list.length} mission{list.length > 1 ? "s" : ""}
+                  {cancelledCount > 0 ? ` · ${cancelledCount} annulée${cancelledCount > 1 ? "s" : ""} (non comptée${cancelledCount > 1 ? "s" : ""})` : ""}
                 </Box>
                 <Box sx={{ flex: 1 }} />
                 {late > 0 && (
@@ -205,7 +210,7 @@ export function EncodingTrackingTable({
                 </Box>
               </Box>
 
-              {list.map((item) => {
+              {all.map((item) => {
                 const tone = STATE_TONE[item.encodingState];
                 const selected = selectedMissionId === item.missionId;
                 const hoursTone = HOURS_COMPARISON_TONE[item.hours.comparison];

@@ -20,7 +20,9 @@ export type EncodingState =
   | "LOCKED"
   | "NOT_APPLICABLE"
   /** D-172 — passée, publiée sans instrumentiste, aucune activité déclarée : « Aucun encodage ». */
-  | "NOT_DECLARED";
+  | "NOT_DECLARED"
+  /** D-184 — mission annulée : visible seulement sur demande (`includeCancelled`), jamais « Sans objet ». */
+  | "CANCELLED";
 
 export type EncodingFinancialState =
   | "NOT_CALCULABLE"
@@ -48,6 +50,8 @@ export interface EncodingTrackingFilter {
   missionType?: MissionType;
   /** Liste vide = tous les états — sérialisée en liste séparée par des virgules. */
   encodingState?: EncodingState[];
+  /** D-184 — « Afficher les missions annulées » (liste seulement ; les indicateurs les excluent toujours). */
+  includeCancelled?: boolean;
 }
 
 export interface EncodingTrackingSummary {
@@ -149,6 +153,9 @@ export interface EncodingTrackingResponse {
   total: number;
   page: number;
   limit: number;
+  /** D-184 — missions annulées de la période, masquées par défaut (jamais comptées). */
+  cancelledCount?: number;
+  includeCancelled?: boolean;
 }
 
 export interface EncodingTrackingSummaryResponse {
@@ -167,6 +174,7 @@ function toParams(filter: EncodingTrackingFilter, extra?: Record<string, string 
     interventionTypeId: filter.interventionTypeId,
     missionType: filter.missionType,
     encodingState: filter.encodingState && filter.encodingState.length > 0 ? filter.encodingState.join(",") : undefined,
+    includeCancelled: filter.includeCancelled ? 1 : undefined,
     ...extra,
   };
 }
