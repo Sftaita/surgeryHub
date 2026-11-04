@@ -165,8 +165,8 @@
         }
       ],
       "validationNeeded": "Passphrase créée par l'utilisateur, .env conservé hors serveur, décision sur archive hebdomadaire et validations explicites successives pour installation, test de restauration puis crontab.",
-      "nextAction": "Scripts D-164 fusionnés dans main (PR #38, 7cc1e82, CI Docker 72/72). AUCUN script D-164 installé sur le serveur. Installer seulement après création sécurisée de la passphrase et décision sur archive_mysql_weekly.sh ; premier cycle + restauration locale et Drive vérifiés avant activation crontab. Rotation réelle interdite sans accord.",
-      "lastReviewed": "2026-10-25"
+      "nextAction": "Priorité de sécurité séparée (indépendante des déploiements D-156 / D-180). Scripts D-164 fusionnés dans main (PR #38, 7cc1e82, CI Docker 72/72). AUCUN script D-164 installé sur le serveur. Installer seulement après création sécurisée de la passphrase et décision sur archive_mysql_weekly.sh ; premier cycle + restauration locale et Drive vérifiés avant activation crontab. Rotation réelle interdite sans accord.",
+      "lastReviewed": "2026-11-03"
     },
     {
       "id": "D-169",
@@ -228,7 +228,7 @@
       "priority": "P2",
       "userImpact": "Instrumentiste sur deux salles simultanées du même chirurgien : encodage et facturation en double aujourd'hui.",
       "status": "deploye",
-      "statusSince": "2026-11-02",
+      "statusSince": "2026-11-03",
       "refs": {
         "decision": "D-156",
         "branches": [
@@ -246,21 +246,28 @@
         ],
         "prs": [
           67,
-          68
+          68,
+          69
         ]
       },
       "pendingOps": [
         {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve de recette multi-salles (prestation réelle 426/427, Salve, 02/09) : présence commune validée (11h30) et répartition 6h00 + 5h30 sans double comptage validées ; soumission commune non encore vérifiée (attend la saisie de Salve) ; validation manager à contrôler après soumission ; tarif du 02/09 absent, aucune correction autorisée. Ne pas modifier 426/427 ni les tarifs de Salve."
+        },
+        {
           "type": "reprise-donnees",
           "status": "en-attente",
-          "description": "app:mission:link-schedule-posts --apply après déploiement (copie du 2026-11-02 : 221 liens CLEAR, 0 à arbitrer)",
+          "description": "app:mission:link-schedule-posts --apply, sur accord distinct après validation de c154f18 (simulation en production le 2026-11-03 : 221 CLEAR, 0 INTERCHANGEABLE, 0 TO_REVIEW, aucune écriture).",
           "validation": "accord explicite"
         }
       ],
-      "validationNeeded": "Validation fonctionnelle accordée par l'utilisateur le 2026-11-02 sur le périmètre testé de D-156 (présence commune, Planning V2 multi-salles, liens poste ↔ mission, missions distinctes), À L'EXCLUSION de l'écran d'encodage instrumentiste multi-salles (choix « Choisissez la mission (salle) »), remplacé par D-156-ENCODAGE-UNIQUE. Ne pas passer D-156 en « valide-production » tant que ce complément n'est pas livré et validé. Accords encore séparés : tag + deploy.sh mark, app:mission:link-schedule-posts --apply.",
-      "nextAction": "Sur accord : tag v2026.11.02-prod + deploy.sh mark (avec la réserve ci-dessus) ; puis link --apply sur accord distinct.",
-      "lastReviewed": "2026-11-02",
-      "notes": "Déployé le 2026-11-02 (release 1e45953, PR #67, 97 migrations), statut de release PENDING_VALIDATION au 2026-11-02. RÉSERVE : l'écran d'encodage instrumentiste multi-salles n'est pas validé (complément D-156-ENCODAGE-UNIQUE, livraison séparée). Postes #3/#4/#5 du Dr Deltour inchangés. Tarif de Salve tranché (65 €/h à partir du 01/10, jamais rétroactif).\nRetour arrière non destructif documenté et scripts SQL versionnés via PR #68 ; pour un rollback de 366627f vers 1e45953, code seul ; pour un retour vers d9e6ee9 après création de présences, verrous SQL obligatoires."
+      "validationNeeded": "Officialisé le 2026-11-03 (v2026.11.03-prod, c154f18) sur accord explicite, avec une réserve de recette fonctionnelle ouverte (soumission commune et validation manager de 426/427). Accord distinct encore requis : app:mission:link-schedule-posts --apply (221 liens).",
+      "nextAction": "Suivre la réserve 426/427 jusqu'à sa clôture (soumission de Salve, puis validation manager, signalement du tarif manquant au 02/09). link --apply sur accord distinct. D-156 officialisé : D-180 (PR #70) peut être fusionné et déployé sur autorisation.",
+      "lastReviewed": "2026-11-03",
+      "notes": "Officialisé v2026.11.03-prod (c154f18, OFFICIAL, 2026-11-03 21:16 UTC), activé le 2026-11-03 11:25 UTC ; la release 1e45953 (2026-11-02, PENDING_VALIDATION) n'a jamais été officialisée. Rollback : deploy.sh rollback 1e45953 (code seul, présences compatibles) ; vers d9e6ee9 seulement avec les verrous SQL (deploy/rollback/d156/). Postes #3/#4/#5 du Dr Deltour inchangés. Tarif de Salve tranché (65 €/h à partir du 01/10, jamais rétroactif)."
     },
     {
       "id": "D-156-ENCODAGE-UNIQUE",
@@ -269,8 +276,8 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Instrumentiste sur deux salles du même chirurgien : devait choisir une salle pour chaque intervention et chaque matériel.",
-      "status": "fusionne",
-      "statusSince": "2026-11-02",
+      "status": "deploye",
+      "statusSince": "2026-11-03",
       "refs": {
         "decision": "D-156",
         "branches": [
@@ -287,10 +294,10 @@
           "366627f"
         ]
       },
-      "validationNeeded": "PR #69 fusionnée ; recette visuelle sur copie isolée conforme. Déploiement distinct de 366627f et validation fonctionnelle en production toujours soumis à accord explicite.",
-      "nextAction": "Sur accord explicite : déployer 366627f dans une release distincte sans migration, contrôler la production, puis tag et deploy.sh mark après validation fonctionnelle. Rattachement des 221 missions toujours séparé.",
-      "lastReviewed": "2026-11-02",
-      "notes": "Décisions utilisateur du 2026-11-02 : référence décidée par le serveur, refus explicite hors référence (jamais de redirection), décisions manager sur toute la prestation, livraison séparée de D-156. Décisions du 2026-11-02 (2) : liste réellement unifiée, matériel autorisé sur intervention historique, stabilité de la référence vérifiée.\nPR #69 fusionnée (main 366627f, arbre testé 9327cb8). Frontend 2040/2040 en CI, recette visuelle isolée complète. Non déployé au 2026-11-03."
+      "validationNeeded": "Déployé et officialisé avec D-156 (v2026.11.03-prod, c154f18, 2026-11-03). Réserve de recette ouverte : soumission commune et validation manager de la prestation réelle 426/427 non encore vérifiées (suivi sur D-156).",
+      "nextAction": "Clôturer la réserve avec D-156 après la soumission de Salve (426/427) et la validation manager.",
+      "lastReviewed": "2026-11-03",
+      "notes": "Décisions utilisateur du 2026-11-02 : référence décidée par le serveur, refus explicite hors référence (jamais de redirection), décisions manager sur toute la prestation, livraison séparée de D-156. Décisions du 2026-11-02 (2) : liste réellement unifiée, matériel autorisé sur intervention historique, stabilité de la référence vérifiée.\nPR #69 fusionnée (main 366627f, arbre testé 9327cb8). Frontend 2040/2040 en CI, recette visuelle isolée complète. Non déployé au 2026-11-03.\nDéployé dans c154f18 (activation 2026-11-03 11:25 UTC, aucune release 366627f distincte : main contenait aussi #68), officialisé v2026.11.03-prod le 2026-11-03."
     },
     {
       "id": "D-139",
@@ -968,7 +975,8 @@
           "SurgicalHub-mes-heures"
         ],
         "prs": [
-          65
+          65,
+          66
         ],
         "commits": [
           "ab6546a2f15d149f17a384cac9b39f9be3f03769",
