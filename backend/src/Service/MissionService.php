@@ -151,6 +151,21 @@ class MissionService
     // ✅ Lot B4 — actor explicite (Option A) pour l’audit trail "who"
     public function approveDeclared(Mission $mission, User $actor): Mission
     {
+        $this->applyApproveDeclared($mission, $actor);
+
+        $this->em->flush();
+        $this->notificationService->missionDeclaredApprovedNotifyInstrumentist($mission);
+
+        return $mission;
+    }
+
+    /**
+     * approveDeclared()'s mutation and audit only — no flush, no notification. D-182:
+     * MissionReplacementService approves a replacement mission inside its own transaction and
+     * tells the instrumentist itself (one confirmation, never two emails).
+     */
+    public function applyApproveDeclared(Mission $mission, User $actor): void
+    {
         if ($mission->getStatus() !== MissionStatus::DECLARED) {
             throw new ConflictHttpException('Mission is not DECLARED');
         }
@@ -159,11 +174,6 @@ class MissionService
 
         // ✅ Lot B4 — Audit + Notifications
         $this->auditService->missionDeclaredApproved($mission, $actor);
-
-        $this->em->flush();
-        $this->notificationService->missionDeclaredApprovedNotifyInstrumentist($mission);
-
-        return $mission;
     }
 
     // ✅ Lot B4 — actor explicite (Option A) pour l’audit trail "who"

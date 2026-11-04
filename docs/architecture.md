@@ -1823,6 +1823,44 @@ EntityManager::flush()            — chaque effet de bord isolé dans try/catch
 
 **Traçabilité** : chaque action post-deploy crée un `AuditEvent` (acteur, type, payload snapshot) et déclenche les `NotificationEvent` appropriés via `NotificationPreferenceResolver`. Les noms des personnes sont snapshotés dans le payload pour préserver la lisibilité à long terme.
 
+**Changement d'instrumentiste par un manager (D-181)** :
+
+```
+/reassign · /reassignments · alerte /reassign
+        │  (MissionVoter::REASSIGN par mission)
+        ▼
+MissionReassignmentService        — une opération : chaque mission contrôlée et validée seule,
+        │                           résultat mission par mission (DONE / FAILED + code)
+        ▼
+MissionPostDeployService::reassign()  (DIRECT)  ou  ::relay()  (RELAY : mission de relais liée)
+        │  verrou mission, MissionReassignmentPolicy, expectedInstrumentistId, éligibilité, audit
+        ▼
+MissionReassignmentNotificationMessage (async, un par opération, changements réels seulement)
+        ▼
+MissionReassignmentNotificationMessageHandler → NotificationDispatcher::dispatchBatch
+        MISSION_REASSIGNMENT_NOTICE : un e-mail par destinataire et par opération
+        (ancienne / nouvelle instrumentiste, chirurgien), statut lu par
+        GET /api/missions/reassignment-operations/{operationId}
+```
+
+**Annulation par un manager (D-182)** — une mission annulée est une mission non réalisée :
+
+```
+/cancel (programme annulé)                 /cancel-as-replaced (doublon d'une mission existante)
+        │  MissionVoter::CANCEL                    │  MissionVoter::CANCEL (+ APPROVE_DECLARED)
+        │                                          ▼
+        │                          MissionReplacementService — une transaction, deux verrous :
+        │                            compatibilité, validation éventuelle de la déclaration,
+        │                            MISSION_KEPT_AS_REPLACEMENT
+        ▼                                          ▼
+MissionPostDeployService::cancelByManager()  — MissionCancellationPolicy, encodage archivé,
+        │                                      calculs ouverts annulés, audit
+        ▼                                          ▼
+MissionLifecycleChangedMessage(CANCELLED)  MissionReassignmentNotificationMessage (mode REPLACED)
+  → PLANNING_MISSION_CANCELLED               → MISSION_REASSIGNMENT_NOTICE (changement
+    (instrumentiste, chirurgien)               d'instrumentiste, mission confirmée)
+```
+
 ### Vérification manuelle des conflits — filet de sécurité (Lot 6, D-106)
 
 Trois niveaux de sécurité coexistent sur Planning V2 : **prévention** (D-101, revalidation

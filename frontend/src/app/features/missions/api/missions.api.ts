@@ -383,14 +383,21 @@ export async function publishMission(
  * Point 5 (audit UX manager) — annulation post-déploiement, jamais une suppression
  * physique (D-055/D-056 : historique auditable). Couvre DRAFT (brouillon jamais
  * publié) / OPEN / ASSIGNED, toujours conditionné à allowedActions.includes("cancel").
+ * D-182 — aussi une mission commencée ou en cours d'encodage (programme annulé : aucune
+ * prestation) ; `internalComment` reste dans l'historique, jamais dans les e-mails.
  * POST /api/missions/{id}/cancel
  */
 export async function cancelMission(
   id: number,
   reason?: string,
+  internalComment?: string,
+  /** D-182 — confirme la correction de l'encodage soumis / validé faite avant l'annulation. */
+  correctionConfirmed?: boolean,
 ): Promise<Mission> {
   const { data } = await apiClient.post<Mission>(`/api/missions/${id}/cancel`, {
     reason: reason?.trim() || undefined,
+    internalComment: internalComment?.trim() || undefined,
+    correctionConfirmed: correctionConfirmed || undefined,
   });
   return data;
 }

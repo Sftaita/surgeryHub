@@ -30,6 +30,8 @@ use App\Enum\SchedulePrecision;
 use App\Exception\AssignmentRefusalException;
 use App\Exception\InstrumentistIneligibleException;
 use App\Exception\MissionClaimIneligibleException;
+use App\Exception\MissionReassignmentException;
+use App\Exception\MissionCancellationException;
 use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
@@ -38,6 +40,7 @@ use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use App\Service\Prestation\MissionEncodingDataGuard;
+use App\Service\Prestation\PrestationGroupResolver;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Clock\Clock;
 
@@ -77,6 +80,11 @@ class MissionPostDeployService
         private readonly ?SurgeonInstrumentistIncompatibilityService $incompatibilities = null,
         // D-177 — closes / reopens room take-over priorities (never an ordinary D-125 request).
         private readonly ?RoomTakeoverPriorityService $priorities = null,
+        // D-182 — a manager's cancellation cancels the calculations a reopen left open.
+        private readonly ?FinancialCalculationService $financialCalculations = null,
+        private readonly ?PrestationGroupResolver $prestationGroups = null,
+        // D-182 — the encoding correction a submitted / validated mission's cancellation performs first.
+        private readonly ?MissionEncodingWorkflowService $encodingWorkflow = null,
     ) {
         // Always autowired; a plain unit test that omits it still gets the real writer (built
         // on the same EntityManager), never a shortcut that would skip the history.
@@ -401,9 +409,72 @@ class MissionPostDeployService
         // D-150 — under the mission row lock, re-checked against the committed state.
         $payload = $this->assignments->inLockedChange($mission, fn (): array => $this->applyCancel($mission, $actor, $reason, $causedByAbsenceId));
 
-        if (!$notify) {
-            return;
+        if ($notify) {
+            $this->dispatchCancelled($mission, $actor, $payload);
         }
+    }
+
+    /**
+     * D-182 — a manager cancels a mission that did not take place (MissionCancellationPolicy):
+     * also once its start time has passed (IN_PROGRESS) or its encoding has started
+     * (ENCODING_IN_PROGRESS). Whatever was encoded stays archived on the cancelled mission
+     * (never deleted, never validated, never billed); the instrumentist is taken off it.
+     *
+     * $replacement — REPLACED_BY_MISSION: the existing mission kept instead (already locked by
+     * MissionReplacementService, same transaction); recorded on the cancelled one.
+     * $notify — false for a replacement: MissionReplacementService sends a change of
+     * instrumentist instead, never a programme cancellation.
+     *
+     * @return array<string,mixed> the audit payload
+     */
+    public function cancelByManager(Mission $mission, User $actor, string $cancellationReason, ?string $reason = null, bool $notify = true, ?Mission $replacement = null, ?string $internalComment = null, bool $correctionConfirmed = false): array
+    {
+        if (!in_array($cancellationReason, [MissionCancellationPolicy::REASON_PROGRAM_CANCELLED, MissionCancellationPolicy::REASON_REPLACED_BY_MISSION], true)
+            || ($cancellationReason === MissionCancellationPolicy::REASON_REPLACED_BY_MISSION) !== ($replacement !== null)) {
+            throw new MissionCancellationException(MissionCancellationPolicy::REASON_INVALID, "Motif d'annulation invalide.", ['missionId' => $mission->getId()]);
+        }
+
+        $payload = $this->assignments->inLockedChange($mission, fn (): array => $this->applyCancel($mission, $actor, $reason, null, [
+            'cancellationReason'   => $cancellationReason,
+            'replacement'          => $replacement,
+            'internalComment'      => self::cleanComment($internalComment),
+            'correctionConfirmed'  => $correctionConfirmed,
+        ]));
+
+        if ($notify) {
+            $this->dispatchCancelled($mission, $actor, $payload);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * D-182 — the comment historised with the correction that precedes a cancellation (the
+     * encoding history shows why it was sent back / reopened).
+     *
+     * @param array{cancellationReason: string, replacement: ?Mission} $byManager
+     */
+    private function correctionComment(array $byManager, ?string $reason): string
+    {
+        $comment = $byManager['cancellationReason'] === MissionCancellationPolicy::REASON_REPLACED_BY_MISSION
+            ? sprintf('Annulation de la mission : remplacée par la mission #%d.', (int) $byManager['replacement']?->getId())
+            : 'Annulation de la mission : programme annulé.';
+        $reason = self::cleanComment($reason);
+
+        return $reason !== null ? $comment . ' ' . $reason : $comment;
+    }
+
+    /** D-182 — missions of $mission's multi-room prestation (MissionCancellationPolicy). */
+    public function prestationSize(Mission $mission): int
+    {
+        return $this->prestationGroups !== null ? count($this->prestationGroups->groupOf($mission)) : 1;
+    }
+
+    /** @param array<string,mixed> $payload */
+    private function dispatchCancelled(Mission $mission, User $actor, array $payload): void
+    {
+        // The manager's internal comment never leaves the audit (no notification carries it).
+        unset($payload['internalComment']);
 
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId:  $mission->getId(),
@@ -414,14 +485,44 @@ class MissionPostDeployService
         ));
     }
 
-    /** cancel()'s mutation, run under the mission lock; returns the audit/lifecycle payload. */
-    private function applyCancel(Mission $mission, User $actor, ?string $reason, ?int $causedByAbsenceId): array
+    /**
+     * cancel()'s mutation, run under the mission lock; returns the audit/lifecycle payload.
+     *
+     * @param array{cancellationReason: string, replacement: ?Mission, internalComment: ?string, correctionConfirmed: bool}|null $byManager
+     *        D-182 — a manager's cancellation (MissionCancellationPolicy) instead of the
+     *        automatic callers' narrower rule (absence reaction, room release, planning edits)
+     */
+    private function applyCancel(Mission $mission, User $actor, ?string $reason, ?int $causedByAbsenceId, ?array $byManager = null): array
     {
-        if (!in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
-            throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
+        $archivedEncoding = null;
+        $encodingCorrection = null;
+        if ($byManager !== null) {
+            $blocked = MissionCancellationPolicy::blockedReason($mission, $this->prestationSize($mission));
+            if ($blocked !== null) {
+                throw new MissionCancellationException($blocked['code'], $blocked['message'], ['missionId' => $mission->getId(), 'status' => $mission->getStatus()->value]);
+            }
+            // A submitted / validated encoding is first corrected explicitly (sent back to
+            // correction, reopened), in this same transaction, once the manager confirmed it.
+            $correction = MissionCancellationPolicy::correction($mission);
+            if ($correction !== null) {
+                if (!$byManager['correctionConfirmed'] || $this->encodingWorkflow === null) {
+                    throw new MissionCancellationException(MissionCancellationPolicy::CORRECTION_REQUIRED, $correction['message'], [
+                        'missionId' => $mission->getId(), 'status' => $mission->getStatus()->value, 'correction' => $correction['action'],
+                    ]);
+                }
+                $encodingCorrection = $this->encodingWorkflow->applyCorrectionBeforeCancellation($mission, $actor, $this->correctionComment($byManager, $reason));
+            }
+            // Archived as is, for traceability only: a CANCELLED mission is never validated
+            // nor billed (billing reads VALIDATED missions only).
+            $archivedEncoding = MissionEncodingDataGuard::hasEncodingData($mission) ? MissionEncodingDataGuard::facts($mission) : null;
+            $this->financialCalculations?->cancelOpenCalculationsOfCancelledMission($mission, $actor);
+        } else {
+            if (!in_array($mission->getStatus(), [MissionStatus::DRAFT, MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+                throw new ConflictHttpException('Mission must be DRAFT, OPEN or ASSIGNED to cancel');
+            }
+            // D-156 — a cancelled mission would hide already-encoded work from validation/billing.
+            MissionEncodingDataGuard::assertNone($mission, 'annuler');
         }
-        // D-156 — a cancelled mission would hide already-encoded work from validation/billing.
-        MissionEncodingDataGuard::assertNone($mission, 'annuler');
 
         $previousStatusEnum = $mission->getStatus();
         $previousStatus     = $previousStatusEnum->value;
@@ -461,6 +562,23 @@ class MissionPostDeployService
             'actorId'               => $actor->getId(),
             'actorName'             => $this->displayName($actor),
         ] + $snapshot;
+
+        if ($byManager !== null) {
+            $replacement = $byManager['replacement'];
+            // D-182 — the duplicate keeps a reference to the mission kept in its place.
+            $mission->setReplacedBy($replacement);
+            $payload += [
+                'cancellationReason'   => $byManager['cancellationReason'],
+                'replacementMissionId' => $replacement?->getId(),
+                'archivedEncoding'     => $archivedEncoding,
+                'internalComment'      => $byManager['internalComment'],
+                'encodingCorrection'   => $encodingCorrection !== null ? [
+                    'action'                          => $encodingCorrection['action'],
+                    'fromStatus'                      => $encodingCorrection['fromStatus'],
+                    'obsoleteFinancialCalculationIds' => $encodingCorrection['obsoleteFinancialCalculationIds'] ?? [],
+                ] : null,
+            ];
+        }
 
         $this->audit->record($mission, $actor, AuditEventType::MISSION_CANCELLED_POST_DEPLOY, $payload);
 
@@ -782,11 +900,24 @@ class MissionPostDeployService
     }
 
     /**
-     * ASSIGNED → ASSIGNED (new instrumentist).
+     * ASSIGNED|IN_PROGRESS|ENCODING_IN_PROGRESS → same status (new instrumentist).
      * Manager reassigns a mission from one instrumentist to another.
-     * Throws 409 if mission is not ASSIGNED, 404 if target instrumentist not found.
+     * Throws 409 if the mission cannot change hands (MissionReassignmentPolicy::blockedReason():
+     * SUBMITTED / VALIDATED / CLOSED, shared presence, no instrumentist), 404 if target
+     * instrumentist not found.
+     *
+     * D-181 — neither the date nor a passed start time (automatic IN_PROGRESS, D-064) blocks
+     * it: only encoded data does (D-156 guard below — use relay() then).
+     *
+     * $expectedInstrumentistId — D-181: the instrumentist the manager saw on screen. Compared
+     * under the mission lock: a mission changed meanwhile by someone else is never silently
+     * overwritten (409 REASSIGNMENT_ASSIGNMENT_CHANGED).
+     * $internalComment — D-181: manager's internal note, kept in the audit only (never in a
+     * notification, never in the lifecycle payload).
      *
      * $notify — see release() doc.
+     *
+     * @return array<string,mixed> the audit/lifecycle payload
      */
     public function reassign(
         Mission $mission,
@@ -796,24 +927,26 @@ class MissionPostDeployService
         EligibilityEnforcementPolicy $policy = EligibilityEnforcementPolicy::STRICT_ASSIGNMENT,
         bool $confirmEncodingData = false,
         ?string $encodingDataReason = null,
-    ): void {
+        ?int $expectedInstrumentistId = null,
+        ?string $internalComment = null,
+    ): array {
         // D-150 — under the mission row lock, re-checked against the committed state.
         $payload = $this->assignments->inLockedChange(
             $mission,
-            fn (): array => $this->applyReassign($mission, $actor, $newInstrumentistId, $policy, $confirmEncodingData, $encodingDataReason),
+            fn (): array => $this->applyReassign($mission, $actor, $newInstrumentistId, $policy, $confirmEncodingData, $encodingDataReason, $expectedInstrumentistId, $internalComment),
         );
 
-        if (!$notify) {
-            return;
+        if ($notify) {
+            $this->bus->dispatch(new MissionLifecycleChangedMessage(
+                missionId:  $mission->getId(),
+                changeType: MissionChangeType::REASSIGNED,
+                actorId:    $actor->getId(),
+                payload:    $payload,
+                occurredAt: new \DateTimeImmutable(),
+            ));
         }
 
-        $this->bus->dispatch(new MissionLifecycleChangedMessage(
-            missionId:  $mission->getId(),
-            changeType: MissionChangeType::REASSIGNED,
-            actorId:    $actor->getId(),
-            payload:    $payload,
-            occurredAt: new \DateTimeImmutable(),
-        ));
+        return $payload;
     }
 
     /** reassign()'s mutation, run under the mission lock; returns the audit/lifecycle payload. */
@@ -824,11 +957,11 @@ class MissionPostDeployService
         EligibilityEnforcementPolicy $policy,
         bool $confirmEncodingData,
         ?string $encodingDataReason,
+        ?int $expectedInstrumentistId = null,
+        ?string $internalComment = null,
     ): array
     {
-        if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
-            throw new ConflictHttpException('Mission must be ASSIGNED to reassign');
-        }
+        $this->guardReassignable($mission, $expectedInstrumentistId, $newInstrumentistId);
 
         // D-156 — controlled correction: interventions/material may stay on the mission only
         // after an explicit, motivated confirmation (audited); hours never follow a mission.
@@ -868,7 +1001,12 @@ class MissionPostDeployService
             'actorName'             => $this->displayName($actor),
         ];
 
-        $this->audit->record($mission, $actor, AuditEventType::MISSION_REASSIGNED_POST_DEPLOY, $payload);
+        // D-181 — the internal comment lives in the audit only (history), never in the payload
+        // handed to notifications.
+        $this->audit->record($mission, $actor, AuditEventType::MISSION_REASSIGNED_POST_DEPLOY, $payload + array_filter([
+            'missionStatus'   => $mission->getStatus()->value,
+            'internalComment' => self::cleanComment($internalComment),
+        ], static fn ($v) => $v !== null));
         // D-177 — a pending room take-over priority is answered by this assignment (ACCEPTED
         // if it went to its recipient, SUPERSEDED otherwise).
         $this->priorities?->closeActiveRequests($mission, $actor);
@@ -884,6 +1022,129 @@ class MissionPostDeployService
         $this->em->flush();  // R-05: flush before dispatch
 
         return $payload;
+    }
+
+    /**
+     * D-181 — relay ("relais") of a started mission: its first instrumentist stops at $relayAt
+     * and another one continues. Never overwrites nor transfers what the first one encoded:
+     *
+     *   - the ORIGINAL mission keeps its instrumentist, status, execution, hours, interventions
+     *     and material; only its planned end becomes $relayAt (so the slot is never counted
+     *     twice in planned hours, statistics, coverage or billing);
+     *   - a RELAY mission (Mission::relayOf = original) covers [$relayAt, previous end) with the
+     *     replacement: same site, surgeon, type, room label and planning version, ASSIGNED
+     *     (app:missions:start-due starts it when due). Not linked to the recurring post: it is
+     *     not an occurrence of it (SurgeonSchedulePost untouched).
+     *
+     * Eligibility of the replacement is checked on the relay window only, under the original's
+     * lock; MISSION_RELAYED is audited on both missions before any dispatch. Notifications are
+     * the caller's (MissionReassignmentService) — no lifecycle message is dispatched here.
+     *
+     * @return array{payload: array<string,mixed>, relayMission: Mission}
+     */
+    public function relay(
+        Mission $mission,
+        User $actor,
+        int $newInstrumentistId,
+        \DateTimeImmutable $relayAt,
+        ?int $expectedInstrumentistId = null,
+        ?string $internalComment = null,
+    ): array {
+        return $this->assignments->inLockedChange($mission, function () use ($mission, $actor, $newInstrumentistId, $relayAt, $expectedInstrumentistId, $internalComment): array {
+            $this->guardReassignable($mission, $expectedInstrumentistId, $newInstrumentistId, relay: true);
+            if (MissionReassignmentPolicy::relayWindow($mission) === null) {
+                throw new MissionReassignmentException(MissionReassignmentPolicy::MODE_NOT_AVAILABLE, "Le relais n'est pas possible sur cette mission (horaire prévu incomplet).", ['missionId' => $mission->getId()]);
+            }
+            $relayAt = $relayAt->setTimezone($mission->getStartAt()->getTimezone());
+            if (!MissionReassignmentPolicy::isValidRelayTime($mission, $relayAt)) {
+                throw new MissionReassignmentException(MissionReassignmentPolicy::RELAY_TIME_INVALID, sprintf(
+                    "L'heure du relais doit se situer strictement entre le début (%s) et la fin prévue (%s) de la mission.",
+                    $mission->getStartAt()->format('H:i'), $mission->getEndAt()->format('H:i'),
+                ), ['missionId' => $mission->getId(), 'startAt' => $mission->getStartAt()->format(\DateTimeInterface::ATOM), 'endAt' => $mission->getEndAt()->format(\DateTimeInterface::ATOM)]);
+            }
+
+            $newInstrumentist = $this->em->find(User::class, $newInstrumentistId);
+            if ($newInstrumentist === null) {
+                throw new NotFoundHttpException('Instrumentist not found');
+            }
+            $fromInstrumentist = $mission->getInstrumentist();
+            $previousEndAt = $mission->getEndAt();
+
+            $relayMission = (new Mission())
+                ->setPlanningVersion($mission->getPlanningVersion())
+                ->setSite($mission->getSite())
+                ->setType($mission->getType())
+                ->setSchedulePrecision(SchedulePrecision::EXACT)
+                ->setSurgeon($mission->getSurgeon())
+                ->setCreatedBy($actor)
+                ->setStartAt($relayAt)
+                ->setEndAt($previousEndAt)
+                ->setRoomLabel($mission->getRoomLabel())
+                ->setRelayOf($mission);
+
+            // The replacement is checked on the relay window only (never on the part already
+            // worked by the first instrumentist).
+            $this->guardEligibility($relayMission, $newInstrumentist, EligibilityEnforcementPolicy::STRICT_ASSIGNMENT);
+
+            $mission->setEndAt($relayAt);
+            $this->assignments->assign($relayMission, $newInstrumentist, MissionAssignmentSource::MANAGER_ASSIGNMENT, $actor);
+            $relayMission->setStatus(MissionStatus::ASSIGNED);
+            $this->em->persist($relayMission);
+            $this->em->flush(); // the relay mission's id is part of both audit payloads
+
+            $payload = [
+                'mode'                  => MissionReassignmentPolicy::MODE_RELAY,
+                'originalMissionId'     => $mission->getId(),
+                'relayMissionId'        => $relayMission->getId(),
+                'relayAt'               => $relayAt->format(\DateTimeInterface::ATOM),
+                'previousEndAt'         => $previousEndAt->format(\DateTimeInterface::ATOM),
+                'fromInstrumentistId'   => $fromInstrumentist?->getId(),
+                'fromInstrumentistName' => $fromInstrumentist !== null ? $this->displayName($fromInstrumentist) : null,
+                'toInstrumentistId'     => $newInstrumentist->getId(),
+                'toInstrumentistName'   => $this->displayName($newInstrumentist),
+                'actorId'               => $actor->getId(),
+                'actorName'             => $this->displayName($actor),
+            ];
+            $comment = array_filter(['internalComment' => self::cleanComment($internalComment)], static fn ($v) => $v !== null);
+            $this->audit->record($mission, $actor, AuditEventType::MISSION_RELAYED, $payload + ['role' => 'ORIGINAL', 'missionStatus' => $mission->getStatus()->value] + $comment);
+            $this->audit->record($relayMission, $actor, AuditEventType::MISSION_RELAYED, $payload + ['role' => 'RELAY'] + $comment);
+
+            $this->em->flush(); // R-05: flush before dispatch (by the caller)
+
+            return ['payload' => $payload, 'relayMission' => $relayMission];
+        });
+    }
+
+    /**
+     * D-181 — under the mission lock: the mission may change hands (policy), still has the
+     * instrumentist the manager saw, and the change is a real one.
+     */
+    private function guardReassignable(Mission $mission, ?int $expectedInstrumentistId, int $newInstrumentistId, bool $relay = false): void
+    {
+        $blocked = MissionReassignmentPolicy::blockedReason($mission);
+        // A direct reassignment of a mission sharing common hours keeps its D-156 answer
+        // (MISSION_HAS_ENCODING_DATA, not confirmable: detach first), raised just after.
+        if ($blocked !== null && ($relay || $blocked['code'] !== MissionReassignmentPolicy::SHARED_PRESENCE)) {
+            throw new MissionReassignmentException($blocked['code'], $blocked['message'], ['missionId' => $mission->getId(), 'status' => $mission->getStatus()->value]);
+        }
+        $current = $mission->getInstrumentist()?->getId();
+        if ($expectedInstrumentistId !== null && $current !== $expectedInstrumentistId) {
+            throw new MissionReassignmentException(MissionReassignmentPolicy::ASSIGNMENT_CHANGED,
+                "L'affectation de cette mission vient d'être modifiée par quelqu'un d'autre. Rechargez la mission avant de la réaffecter.",
+                ['missionId' => $mission->getId(), 'currentInstrumentistId' => $current]);
+        }
+        if ($current === $newInstrumentistId) {
+            throw new MissionReassignmentException(MissionReassignmentPolicy::NO_CHANGE,
+                "Cette personne est déjà affectée à la mission : aucune modification.", ['missionId' => $mission->getId()]);
+        }
+    }
+
+    /** D-181 — a manager's internal comment, trimmed and bounded (audit only, never notified). */
+    public static function cleanComment(?string $comment): ?string
+    {
+        $comment = $comment !== null ? trim($comment) : '';
+
+        return $comment !== '' ? mb_substr($comment, 0, 1000) : null;
     }
 
     /**

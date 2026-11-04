@@ -46,6 +46,8 @@ class MissionVoter extends Voter
     public const RELEASE  = 'MISSION_RELEASE';
     public const CANCEL   = 'MISSION_CANCEL';
     public const REASSIGN = 'MISSION_REASSIGN';
+    // D-181 — statut réel des notifications d'une opération de réaffectation (évalué sur la classe).
+    public const VIEW_REASSIGNMENT_OPERATION = 'MISSION_VIEW_REASSIGNMENT_OPERATION';
 
     // Pre-deploy DRAFT instrumentist assignment (RC1-C, Cluster C fix)
     public const ASSIGN_INSTRUMENTIST = 'MISSION_ASSIGN_INSTRUMENTIST';
@@ -128,6 +130,7 @@ class MissionVoter extends Voter
             self::RELEASE,
             self::CANCEL,
             self::REASSIGN,
+            self::VIEW_REASSIGNMENT_OPERATION,
             self::ASSIGN_INSTRUMENTIST,
             self::VIEW_ELIGIBLE_INSTRUMENTISTS,
             self::VIEW_AUDIT,
@@ -152,7 +155,7 @@ class MissionVoter extends Voter
         }
 
         // CREATE et DECLARE peuvent être évalués sur la classe
-        if (in_array($attribute, [self::CREATE, self::DECLARE], true)) {
+        if (in_array($attribute, [self::CREATE, self::DECLARE, self::VIEW_REASSIGNMENT_OPERATION], true)) {
             return $subject === Mission::class || $subject instanceof Mission;
         }
 
@@ -170,7 +173,7 @@ class MissionVoter extends Voter
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
 
         // CREATE / DECLARE ne dépendent pas d'une mission existante
-        if ($attribute === self::CREATE) {
+        if ($attribute === self::CREATE || $attribute === self::VIEW_REASSIGNMENT_OPERATION) {
             return $isManager;
         }
 

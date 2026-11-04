@@ -17,11 +17,13 @@ use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\MissionAssignmentRefusalScope;
 use App\Enum\MissionDispatchMode;
 use App\Security\Voter\MissionVoter;
+use App\Service\MissionCancellationPolicy;
 use App\Service\MissionDispatchService;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
 use App\Service\MissionPostDeployService;
+use App\Service\MissionReassignmentService;
 use App\Service\MissionService;
 use App\Service\RoomTakeoverPriorityService;
 use App\Service\Prestation\MissionListAnnotator;
@@ -55,6 +57,7 @@ class MissionController extends AbstractController
         private readonly MissionDispatchService    $dispatchService,
         private readonly RoomTakeoverPriorityService $priorities,
         private readonly MissionListAnnotator      $listAnnotator,
+        private readonly MissionReassignmentService $reassignments,
     ) {}
 
     #[Route(name: 'api_missions_create', methods: ['POST'])]
@@ -347,14 +350,22 @@ class MissionController extends AbstractController
             ->setParameter('mission', $mission)
             ->getResult();
 
-        $items = array_map(static function (AuditEvent $ae): array {
+        // D-181 — the manager's internal comment on a reassignment stays among managers (the
+        // mission's surgeon also reads this history).
+        $seesInternalComments = $this->isGranted(MissionVoter::REASSIGN, $mission);
+
+        $items = array_map(static function (AuditEvent $ae) use ($seesInternalComments): array {
             $actor = $ae->getActor();
+            $payload = $ae->getPayload();
+            if (!$seesInternalComments && is_array($payload)) {
+                unset($payload['internalComment']);
+            }
             return [
                 'eventType'  => $ae->getEventType()->value,
                 'occurredAt' => $ae->getCreatedAt()?->format(\DateTimeInterface::ATOM),
                 'actorId'    => $actor?->getId(),
                 'actorName'  => trim(($actor?->getFirstname() ?? '') . ' ' . ($actor?->getLastname() ?? '')),
-                'payload'    => $ae->getPayload(),
+                'payload'    => $payload,
             ];
         }, $events);
 
@@ -383,9 +394,37 @@ class MissionController extends AbstractController
         $data   = json_decode($request->getContent(), true) ?? [];
         $reason = isset($data['reason']) && is_string($data['reason']) ? $data['reason'] : null;
 
-        $this->missionPostDeployService->cancel($mission, $user, $reason);
+        // D-182 — a manager's cancellation: the programme did not take place (also once
+        // started or encoded; a duplicate goes through /cancel-as-replaced instead).
+        $this->missionPostDeployService->cancelByManager(
+            $mission, $user,
+            MissionCancellationPolicy::REASON_PROGRAM_CANCELLED,
+            $reason,
+            internalComment: isset($data['internalComment']) && is_string($data['internalComment']) ? $data['internalComment'] : null,
+            correctionConfirmed: $this->cancellationCorrectionConfirmed($mission, $data),
+        );
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /**
+     * D-182 — a submitted / validated mission is cancelled after the explicit correction of its
+     * encoding (MissionCancellationPolicy::correction()), confirmed by the manager: also
+     * authorised as that correction itself would be (MissionVoter::ENCODING_REJECT / _REOPEN).
+     *
+     * @param array<string,mixed> $data
+     */
+    private function cancellationCorrectionConfirmed(Mission $mission, array $data): bool
+    {
+        $confirmed = ($data['correctionConfirmed'] ?? false) === true;
+        $correction = MissionCancellationPolicy::correction($mission);
+        if ($confirmed && $correction !== null) {
+            $this->denyAccessUnlessGranted($correction['action'] === MissionCancellationPolicy::CORRECTION_REJECT
+                ? MissionVoter::ENCODING_REJECT
+                : MissionVoter::ENCODING_REOPEN, $mission);
+        }
+
+        return $confirmed;
     }
 
     /**
@@ -436,13 +475,18 @@ class MissionController extends AbstractController
 
         // D-156 — correction contrôlée : une mission qui porte déjà des interventions / du
         // matériel n'est réaffectée qu'après confirmation explicite et motivée (409 sinon).
-        $this->missionPostDeployService->reassign(
-            $mission,
-            $user,
-            (int) $instrumentistId,
-            confirmEncodingData: (bool) ($data['confirmEncodingData'] ?? false),
-            encodingDataReason: isset($data['encodingDataReason']) ? (string) $data['encodingDataReason'] : null,
-        );
+        // D-181 — même opération que la réaffectation multiple (une seule mission) : mission
+        // commencée, relais, contrôle de concurrence et e-mails aux trois personnes concernées.
+        $this->reassignments->reassign($user, [[
+            'missionId'               => $mission->getId(),
+            'instrumentistId'         => (int) $instrumentistId,
+            'mode'                    => $data['mode'] ?? null,
+            'relayAt'                 => $data['relayAt'] ?? null,
+            'expectedInstrumentistId' => $data['expectedInstrumentistId'] ?? null,
+            'confirmEncodingData'     => (bool) ($data['confirmEncodingData'] ?? false),
+            'encodingDataReason'      => $data['encodingDataReason'] ?? null,
+        ]], isset($data['comment']) ? (string) $data['comment'] : null, fn (Mission $m) => $this->isGranted(MissionVoter::REASSIGN, $m), throwOnFailure: true);
+        $this->em->refresh($mission);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }

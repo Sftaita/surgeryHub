@@ -1,10 +1,10 @@
 import * as React from "react";
 import {
-  Alert, Box, Button, Chip, CircularProgress,
+  Alert, Box, Button, Checkbox, Chip, CircularProgress,
   Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
   MenuItem, Paper, Select, Stack, ToggleButton, ToggleButtonGroup,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField,
-  Link, Typography,
+  Link, Tooltip, Typography,
 } from "@mui/material";
 import { Link as RouterLink } from "react-router-dom";
 import LockOpenIcon   from "@mui/icons-material/LockOpen";
@@ -13,18 +13,17 @@ import SwapHorizIcon  from "@mui/icons-material/SwapHoriz";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAllMissions } from "../../../features/missions/api/missions.api";
 import { dispatchMission, invalidateOperationalPlanning } from "../../../features/missions/dispatch/missionDispatch.api";
-import { prestationError } from "../../../features/prestations/api/prestations.api";
-import { EncodingDataConfirmDialog } from "../../../features/prestations/components/EncodingDataConfirmDialog";
 import type { Mission, MissionStatus } from "../../../features/missions/api/missions.types";
 import { fetchSites } from "../../../features/sites/api/sites.api";
 import { useToast } from "../../../ui/toast/useToast";
 import {
-  releaseMission, cancelMission, reassignMission, extractErrorV2,
+  releaseMission, extractErrorV2,
 } from "../../../features/planning-v2/api/planningV2.api";
 import { CoverageBanner }      from "../../../features/planning-v2/components/CoverageBanner";
 import { MissionHistoryDrawer } from "../../../features/planning-v2/components/MissionHistoryDrawer";
-import { CancelMissionDialog }  from "../../../features/planning-v2/components/CancelMissionDialog";
-import { ReassignMissionDialog } from "../../../features/planning-v2/components/ReassignMissionDialog";
+import { CancelMissionDialog }  from "../../../features/missions/cancellation/CancelMissionDialog";
+import { ChangeInstrumentistDialog } from "../../../features/missions/reassignment/ChangeInstrumentistDialog";
+import { BatchReassignmentDialog } from "../../../features/missions/reassignment/BatchReassignmentDialog";
 import { useRosterEligibility, type RosterSlot } from "../../../features/planning-v2/api/useRosterEligibility";
 import { candidateGhostLabel } from "../../../features/planning-v2/api/eligibilityReasons";
 import { OPERATIONAL_LIVE_QUERY_OPTIONS } from "../../../features/missions/sync/liveQueryOptions";
@@ -84,6 +83,8 @@ interface ScheduleRow {
   canEdit:            boolean;
   canRelease:         boolean;
   canCancel:          boolean;
+  /** D-182 — annulation impossible : bouton désactivé avec cette raison (serveur). */
+  cancelBlockedReason: string | null;
   canReassign:        boolean;
 }
 
@@ -107,8 +108,17 @@ function toRow(m: Mission): ScheduleRow {
     status,
     canEdit:    status === "OPEN",
     canRelease: status === "ASSIGNED",
-    canCancel:  status === "OPEN",
-    canReassign: status === "ASSIGNED",
+    // D-182 — servi par le backend (OPEN, ASSIGNED, mission du jour commencée…), jamais
+    // déduit du statut : plus besoin de remettre la mission au pool avant de l'annuler.
+    canCancel:  (m.allowedActions ?? []).includes("cancel"),
+    // D-182 — mission facturée, clôturée, prestation multi-salles… : jamais une opération
+    // engagée puis refusée, l'action est désactivée avec la raison du serveur.
+    cancelBlockedReason: !(m.allowedActions ?? []).includes("cancel") && m.cancellation?.blockedReason
+      && m.cancellation.blockedReason.code !== "CANCELLATION_NOT_POSSIBLE"
+      ? m.cancellation.blockedReason.message
+      : null,
+    // D-181 — servi par le backend (y compris une mission du jour déjà commencée), jamais déduit du statut.
+    canReassign: (m.allowedActions ?? []).includes("reassign"),
   };
 }
 
@@ -306,6 +316,10 @@ export default function PlanningSchedulePage() {
   const [releaseTarget, setReleaseTarget]       = React.useState<number | null>(null);
   const [cancelTarget,  setCancelTarget]        = React.useState<number | null>(null);
   const [reassignTarget, setReassignTarget]     = React.useState<ScheduleRow | null>(null);
+  // D-181 — réaffectation multiple (absence imprévue sur plusieurs missions).
+  const [selectedIds, setSelectedIds]           = React.useState<number[]>([]);
+  // The missions of the operation are fixed when the dialog opens (the selection is cleared once done).
+  const [batchIds, setBatchIds]                 = React.useState<number[] | null>(null);
 
   const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites });
   const missionsQuery = useQuery({
@@ -376,7 +390,7 @@ export default function PlanningSchedulePage() {
         r.map((row) =>
           row.missionId === missionId
             ? { ...row, status: "OPEN" as MissionStatus, instrumentistId: null, instrumentistName: null,
-                canEdit: true, canRelease: false, canCancel: true, canReassign: false }
+                canEdit: true, canRelease: false, canCancel: true, cancelBlockedReason: null, canReassign: false }
             : row,
         ),
       );
@@ -398,79 +412,13 @@ export default function PlanningSchedulePage() {
     onSettled: () => setReleaseTarget(null),
   });
 
-  // ── Cancel mutation ───────────────────────────────────────────────────────
-
-  const cancelMut = useMutation({
-    mutationFn: ({ id, reason }: { id: number; reason?: string }) => cancelMission(id, reason),
-    onMutate: ({ id }) => {
-      const prev = rows.find((r) => r.missionId === id);
-      setRows((r) =>
-        r.map((row) =>
-          row.missionId === id
-            ? { ...row, status: "CANCELLED" as MissionStatus,
-                canEdit: false, canRelease: false, canCancel: false, canReassign: false }
-            : row,
-        ),
-      );
-      return { prev };
-    },
-    onError: (_e, { id }, ctx) => {
-      if (ctx?.prev) {
-        setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
-      }
-      toast.error("Erreur lors de l'annulation");
-    },
-    onSuccess: () => {
-      toast.success("Mission annulée");
-      invalidateCoverage();
-    },
-    onSettled: () => setCancelTarget(null),
-  });
-
-  // ── Reassign mutation ─────────────────────────────────────────────────────
-
-  // D-156 — 409 MISSION_HAS_ENCODING_DATA : la mission porte déjà des données d'encodage ;
-  // confirmation motivée si le serveur l'autorise, jamais un transfert implicite.
-  const [encodingDataConflict, setEncodingDataConflict] = React.useState<
-    { id: number; instrumentistId: number; instrumentistName: string; message: string; confirmable: boolean } | null
-  >(null);
-
-  const reassignMut = useMutation({
-    mutationFn: ({ id, instrumentistId, encodingDataReason }: { id: number; instrumentistId: number; instrumentistName: string; encodingDataReason?: string }) =>
-      reassignMission(id, instrumentistId, encodingDataReason ? { encodingDataReason } : undefined),
-    onMutate: ({ id, instrumentistId, instrumentistName }) => {
-      const prev = rows.find((r) => r.missionId === id);
-      setRows((r) =>
-        r.map((row) =>
-          row.missionId === id
-            ? { ...row, instrumentistId, instrumentistName }
-            : row,
-        ),
-      );
-      return { prev };
-    },
-    onError: (e, { id, instrumentistId, instrumentistName }, ctx) => {
-      if (ctx?.prev) {
-        setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
-      }
-      const err = prestationError(e);
-      if (err.code === "MISSION_HAS_ENCODING_DATA") {
-        setEncodingDataConflict({ id, instrumentistId, instrumentistName, message: err.message, confirmable: err.extra.confirmable === true });
-        return;
-      }
-      toast.error(err.message || "Erreur lors de la réassignation");
-    },
-    onSuccess: () => {
-      setEncodingDataConflict(null);
-      toast.success("Mission réassignée");
-      invalidateCoverage();
-    },
-    onSettled: () => setReassignTarget(null),
-  });
-
   const filteredRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.status === statusFilter);
   const draftCount = (missionsQuery.data ?? []).filter((m) => m.status === "DRAFT").length;
   const weeks = groupRows(filteredRows);
+  const selectable = new Set(rows.filter((r) => r.canReassign).map((r) => r.missionId));
+  const selection = selectedIds.filter((id) => selectable.has(id));
+  const toggleSelected = (id: number) =>
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
   return (
     <Stack spacing={3}>
@@ -553,6 +501,20 @@ export default function PlanningSchedulePage() {
         </Stack>
       </Paper>
 
+      {/* D-181 — réaffectation multiple */}
+      {selection.length > 0 && (
+        <Stack direction="row" spacing={1.5} alignItems="center" data-testid="schedule-selection-bar">
+          <Typography variant="body2" fontWeight={600}>
+            {selection.length} mission{selection.length > 1 ? "s" : ""} sélectionnée{selection.length > 1 ? "s" : ""}
+          </Typography>
+          <Button size="small" variant="contained" disableElevation startIcon={<SwapHorizIcon fontSize="small" />}
+            onClick={() => setBatchIds(selection)} data-testid="schedule-batch-reassign">
+            Réaffecter la sélection
+          </Button>
+          <Button size="small" onClick={() => setSelectedIds([])}>Tout désélectionner</Button>
+        </Stack>
+      )}
+
       {/* Empty states */}
       {!loaded && !missionsQuery.isFetching && (
         <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", py: 8, gap: 2 }}>
@@ -589,6 +551,7 @@ export default function PlanningSchedulePage() {
             <Table size="small" sx={{ tableLayout: "fixed" }}>
               <TableHead>
                 <TableRow sx={{ bgcolor: "grey.50" }}>
+                  <TableCell sx={{ width: 36, px: 0.5 }} aria-label="Sélection" />
                   <TableCell sx={{ width: 88,  fontWeight: 700, fontSize: 12 }}>Jour</TableCell>
                   <TableCell sx={{ width: 90,  fontWeight: 700, fontSize: 12 }}>Date</TableCell>
                   <TableCell sx={{ width: 150, fontWeight: 700, fontSize: 12 }}>Chirurgien</TableCell>
@@ -621,6 +584,14 @@ export default function PlanningSchedulePage() {
                           },
                         }}
                       >
+                        <TableCell sx={{ px: 0.5 }} onClick={(e) => e.stopPropagation()}>
+                          {row.canReassign && (
+                            <Checkbox
+                              size="small" checked={selection.includes(row.missionId)} onChange={() => toggleSelected(row.missionId)}
+                              inputProps={{ "aria-label": "Sélectionner pour réaffectation", "data-testid": `schedule-select-${row.missionId}` } as React.InputHTMLAttributes<HTMLInputElement>}
+                            />
+                          )}
+                        </TableCell>
                         {isFirst && (
                           <TableCell rowSpan={dayRows.length} sx={{ fontWeight: 700, verticalAlign: "top", pt: "9px !important" }}>
                             {getDayName(date)}
@@ -676,18 +647,25 @@ export default function PlanningSchedulePage() {
                                 Pool
                               </Button>
                             )}
-                            {row.canCancel && (
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                color="error"
-                                startIcon={<BlockIcon fontSize="small" />}
-                                aria-label="Annuler la mission"
-                                onClick={() => setCancelTarget(row.missionId)}
-                                sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
-                              >
-                                Annuler
-                              </Button>
+                            {(row.canCancel || row.cancelBlockedReason) && (
+                              <Tooltip title={row.cancelBlockedReason ? `Annulation impossible : ${row.cancelBlockedReason}` : ""} arrow>
+                                {/* span : un bouton désactivé ne reçoit pas le survol de l'infobulle. */}
+                                <span>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="error"
+                                    startIcon={<BlockIcon fontSize="small" />}
+                                    aria-label="Annuler la mission"
+                                    disabled={!row.canCancel}
+                                    data-testid={`cancel-mission-${row.missionId}`}
+                                    onClick={() => setCancelTarget(row.missionId)}
+                                    sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
+                                  >
+                                    Annuler
+                                  </Button>
+                                </span>
+                              </Tooltip>
                             )}
                             {row.canReassign && (
                               <Button
@@ -695,7 +673,7 @@ export default function PlanningSchedulePage() {
                                 variant="outlined"
                                 color="info"
                                 startIcon={<SwapHorizIcon fontSize="small" />}
-                                aria-label="Réassigner la mission"
+                                aria-label="Changer d'instrumentiste"
                                 onClick={() => setReassignTarget(row)}
                                 sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
                               >
@@ -739,43 +717,25 @@ export default function PlanningSchedulePage() {
         </DialogActions>
       </Dialog>
 
-      {/* Cancel dialog */}
+      {/* D-182 — annulation : programme annulé ou mission remplacée par une mission existante */}
       <CancelMissionDialog
         open={cancelTarget !== null}
-        loading={cancelMut.isPending}
-        onClose={() => setCancelTarget(null)}
-        onConfirm={(reason) =>
-          cancelTarget !== null && cancelMut.mutate({ id: cancelTarget, reason })
-        }
+        missionId={cancelTarget}
+        onClose={() => { setCancelTarget(null); invalidateCoverage(); }}
+        onCancelled={() => toast.success("Mission annulée")}
       />
 
-      {/* Reassign dialog */}
-      <EncodingDataConfirmDialog
-        open={encodingDataConflict !== null}
-        message={encodingDataConflict?.message ?? ""}
-        confirmable={encodingDataConflict?.confirmable ?? false}
-        loading={reassignMut.isPending}
-        onClose={() => setEncodingDataConflict(null)}
-        onConfirm={(reason) =>
-          encodingDataConflict !== null &&
-          reassignMut.mutate({
-            id: encodingDataConflict.id,
-            instrumentistId: encodingDataConflict.instrumentistId,
-            instrumentistName: encodingDataConflict.instrumentistName,
-            encodingDataReason: reason,
-          })
-        }
-      />
-
-      <ReassignMissionDialog
+      {/* D-181 — « Changer d'instrumentiste » (une mission) et réaffectation multiple */}
+      <ChangeInstrumentistDialog
         open={reassignTarget !== null}
-        loading={reassignMut.isPending}
         missionId={reassignTarget?.missionId ?? null}
-        onClose={() => setReassignTarget(null)}
-        onConfirm={(instrumentistId, instrumentistName) =>
-          reassignTarget !== null &&
-          reassignMut.mutate({ id: reassignTarget.missionId, instrumentistId, instrumentistName })
-        }
+        onClose={() => { setReassignTarget(null); invalidateCoverage(); }}
+      />
+      <BatchReassignmentDialog
+        open={batchIds !== null}
+        missionIds={batchIds ?? []}
+        onClose={() => { setBatchIds(null); invalidateCoverage(); }}
+        onDone={() => setSelectedIds([])}
       />
 
       {/* Mission history drawer */}

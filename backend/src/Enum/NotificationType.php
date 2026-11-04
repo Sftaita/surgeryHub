@@ -206,6 +206,14 @@ enum NotificationType: string
     // uniquement si le chirurgien l'active dans ses préférences. 19 caractères (< 32).
     case ROOM_SLOT_AVAILABLE = 'ROOM_SLOT_AVAILABLE';
 
+    // ── Réaffectation par un manager d'une mission publiée (D-181) ───────────
+    // À l'ancienne instrumentiste (mission retirée), à la nouvelle (mission attribuée) et au
+    // chirurgien (changement d'instrumentiste) : UNE notification par destinataire et par
+    // opération (BATCH, un seul e-mail récapitulatif même pour plusieurs missions ou plusieurs
+    // rôles). Opérationnelle : e-mail activé par défaut. Jamais le commentaire interne du
+    // manager ni un motif. 27 caractères (< 32).
+    case MISSION_REASSIGNMENT_NOTICE = 'MISSION_REASSIGNMENT_NOTICE';
+
     // ── H5a — email flows migrated to NotificationDispatcher ─────────────────
     // Encoding reminder D+1 (D-083) — RETIRED by D-143 (replaced by ENCODING_REMINDER,
     // J+1/J+2/J+4). Value kept so the existing outbound / dispatch history keeps its type.
@@ -331,6 +339,7 @@ enum NotificationType: string
             self::ENCODING_UPDATED_BY_SURGEON, self::MISSION_HOURS_REMINDER, self::ENCODING_TAKEN_OVER => [$i],
 
             self::PLANNING_MISSION_CANCELLED, self::PLANNING_CHANGE_SUMMARY, self::PLANNING_MISSION_ADDED,
+            self::MISSION_REASSIGNMENT_NOTICE,
             self::PLANNING_MISSION_UPDATED, self::MISSION_RESTORED, self::PLANNING_RESENT_MANUAL,
             self::ABSENCE_REQUEST_MISSING, self::ABSENCE_ENCODED_RECAP => [$s, $i],
 

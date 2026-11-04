@@ -50,6 +50,8 @@ class PlanningAlertActionService
         private readonly ?MissionEligibilityService $eligibility = null,
         // D-177 — a room take-over mission reopened here stays reachable (active POOL).
         private readonly ?RoomTakeoverPriorityService $priorities = null,
+        // D-181 — changing the instrumentist of a published mission; always autowired.
+        private readonly ?MissionReassignmentService $reassignments = null,
     ) {
         // D-150 — always autowired; a plain unit test that omits it still gets the real writer.
         $this->assignments = $assignments ?? new MissionAssignmentService($em);
@@ -70,7 +72,17 @@ class PlanningAlertActionService
         $this->assertEligible($mission, $instrumentist);
 
 
-        if (in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+        if ($this->reassignments !== null && $actor !== null && $mission->getInstrumentist() !== null
+            && in_array($mission->getStatus(), MissionReassignmentPolicy::REASSIGNABLE_STATUSES, true)) {
+            // D-181 — a published mission changing hands (ASSIGNED, or already started): the same
+            // operation as « Changer d'instrumentiste » — status kept, encoded data protected,
+            // audit, and the three people concerned told. The access decision is the caller's
+            // (PlanningVoter::PLANNING_MANAGE). The alert note stays internal (audit only).
+            $this->reassignments->reassign($actor, [[
+                'missionId'       => $mission->getId(),
+                'instrumentistId' => $instrumentistId,
+            ]], $note, static fn (): bool => true, throwOnFailure: true);
+        } elseif (in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             // Post-deploy: delegate to MissionPostDeployService so R-04/R-05/R-07 are enforced
             // (audit event + flush before dispatch + MissionLifecycleChangedMessage).
             if ($actor === null) {

@@ -185,6 +185,25 @@ class Mission
     #[ORM\Column(type: 'date_immutable', nullable: true)]
     private ?\DateTimeImmutable $scheduleOccurrenceDate = null;
 
+    /**
+     * D-181 — relay ("relais") of a started mission: the mission this one continues, from its
+     * start, with another instrumentist (MissionPostDeployService::relay()). The original keeps
+     * its instrumentist and everything she encoded; its planned end becomes this mission's
+     * start, so the slot is never counted twice. Never set by the planning generator.
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'relay_of_mission_id', nullable: true, onDelete: 'SET NULL')]
+    private ?Mission $relayOf = null;
+
+    /**
+     * D-182 — this CANCELLED mission was a duplicate: the existing mission kept in its place
+     * for the same programme (MissionReplacementService). Traceability only — the kept mission
+     * is never changed by the link.
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'replaced_by_mission_id', nullable: true, onDelete: 'SET NULL')]
+    private ?Mission $replacedBy = null;
+
     #[ORM\ManyToOne(inversedBy: 'missions')]
     #[ORM\JoinColumn(nullable: true)]
     private ?PlanningVersion $planningVersion = null;
@@ -318,6 +337,12 @@ class Mission
 
     public function getRoomLabel(): ?string { return $this->roomLabel; }
     public function setRoomLabel(?string $roomLabel): static { $this->roomLabel = $roomLabel; return $this; }
+
+    public function getRelayOf(): ?Mission { return $this->relayOf; }
+    public function setRelayOf(?Mission $relayOf): static { $this->relayOf = $relayOf; return $this; }
+
+    public function getReplacedBy(): ?Mission { return $this->replacedBy; }
+    public function setReplacedBy(?Mission $replacedBy): static { $this->replacedBy = $replacedBy; return $this; }
 
     public function getSchedulePost(): ?SurgeonSchedulePost { return $this->schedulePost; }
     public function getScheduleOccurrenceDate(): ?\DateTimeImmutable { return $this->scheduleOccurrenceDate; }

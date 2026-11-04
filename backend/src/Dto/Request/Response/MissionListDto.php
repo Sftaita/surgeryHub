@@ -58,5 +58,13 @@ final class MissionListDto
          * @var list<int>
          */
         public readonly array $scheduleConflictMissionIds = [],
+        /**
+         * D-182 — managers only (null otherwise): {blockedReason: {code, message}|null,
+         * correction: {action: REJECT|REOPEN, message}|null} (MissionCancellationPolicy) — why
+         * 'cancel' is missing from allowedActions, shown on the disabled action.
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $cancellation = null,
     ) {}
 }

@@ -466,10 +466,6 @@ export async function releaseMission(id: number): Promise<void> {
   await apiClient.post(`/api/missions/${id}/release`);
 }
 
-export async function cancelMission(id: number, reason?: string): Promise<void> {
-  await apiClient.post(`/api/missions/${id}/cancel`, reason ? { reason } : {});
-}
-
 /**
  * D-156 — `confirmEncodingData` + motif : correction contrôlée d'une mission qui porte déjà
  * des interventions / du matériel (le serveur répond 409 MISSION_HAS_ENCODING_DATA sinon,

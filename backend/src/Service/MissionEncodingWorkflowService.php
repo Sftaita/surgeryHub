@@ -711,6 +711,29 @@ final class MissionEncodingWorkflowService
         return $payload;
     }
 
+    /**
+     * D-182 — la correction explicite qui précède l'annulation d'une mission soumise ou validée
+     * (MissionCancellationPolicy::correction()), dans la transaction et sous le verrou de
+     * l'annulation : mêmes écritures exactement que reject() / reopen() (statut, déverrouillage,
+     * motif historisé, calculs marqués obsolètes, audit), contrôles de reopen() compris (calcul
+     * verrouillé lu en base). Sans flush ni notification : la mission est annulée dans la foulée,
+     * l'instrumentiste ne reçoit que l'annulation, jamais une demande de correction.
+     *
+     * @return array<string,mixed> le payload d'audit de la correction
+     */
+    public function applyCorrectionBeforeCancellation(Mission $mission, User $actor, string $comment): array
+    {
+        $comment = $this->requireReason($comment);
+        $extra = ['beforeCancellation' => true];
+
+        if ($mission->getStatus() === MissionStatus::SUBMITTED) {
+            return ['action' => MissionCancellationPolicy::CORRECTION_REJECT] + $this->applyReject($mission, $actor, $comment, $extra);
+        }
+        $this->assertReopenable($mission);
+
+        return ['action' => MissionCancellationPolicy::CORRECTION_REOPEN] + $this->applyReopen($mission, $actor, $comment, $extra);
+    }
+
     // ── Complément D-156 — décisions du manager sur toute une prestation multi-salles ──────
 
     /**

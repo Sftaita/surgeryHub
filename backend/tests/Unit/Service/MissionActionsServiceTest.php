@@ -363,13 +363,17 @@ final class MissionActionsServiceTest extends TestCase
         self::assertContains('cancel', $this->service->allowedActions($this->makeMission(MissionStatus::ASSIGNED, $instr), $manager));
     }
 
-    public function test_manager_never_gets_cancel_on_submitted_validated_declared(): void
+    public function test_manager_gets_cancel_on_submitted_and_validated_but_never_on_declared(): void
     {
         $manager = $this->makeUser(['ROLE_MANAGER']);
 
-        foreach ([MissionStatus::SUBMITTED, MissionStatus::VALIDATED, MissionStatus::DECLARED] as $status) {
-            self::assertNotContains('cancel', $this->service->allowedActions($this->makeMission($status), $manager));
+        // D-182 — submitted / validated (never billed): cancelled after the confirmed correction
+        // of the encoding, in the same operation (MissionCancellationPolicy::correction()).
+        foreach ([MissionStatus::SUBMITTED, MissionStatus::VALIDATED] as $status) {
+            self::assertContains('cancel', $this->service->allowedActions($this->makeMission($status), $manager));
         }
+        // A pending declaration is refused, never cancelled.
+        self::assertNotContains('cancel', $this->service->allowedActions($this->makeMission(MissionStatus::DECLARED), $manager));
     }
 
     // ── D-120 : 'remind' (cockpit Suivi des encodages) ──────────────────────
@@ -466,7 +470,7 @@ final class MissionActionsServiceTest extends TestCase
         $manager = $this->makeUser(['ROLE_MANAGER']);
         $mission = $this->makeEndedMission(MissionStatus::VALIDATED, $this->makeUser(['ROLE_INSTRUMENTIST']));
 
-        self::assertSame(['view', 'reopen'], $this->service->allowedActions($mission, $manager));
+        self::assertSame(['view', 'reopen', 'cancel'], $this->service->allowedActions($mission, $manager));
     }
 
     public function test_instrumentist_never_gets_remind_hours(): void

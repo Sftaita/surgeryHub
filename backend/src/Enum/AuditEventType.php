@@ -162,6 +162,10 @@ enum AuditEventType: string
     case MISSION_ROOM_LABEL_CHANGED = 'MISSION_ROOM_LABEL_CHANGED';
     /** D-156 — réaffectation explicitement confirmée d'une mission qui porte déjà des interventions/matériel (restent sur la mission, auteurs conservés). */
     case MISSION_REASSIGNED_WITH_ENCODING_DATA = 'MISSION_REASSIGNED_WITH_ENCODING_DATA';
+    /** D-181 — relais d'une mission commencée : enregistré sur la mission d'origine ET sur la mission de relais (payload `role`). */
+    case MISSION_RELAYED = 'MISSION_RELAYED';
+    /** D-182 — mission existante conservée à la place d'une mission annulée comme doublon (payload `cancelledMissionId`). */
+    case MISSION_KEPT_AS_REPLACEMENT = 'MISSION_KEPT_AS_REPLACEMENT';
 
     // Exécution & Valorisation, Lot 2 (D-072) — historisation des tarifs.
     // PricingRuleVersioningService / InstrumentistRateService. Non rattachés à une

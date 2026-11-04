@@ -103,36 +103,153 @@ describe("ManagerMissionDrawer — annulation de mission (Point 5)", () => {
     expect(screen.queryByRole("button", { name: "Annuler la mission" })).not.toBeInTheDocument();
   });
 
-  it("affiche un message d'effet différent pour un brouillon (DRAFT)", async () => {
-    const user = userEvent.setup();
-    renderDrawer(baseMission({ status: "DRAFT", allowedActions: ["view", "edit", "publish", "cancel"] }));
-    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
-    expect(screen.getByText(/n'a jamais été publié/i)).toBeInTheDocument();
-  });
+  const dialogPaper = () => screen.getAllByRole("dialog").find((d) => d.classList.contains("MuiDialog-paper"))!;
 
-  it("affiche un message d'effet différent pour une mission assignée (ASSIGNED)", async () => {
+  it("D-182 — mission assignée : annulée en deux clics (motif « Programme annulé » par défaut), personnes prévenues annoncées", async () => {
     const user = userEvent.setup();
-    renderDrawer(baseMission({
+    const { onClose } = renderDrawer(baseMission({
       status: "ASSIGNED",
       instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
       allowedActions: ["view", "cancel", "reassign", "view_claim"],
+      cancellation: { blockedReason: null, hasEncodingData: false },
     }));
-    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
-    expect(screen.getByText(/instrumentiste est assigné/i)).toBeInTheDocument();
-  });
-
-  it("confirmer l'annulation appelle POST /cancel avec le motif, affiche un succès et ferme le tiroir", async () => {
-    const user = userEvent.setup();
-    const { onClose } = renderDrawer(baseMission({ status: "OPEN" }));
 
     await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
-    await user.type(screen.getByLabelText(/motif/i), "Créneau finalement inutile");
-    const dialog = screen.getAllByRole("dialog").find((d) => d.classList.contains("MuiDialog-paper"))!;
-    await user.click(within(dialog).getByRole("button", { name: "Annuler la mission" }));
+    expect(await within(dialogPaper()).findByTestId("cancel-mission-recap")).toHaveTextContent("Sophie Martin");
+    expect(within(dialogPaper()).getByTestId("cancel-mission-recap")).toHaveTextContent("Dr A B");
+    await user.click(within(dialogPaper()).getByTestId("confirm-cancel-mission"));
 
-    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel", { reason: "Créneau finalement inutile" }));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel", { reason: undefined, internalComment: undefined }));
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Mission annulée."));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("confirmer l'annulation transmet le motif communiqué et le commentaire interne", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({ status: "OPEN", cancellation: { blockedReason: null, hasEncodingData: false } }));
+
+    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
+    await user.type(await screen.findByTestId("cancel-message"), "Créneau finalement inutile");
+    await user.type(screen.getByTestId("cancel-comment"), "Vu avec le bloc");
+    await user.click(screen.getByTestId("confirm-cancel-mission"));
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel", { reason: "Créneau finalement inutile", internalComment: "Vu avec le bloc" }));
+  });
+
+  it("D-182 — mission commencée avec encodage : l'archivage sans incidence financière est annoncé", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "ENCODING_IN_PROGRESS",
+      instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
+      allowedActions: ["view", "reassign", "cancel"],
+      cancellation: { blockedReason: null, hasEncodingData: true },
+    }));
+    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
+    expect(await within(dialogPaper()).findByText(/archivé pour la traçabilité, sans aucune incidence financière/)).toBeInTheDocument();
+  });
+
+  it("D-182 — annulation refusée par le serveur (mission facturée) : action désactivée, raison affichée, rien n'est engagé", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "VALIDATED",
+      instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
+      allowedActions: ["view"],
+      cancellation: { blockedReason: { code: "CANCELLATION_MISSION_BILLED", message: "Cette mission est déjà facturée." }, correction: null, hasEncodingData: true },
+    }));
+    const button = await screen.findByRole("button", { name: "Annuler la mission" });
+    expect(button).toBeDisabled();
+    expect(screen.getByTestId("manager-cancel-mission-reason")).toHaveTextContent("Annuler la mission — impossible : Cette mission est déjà facturée.");
+    await user.click(button);
+    expect(screen.queryByTestId("confirm-cancel-mission")).not.toBeInTheDocument();
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("D-182 — encodage soumis : renvoi en correction confirmé puis annulation, dans la même fenêtre et la même opération", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "SUBMITTED",
+      instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
+      allowedActions: ["view", "validate", "reject", "cancel"],
+      cancellation: { blockedReason: null, correction: { action: "REJECT", message: "L'encodage sera d'abord renvoyé en correction." }, hasEncodingData: true },
+    }));
+    const button = await screen.findByRole("button", { name: "Annuler la mission" });
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(await within(dialogPaper()).findByTestId("cancel-mission-correction")).toHaveTextContent("L'encodage sera d'abord renvoyé en correction.");
+    // Jamais sans la confirmation explicite de la correction.
+    expect(within(dialogPaper()).getByTestId("confirm-cancel-mission")).toBeDisabled();
+    await user.click(within(dialogPaper()).getByTestId("confirm-correction"));
+    await user.click(within(dialogPaper()).getByTestId("confirm-cancel-mission"));
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel", { reason: undefined, internalComment: undefined, correctionConfirmed: true }));
+  });
+
+  it("D-182 — mission remplacée : la mission déclarée est choisie, validée et la mission annulée en une seule opération", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "IN_PROGRESS",
+      instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
+      allowedActions: ["view", "reassign", "cancel"],
+      cancellation: { blockedReason: null, hasEncodingData: false },
+    }));
+    const base = apiGetMock.getMockImplementation()!;
+    apiGetMock.mockImplementation((url: string) => {
+      if (url === "/api/missions/42/replacement-candidates") {
+        return Promise.resolve({ data: { items: [{
+          id: 77, status: "DECLARED", startAt: "2026-08-10T08:15:00+02:00", endAt: "2026-08-10T16:00:00+02:00",
+          siteName: "Site Delta", roomLabel: null, instrumentist: { id: 11, firstname: "Salve", lastname: "Dupont" },
+          declared: true, hasEncodingData: true,
+        }] } });
+      }
+      if (url.startsWith("/api/missions/reassignment-operations/")) return Promise.resolve({ data: { recipients: [] } });
+      return base(url);
+    });
+    apiPostMock.mockResolvedValue({ data: {
+      operationId: "0190a0b0-0000-7000-8000-000000000001", cancelledMissionId: 42, replacementMissionId: 77, approved: true,
+      recipients: [
+        { userId: 9, name: "Sophie Martin", roles: ["PREVIOUS_INSTRUMENTIST"] },
+        { userId: 11, name: "Salve Dupont", roles: ["CONFIRMED_INSTRUMENTIST"] },
+        { userId: 2, name: "A B", roles: ["SURGEON"] },
+      ],
+    } });
+
+    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
+    await user.click(await within(dialogPaper()).findByLabelText(/Mission remplacée par une autre mission/));
+    await user.click(await screen.findByTestId("replacement-77"));
+    expect(screen.getByTestId("approve-replacement")).toBeChecked();
+    expect(screen.getByTestId("cancel-mission-recap")).toHaveTextContent("Salve Dupont (mission conservée et validée)");
+    expect(screen.getByTestId("cancel-mission-recap")).toHaveTextContent("changement d'instrumentiste");
+    await user.click(screen.getByTestId("confirm-cancel-mission"));
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel-as-replaced", {
+      replacementMissionId: 77, approveReplacement: true, expectedReplacementStatus: "DECLARED", internalComment: undefined,
+    }));
+    expect(await screen.findByTestId("cancel-mission-done")).toHaveTextContent("conservée et validée");
+    expect(screen.getByTestId("reassignment-recipient-11")).toHaveTextContent("mission confirmée");
+  });
+
+  it("D-182 — mission remplacée sans mission compatible : rien n'est confirmable", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({ status: "ASSIGNED", instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
+      allowedActions: ["view", "cancel"], cancellation: { blockedReason: null, hasEncodingData: false } }));
+    const base = apiGetMock.getMockImplementation()!;
+    apiGetMock.mockImplementation((url: string) => url.endsWith("/replacement-candidates") ? Promise.resolve({ data: { items: [] } }) : base(url));
+
+    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
+    await user.click(await within(dialogPaper()).findByLabelText(/Mission remplacée par une autre mission/));
+    expect(await screen.findByTestId("replacement-none")).toBeInTheDocument();
+    expect(screen.getByTestId("confirm-cancel-mission")).toBeDisabled();
+  });
+
+  it("D-182 — un refus du serveur est affiché tel quel, la fenêtre reste ouverte", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({ status: "OPEN", cancellation: { blockedReason: null, hasEncodingData: false } }));
+    apiPostMock.mockRejectedValue({ response: { status: 409, data: { error: { code: "CANCELLATION_ENCODING_SUBMITTED", message: "Encodage soumis entre-temps." } } } });
+
+    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
+    await user.click(await screen.findByTestId("confirm-cancel-mission"));
+    expect(await screen.findByTestId("cancel-mission-error")).toHaveTextContent("Encodage soumis entre-temps.");
+    expect(toastSuccess).not.toHaveBeenCalled();
   });
 
   it("le bouton 'Retour' du dialogue n'appelle jamais l'API", async () => {
@@ -356,77 +473,114 @@ describe("ManagerMissionDrawer — corrections (reassign, edit_hours, edit_encod
     expect(screen.queryByTestId("manager-edit-encoding")).toBeNull();
   });
 
-  it("« Changer » l'instrumentiste : liste des éligibles du backend, puis POST /reassign", async () => {
-    const user = userEvent.setup();
-    renderDrawer(assigned);
+  const withCandidates = () => {
     const base = apiGetMock.getMockImplementation()!;
-    apiGetMock.mockImplementation((url: string) =>
-      url.endsWith("/eligible-instrumentists")
-        ? Promise.resolve({ data: { missionId: 42, candidates: [{ id: 15, name: "Julie Lambert", selectable: true, eligible: true, reasons: [] }] } })
-        : base(url));
-    apiPostMock.mockResolvedValue({ data: {} });
-
-    await user.click(await screen.findByTestId("manager-reassign"));
-    await user.click(await screen.findByText("Julie Lambert"));
-    const dialog = screen.getAllByRole("dialog").find((d) => d.classList.contains("MuiDialog-paper"))!;
-    await user.click(within(dialog).getByRole("button", { name: /Réassigner|Confirmer/ }));
-
-    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/reassign", { instrumentistId: 15 }));
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Instrumentiste changé."));
-  });
-
-  it("D-156 — mission avec interventions encodées : confirmation motivée exigée par le serveur, puis réaffectation confirmée", async () => {
-    const user = userEvent.setup();
-    renderDrawer(assigned);
-    const base = apiGetMock.getMockImplementation()!;
-    apiGetMock.mockImplementation((url: string) =>
-      url.endsWith("/eligible-instrumentists")
-        ? Promise.resolve({ data: { missionId: 42, candidates: [{ id: 15, name: "Julie Lambert", selectable: true, eligible: true, reasons: [] }] } })
-        : base(url));
-    apiPostMock.mockReset();
-    apiPostMock.mockRejectedValueOnce({
-      response: { status: 409, data: { error: { code: "MISSION_HAS_ENCODING_DATA", message: "Impossible de réaffecter cette mission sans confirmation : elle porte déjà des interventions ou du matériel encodés, qui resteront attachés à la mission.", confirmable: true } } },
+    apiGetMock.mockImplementation((url: string) => {
+      if (url.endsWith("/eligible-instrumentists")) {
+        return Promise.resolve({ data: { missionId: 42, candidates: [
+          { id: 15, name: "Julie Lambert", selectable: true, eligible: true, reasons: [] },
+          { id: 16, name: "Marc Absent", selectable: false, eligible: false, reasons: ["ABSENT"] },
+        ] } });
+      }
+      if (url.startsWith("/api/missions/reassignment-operations/")) {
+        return Promise.resolve({ data: { recipients: [
+          { userId: 9, name: "Sophie Martin", missionIds: [42], email: { status: "SENT", skipReason: null, at: null }, inApp: { status: "SENT", skipReason: null, at: null } },
+          { userId: 2, name: "A B", missionIds: [42], email: { status: "SKIPPED", skipReason: "DISABLED_BY_PREFERENCE", at: null }, inApp: { status: "SENT", skipReason: null, at: null } },
+        ] } });
+      }
+      return base(url);
     });
-    apiPostMock.mockResolvedValue({ data: {} });
+  };
+  const doneResponse = (mode: "DIRECT" | "RELAY") => ({ data: {
+    operationId: "01a1a10c-8f95-7388-bf2e-9304293a241d",
+    results: [{ missionId: 42, status: "DONE", mode, relayMissionId: mode === "RELAY" ? 77 : null }],
+    recipients: [
+      { userId: 9, name: "Sophie Martin", roles: ["PREVIOUS_INSTRUMENTIST"] },
+      { userId: 15, name: "Julie Lambert", roles: ["NEW_INSTRUMENTIST"] },
+      { userId: 2, name: "A B", roles: ["SURGEON"] },
+    ],
+  } });
+
+  it("D-181 — « Changer » : détail de la mission, éligibles du backend, récapitulatif, puis une opération de réaffectation", async () => {
+    const user = userEvent.setup();
+    renderDrawer({ ...assigned, reassignment: { modes: ["DIRECT"], blockedReason: null, relayWindow: { from: assigned.startAt, to: assigned.endAt } } } as ReturnType<typeof baseMission>);
+    withCandidates();
+    apiPostMock.mockResolvedValue(doneResponse("DIRECT"));
 
     await user.click(await screen.findByTestId("manager-reassign"));
-    await user.click(await screen.findByText("Julie Lambert"));
-    const dialog = screen.getAllByRole("dialog").find((d) => d.classList.contains("MuiDialog-paper"))!;
-    await user.click(within(dialog).getByRole("button", { name: /Réassigner|Confirmer/ }));
+    const summary = await screen.findByTestId("change-instrumentist-summary");
+    expect(summary).toHaveTextContent("Site Delta");
+    expect(summary).toHaveTextContent("Dr A B");
+    expect(summary).toHaveTextContent("08:00 – 17:00");
+    expect(summary).toHaveTextContent("ActuellementSophie Martin");
+    // Une instrumentiste absente est affichée avec sa raison, jamais sélectionnable.
+    expect(await screen.findByTestId("candidate-16")).toHaveAttribute("aria-disabled", "true");
+    expect(within(screen.getByTestId("candidate-16")).getByText("Absente")).toBeInTheDocument();
 
-    expect(await screen.findByText("Données d'encodage déjà enregistrées")).toBeInTheDocument();
-    const confirm = screen.getByRole("button", { name: "Confirmer la réaffectation" });
-    expect(confirm).toBeDisabled();
-    await user.type(screen.getByTestId("encoding-data-reason"), "Reprise de la salle par Julie.");
-    await user.click(confirm);
+    await user.click(screen.getByText("Julie Lambert"));
+    expect(screen.getByTestId("change-instrumentist-recap")).toHaveTextContent("Julie Lambert");
+    await user.type(screen.getByTestId("reassign-comment"), "Sophie malade");
+    await user.click(screen.getByTestId("confirm-reassignment"));
 
-    await waitFor(() => expect(apiPostMock).toHaveBeenLastCalledWith("/api/missions/42/reassign", {
-      instrumentistId: 15, confirmEncodingData: true, encodingDataReason: "Reprise de la salle par Julie.",
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/reassignments", {
+      items: [{ missionId: 42, instrumentistId: 15, mode: "DIRECT", expectedInstrumentistId: 9 }],
+      comment: "Sophie malade",
     }));
-    await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Instrumentiste changé."));
+    expect(await screen.findByTestId("change-instrumentist-done")).toHaveTextContent("Mission désormais attribuée à Julie Lambert.");
+    // Statut réel des notifications, lu au serveur : la préférence du chirurgien est dite.
+    expect(await screen.findByText(/désactivé dans ses préférences/)).toBeInTheDocument();
+    // Libellés neutres, comme dans les e-mails : « mission retirée » / « nouvelle mission attribuée ».
+    expect(document.body).toHaveTextContent("Sophie Martin (mission retirée)");
+    expect(document.body).toHaveTextContent("Julie Lambert (nouvelle mission attribuée)");
+    expect(document.body.textContent).not.toMatch(/instrumentiste actuelle|nouvelle instrumentiste|ancienne instrumentiste|remplaçante|est désormais affectée/i);
   });
 
-  it("D-156 — heures réelles déjà déclarées : aucune confirmation possible, rien n'est envoyé", async () => {
+  it("D-181 — encodage existant : relais obligatoire, avec l'heure du relais, sans rien transférer", async () => {
     const user = userEvent.setup();
-    renderDrawer(assigned);
-    const base = apiGetMock.getMockImplementation()!;
-    apiGetMock.mockImplementation((url: string) =>
-      url.endsWith("/eligible-instrumentists")
-        ? Promise.resolve({ data: { missionId: 42, candidates: [{ id: 15, name: "Julie Lambert", selectable: true, eligible: true, reasons: [] }] } })
-        : base(url));
-    apiPostMock.mockReset();
-    apiPostMock.mockRejectedValueOnce({
-      response: { status: 409, data: { error: { code: "MISSION_HAS_ENCODING_DATA", message: "Des heures réelles y sont déjà enregistrées pour l'instrumentiste actuelle.", confirmable: false } } },
-    });
+    renderDrawer({ ...assigned, status: "ENCODING_IN_PROGRESS", reassignment: { modes: ["RELAY"], blockedReason: null, relayWindow: { from: assigned.startAt, to: assigned.endAt } } } as ReturnType<typeof baseMission>);
+    withCandidates();
+    apiPostMock.mockResolvedValue(doneResponse("RELAY"));
+
+    await user.click(await screen.findByTestId("manager-reassign"));
+    expect(await screen.findByText(/Un encodage existe déjà sur cette mission/)).toBeInTheDocument();
+    await user.click(await screen.findByText("Julie Lambert"));
+    expect(screen.getByTestId("confirm-reassignment")).toBeDisabled();
+    await user.type(screen.getByTestId("relay-time"), "11:30");
+    await user.click(screen.getByTestId("confirm-reassignment"));
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/reassignments", {
+      items: [{ missionId: 42, instrumentistId: 15, mode: "RELAY", relayAt: "2026-08-10T11:30:00+02:00", expectedInstrumentistId: 9 }],
+    }));
+    expect(await screen.findByTestId("change-instrumentist-done")).toHaveTextContent("reprend la mission à 11:30");
+  });
+
+  it("D-181 — refus du serveur (conflit apparu entre-temps) : expliqué, rien n'est présenté comme fait", async () => {
+    const user = userEvent.setup();
+    renderDrawer({ ...assigned, reassignment: { modes: ["DIRECT"], blockedReason: null, relayWindow: null } } as ReturnType<typeof baseMission>);
+    withCandidates();
+    apiPostMock.mockResolvedValue({ data: { operationId: "x", recipients: [], results: [
+      { missionId: 42, status: "FAILED", error: { status: 409, code: "INSTRUMENTIST_INCOMPATIBLE", message: "Instrumentiste indisponible", reasons: ["SCHEDULE_CONFLICT"] } },
+    ] } });
 
     await user.click(await screen.findByTestId("manager-reassign"));
     await user.click(await screen.findByText("Julie Lambert"));
-    const dialog = screen.getAllByRole("dialog").find((d) => d.classList.contains("MuiDialog-paper"))!;
-    await user.click(within(dialog).getByRole("button", { name: /Réassigner|Confirmer/ }));
+    await user.click(screen.getByTestId("confirm-reassignment"));
 
-    expect(await screen.findByText(/Des heures réelles y sont déjà enregistrées/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Confirmer la réaffectation" })).toBeNull();
-    expect(apiPostMock).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId("change-instrumentist-error")).toHaveTextContent("Instrumentiste indisponible");
+    expect(screen.queryByTestId("change-instrumentist-done")).toBeNull();
+  });
+
+  it("D-181 — encodage validé : l'action explique le chemin de correction et ne permet aucun changement", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "VALIDATED", instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" }, allowedActions: ["view", "reopen"],
+      reassignment: { modes: [], blockedReason: { code: "REASSIGNMENT_ENCODING_VALIDATED", message: "L'encodage de cette mission est validé : rouvrez d'abord l'encodage." }, relayWindow: null },
+    }));
+
+    await user.click(await screen.findByTestId("manager-reassign"));
+    expect(await screen.findByTestId("change-instrumentist-blocked")).toHaveTextContent("rouvrez d'abord l'encodage");
+    expect(screen.queryByTestId("confirm-reassignment")).toBeNull();
+    expect(apiPostMock).not.toHaveBeenCalled();
   });
 
   it("« Corriger les heures » ouvre la saisie manager des heures prestées", async () => {
