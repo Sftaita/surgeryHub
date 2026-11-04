@@ -16787,6 +16787,15 @@ Conception figée : `docs/design/Instruction design/handoff-heures-instrumentist
 volée, indicative, jamais un calcul approuvé ni un paiement. L'interface manager n'a pas de
 shell mobile : les écrans sont adaptatifs, la navigation mobile manager reste un chantier séparé.
 
+**Interaction avec D-181 / D-182 (vérifiée le 2026-11-04, aucun changement de règle).** Une
+mission est comptée chez l'instrumentiste qu'elle porte aujourd'hui : réaffectée, elle passe
+entièrement à la remplaçante ; un relais laisse sa part à l'instrumentiste d'origine (fin prévue
+ramenée à l'heure du relais) et la suite à la mission de relais, jamais le même créneau deux fois.
+Une mission annulée (même encodée, soumise ou validée puis rouverte) est `CANCELLED`, sans
+instrumentiste : ni heures, ni coût, ni « première prestation connue ». Un doublon annulé
+s'efface au profit de la mission conservée, seule comptée. Preuve :
+`ManagerInstrumentistHoursReassignmentTest` (vrais flux HTTP, tiroir = « Mes heures »).
+
 
 ## D-183 — Interventions sans firme : catalogue indépendant des firmes, rattachements calculés (2026-11-04)
 
