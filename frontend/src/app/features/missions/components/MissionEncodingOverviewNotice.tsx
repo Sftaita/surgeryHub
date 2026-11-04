@@ -6,7 +6,7 @@ import { encodingActorLabel, MissionLocksIndicator } from "./MissionEncodingBadg
  * finalisé et validé, et l'explication de chaque verrou réel servi par le backend.
  */
 export function MissionEncodingOverviewNotice({ encoding, locksOnly = false }: { encoding?: MissionEncodingOverview | null; locksOnly?: boolean }) {
-  if (!encoding || encoding.state === "NOT_APPLICABLE" || encoding.state === "UPCOMING") return null;
+  if (!encoding || encoding.state === "NOT_APPLICABLE" || encoding.state === "UPCOMING" || encoding.state === "CANCELLED") return null;
   // Activité sans instrumentiste : état et auteurs sont dans le bloc « Activité opératoire ».
   if (locksOnly) {
     if (encoding.locks.length === 0) return null;

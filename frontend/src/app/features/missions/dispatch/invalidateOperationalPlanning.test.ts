@@ -17,6 +17,10 @@ describe("invalidateOperationalPlanning", () => {
       ["surgeon-planning", 6, "a", "b"],
       ["mission", 42],
       ["missionEncoding", 42],
+      // D-184 — une annulation actualise aussi le suivi des encodages (liste, indicateurs, badge).
+      ["encoding-tracking", "list", {}, [], 1, false],
+      ["encoding-tracking", "summary", {}],
+      ["encoding-tracking", "pending-validation-count"],
     ];
     keys.forEach((k) => client.setQueryData(k, { ok: true }));
     const untouched = ["sites"];

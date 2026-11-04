@@ -8581,6 +8581,8 @@ toujours les deux ensemble.
 
 Le `summary` porte sur **toute la période**, `items` sur la page demandée.
 
+**D-184 — missions annulées.** Exclues par défaut de `items`, de `total` et de **tous** les indicateurs (`summary`, y compris `GET …/summary`) : elles ne sont jamais « Sans objet ». `includeCancelled=1` les ajoute à la liste seulement (consultation), avec `encodingState: "CANCELLED"` (« Annulée ») ; le `summary` les exclut toujours. La réponse porte `includeCancelled` et `cancelledCount` (annulées de la période, masquées ou affichées — jamais comptées). Les missions annulées restent en base et dans l'historique. Une mission non annulée réellement « Sans objet » (`NOT_APPLICABLE`) est inchangée.
+
 **Réponse — 200 :**
 ```json
 {

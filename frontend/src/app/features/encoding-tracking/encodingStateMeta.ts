@@ -21,6 +21,8 @@ export const ENCODING_STATE_CONFIG: Record<EncodingState, StatusBadgeConfig> = {
   LOCKED: { label: "Verrouillé", color: "success", variant: "outlined" },
   NOT_APPLICABLE: { label: "Sans objet", color: "default", variant: "outlined" },
   NOT_DECLARED: { label: "Aucun encodage", color: "warning", variant: "outlined" },
+  // D-184 — badge explicite, distinct de « Sans objet ».
+  CANCELLED: { label: "Annulée", color: "error", variant: "outlined" },
 };
 
 export const FINANCIAL_STATE_CONFIG: Record<EncodingFinancialState, StatusBadgeConfig> = {
@@ -56,7 +58,7 @@ export const MISSION_TYPE_LABEL: Record<MissionType, string> = {
 };
 
 export const ENCODING_STATE_ORDER: EncodingState[] = [
-  "UPCOMING", "TO_ENCODE", "IN_PROGRESS", "SUBMITTED", "VALIDATED", "LOCKED", "NOT_DECLARED", "NOT_APPLICABLE",
+  "UPCOMING", "TO_ENCODE", "IN_PROGRESS", "SUBMITTED", "VALIDATED", "LOCKED", "NOT_DECLARED", "NOT_APPLICABLE", "CANCELLED",
 ];
 
 export function formatMinutes(minutes: number): string {

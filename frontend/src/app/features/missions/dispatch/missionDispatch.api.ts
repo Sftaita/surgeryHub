@@ -100,6 +100,8 @@ export const OPERATIONAL_PLANNING_QUERY_KEYS: readonly (readonly string[])[] = [
   ["available-rooms"],
   ["mission-audit"],
   ["prestation"],
+  // D-184 — Facturation › Suivi des encodages (liste, indicateurs, badge) après une annulation.
+  ["encoding-tracking"],
 ];
 
 export function invalidateOperationalPlanning(queryClient: QueryClient, missionId?: number | null): Promise<unknown> {
