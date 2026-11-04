@@ -1,4 +1,5 @@
-// D-179 — formats d'affichage de « Mes heures » (handoff révision 3). Présentation seule :
+// D-179 — formats d'affichage de « Mes heures » (handoff révision 3), partagés avec le suivi
+// manager (D-180). Présentation seule :
 // aucune durée ni aucun montant n'est calculé ici, tout vient de GET /api/me/hours.
 
 const MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
@@ -58,6 +59,11 @@ export function monthLabel(month: string): string {
 /** "2026-10" → "octobre" */
 export function monthName(month: string): string {
   return MONTHS[Number(month.split("-")[1]) - 1];
+}
+
+/** "2026-09" → "sept." */
+export function monthShort(month: string): string {
+  return MONTHS_SHORT[Number(month.split("-")[1]) - 1];
 }
 
 /** "2026-10-29" → "Jeu." */

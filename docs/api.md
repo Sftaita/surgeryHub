@@ -9634,3 +9634,91 @@ motivée des heures communes de toute la prestation, historisée (motif, heures 
 avant/après). Les calculs `CALCULATED` des missions deviennent obsolètes
 (`obsoleteFinancialCalculationIds` dans l'audit) ; `409 PRESENCE_FINANCIALLY_SETTLED` si un
 calcul est approuvé ou verrouillé, `403` si une mission n'est plus corrigeable (Voters).
+
+## 51. Suivi manager des heures instrumentistes (D-180)
+
+**AuthZ :** `InstrumentistHoursVoter::VIEW` — `ROLE_MANAGER` ou `ROLE_ADMIN` actif (`403` pour
+instrumentiste et chirurgien, `401` sans jeton). Lecture seule. Le serveur calcule tout
+(périmètre, durées, montants, totaux, filtres, pourcentages, tri) : le client n'affiche que ces
+valeurs. Handoff figé : `docs/design/Instruction design/handoff-heures-instrumentistes/`.
+
+**Règles (reprises de D-179, jamais réimplémentées)** : chaque prestation passe par
+`MyHoursService::prestationRow()` — périmètre et statut (`EncodingStateResolver` : soumise →
+`pending`, validée ou clôturée → `validated`), durée réelle (`resolveEffectiveDuration`,
+parts imputées `PRESENCE_SHARE` D-156 comprises, sans double comptage), estimation
+(`FinancialCalculationService::evaluate($mission, true)`, tarif personnel horaire ou forfait
+consultation). Une ligne de liste est, à la minute et au centime, le relevé `GET /api/me/hours`
+de l'instrumentiste pour le même mois et le même site. Mois d'appartenance = `startAt` planifié,
+heure de Bruxelles.
+
+### `GET /api/manager/instrumentist-hours?month=YYYY-MM[&siteId=][&q=][&sort=][&direction=][&limit=]`
+
+**Paramètres** (`422` si invalides) : `month` obligatoire, jamais dans le futur ; `siteId` et
+`limit` entiers positifs ; `q` ≤ 100 caractères (prénom/nom, insensible à la casse et aux
+accents) ; `sort` ∈ `name`, `encodedMinutes`, `validatedMinutes` (défaut), `encodedAmount`,
+`validatedAmount`, `previousMonthPct`, `personalAveragePct` ; `direction` ∈ `asc`, `desc`
+(défaut). Les valeurs indisponibles (`null`) sont toujours en fin de liste ; égalité → nom.
+`limit` = classement : les `limit` premières lignes ayant des heures validées (carte Top 5 :
+`limit=5`, sans site ni recherche).
+
+**Lignes** : toutes les instrumentistes actives (même à 0h00) + les inactives ayant au moins
+une prestation dans le mois et le site. `totals` porte sur le périmètre filtré (site + `q`),
+jamais limité par `limit`, sans évolution globale. `sites` couvre le mois entier.
+
+```json
+{
+  "month": "2026-10", "provisional": false, "asOfDay": null, "siteId": null, "q": null,
+  "sort": "validatedMinutes", "direction": "desc",
+  "sites": [{ "id": 3, "name": "CHU Brugmann" }],
+  "reference": { "previousMonth": "2026-09" },
+  "totals": { "instrumentistCount": 10, "count": 78, "pendingCount": 9, "encodedMinutes": 36195,
+    "validatedMinutes": 32280, "pendingMinutes": 3915, "validatedPct": 89, "currency": "EUR",
+    "encodedAmount": "23183.50", "validatedAmount": "20975.00", "unratedInstrumentistCount": 1, "unratedCount": 8 },
+  "items": [{
+    "instrumentist": { "id": 41, "firstname": "Nadia", "lastname": "Benali", "active": true },
+    "count": 12, "pendingCount": 1, "missingHoursCount": 1,
+    "encodedMinutes": 4230, "validatedMinutes": 4080, "pendingMinutes": 150,
+    "estimateState": "RATED",
+    "estimate": { "currency": "EUR", "encodedAmount": "3419.00", "validatedAmount": "3304.00", "consultationFeeCount": 3, "unratedCount": 0 },
+    "ratio": 0.654,
+    "comparison": {
+      "previousMonth": { "validatedMinutes": 4320, "pct": -6, "available": true, "reason": null },
+      "personalAverage": { "validatedMinutes": 3960, "pct": 3, "available": true, "reason": null,
+        "monthsCounted": 6, "from": "2026-04", "to": "2026-09", "observableSince": "2025-03" }
+    }
+  }]
+}
+```
+
+- `estimateState` : `RATED` (au moins une prestation valorisée), `UNRATED` (prestations
+  valorisables sans tarif personnel : « Tarif manquant »), `NO_PRESTATION` (rien à valoriser :
+  aucune prestation, ou prestations sans heures). `estimate.validatedAmount` vaut `"0.00"`
+  quand un tarif s'applique mais qu'aucune prestation n'est validée (« ≈ 0,00 € », comme les
+  totaux et le tiroir), et `null` (« — ») seulement quand des prestations validées n'ont aucune
+  estimation ; `unratedCount` > 0 avec `RATED` = tarif
+  partiellement manquant.
+- `ratio` = heures validées / maximum du périmètre (barre du Top 5).
+- **Comparaisons** (heures validées, pourcentages arrondis par le serveur — `round()` PHP,
+  demi-unité loin de zéro, jamais réarrondis côté client) :
+  - `previousMonth` : (M − M-1) / M-1. M-1 antérieur à l'historique observable →
+    `reason: NO_REFERENCE` ; M-1 = 0 → `ZERO_REFERENCE` ; `pct` alors `null` (« — »).
+  - `personalAverage` : moyenne des mois M-6 … M-1 restreints à l'**historique observable**
+    (`observableSince` = mois de la première prestation connue, périmètre D-179, **tous
+    sites**) ; mois sans prestation = 0 h ; le mois M n'en fait jamais partie ; `monthsCounted`
+    < 6 = période raccourcie. Aucun mois → `NO_REFERENCE` ; moyenne nulle → `ZERO_REFERENCE`.
+    `observableSince` n'est **jamais** une date d'entrée en activité : le modèle n'en a pas
+    (une première prestation connue ne la prouve pas).
+  - Filtre `siteId` : heures comparées du site ; `observableSince` et la période restent
+    calculés tous sites.
+  - Mois en cours : `provisional: true`, `asOfDay` = J ; M et chaque mois de référence sont
+    comparés sur les jours 1→J (les heures affichées restent celles du mois).
+
+### `GET /api/manager/instrumentists/{id}/hours?month=YYYY-MM[&siteId=]`
+
+`404` si `{id}` n'est pas une instrumentiste. Réponse = relevé `GET /api/me/hours` de
+l'instrumentiste (estimation comprise : `sites`, `summary`, `estimate`, `items`, mêmes champs
+et mêmes valeurs) + `instrumentist` (`id`, `firstname`, `lastname`, `active`), `comparison`
+(identique à sa ligne de liste), `provisional`, `asOfDay`.
+
+Aucune donnée patient, aucun texte libre, aucun e-mail, aucun tarif firme, aucune heure planifiée.
+

@@ -8,7 +8,7 @@ import { useMediaQuery } from "@mui/material";
 import MyHoursPage from "./MyHoursPage";
 import { fetchMyHours } from "./api/myHours.api";
 import type { MyHoursItem, MyHoursStatement } from "./api/myHours.types";
-import { currentMonth, shiftMonth } from "./format";
+import { currentMonth, shiftMonth } from "../hours-shared/format";
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }));
 
