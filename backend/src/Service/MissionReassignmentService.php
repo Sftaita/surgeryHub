@@ -117,7 +117,7 @@ class MissionReassignmentService
             }
             $relayAt = self::parseInstant($item['relayAt'] ?? null);
             if ($relayAt === null) {
-                throw new MissionReassignmentException(MissionReassignmentPolicy::RELAY_TIME_INVALID, "Indiquez l'heure à laquelle la remplaçante prend le relais.", ['missionId' => $missionId]);
+                throw new MissionReassignmentException(MissionReassignmentPolicy::RELAY_TIME_INVALID, "Indiquez l'heure à laquelle l'instrumentiste de remplacement prend le relais.", ['missionId' => $missionId]);
             }
             $relay = $this->postDeploy->relay($mission, $actor, $instrumentistId, $relayAt, $expected, $internalComment);
             $relayMission = $relay['relayMission'];

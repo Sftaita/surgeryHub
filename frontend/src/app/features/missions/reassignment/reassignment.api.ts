@@ -11,7 +11,7 @@ export interface ReassignmentItem {
   missionId: number;
   instrumentistId: number;
   mode: ReassignmentMode;
-  /** ISO 8601 — RELAY seulement : l'heure à laquelle la remplaçante prend le relais. */
+  /** ISO 8601 — RELAY seulement : l'heure à laquelle l'instrumentiste de remplacement prend le relais. */
   relayAt?: string;
   /** L'instrumentiste vue à l'écran : le serveur refuse si la mission a changé entre-temps. */
   expectedInstrumentistId: number | null;
@@ -77,8 +77,8 @@ export function relayInstant(missionStartAt: string, hhmm: string): string {
 }
 
 export const ROLE_LABEL: Record<ReassignmentRecipientRole, string> = {
-  PREVIOUS_INSTRUMENTIST: "ancienne instrumentiste",
-  NEW_INSTRUMENTIST: "nouvelle instrumentiste",
+  PREVIOUS_INSTRUMENTIST: "mission retirée",
+  NEW_INSTRUMENTIST: "nouvelle mission attribuée",
   CONFIRMED_INSTRUMENTIST: "mission confirmée",
   SURGEON: "chirurgien",
 };

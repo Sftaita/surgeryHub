@@ -1135,7 +1135,7 @@ class MissionPostDeployService
         }
         if ($current === $newInstrumentistId) {
             throw new MissionReassignmentException(MissionReassignmentPolicy::NO_CHANGE,
-                'Cette instrumentiste est déjà affectée à la mission : aucune modification.', ['missionId' => $mission->getId()]);
+                "Cette personne est déjà affectée à la mission : aucune modification.", ['missionId' => $mission->getId()]);
         }
     }
 

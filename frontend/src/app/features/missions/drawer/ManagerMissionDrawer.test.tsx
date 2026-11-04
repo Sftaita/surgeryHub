@@ -512,7 +512,7 @@ describe("ManagerMissionDrawer — corrections (reassign, edit_hours, edit_encod
     expect(summary).toHaveTextContent("Site Delta");
     expect(summary).toHaveTextContent("Dr A B");
     expect(summary).toHaveTextContent("08:00 – 17:00");
-    expect(summary).toHaveTextContent("Sophie Martin");
+    expect(summary).toHaveTextContent("ActuellementSophie Martin");
     // Une instrumentiste absente est affichée avec sa raison, jamais sélectionnable.
     expect(await screen.findByTestId("candidate-16")).toHaveAttribute("aria-disabled", "true");
     expect(within(screen.getByTestId("candidate-16")).getByText("Absente")).toBeInTheDocument();
@@ -526,9 +526,13 @@ describe("ManagerMissionDrawer — corrections (reassign, edit_hours, edit_encod
       items: [{ missionId: 42, instrumentistId: 15, mode: "DIRECT", expectedInstrumentistId: 9 }],
       comment: "Sophie malade",
     }));
-    expect(await screen.findByTestId("change-instrumentist-done")).toHaveTextContent("Julie Lambert");
+    expect(await screen.findByTestId("change-instrumentist-done")).toHaveTextContent("Mission désormais attribuée à Julie Lambert.");
     // Statut réel des notifications, lu au serveur : la préférence du chirurgien est dite.
     expect(await screen.findByText(/désactivé dans ses préférences/)).toBeInTheDocument();
+    // Libellés neutres, comme dans les e-mails : « mission retirée » / « nouvelle mission attribuée ».
+    expect(document.body).toHaveTextContent("Sophie Martin (mission retirée)");
+    expect(document.body).toHaveTextContent("Julie Lambert (nouvelle mission attribuée)");
+    expect(document.body.textContent).not.toMatch(/instrumentiste actuelle|nouvelle instrumentiste|ancienne instrumentiste|remplaçante|est désormais affectée/i);
   });
 
   it("D-181 — encodage existant : relais obligatoire, avec l'heure du relais, sans rien transférer", async () => {

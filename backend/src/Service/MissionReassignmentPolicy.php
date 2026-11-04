@@ -79,7 +79,7 @@ final class MissionReassignmentPolicy
             $status === MissionStatus::CLOSED => [self::MISSION_CLOSED,
                 "Cette mission est clôturée : son affectation et son encodage ne peuvent plus être modifiés."],
             !in_array($status, self::REASSIGNABLE_STATUSES, true) || $mission->getInstrumentist() === null => [self::NOT_REASSIGNABLE,
-                "Cette mission n'a pas d'instrumentiste affectée à remplacer."],
+                "Cette mission n'a aucune affectation à remplacer."],
             $mission->getExecution()?->getPresence() !== null => [self::SHARED_PRESENCE,
                 "Cette mission partage des heures communes avec d'autres salles de la prestation : détachez-la d'abord de la présence commune (correction contrôlée), puis organisez le relais."],
             default => null,

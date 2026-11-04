@@ -272,7 +272,7 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
             {done && replacedResult && (
               <Stack spacing={1.5}>
                 <Alert severity="success" data-testid="cancel-mission-done">
-                  Mission annulée comme doublon. La mission #{replacedResult.replacementMissionId} de {replacementName ?? "la remplaçante"} est conservée
+                  Mission annulée comme doublon. La mission #{replacedResult.replacementMissionId}{replacementName ? ` de ${replacementName}` : ""} est conservée
                   {replacedResult.approved ? " et validée." : "."}
                 </Alert>
                 <ReassignmentNotificationStatus result={{ operationId: replacedResult.operationId, results: [], recipients: replacedResult.recipients }} />

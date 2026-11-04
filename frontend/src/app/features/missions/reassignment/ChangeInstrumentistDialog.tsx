@@ -130,7 +130,7 @@ export function ChangeInstrumentistDialog({ missionId, open, onClose }: Props) {
               <dt>Site</dt><dd>{mission.site?.name ?? "—"}{mission.roomLabel ? ` · ${mission.roomLabel}` : ""}</dd>
               <dt>Chirurgien</dt><dd>Dr {personName(mission.surgeon)}</dd>
               <dt>Horaire prévu</dt><dd>{hhmm(mission.startAt)} – {hhmm(mission.endAt)}</dd>
-              <dt>Instrumentiste actuelle</dt><dd>{personName(mission.instrumentist)}</dd>
+              <dt>Actuellement</dt><dd>{personName(mission.instrumentist)}</dd>
             </Box>
 
             {modes.length === 0 && (
@@ -151,8 +151,8 @@ export function ChangeInstrumentistDialog({ missionId, open, onClose }: Props) {
                   <Stack spacing={1}>
                     <Typography variant="body2" color="text.secondary">
                       {modes.length === 1
-                        ? "Un encodage existe déjà sur cette mission : il reste à l'instrumentiste actuelle. La remplaçante reprend la suite à l'heure du relais."
-                        : "L'instrumentiste actuelle garde la partie déjà réalisée ; la remplaçante reprend la suite à l'heure du relais."}
+                        ? "Un encodage existe déjà sur cette mission : il reste rattaché à l'affectation actuelle. L'instrumentiste de remplacement reprend la suite à l'heure du relais."
+                        : "L'affectation actuelle garde la partie déjà réalisée ; l'instrumentiste de remplacement reprend la suite à l'heure du relais."}
                     </Typography>
                     <TextField
                       type="time" size="small" label="Heure du relais" value={relayTime}
@@ -164,7 +164,7 @@ export function ChangeInstrumentistDialog({ missionId, open, onClose }: Props) {
                 )}
 
                 <Stack spacing={0.75}>
-                  <Typography variant="subtitle2" fontWeight={700}>Nouvelle instrumentiste</Typography>
+                  <Typography variant="subtitle2" fontWeight={700}>Instrumentiste de remplacement</Typography>
                   {candidatesQuery.isLoading && <CircularProgress size={20} />}
                   {candidatesQuery.isError && <Alert severity="error">Impossible de charger les instrumentistes.</Alert>}
                   {candidatesQuery.data && candidates.length === 0 && (
@@ -204,7 +204,7 @@ export function ChangeInstrumentistDialog({ missionId, open, onClose }: Props) {
 
                 <Alert severity="info" icon={false} data-testid="change-instrumentist-recap">
                   Seront informés automatiquement : <strong>{personName(mission.instrumentist)}</strong> (mission retirée),{" "}
-                  <strong>{selectedCandidate?.name ?? "la nouvelle instrumentiste"}</strong> (mission attribuée) et{" "}
+                  <strong>{selectedCandidate?.name ?? "l'instrumentiste de remplacement"}</strong> (mission attribuée) et{" "}
                   <strong>Dr {personName(mission.surgeon)}</strong> (changement d'instrumentiste).
                 </Alert>
               </>
@@ -219,8 +219,8 @@ export function ChangeInstrumentistDialog({ missionId, open, onClose }: Props) {
               <Stack spacing={1.5}>
                 <Alert severity="success" data-testid="change-instrumentist-done">
                   {item?.mode === "RELAY"
-                    ? `Relais enregistré : ${selectedCandidate?.name ?? "la remplaçante"} reprend la mission à ${relayTime}.`
-                    : `${selectedCandidate?.name ?? "La nouvelle instrumentiste"} est désormais affectée à la mission.`}
+                    ? `Relais enregistré : ${selectedCandidate?.name ?? "l'instrumentiste de remplacement"} reprend la mission à ${relayTime}.`
+                    : `Mission désormais attribuée à ${selectedCandidate?.name ?? "l'instrumentiste de remplacement"}.`}
                 </Alert>
                 <ReassignmentNotificationStatus result={result} />
               </Stack>

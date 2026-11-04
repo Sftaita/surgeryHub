@@ -119,7 +119,7 @@ export function BatchReassignmentDialog({ missionIds, open, onClose, onDone }: P
                         onChange={(e) => setChoice(m, { instrumentistId: e.target.value as number | "" })}
                         inputProps={{ "data-testid": `batch-select-${m.id}` }}
                       >
-                        <MenuItem value=""><em>Choisir la remplaçante</em></MenuItem>
+                        <MenuItem value=""><em>Choisir l'instrumentiste de remplacement</em></MenuItem>
                         {(candidates ?? []).sort((a, b) => Number(b.selectable) - Number(a.selectable)).map((cand) => (
                           <MenuItem key={cand.id} value={cand.id} disabled={!cand.selectable} data-testid={`batch-option-${m.id}-${cand.id}`}>
                             {cand.name}{!cand.selectable ? ` — ${candidateGhostLabel(cand) ?? ""}` : ""}
@@ -166,7 +166,7 @@ export function BatchReassignmentDialog({ missionIds, open, onClose, onDone }: P
               );
             })}
             {reassignable.length > chosen.length && (
-              <Alert severity="warning">{reassignable.length - chosen.length} mission(s) sans remplaçante choisie ne seront pas modifiées.</Alert>
+              <Alert severity="warning">{reassignable.length - chosen.length} mission(s) sans remplacement choisi ne seront pas modifiées.</Alert>
             )}
             <Alert severity="info" icon={false}>
               Chaque personne concernée (anciennes et nouvelles instrumentistes, chirurgiens) recevra un seul e-mail récapitulant ses missions.
