@@ -16749,3 +16749,62 @@ déjà une par prestation (D-156).
 a été fusionnée sur `main` au commit `366627f` ; son déploiement reste soumis à un accord
 distinct. La première release D-156 (`1e45953`) a été déployée sans être officialisée ;
 ne pas lui attribuer rétroactivement le tag du complément.
+
+## D-183 — Interventions sans firme : catalogue indépendant des firmes, rattachements calculés (2026-11-04)
+
+**Constat.** Une intervention (`InterventionType`, catalogue global) existe indépendamment des
+firmes ; son rattachement à une firme est une prestation (`FirmServiceOffering` firme × type).
+Mais la création depuis Prestations ne permettait pas de dire « aucune firme », la résolution
+d'une demande faite avec une firme ne pouvait pas aboutir sans firme, et la sélection
+« Aucune firme » à l'encodage (D-178) ne proposait que les types cochés par le manager — aucun
+en production, alors que 5 types actifs n'avaient aucune prestation active.
+
+**Décision (validée par l'utilisateur le 2026-11-04).**
+
+- **Rien n'est stocké pour dire « sans firme »** : tout est calculé à partir des rattachements
+  **effectifs** (prestation active d'une firme active), par `InterventionTypeFirmLinkService`,
+  pour ne jamais se désynchroniser.
+- **Catégorie « Interventions sans firme »** (Catalogue › Prestations, barre latérale Firmes) :
+  interventions actives sans aucun rattachement effectif. Ce n'est pas une firme et rien n'est
+  créé pour elle. Elle se met à jour d'elle-même après une création sans firme, un premier
+  rattachement, le retrait du dernier, un changement de statut de l'intervention ou de la firme.
+- **Sélection « Aucune firme » à l'encodage** (création, correction, résolution d'une demande,
+  suggestions) : intervention active **sans rattachement effectif OU autorisée sans firme par le
+  manager** (mécanisme D-178 conservé, pour une intervention qui a des firmes mais se réalise
+  parfois sans). Le serveur sert `selectableWithoutFirm` ; le client ne déduit rien. Ajouter une
+  firme à une intervention ne modifie jamais l'autorisation manuelle.
+- **Création depuis Prestations** : « Firme associée » = « Aucune firme » (par défaut :
+  l'intervention seule, active, sans tarif ni prestation) ou une firme (prestation créée dans la
+  même transaction, comme depuis la firme). L'absence de firme n'est jamais une erreur. Code déjà
+  pris : `409 INTERVENTION_TYPE_CODE_EXISTS` avec l'intervention existante, proposée à la
+  réutilisation (et rattachée à la firme choisie) — jamais de doublon.
+- **Rattachements** (Référentiel › détail, section « Firmes associées ») : rattacher crée la
+  prestation ou **réactive** celle retirée (mêmes paramètres et tarifs) ; retirer **désactive** la
+  prestation, jamais ne la supprime (tarifs, encodages, calculs, facturation intacts) ;
+  l'intervention globale reste. Aucun choix « Aucune firme » dans « Modifier l'intervention » :
+  retirer un rattachement reste une action volontaire et confirmée, par firme.
+- **Demandes → Interventions demandées** : le manager choisit « Firme associée : une firme /
+  Aucune firme » pour toute demande (la firme indiquée par l'instrumentiste n'est qu'une
+  proposition). « Aucune firme » : intervention existante sélectionnable sans firme, ou nouvelle
+  intervention créée sans prestation (plus besoin de l'autoriser : sans rattachement, elle est
+  sélectionnable) ; aucune décision de prestation demandée. Création et résolution restent une
+  seule transaction (`MissionInterventionDraftService::resolveRequest()`) : un échec (code déjà
+  utilisé, type non sélectionnable…) laisse la demande en attente. Le lien demande → intervention
+  (`resolvedInterventionType`) est conservé. Une demande faite « Aucune firme » se résout toujours
+  sans firme (D-178 inchangé).
+- **Encodage et facturation** : inchangés (D-178) — une intervention encodée « Aucune firme » est
+  marquée `without_firm`, complète, évaluée `WITHOUT_FIRM`, jamais facturée à une firme. Un
+  rattachement ultérieur ne réécrit aucun encodage ni calcul existant ; seuls les nouveaux
+  encodages suivent la règle courante (avec sa firme, sauf autorisation manuelle).
+- **Droits** : `BillingVoter::MANAGE` (MANAGER / ADMIN) pour créer, rattacher, retirer et
+  résoudre ; aucune règle d'autorisation nouvelle.
+
+**Effet au déploiement (aucune donnée modifiée).** Les 5 types actifs sans prestation active
+(Ténodèse du biceps #53, Canal lombaire étroit #54, Suture/réinsertion du long biceps #56,
+Plastie/suture du tendon quadricipital #58, OLIF #63) deviennent sélectionnables « Aucune firme »
+et apparaissent dans « Interventions sans firme ». Aucun encodage, aucune prestation, aucun
+tarif existant n'est modifié.
+
+**Limites.** Le flux « Ajouter une prestation » depuis une firme garde son fonctionnement
+(création de l'intervention puis de la prestation en deux appels). Les 8 interventions
+historiques sans firme (antérieures à D-146 bis) restent `without_firm = false` (D-178).

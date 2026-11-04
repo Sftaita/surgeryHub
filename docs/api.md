@@ -6035,11 +6035,47 @@ suggérés accélèrent la saisie mais ne sont **jamais** lus par le moteur fina
 ### `GET|POST /api/intervention-types`
 
 Référentiel médical fermé. `code` unique et immuable après création (aucun champ `code`
-dans le body de `PATCH`). `POST` : `{ code, label, specialty? }`.
+dans le body de `PATCH`). `POST` : `{ code, label, specialty?, firmId? }`.
+
+**D-183 — firme associée à la création.** `firmId` absent ou `null` = « Aucune firme » :
+l'intervention est créée seule (aucune prestation, aucun tarif, aucune firme fictive).
+`firmId: <id>` : la prestation firme × type est créée dans la **même transaction**
+(paramètres par défaut d'une prestation créée depuis la firme ; aucun montant). Firme
+inconnue `404` (`PRIMARY_FIRM_NOT_FOUND`), désactivée `422` (`PRIMARY_FIRM_INACTIVE`) :
+rien n'est créé. Code déjà utilisé : `409 INTERVENTION_TYPE_CODE_EXISTS` avec
+`error.existingInterventionType` (à réutiliser, jamais dupliquer).
+
+**D-183 — champs calculés** (liste, création, `PATCH`, rattachements) à partir des
+rattachements **effectifs** (prestation active d'une firme active) :
+
+| Champ | Sens |
+|---|---|
+| `activeFirmsCount` | Nombre de firmes réellement rattachées. |
+| `withoutFirm` | Catégorie « Interventions sans firme » : intervention active sans aucun rattachement effectif. |
+| `selectableWithoutFirm` | Proposée « Aucune firme » à l'encodage : active ET (`withoutFirm` OU `allowedWithoutFirm` D-178). |
+
+`firmsCount` (liste) reste le nombre de firmes ayant une prestation, active ou non.
 
 ### `PATCH /api/intervention-types/{id}`
 
-`{ label?, specialty?, active? }` — jamais `code`.
+`{ label?, specialty?, active?, allowedWithoutFirm? }` — jamais `code`. Désactiver une
+intervention la retire de « Interventions sans firme » et de la sélection « Aucune firme ».
+
+### `POST /api/intervention-types/{id}/firm-links` (D-183)
+
+`MANAGER`/`ADMIN`. Body `{ firmId }`. Rattache l'intervention à une firme active : crée la
+prestation (`201`), ou réactive celle qui avait été retirée (`200`, `reactivated: true`, mêmes
+paramètres et tarifs qu'avant). Jamais de doublon : déjà rattachée `409` ; intervention
+désactivée `422`. L'autorisation manuelle D-178 (`allowedWithoutFirm`) n'est jamais modifiée.
+Réponse : `{ offeringId, firmId, active: true, reactivated, interventionType }`.
+
+### `DELETE /api/intervention-types/{id}/firm-links/{offeringId}` (D-183)
+
+`MANAGER`/`ADMIN`. Retire le rattachement : la prestation est **désactivée, jamais supprimée**
+(tarifs, encodages, calculs et facturation existants intacts) ; l'intervention globale reste.
+Une prestation d'une autre intervention : `422`. Réponse :
+`{ offeringId, firmId, active: false, interventionType }` — `interventionType.withoutFirm`
+indique si l'intervention revient dans « Interventions sans firme ».
 
 ### `DELETE /api/intervention-types/{id}`
 
@@ -9323,11 +9359,11 @@ l'autorisation est retirée. Aucune règle n'est contournable par l'API.
 
 | Endpoint | Champ | Règle |
 |---|---|---|
-| `PATCH /api/intervention-types/{id}` (`BillingVoter::MANAGE`) | `allowedWithoutFirm: bool` | Autorise / retire. `GET /api/intervention-types` et le catalogue de `GET /api/missions/{id}/encoding` (`catalog.interventionTypes[].allowedWithoutFirm`) l'exposent. |
-| `POST /api/missions/{id}/interventions` | `withoutFirm: true` | Exclusif de `primaryFirmId` (422 si les deux). Refusé (422) si le type n'est pas autorisé sans firme. Sans firme : ni réponse délégué ni choix obligatoire (un choix fourni est refusé). Sans `primaryFirmId` ni `withoutFirm` : 422 (D-146 bis). |
+| `PATCH /api/intervention-types/{id}` (`BillingVoter::MANAGE`) | `allowedWithoutFirm: bool` | Autorise / retire. `GET /api/intervention-types` et le catalogue de `GET /api/missions/{id}/encoding` (`catalog.interventionTypes[].allowedWithoutFirm`) l'exposent. **D-183** : le catalogue d'encodage expose aussi `selectableWithoutFirm` (sans rattachement effectif, ou autorisé) — c'est lui qui décide de la liste « Aucune firme », jamais le client. |
+| `POST /api/missions/{id}/interventions` | `withoutFirm: true` | Exclusif de `primaryFirmId` (422 si les deux). Refusé (422) si le type n'est pas sélectionnable sans firme (D-183 : rattaché à une firme et non autorisé). Sans firme : ni réponse délégué ni choix obligatoire (un choix fourni est refusé). Sans `primaryFirmId` ni `withoutFirm` : 422 (D-146 bis). |
 | `PATCH /api/missions/{id}/interventions/{iid}` | `withoutFirm: true` + `primaryFirmId: null` | Passage à « Aucune firme », contrôlé contre le catalogue actuel ; réponse délégué et choix effacés. `primaryFirmId: <id>` lève le marqueur. `primaryFirmId: null` seul : 422. Changer le type d'une intervention sans firme : nouveau type autorisé obligatoire. Une correction qui ne touche ni la firme ni le type ne revérifie rien. |
 | `POST /api/missions/{id}/intervention-type-requests` | `withoutFirm: true` | Troisième réponse à la question de la firme, exclusive de `requestedFirmId` / `proposedFirmName` (422 `FIRM_AMBIGUOUS`). Réponse et liste manager (`GET /api/intervention-type-requests`) : `withoutFirm`. |
-| `POST /api/intervention-type-requests/{id}/resolve` | — | Demande sans firme : `firmId` / `newFirmName` refusés (422) ; type existant autorisé sans firme, ou `newInterventionType: { code, label, allowedWithoutFirm: true }` (autorisation explicite, sinon 422 et transaction annulée). L'intervention créée est `withoutFirm: true`, auteur = auteur de la demande. |
+| `POST /api/intervention-type-requests/{id}/resolve` | `withoutFirm: true` (D-183) | Demande sans firme : `firmId` / `newFirmName` refusés (422). **D-183** : pour toute demande (même faite avec une firme), le manager peut choisir « Aucune firme » (`withoutFirm: true`, exclusif de `firmId` / `newFirmName` / `offeringDecision`, sinon 422 `FIRM_AMBIGUOUS`). Type existant sélectionnable sans firme, ou `newInterventionType: { code, label, allowedWithoutFirm? }` — sans prestation, la nouvelle intervention est sélectionnable sans firme ; `allowedWithoutFirm` reste une autorisation facultative, jamais implicite. Code déjà utilisé : 409 `INTERVENTION_TYPE_CODE_EXISTS` (`existingInterventionType` à réutiliser) et transaction annulée (demande toujours en attente). L'intervention créée est `withoutFirm: true`, auteur = auteur de la demande ; la demande garde son lien (`resolvedInterventionType`). |
 
 Lecture : `GET /api/missions/{id}/encoding` → `entries[].withoutFirm` (intervention ou demande).
 Complétude (soumission/validation) : une intervention `withoutFirm` est complète sans firme. Calcul

@@ -74,8 +74,10 @@ export type OfferingDecision = "FEE_APPLICABLE" | "NO_FEE" | "LEAVE_UNCONFIGURED
 /** D-146 bis — corps de POST /api/intervention-type-requests/{id}/resolve (transaction unique). */
 export type ResolveInterventionTypeRequestBody = {
   interventionTypeId?: number;
-  /** D-178 — allowedWithoutFirm : autorisation explicite, obligatoire pour résoudre une demande sans firme. */
+  /** D-178 — allowedWithoutFirm : autorisation explicite, facultative (D-183 : une intervention sans firme est sélectionnable sans firme). */
   newInterventionType?: { code: string; label: string; allowedWithoutFirm?: boolean };
+  /** D-183 — « Firme associée : Aucune firme » choisi par le manager : aucune firme, aucune prestation. */
+  withoutFirm?: boolean;
   firmId?: number;
   newFirmName?: string;
   offeringDecision?: OfferingDecision;

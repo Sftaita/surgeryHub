@@ -68,8 +68,10 @@ export type CatalogInterventionType = {
   id: number;
   code: string;
   label: string;
-  /** D-178 — proposé sous « Aucune firme » (paramétrage manager, Catalogue › Interventions). */
+  /** D-178 — autorisée sans firme par le manager (Catalogue › Interventions). */
   allowedWithoutFirm?: boolean;
+  /** D-183 — proposée sous « Aucune firme » : calculé par le serveur (sans rattachement à une firme, ou autorisée). */
+  selectableWithoutFirm?: boolean;
 };
 
 /**

@@ -158,6 +158,11 @@ final class MissionInterventionDraftService
             $this->assertResolvable($draft);
             $this->resolutionGuard->assertResolutionAllowed($draft->getMission());
 
+            // D-183 — « Firme associée : Aucune firme » choisi par le manager, sur toute demande :
+            // demande faite « Aucune firme » (D-178), ou firme indiquée par l'instrumentiste mais
+            // intervention réellement réalisée sans firme (la firme validée par le manager compte).
+            $resolveWithoutFirm = $draft->isWithoutFirm() || ($input['withoutFirm'] ?? false) === true;
+
             $createdType = false;
             $typeId = $input['interventionTypeId'] ?? null;
             $newType = is_array($input['newInterventionType'] ?? null) ? $input['newInterventionType'] : null;
@@ -168,9 +173,10 @@ final class MissionInterventionDraftService
                 $type = $this->interventionTypeResolver->resolveActive((int) $typeId);
             } elseif ($newType !== null) {
                 $type = $this->catalogue->createInterventionType((string) ($newType['code'] ?? ''), (string) ($newType['label'] ?? ''));
-                // D-178 — demande sans firme : le manager peut autoriser explicitement le type
-                // qu'il crée à être encodé sans firme (jamais implicitement).
-                if ($draft->isWithoutFirm() && ($newType['allowedWithoutFirm'] ?? false) === true) {
+                // D-183 — un type créé sans firme n'a aucun rattachement : il est sélectionnable
+                // « Aucune firme » sans autorisation. D-178 — le manager peut encore l'autoriser
+                // explicitement (utile s'il est rattaché à une firme plus tard ; jamais implicite).
+                if ($resolveWithoutFirm && ($newType['allowedWithoutFirm'] ?? false) === true) {
                     $type->setAllowedWithoutFirm(true);
                 }
                 $createdType = true;
@@ -182,12 +188,15 @@ final class MissionInterventionDraftService
             $firmId = $input['firmId'] ?? null;
             $newFirmName = CatalogueFactory::normalizeName((string) ($input['newFirmName'] ?? ''));
 
-            // D-178 — demande faite « Aucune firme » : l'information est conservée telle quelle,
-            // l'intervention est créée sans firme avec les mêmes contrôles qu'un encodage direct
-            // (type autorisé sans firme, InterventionRequirementsService::assertFirmChoice()).
-            if ($draft->isWithoutFirm()) {
-                if ($firmId !== null || $newFirmName !== '') {
+            // D-178 / D-183 — résolution « Aucune firme » : aucune firme, aucune prestation, aucun
+            // tarif ; l'intervention est créée sans firme avec les mêmes contrôles qu'un encodage
+            // direct (type sélectionnable sans firme, InterventionRequirementsService::assertFirmChoice()).
+            if ($resolveWithoutFirm) {
+                if ($draft->isWithoutFirm() && ($firmId !== null || $newFirmName !== '')) {
                     throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Cette demande a été faite sans firme et se résout donc sans firme. Ignorez-la si l\'intervention a en réalité été réalisée avec une firme.');
+                }
+                if ($firmId !== null || $newFirmName !== '' || ($input['offeringDecision'] ?? null) !== null) {
+                    throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Choisissez une firme OU « Aucune firme », pas les deux.');
                 }
                 $this->em->flush();
                 $intervention = $this->resolve($draft, $type, null, $actor, null, null, [
@@ -323,9 +332,9 @@ final class MissionInterventionDraftService
             $mission = $draft->getMission();
 
             $this->resolutionGuard->assertResolutionAllowed($mission);
-            // D-178 — même contrôle qu'un encodage direct : une firme, ou (demande faite
-            // « Aucune firme ») un type que le catalogue autorise actuellement sans firme.
-            $withoutFirm = $draft->isWithoutFirm();
+            // D-178 / D-183 — même contrôle qu'un encodage direct : une firme, ou (résolution
+            // « Aucune firme ») un type actuellement sélectionnable sans firme.
+            $withoutFirm = ($catalogueMeta['withoutFirm'] ?? $draft->isWithoutFirm()) === true;
             $this->requirements->assertFirmChoice($firm, $withoutFirm, $interventionType);
             if ($selectedChoiceOption !== null) {
                 // Revalide l'appartenance de l'option à la prestation (firme × type) effective.

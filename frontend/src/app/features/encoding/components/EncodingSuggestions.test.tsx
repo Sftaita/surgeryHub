@@ -9,7 +9,7 @@ import type { MissionEncodingInterventionEntry } from "../api/encoding.types";
 
 const apiGetMock = vi.fn();
 /** D-178 — entrée fixe « Aucune firme » en tête de la liste des firmes (libellé + précision). */
-const NO_FIRM_OPTION = "Aucune firmeInterventions autorisées sans firme";
+const NO_FIRM_OPTION = "Aucune firmeInterventions sans firme";
 
 vi.mock("../../../api/apiClient", () => ({
   apiClient: {
@@ -511,7 +511,7 @@ describe("EditInterventionDialog — correction avec raccourcis (D-178)", () => 
 // ─────────────────────────────────────────────────────────────────────────
 
 /** Types 3 et 4 autorisés sans firme par le manager (Catalogue › Interventions). */
-const TYPES_WITH_NO_FIRM = TYPES.map((t) => (t.id === 3 || t.id === 4 ? { ...t, allowedWithoutFirm: true } : t));
+const TYPES_WITH_NO_FIRM = TYPES.map((t) => (t.id === 3 || t.id === 4 ? { ...t, selectableWithoutFirm: true } : t));
 
 describe("AddInterventionDialog — « Aucune firme » (D-178)", () => {
   async function pickNoFirm(user: ReturnType<typeof userEvent.setup>) {
@@ -527,7 +527,7 @@ describe("AddInterventionDialog — « Aucune firme » (D-178)", () => {
 
     await screen.findByRole("group", { name: RECENT_TYPES_TITLE });
     expect(within(recentGroup(RECENT_TYPES_TITLE)).getAllByRole("option").map((o) => o.textContent)).toEqual(["LATARJET — Butée coracoïdienne"]);
-    expect(within(recentGroup("Interventions autorisées sans firme")).getAllByRole("option").map((o) => o.textContent)).toEqual(["OSTÉOTOMIE — Ostéotomie tibiale"]);
+    expect(within(recentGroup("Interventions sans firme")).getAllByRole("option").map((o) => o.textContent)).toEqual(["OSTÉOTOMIE — Ostéotomie tibiale"]);
     expect(screen.queryByRole("option", { name: /^LCA/ })).not.toBeInTheDocument();
     expect(suggestionCalls("intervention-types")[0]).toEqual(["/api/missions/42/encoding-suggestions/intervention-types", { params: { firmId: "none" } }]);
     expect(apiGetMock.mock.calls.some(([url]) => String(url).includes("/service-offerings"))).toBe(false);
@@ -549,7 +549,7 @@ describe("AddInterventionDialog — « Aucune firme » (D-178)", () => {
     const onSubmitDraft = vi.fn();
     renderAdd({ interventionTypes: TYPES, onSubmitDraft });
     await pickNoFirm(user);
-    expect(screen.getByText("Aucune intervention autorisée sans firme ne correspond.")).toBeInTheDocument();
+    expect(screen.getByText("Aucune intervention sans firme ne correspond.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Intervention absente du catalogue" }));
     await user.type(screen.getByLabelText(/Type d'intervention souhaité/), "Plastie du quadriceps");
@@ -613,7 +613,7 @@ describe("EditInterventionDialog — « Aucune firme » (D-178)", () => {
     await user.click(screen.getByRole("option", { name: /^Aucune firme/ }));
 
     expect(screen.getByRole("button", { name: "Enregistrer" })).toBeDisabled();
-    const allowedGroup = recentGroup("Interventions autorisées sans firme");
+    const allowedGroup = recentGroup("Interventions sans firme");
     expect(within(allowedGroup).getAllByRole("option").map((o) => o.textContent)).toEqual(["OSTÉOTOMIE — Ostéotomie tibiale", "LATARJET — Butée coracoïdienne"]);
     await user.click(within(allowedGroup).getByRole("option", { name: "LATARJET — Butée coracoïdienne" }));
     await user.click(screen.getByRole("button", { name: "Enregistrer" }));

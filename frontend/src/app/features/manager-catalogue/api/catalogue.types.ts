@@ -3,6 +3,8 @@ export type FirmDTO = {
   name: string;
   /** Chemin racine-relatif ("/uploads/firm-logos/..."), résoudre via resolveApiAssetUrl(). */
   logoPath?: string | null;
+  /** Firme désactivée : plus proposée pour un nouveau rattachement (D-183). */
+  active?: boolean;
 };
 
 /** Refonte Catalogue/Prestations (D-092) — distingue "volontairement non facturé" de "tarif pas encore configuré". */

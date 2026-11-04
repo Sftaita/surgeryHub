@@ -25,7 +25,7 @@ const NOT_IN_CATALOG = -1;
 /** D-178 — sentinel de l'entrée « Aucune firme » dans la liste des firmes (ids toujours positifs). */
 export const NO_FIRM_ITEM_ID = -2;
 export const NO_FIRM_LABEL = "Aucune firme";
-export const NO_FIRM_ITEM: PickerItem = { id: NO_FIRM_ITEM_ID, primary: NO_FIRM_LABEL, secondary: "Interventions autorisées sans firme" };
+export const NO_FIRM_ITEM: PickerItem = { id: NO_FIRM_ITEM_ID, primary: NO_FIRM_LABEL, secondary: "Interventions sans firme" };
 
 /** D-146 bis — question posée pour chaque intervention ; D-178 — « Aucune firme » n'ouvre que les types autorisés sans firme. */
 export const FIRM_QUESTION = "Avec quelle firme cette intervention a-t-elle été réalisée ?";
@@ -155,10 +155,10 @@ export default function AddInterventionDialog({
   const firmTypes = (offeringsQuery.data ?? [])
     .filter((o) => o.active !== false)
     .map((o) => o.interventionType);
-  // D-178 — « Aucune firme » : uniquement les types que le manager autorise sans firme, jamais
-  // tout le catalogue (une intervention absente passe par la demande au manager).
+  // D-178 / D-183 — « Aucune firme » : uniquement les types sélectionnables sans firme (calculé par le
+  // serveur : sans rattachement à une firme, ou autorisés) ; une intervention absente passe par la demande.
   const typesToShow = withoutFirm
-    ? interventionTypes.filter((t) => t.allowedWithoutFirm === true)
+    ? interventionTypes.filter((t) => t.selectableWithoutFirm === true)
     : firmId != null && firmTypes.length > 0 ? firmTypes : interventionTypes;
 
   const recentFirmsQuery = useRecentFirms(missionId, open);
@@ -365,8 +365,8 @@ export default function AddInterventionDialog({
                 recent={(recentTypesQuery.data?.interventionTypes ?? []).map(typePickerItem)}
                 recentTitle={RECENT_TYPES_TITLE}
                 recentLoading={recentTypesQuery.isLoading}
-                allTitle={withoutFirm ? "Interventions autorisées sans firme" : firmTypes.length > 0 ? "Interventions de la firme" : "Toutes les interventions"}
-                emptyText={withoutFirm ? "Aucune intervention autorisée sans firme ne correspond." : "Aucune intervention ne correspond."}
+                allTitle={withoutFirm ? "Interventions sans firme" : firmTypes.length > 0 ? "Interventions de la firme" : "Toutes les interventions"}
+                emptyText={withoutFirm ? "Aucune intervention sans firme ne correspond." : "Aucune intervention ne correspond."}
                 value={selectedTypeItem}
                 onSelect={pickType}
                 disabled={loading}
