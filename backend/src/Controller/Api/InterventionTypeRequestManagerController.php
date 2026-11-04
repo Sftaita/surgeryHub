@@ -250,6 +250,10 @@ final class InterventionTypeRequestManagerController extends AbstractController
         $draft = $r->getDraft();
         $requestedFirm = $draft?->getRequestedFirm();
         $pending = $r->getStatus() === InterventionTypeRequest::STATUS_PENDING;
+        // D-183 — résolution effective, distincte de la firme indiquée par l'instrumentiste
+        // (conservée telle quelle) : lue sur l'intervention réellement créée par la résolution.
+        $resolvedIntervention = $r->getStatus() === InterventionTypeRequest::STATUS_RESOLVED ? $draft?->getResolvedMissionIntervention() : null;
+        $resolvedFirm = $resolvedIntervention?->getPrimaryFirm();
 
         return [
             'id' => $r->getId(),
@@ -293,6 +297,11 @@ final class InterventionTypeRequestManagerController extends AbstractController
                 'id' => $type->getId(),
                 'code' => $type->getCode(),
                 'label' => $type->getLabel(),
+            ] : null,
+            // null : demande non résolue, ou résolution antérieure sans intervention liée.
+            'resolution' => $resolvedIntervention ? [
+                'withoutFirm' => $resolvedIntervention->isWithoutFirm(),
+                'firm' => $resolvedFirm ? ['id' => $resolvedFirm->getId(), 'name' => $resolvedFirm->getName()] : null,
             ] : null,
             'ignoreReason' => $r->getIgnoreReason()?->value,
             'ignoreComment' => $r->getIgnoreComment(),

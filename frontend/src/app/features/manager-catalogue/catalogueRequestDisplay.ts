@@ -50,3 +50,10 @@ const DATE_TIME_FORMAT = new Intl.DateTimeFormat("fr-BE", {
 export function formatRequestDateTime(iso: string | null): string | null {
   return iso ? DATE_TIME_FORMAT.format(new Date(iso)) : null;
 }
+
+/** D-183 — résolution effective d'une demande d'intervention, distincte de la firme demandée. */
+export function resolutionFirmLabel(resolution: InterventionTypeRequestDTO["resolution"]): string | null {
+  if (!resolution) return null;
+  if (resolution.withoutFirm) return "Créée sans firme";
+  return resolution.firm ? `Associée à ${resolution.firm.name}` : "Firme non renseignée";
+}

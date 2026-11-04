@@ -975,4 +975,32 @@ describe("CatalogueRequestsPage — demande faite « Aucune firme » (D-178)", (
       newInterventionType: { code: "RES-AC", label: "Résection acromio-claviculaire" },
     }));
   });
+
+  it("D-183 — demande résolue : la firme demandée reste affichée, distincte de la résolution effective", async () => {
+    const user = userEvent.setup();
+    const resolvedBase = { ...withoutFirmRequest, withoutFirm: false, requestedFirm: { id: 3, name: "Arthrex" }, status: "RESOLVED", decidedBy: { id: 1, displayName: "Manager" }, decidedAt: "2026-11-04T10:00:00Z" };
+    getInterventionTypeRequestsMock.mockImplementation(async ({ status }: { status: string }) =>
+      status === "RESOLVED"
+        ? {
+          items: [
+            { ...resolvedBase, id: 21, label: "Arthrolyse du coude", resolvedInterventionType: { id: 3, code: "ARTHROL-COUDE", label: "Arthrolyse du coude" }, resolution: { withoutFirm: true, firm: null } },
+            { ...resolvedBase, id: 22, label: "Ténodèse du biceps", resolvedInterventionType: { id: 53, code: "TEN-BICEPS", label: "Ténodèse du biceps" }, resolution: { withoutFirm: false, firm: { id: 4, name: "ConMed" } } },
+          ],
+          total: 2,
+        }
+        : { items: [], total: 0 });
+    renderPage();
+
+    await screen.findByText("Aucune demande.");
+    await user.click(screen.getByRole("tab", { name: "Résolues" }));
+    expect(await screen.findByTestId("resolution-firm-21")).toHaveTextContent("Créée sans firme");
+    expect(screen.getByTestId("resolution-firm-22")).toHaveTextContent("Associée à ConMed");
+    expect(screen.getAllByText("Demandée : Arthrex")).toHaveLength(2);
+
+    const row = screen.getByTestId("resolution-firm-21").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Voir le détail" }));
+    const dialog = await screen.findByRole("dialog", { name: /Détail de la demande/ });
+    expect(within(dialog).getByText("Firme indiquée").nextSibling).toHaveTextContent("Arthrex");
+    expect(within(dialog).getByText("Firme retenue").nextSibling).toHaveTextContent("Créée sans firme");
+  });
 });
