@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { approx, averagePeriodNote, averagePeriodRange, averageReason, deltaAria, pctLabel, previousMonthHeading, previousMonthReason } from "./format";
+import { listFixture } from "./testFixtures";
+import { approx, averagePeriodNote, encodedCost, validatedCost, averagePeriodRange, averageReason, deltaAria, pctLabel, previousMonthHeading, previousMonthReason } from "./format";
 
 const base = { validatedMinutes: 0, monthsCounted: 6, from: "2026-04", to: "2026-09", observableSince: "2025-03" };
 
@@ -42,5 +43,23 @@ describe("D-180 — formats du suivi manager", () => {
   it("produit un libellé accessible complet", () => {
     expect(deltaAria(-9, "septembre", null)).toBe("En baisse de 9 % par rapport à septembre");
     expect(deltaAria(null, "septembre", "Pas d'historique en septembre")).toBe("Comparaison septembre indisponible : Pas d'historique en septembre");
+  });
+});
+
+describe("D-180 — coût estimé validé d'une ligne", () => {
+  const base = listFixture().items[0];
+  const eur = (encodedAmount: string, validatedAmount: string | null, unratedCount = 0) =>
+    ({ currency: "EUR", encodedAmount, validatedAmount, consultationFeeCount: 0, unratedCount });
+
+  it("affiche ≈ 0,00 € quand un tarif s'applique mais que rien n'est validé", () => {
+    const row = { ...base, estimateState: "RATED" as const, validatedMinutes: 0, estimate: eur("120.00", "0.00") };
+    expect(validatedCost(row)).toEqual({ text: "≈ 0,00 €", missing: false });
+    expect(encodedCost(row)).toEqual({ text: "≈ 120,00 €", missing: false });
+  });
+
+  it("garde « — » sans estimation exploitable et « Tarif manquant » sans tarif", () => {
+    expect(validatedCost({ ...base, estimateState: "RATED", estimate: eur("60.00", null, 1) })).toEqual({ text: "—", missing: false });
+    expect(validatedCost({ ...base, estimateState: "NO_PRESTATION", estimate: null })).toEqual({ text: "—", missing: false });
+    expect(validatedCost({ ...base, estimateState: "UNRATED", estimate: null })).toEqual({ text: "Tarif manquant", missing: true });
   });
 });

@@ -329,6 +329,44 @@ final class ManagerInstrumentistHoursControllerTest extends WebTestCase
         }
     }
 
+    public function test_validated_cost_is_zero_when_rated_but_nothing_validated_and_dash_only_without_estimate(): void
+    {
+        $client = $this->boot();
+        $site = $this->makeSite('Couts');
+        $pendingOnly = $this->createUser('ROLE_INSTRUMENTIST', 'Zoé', 'Attente');
+        $this->makeRate($pendingOnly, InstrumentistRateType::HOURLY_RATE, '40.00');
+        $this->makeMission($site, $pendingOnly, MissionStatus::SUBMITTED, '2026-10-06 08:00', '2026-10-06 11:00');
+        $unrated = $this->createUser('ROLE_INSTRUMENTIST', 'Yann', 'Sanstarif');
+        $this->makeMission($site, $unrated, MissionStatus::VALIDATED, '2026-10-07 08:00', '2026-10-07 10:00');
+        // Tarif seulement à partir du 15/10 : la prestation validée du 08/10 n'a pas d'estimation.
+        $partial = $this->createUser('ROLE_INSTRUMENTIST', 'Xavier', 'Partiel');
+        $this->makeRate($partial, InstrumentistRateType::HOURLY_RATE, '30.00', '2026-10-15');
+        $this->makeMission($site, $partial, MissionStatus::VALIDATED, '2026-10-08 08:00', '2026-10-08 10:00');
+        $this->makeMission($site, $partial, MissionStatus::SUBMITTED, '2026-10-20 08:00', '2026-10-20 10:00');
+        $this->em->clear();
+        $manager = $this->login($client, $this->createUser('ROLE_MANAGER'));
+
+        $query = 'month=2026-10&siteId=' . $site->getId();
+        $list = $this->json($this->get($client, $manager, '/api/manager/instrumentist-hours?' . $query));
+        $rows = $this->rowsById($list);
+
+        // Tarif applicable, aucune prestation validée : ≈ 0,00 €, comme le total et le tiroir.
+        $row = $rows[$pendingOnly->getId()];
+        self::assertSame(['RATED', '120.00', '0.00'], [$row['estimateState'], $row['estimate']['encodedAmount'], $row['estimate']['validatedAmount']]);
+        $detail = $this->json($this->get($client, $manager, '/api/manager/instrumentists/' . $pendingOnly->getId() . '/hours?' . $query));
+        self::assertSame($detail['estimate']['validatedAmount'], $row['estimate']['validatedAmount']);
+
+        // Aucune estimation exploitable : « Tarif manquant », jamais un montant.
+        self::assertSame(['UNRATED', null], [$rows[$unrated->getId()]['estimateState'], $rows[$unrated->getId()]['estimate']]);
+
+        // Tarif partiel : la validée n'est pas estimable → « — », avertissement conservé.
+        $row = $rows[$partial->getId()];
+        self::assertSame(['RATED', '60.00', null, 1], [$row['estimateState'], $row['estimate']['encodedAmount'], $row['estimate']['validatedAmount'], $row['estimate']['unratedCount']]);
+
+        $this->assertTotalsAreSumOfRows($list);
+        self::assertSame('0.00', $list['totals']['validatedAmount']);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     /** @param array<string, mixed> $list */
@@ -402,14 +440,14 @@ final class ManagerInstrumentistHoursControllerTest extends WebTestCase
         return $h;
     }
 
-    private function makeRate(User $instrumentist, InstrumentistRateType $type, string $amount): void
+    private function makeRate(User $instrumentist, InstrumentistRateType $type, string $amount, string $validFrom = '2025-01-01'): void
     {
         $r = new InstrumentistRate();
         $r->setInstrumentist($instrumentist);
         $r->setRateType($type);
         $r->setAmount($amount);
         $r->setCurrency('EUR');
-        $r->setValidFrom(new \DateTimeImmutable('2025-01-01'));
+        $r->setValidFrom(new \DateTimeImmutable($validFrom));
         $r->setValidTo(null);
         $this->em->persist($r);
         $this->em->flush();

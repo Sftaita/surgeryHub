@@ -199,6 +199,7 @@ final class InstrumentistHoursService
         $unrated = 0;
         $consultationFees = 0;
         $validatedRated = false;
+        $hasValidated = false;
         $pendingCount = 0;
         $current = 0;
         foreach ($entries as $e) {
@@ -209,8 +210,11 @@ final class InstrumentistHoursService
             if ($r['estimate'] !== null && $r['estimate']['rateType'] === InstrumentistRateType::CONSULTATION_FEE->value) {
                 $consultationFees++;
             }
-            if ($r['estimate'] !== null && $r['status'] === 'validated') {
-                $validatedRated = true;
+            if ($r['status'] === 'validated') {
+                $hasValidated = true;
+                if ($r['estimate'] !== null) {
+                    $validatedRated = true;
+                }
             }
             if ($r['status'] === 'pending') {
                 $pendingCount++;
@@ -242,7 +246,9 @@ final class InstrumentistHoursService
             'estimate' => $estimate === null ? null : [
                 'currency' => $estimate['currency'],
                 'encodedAmount' => $estimate['encodedAmount'],
-                'validatedAmount' => $validatedRated ? $estimate['validatedAmount'] : null,
+                // Tarif connu, rien de validé : 0,00 réel (≈ 0,00 €), comme les totaux et le tiroir.
+                // null (« — ») seulement quand des prestations validées n'ont aucune estimation.
+                'validatedAmount' => $validatedRated || !$hasValidated ? $estimate['validatedAmount'] : null,
                 'consultationFeeCount' => $consultationFees,
                 'unratedCount' => $unrated,
             ],

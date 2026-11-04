@@ -9690,8 +9690,10 @@ jamais limité par `limit`, sans évolution globale. `sites` couvre le mois enti
 
 - `estimateState` : `RATED` (au moins une prestation valorisée), `UNRATED` (prestations
   valorisables sans tarif personnel : « Tarif manquant »), `NO_PRESTATION` (rien à valoriser :
-  aucune prestation, ou prestations sans heures). `estimate.validatedAmount` est `null` quand
-  aucune prestation validée n'est valorisée ; `unratedCount` > 0 avec `RATED` = tarif
+  aucune prestation, ou prestations sans heures). `estimate.validatedAmount` vaut `"0.00"`
+  quand un tarif s'applique mais qu'aucune prestation n'est validée (« ≈ 0,00 € », comme les
+  totaux et le tiroir), et `null` (« — ») seulement quand des prestations validées n'ont aucune
+  estimation ; `unratedCount` > 0 avec `RATED` = tarif
   partiellement manquant.
 - `ratio` = heures validées / maximum du périmètre (barre du Top 5).
 - **Comparaisons** (heures validées, pourcentages arrondis par le serveur — `round()` PHP,

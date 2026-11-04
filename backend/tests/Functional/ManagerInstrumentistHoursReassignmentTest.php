@@ -127,7 +127,7 @@ final class ManagerInstrumentistHoursReassignmentTest extends WebTestCase
         // Sophie : sa seule part de B (09:00–11:30), soumise. Rien de A (réaffectée), C, D, E (annulées).
         self::assertSame([1, 150, 0, 150], [$rows[$this->sophie->getId()]['count'], $rows[$this->sophie->getId()]['encodedMinutes'], $rows[$this->sophie->getId()]['validatedMinutes'], $rows[$this->sophie->getId()]['pendingMinutes']]);
         self::assertSame('100.00', $rows[$this->sophie->getId()]['estimate']['encodedAmount']);
-        self::assertNull($rows[$this->sophie->getId()]['estimate']['validatedAmount'], 'aucune heure validée : pas de montant validé (« — »)');
+        self::assertSame('0.00', $rows[$this->sophie->getId()]['estimate']['validatedAmount'], 'tarif connu, rien de validé : ≈ 0,00 €');
         // Jean : A (120) + relais (150) validés, F (80) en attente — le créneau de B n'est jamais doublé.
         self::assertSame([3, 350, 270, 80], [$rows[$this->jean->getId()]['count'], $rows[$this->jean->getId()]['encodedMinutes'], $rows[$this->jean->getId()]['validatedMinutes'], $rows[$this->jean->getId()]['pendingMinutes']]);
         self::assertSame('233.33', $rows[$this->jean->getId()]['estimate']['encodedAmount']);
