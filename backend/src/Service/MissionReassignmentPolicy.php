@@ -73,9 +73,9 @@ final class MissionReassignmentPolicy
 
         $reason = match (true) {
             $status === MissionStatus::SUBMITTED => [self::ENCODING_SUBMITTED,
-                "L'encodage de cette mission a déjà été soumis : l'instrumentiste ne peut plus être remplacée. Renvoyez d'abord l'encodage en correction ; le relais deviendra alors possible, sans rien perdre de ce qui a été encodé."],
+                "Le changement d'instrumentiste n'est plus autorisé pour une mission soumise. Renvoyez d'abord l'encodage en correction ; le relais deviendra alors possible, sans rien perdre de ce qui a été encodé."],
             $status === MissionStatus::VALIDATED => [self::ENCODING_VALIDATED,
-                "L'encodage de cette mission est validé : l'instrumentiste ne peut pas être remplacée après coup. Si l'affectation est réellement erronée, rouvrez d'abord l'encodage (correction contrôlée et tracée)."],
+                "Le changement d'instrumentiste n'est plus autorisé pour une mission validée. Si l'affectation est réellement erronée, rouvrez d'abord l'encodage (correction contrôlée et tracée)."],
             $status === MissionStatus::CLOSED => [self::MISSION_CLOSED,
                 "Cette mission est clôturée : son affectation et son encodage ne peuvent plus être modifiés."],
             !in_array($status, self::REASSIGNABLE_STATUSES, true) || $mission->getInstrumentist() === null => [self::NOT_REASSIGNABLE,
