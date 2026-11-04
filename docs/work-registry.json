@@ -1010,8 +1010,8 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Le manager n'avait aucune vue des heures encodées et validées par instrumentiste ni de leur coût estimé.",
-      "status": "pr-ouverte",
-      "statusSince": "2026-11-03",
+      "status": "fusionne",
+      "statusSince": "2026-11-04",
       "refs": {
         "branches": [
           "feat/heures-instrumentistes-manager"
@@ -1023,17 +1023,20 @@
         "prs": [
           70
         ],
-        "commits": []
+        "commits": [
+          "8707cd16ef3620bb550c5a3d67e4d070cc15ff27"
+        ]
       },
       "pendingOps": [
         {
           "type": "validation",
           "status": "en-attente",
-          "description": "Validation utilisateur de la PR, puis décision de fusion et de mise en production."
+          "validation": "accord explicite",
+          "description": "Déploiement de main (8707cd1, D-180 seul par rapport à la production e97d879, aucune migration), puis tag daté + deploy.sh mark après contrôles."
         }
       ],
-      "nextAction": "Validation utilisateur de la PR, puis décision de fusion et de mise en production.",
-      "lastReviewed": "2026-11-03"
+      "nextAction": "PR #70 fusionnée (8707cd1). Déploiement de main complet sur accord explicite ; validation fonctionnelle manager après déploiement.",
+      "lastReviewed": "2026-11-04"
     }
   ]
 }
