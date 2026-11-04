@@ -126,9 +126,9 @@ export default function EditInterventionDialog({
     : withoutFirm ? NO_FIRM_ITEM
     : firmItems.find((f) => f.id === firmId) ?? (currentFirm?.id === firmId ? firmPickerItem(currentFirm) : null);
   const currentType = intervention?.interventionType ?? null;
-  // D-178 — « Aucune firme » : seuls les types autorisés sans firme (le type déjà enregistré reste
-  // affiché même si l'autorisation a été retirée depuis : validité historique).
-  const typeItems = (withoutFirm ? interventionTypes.filter((t) => t.allowedWithoutFirm === true) : interventionTypes).map(typePickerItem);
+  // D-178 / D-183 — « Aucune firme » : seuls les types sélectionnables sans firme (le type déjà enregistré reste
+  // affiché même s'il ne l'est plus depuis : validité historique).
+  const typeItems = (withoutFirm ? interventionTypes.filter((t) => t.selectableWithoutFirm === true) : interventionTypes).map(typePickerItem);
   const typeValue = typeId == null ? null
     : typeItems.find((t) => t.id === typeId) ?? (currentType?.id === typeId ? typePickerItem(currentType) : null);
 
@@ -153,7 +153,7 @@ export default function EditInterventionDialog({
             setRepresentativePresent(null);
             setSelectedChoiceOptionId(null);
             // Un type non autorisé sans firme doit être re-choisi, jamais conservé implicitement.
-            if (v === NO_FIRM_ITEM_ID && !interventionTypes.some((t) => t.id === typeId && t.allowedWithoutFirm === true)) setTypeId(null);
+            if (v === NO_FIRM_ITEM_ID && !interventionTypes.some((t) => t.id === typeId && t.selectableWithoutFirm === true)) setTypeId(null);
           }}
           disabled={loading}
         />
@@ -167,8 +167,8 @@ export default function EditInterventionDialog({
           recent={(recentTypesQuery.data?.interventionTypes ?? []).map(typePickerItem)}
           recentTitle={RECENT_TYPES_TITLE}
           recentLoading={recentTypesQuery.isLoading}
-          allTitle={withoutFirm ? "Interventions autorisées sans firme" : "Toutes les interventions"}
-          emptyText={withoutFirm ? "Aucune intervention autorisée sans firme ne correspond." : "Aucune intervention ne correspond."}
+          allTitle={withoutFirm ? "Interventions sans firme" : "Toutes les interventions"}
+          emptyText={withoutFirm ? "Aucune intervention sans firme ne correspond." : "Aucune intervention ne correspond."}
           value={typeValue}
           onSelect={(v) => { if (v === typeId) return; setTypeId(v); setRepresentativePresent(null); setSelectedChoiceOptionId(null); }}
           disabled={loading}

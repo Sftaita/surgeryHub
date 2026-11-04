@@ -81,6 +81,7 @@ class NotificationActivityRecorder
         'ENCODING_TAKEN_OVER'              => 'Encodage repris et validé par un manager',
         'SURGEON_MISSION_REQUEST_CREATED'  => 'Nouvelle demande de mission',
         'ROOM_TAKEOVER_MISSION_OFFER'      => 'Salle reprise — mission disponible',
+        'MISSION_REASSIGNMENT_NOTICE'      => "Changement d'instrumentiste",
         // H5b — transactional deliveries on the common low-level layer (no user notification).
         'FIRM_INVOICE_DOCUMENT'            => 'Facture firme',
         'INSTRUMENTIST_STATEMENT_DOCUMENT' => 'Décompte instrumentiste',

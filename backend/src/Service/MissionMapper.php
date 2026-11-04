@@ -9,6 +9,7 @@ use App\Dto\Request\Response\UserSlimDto;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Service\Prestation\MissionEncodingDataGuard;
 use App\Service\Prestation\MissionListAnnotator;
 use App\Service\Prestation\PrestationGroupResolver;
 use Symfony\Component\Clock\Clock;
@@ -27,6 +28,8 @@ final class MissionMapper
         private readonly ?MissionEncodingOverviewService $encodingOverview = null,
         // Complément D-156 — optional for the same reason.
         private readonly ?PrestationGroupResolver $prestationGroups = null,
+        // D-181 — optional for the same reason.
+        private readonly ?MissionReassignmentService $relays = null,
     ) {}
 
     /**
@@ -68,13 +71,16 @@ final class MissionMapper
             status: (string) $m->getStatus()?->value,
             surgeon: $this->toUserSlim($m->getSurgeon()),
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
-            allowedActions: $this->actions->allowedActions($m, $viewer),
+            allowedActions: $this->actions->allowedActions($m, $viewer, (int) ($annotation['prestation']['size'] ?? 1)),
             covered: $this->coverage->isCovered($m),
             targetedOffer: $this->targetedOffer($m),
             encoding: $encoding,
             roomLabel: $m->getRoomLabel(),
             prestation: $annotation['prestation'] ?? null,
             scheduleConflictMissionIds: $annotation['scheduleConflictMissionIds'] ?? [],
+            // D-182 — why 'cancel' is missing from allowedActions: the planning shows the action
+            // disabled with this reason, never an operation refused afterwards.
+            cancellation: self::isManager($viewer) ? $this->cancellation($m, (int) ($annotation['prestation']['size'] ?? 1)) : null,
         );
     }
 
@@ -109,7 +115,7 @@ final class MissionMapper
             status: (string) $m->getStatus()?->value,
             surgeon: $this->toUserSlim($m->getSurgeon()),
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
-            allowedActions: $this->actions->allowedActions($m, $viewer),
+            allowedActions: $this->actions->allowedActions($m, $viewer, count($group)),
             noMaterialComment: $m->getNoMaterialComment(),
             submittedWithoutMaterial: $m->isSubmittedWithoutMaterial(),
             covered: $this->coverage->isCovered($m),
@@ -148,7 +154,68 @@ final class MissionMapper
             encoding: $isManagerViewer ? $this->encodingOverview?->overviewOfMission($m, Clock::get()->now()) : null,
             roomLabel: $m->getRoomLabel(),
             prestation: MissionListAnnotator::summary($group),
+            reassignment: $isManagerViewer ? $this->reassignment($m) : null,
+            relay: $this->relayLinks($m),
+            // D-182 — with its multi-room prestation (D-156), as the guard does.
+            cancellation: $isManagerViewer ? $this->cancellation($m, count($group)) + [
+                'hasEncodingData' => MissionEncodingDataGuard::hasEncodingData($m),
+            ] : null,
+            replacement: $this->replacementLinks($m),
         );
+    }
+
+    /**
+     * D-182 — MissionCancellationPolicy as served to the manager: why the mission cannot be
+     * cancelled (the action is then disabled), else the encoding correction its cancellation
+     * performs first (submitted / validated).
+     *
+     * @return array{blockedReason: ?array{code: string, message: string}, correction: ?array{action: string, message: string}}
+     */
+    private function cancellation(Mission $m, int $prestationSize): array
+    {
+        $blocked = MissionCancellationPolicy::blockedReason($m, $prestationSize);
+
+        return [
+            'blockedReason' => $blocked,
+            'correction'    => $blocked === null ? MissionCancellationPolicy::correction($m) : null,
+        ];
+    }
+
+    /** D-181 — see MissionDetailDto::$reassignment. */
+    private function reassignment(Mission $m): array
+    {
+        $window = MissionReassignmentPolicy::relayWindow($m);
+
+        return [
+            'modes'         => MissionReassignmentPolicy::modes($m, Clock::get()->now()),
+            'blockedReason' => MissionReassignmentPolicy::blockedReason($m),
+            'relayWindow'   => $window !== null ? [
+                'from' => $window['from']->format(\DateTimeInterface::ATOM),
+                'to'   => $window['to']->format(\DateTimeInterface::ATOM),
+            ] : null,
+        ];
+    }
+
+    /** D-182 — see MissionDetailDto::$replacement (one query, detail only). */
+    private function replacementLinks(Mission $m): ?array
+    {
+        $replaces = $this->relays?->replacedMissionIdsOf($m) ?? [];
+        if ($m->getReplacedBy() === null && $replaces === []) {
+            return null;
+        }
+
+        return ['replacedByMissionId' => $m->getReplacedBy()?->getId(), 'replacesMissionIds' => $replaces];
+    }
+
+    /** D-181 — see MissionDetailDto::$relay (one query, detail only). */
+    private function relayLinks(Mission $m): ?array
+    {
+        $relayIds = $this->relays?->relayMissionIdsOf($m) ?? [];
+        if ($m->getRelayOf() === null && $relayIds === []) {
+            return null;
+        }
+
+        return ['relayOfMissionId' => $m->getRelayOf()?->getId(), 'relayMissionIds' => $relayIds];
     }
 
     /**

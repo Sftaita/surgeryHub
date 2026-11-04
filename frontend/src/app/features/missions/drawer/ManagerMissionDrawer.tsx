@@ -123,7 +123,7 @@ export function ManagerMissionDrawer({ missionId, onClose }: Props) {
   const secondary = actions.filter((a) => !a.contained);
   const primary = actions.filter((a) => a.contained);
   for (const a of secondary) {
-    footerActions.push({ key: a.key, label: a.label, tone: TONE[a.tone], icon: a.key === "reopenEncoding" ? "reopen" : undefined, disabled: a.disabled, testId: a.testId, onClick: a.onClick });
+    footerActions.push({ key: a.key, label: a.label, tone: TONE[a.tone], icon: a.key === "reopenEncoding" ? "reopen" : undefined, disabled: a.disabled, disabledReason: a.disabledReason, testId: a.testId, onClick: a.onClick });
   }
   const active = finance.active;
   if (financeApplicable && active && (active.status === "CALCULATED" || active.status === "APPROVED")) {

@@ -28,6 +28,7 @@ framework:
             App\Message\PlanningDeployPdfsMessage:          async
             App\Message\PlanningAlertRaisedMessage:         async
             App\Message\MissionLifecycleChangedMessage:     async
+            App\Message\MissionReassignmentNotificationMessage: async
             App\Message\AbsenceMissionsReactedMessage:      async
             App\Message\AbsenceImpactNotificationMessage:   async
             App\Message\MissionPublishedMessage:            async

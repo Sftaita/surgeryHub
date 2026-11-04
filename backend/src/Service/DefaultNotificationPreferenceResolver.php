@@ -134,6 +134,9 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         // D-177 — exclusive 48 h priority on a taken-over room: the deadline runs from the
         // offer's creation, so it must not go unnoticed for want of opening the app.
         NotificationType::ROOM_TAKEOVER_MISSION_OFFER,
+        // D-181 — a manager changed the instrumentist of a published mission (often the same
+        // day): operational, the three people concerned must not miss it.
+        NotificationType::MISSION_REASSIGNMENT_NOTICE,
     ];
 
     /**

@@ -476,10 +476,14 @@ final class MissionPostDeployServiceTest extends TestCase
         $mission = $this->makeMission(MissionStatus::OPEN);
         $actor   = $this->makeActor();
 
-        $this->expectException(ConflictHttpException::class);
-        $this->expectExceptionMessage('Mission must be ASSIGNED to reassign');
-
-        $this->service->reassign($mission, $actor, 99);
+        // D-181 — explicit, coded refusal (still a 409 ConflictHttpException).
+        try {
+            $this->service->reassign($mission, $actor, 99);
+            $this->fail('Expected a conflict');
+        } catch (\App\Exception\MissionReassignmentException $e) {
+            $this->assertInstanceOf(ConflictHttpException::class, $e);
+            $this->assertSame(\App\Service\MissionReassignmentPolicy::NOT_REASSIGNABLE, $e->getErrorCode());
+        }
     }
 
     /** D-101 — reassign() must never place an ineligible instrumentist on a mission. */

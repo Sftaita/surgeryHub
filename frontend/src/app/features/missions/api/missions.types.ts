@@ -209,6 +209,32 @@ export interface InstrumentistService {
   [key: string]: unknown;
 }
 
+/**
+ * D-181 — servi par le backend (MissionReassignmentPolicy) : `modes` vide = impossible, le
+ * premier mode est celui à proposer ; `blockedReason` explique pourquoi. Jamais déduit du statut.
+ */
+export interface MissionReassignmentInfo {
+  modes: Array<"DIRECT" | "RELAY">;
+  blockedReason: { code: string; message: string } | null;
+  relayWindow: { from: string; to: string } | null;
+}
+
+/**
+ * D-182 — servi par le backend (MissionCancellationPolicy) : `blockedReason` null = annulable
+ * maintenant ; sinon le chemin de correction à suivre. Jamais déduit du statut.
+ */
+export interface MissionCancellationInfo {
+  /** Pourquoi la mission ne peut pas être annulée : l'action est affichée désactivée avec ce message. */
+  blockedReason: { code: string; message: string } | null;
+  /**
+   * Encodage soumis (REJECT) ou validé non facturé (REOPEN) : correction tracée faite d'abord,
+   * dans la même opération, une fois confirmée par le manager (`correctionConfirmed`).
+   */
+  correction?: { action: "REJECT" | "REOPEN"; message: string } | null;
+  /** Encodage existant : archivé sans aucune incidence financière si la mission est annulée (détail seulement). */
+  hasEncodingData?: boolean;
+}
+
 export interface Mission {
   id: number;
 
@@ -298,6 +324,14 @@ export interface Mission {
   prestation?: MissionPrestationSummary | null;
   /** D-156 — vrais conflits d'horaire (serveur) : jamais recalculés côté client. */
   scheduleConflictMissionIds?: number[];
+  /** D-181 — managers : comment l'instrumentiste peut être changée maintenant (serveur seul). */
+  reassignment?: MissionReassignmentInfo | null;
+  /** D-181 — relais : mission poursuivie / missions de relais. */
+  relay?: { relayOfMissionId: number | null; relayMissionIds: number[] } | null;
+  /** D-182 — managers : l'annulation est-elle possible maintenant (serveur seul). */
+  cancellation?: MissionCancellationInfo | null;
+  /** D-182 — doublon : mission conservée à la place / missions annulées remplacées par celle-ci. */
+  replacement?: { replacedByMissionId: number | null; replacesMissionIds: number[] } | null;
 
   [key: string]: unknown;
 }

@@ -41,6 +41,8 @@ final class MissionEncodingService
         private readonly EncodingTrackingRepository $trackingRepository,
         // Complément D-156 — optional only so plain unit tests can build the service; always autowired.
         private readonly ?PrestationContentGuard $prestationContent = null,
+        // D-183 — même convention : optionnel pour les tests unitaires simples, toujours injecté.
+        private readonly ?InterventionTypeFirmLinkService $firmLinks = null,
     ) {}
 
     public function buildEncodingDto(Mission $mission, User $viewer): MissionEncodingDto
@@ -293,6 +295,8 @@ final class MissionEncodingService
             ->orderBy('it.label', 'ASC')
             ->getQuery()->getResult();
 
+        // D-183 — « Aucune firme » : calculé ici (rattachements effectifs), jamais par le client.
+        $linkCounts = $this->firmLinks?->effectiveLinkCounts();
         $typeDtos = [];
         foreach ($types as $t) {
             $typeDtos[] = new InterventionTypeSlimDto(
@@ -300,6 +304,9 @@ final class MissionEncodingService
                 code: (string) $t->getCode(),
                 label: (string) $t->getLabel(),
                 allowedWithoutFirm: $t->isAllowedWithoutFirm(),
+                selectableWithoutFirm: $linkCounts === null
+                    ? $t->isAllowedWithoutFirm()
+                    : InterventionTypeFirmLinkService::selectableWithoutFirm($t, $linkCounts[(int) $t->getId()] ?? 0),
             );
         }
 

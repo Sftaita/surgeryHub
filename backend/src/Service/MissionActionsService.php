@@ -19,11 +19,14 @@ final class MissionActionsService
     ) {}
 
     /**
+     * @param int $prestationSize D-182 — missions of its multi-room prestation (D-156), as
+     *        served with the mission (list annotation, detail): 'cancel' follows exactly
+     *        MissionCancellationPolicy::blockedReason() with it
      * @return string[]
      */
-    public function allowedActions(Mission $mission, User $viewer): array
+    public function allowedActions(Mission $mission, User $viewer, int $prestationSize = 1): array
     {
-        $actions = $this->computeActions($mission, $viewer);
+        $actions = $this->computeActions($mission, $viewer, $prestationSize);
 
         // D-156 — the hours of a mission linked to the shared presence of a multi-room prestation
         // are the prestation's (PUT /api/missions/{id}/prestation/presence): the per-mission hours
@@ -36,7 +39,7 @@ final class MissionActionsService
     }
 
     /** @return string[] */
-    private function computeActions(Mission $mission, User $viewer): array
+    private function computeActions(Mission $mission, User $viewer, int $prestationSize): array
     {
         $roles = $viewer->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
@@ -70,17 +73,33 @@ final class MissionActionsService
                     ? ['view', 'view_publications', 'cancel', 'dispatch']
                     : ['view', 'view_publications', 'cancel'],
                 MissionStatus::ASSIGNED => [...['view', 'cancel', 'reassign', 'view_claim'], ...$remind],
-                MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [...['view'], ...$remind],
+                // D-181 — a started mission still changes hands (directly, or by a relay once
+                // encoding exists): same rule exactly as MissionReassignmentPolicy::modes().
+                // D-182 — and cancelled when it did not take place (filtered below).
+                MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [
+                    ...['view'],
+                    ...(MissionReassignmentPolicy::modes($mission, Clock::get()->now()) !== [] ? ['reassign'] : []),
+                    'cancel',
+                    ...$remind,
+                ],
                 // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED
                 // (une mission SUBMITTED n'a jamais été validée, donc rien à "rouvrir").
-                MissionStatus::SUBMITTED => ['view', 'validate', 'reject'],
+                // D-182 — 'cancel' : renvoyée en correction puis annulée dans la même opération.
+                MissionStatus::SUBMITTED => ['view', 'validate', 'reject', 'cancel'],
                 // D-148 — jamais proposé quand reopen() le refuserait (calcul LOCKED).
+                // D-182 — 'cancel' : rouverte puis annulée dans la même opération.
                 MissionStatus::VALIDATED => MissionEncodingCorrectionPolicy::reopenBlockedReason($mission) === null
-                    ? ['view', 'reopen']
+                    ? ['view', 'reopen', 'cancel']
                     : ['view'],
                 MissionStatus::DECLARED => [...['view', 'approve', 'reject', 'edit'], ...$remind],
                 default => ['view'],
             };
+
+            // D-182 — 'cancel' : même règle exactement que MissionPostDeployService::cancelByManager()
+            // (MissionCancellationPolicy — ex. jamais une mission d'une présence commune).
+            if (MissionCancellationPolicy::blockedReason($mission, $prestationSize) !== null) {
+                $actions = array_values(array_diff($actions, ['cancel']));
+            }
 
             // D-177 — lever la priorité d'une reprise de salle : même règle que MissionVoter::LIFT_PRIORITY.
             if (RoomTakeoverPriorityService::pendingPriority($mission) !== null) {
