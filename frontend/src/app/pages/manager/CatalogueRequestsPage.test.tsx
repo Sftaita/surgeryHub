@@ -297,7 +297,9 @@ describe("CatalogueRequestsPage — résolution type d'intervention (D-146 bis)"
     await pickType(user, dialog);
 
     expect(await within(dialog).findByText(/n'est pas encore configurée chez Zimmer Biomet/)).toBeInTheDocument();
-    const radios = within(dialog).getAllByRole("radio");
+    // Décision de prestation : aucune option préchoisie (le choix « Firme associée » D-183 est distinct).
+    const radios = within(dialog).getAllByRole("radio").filter((r) => !["firm", "none"].includes((r as HTMLInputElement).value));
+    expect(radios.length).toBeGreaterThan(0);
     expect(radios.every((r) => !(r as HTMLInputElement).checked)).toBe(true);
     expect(within(dialog).getByRole("button", { name: "Résoudre" })).toBeDisabled();
 
@@ -898,10 +900,11 @@ describe("CatalogueRequestsPage — demande faite « Aucune firme » (D-178)", (
     draft: { id: 1, status: "OPEN", materialLineCount: 0, materialItemRequestCount: 0 },
     mission: { id: 502, site: "Clinique du Parc", status: "ASSIGNED", locked: false, reopenAvailable: false, interventions: [] },
   };
-  const ALLOWED = { id: 58, code: "SUT-PLAS-TEND-QUAD", label: "Plastie/Suture du tendon quadricipital", specialty: null, active: true, allowedWithoutFirm: true };
-  const NOT_ALLOWED = { id: 19, code: "LCA", label: "Plastie du ligament croisé antérieur", specialty: null, active: true, allowedWithoutFirm: false };
+  // D-183 — `selectableWithoutFirm` est calculé par le serveur (sans rattachement à une firme, ou autorisée).
+  const ALLOWED = { id: 58, code: "SUT-PLAS-TEND-QUAD", label: "Plastie/Suture du tendon quadricipital", specialty: null, active: true, allowedWithoutFirm: false, selectableWithoutFirm: true };
+  const NOT_ALLOWED = { id: 19, code: "LCA", label: "Plastie du ligament croisé antérieur", specialty: null, active: true, allowedWithoutFirm: false, selectableWithoutFirm: false };
 
-  it("se résout sans firme, uniquement sur une intervention autorisée sans firme", async () => {
+  it("se résout sans firme, uniquement sur une intervention sélectionnable sans firme", async () => {
     const user = userEvent.setup();
     getInterventionTypeRequestsMock.mockResolvedValue({ items: [withoutFirmRequest], total: 1 });
     getInterventionTypesMock.mockResolvedValue([ALLOWED, NOT_ALLOWED]);
@@ -920,11 +923,11 @@ describe("CatalogueRequestsPage — demande faite « Aucune firme » (D-178)", (
     await user.click(screen.getByRole("option", { name: /Plastie\/Suture du tendon quadricipital/ }));
     await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
 
-    await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, { interventionTypeId: 58 }));
+    await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, { withoutFirm: true, interventionTypeId: 58 }));
     expect(fetchFirmServiceOfferingsMock).not.toHaveBeenCalled();
   });
 
-  it("nouvelle intervention : autorisation sans firme explicite obligatoire", async () => {
+  it("D-183 — nouvelle intervention sans firme : aucune autorisation à cocher, aucune prestation demandée", async () => {
     const user = userEvent.setup();
     getInterventionTypeRequestsMock.mockResolvedValue({ items: [withoutFirmRequest], total: 1 });
     getInterventionTypesMock.mockResolvedValue([ALLOWED]);
@@ -936,13 +939,40 @@ describe("CatalogueRequestsPage — demande faite « Aucune firme » (D-178)", (
     await user.click(within(dialog).getByRole("button", { name: "Créer une nouvelle intervention" }));
     await user.type(within(dialog).getByLabelText(/Code/), "PLAS-QUAD");
 
-    const submit = within(dialog).getByRole("button", { name: "Résoudre" });
-    expect(submit).toBeDisabled();
-    await user.click(within(dialog).getByLabelText(/Autoriser cette nouvelle intervention sans firme/));
-    await user.click(submit);
+    expect(within(dialog).queryByLabelText(/Autoriser cette nouvelle intervention sans firme/)).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
 
     await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, {
-      newInterventionType: { code: "PLAS-QUAD", label: "Plastie du quadriceps", allowedWithoutFirm: true },
+      withoutFirm: true,
+      newInterventionType: { code: "PLAS-QUAD", label: "Plastie du quadriceps" },
+    }));
+  });
+
+  it("D-183 — demande faite avec une firme : le manager choisit « Aucune firme » et crée l'intervention sans prestation", async () => {
+    const user = userEvent.setup();
+    const withFirmRequest = { ...withoutFirmRequest, label: "Résection acromio-claviculaire", withoutFirm: false, requestedFirm: { id: 3, name: "Arthrex" } };
+    getInterventionTypeRequestsMock.mockResolvedValue({ items: [withFirmRequest], total: 1 });
+    getInterventionTypesMock.mockResolvedValue([ALLOWED, NOT_ALLOWED]);
+    getFirmsMock.mockResolvedValue([{ id: 3, name: "Arthrex" }]);
+    fetchFirmServiceOfferingsMock.mockResolvedValue([]);
+    resolveInterventionTypeRequestMock.mockResolvedValue({ requestId: 11, draftId: 1, status: "RESOLVED", draftStatus: "CONVERTED", missionInterventionId: 77, offeringDecision: null });
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Résoudre" }));
+    const dialog = await screen.findByRole("dialog", { name: "Résoudre la demande d'intervention" });
+    expect(within(dialog).getByLabelText(/Avec quelle firme/)).toBeInTheDocument();
+    await user.click(within(dialog).getByLabelText("Aucune firme"));
+    expect(within(dialog).getByTestId("resolve-without-firm-info")).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(/Avec quelle firme/)).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Créer une nouvelle intervention" }));
+    await user.type(within(dialog).getByLabelText(/Code/), "RES-AC");
+    expect(within(dialog).queryByText(/n'est pas encore configurée/)).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Résoudre" }));
+
+    await waitFor(() => expect(resolveInterventionTypeRequestMock).toHaveBeenCalledWith(11, {
+      withoutFirm: true,
+      newInterventionType: { code: "RES-AC", label: "Résection acromio-claviculaire" },
     }));
   });
 });

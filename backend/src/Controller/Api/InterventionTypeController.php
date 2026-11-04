@@ -7,7 +7,9 @@ use App\Entity\InterventionType;
 use App\Entity\PricingRule;
 use App\Exception\InterventionTypeMergeConflictException;
 use App\Security\Voter\BillingVoter;
+use App\Service\ActiveFirmResolver;
 use App\Service\InterventionEncodingContextService;
+use App\Service\InterventionTypeFirmLinkService;
 use App\Service\InterventionTypeAuditService;
 use App\Service\InterventionTypeMergeService;
 use App\Service\InterventionTypeSimilarityService;
@@ -35,6 +37,8 @@ final class InterventionTypeController extends AbstractController
         private readonly InterventionTypeAuditService $auditService,
         private readonly InterventionTypeMergeService $mergeService,
         private readonly PricingRuleResolver $pricingRuleResolver,
+        private readonly InterventionTypeFirmLinkService $firmLinks,
+        private readonly ActiveFirmResolver $firmResolver,
     ) {}
 
     #[Route('', name: 'api_intervention_types_list', methods: ['GET'])]
@@ -58,9 +62,12 @@ final class InterventionTypeController extends AbstractController
             ->groupBy('o.interventionType')
             ->getQuery()->getResult();
         $firmsCountByTypeId = array_column($counts, 'cnt', 'typeId');
+        // D-183 — rattachements effectifs (prestation active d'une firme active) : catégorie
+        // « Interventions sans firme » et sélection « Aucune firme », toujours calculées.
+        $linkCounts = $this->firmLinks->effectiveLinkCounts();
 
         return $this->json(array_map(
-            fn (InterventionType $t) => $this->serialize($t, (int) ($firmsCountByTypeId[$t->getId()] ?? 0)),
+            fn (InterventionType $t) => $this->serialize($t, (int) ($firmsCountByTypeId[$t->getId()] ?? 0), $linkCounts[(int) $t->getId()] ?? 0),
             $types,
         ));
     }
@@ -115,21 +122,41 @@ final class InterventionTypeController extends AbstractController
             return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'code et label sont requis.']], 422);
         }
 
+        // D-183 — « Firme associée » : absente (ou null) = « Aucune firme », l'intervention est
+        // créée seule, sans prestation ni tarif ; sinon la prestation firme × type est créée
+        // dans la même transaction (jamais une intervention créée et un rattachement perdu).
+        $firmId = $data['firmId'] ?? null;
+        if ($firmId !== null && (!is_int($firmId) || $firmId <= 0)) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'firmId doit être l\'identifiant d\'une firme, ou null (aucune firme).']], 422);
+        }
+
+        $existing = $this->em->getRepository(InterventionType::class)->findOneBy(['code' => $code]);
+        if ($existing instanceof InterventionType) {
+            return $this->codeConflict($existing);
+        }
+        $firm = $firmId !== null ? $this->firmResolver->resolveActive($firmId) : null;
+
         $type = new InterventionType();
         $type->setCode($code);
         $type->setLabel($label);
         $type->setSpecialty(isset($data['specialty']) ? trim((string) $data['specialty']) ?: null : null);
         $type->setActive((bool) ($data['active'] ?? true));
 
-        $this->em->persist($type);
-
         try {
-            $this->em->flush();
+            $this->em->wrapInTransaction(function () use ($type, $firm): void {
+                $this->em->persist($type);
+                $this->em->flush();
+                if ($firm !== null) {
+                    $this->firmLinks->link($type, (int) $firm->getId());
+                }
+            });
         } catch (UniqueConstraintViolationException) {
             return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => 'Un type d\'intervention avec ce code existe déjà.']], 409);
         }
 
-        return $this->json($this->serialize($type, null), Response::HTTP_CREATED);
+        $effectiveLinks = $firm !== null ? 1 : 0;
+
+        return $this->json($this->serialize($type, $effectiveLinks, $effectiveLinks), Response::HTTP_CREATED);
     }
 
     /**
@@ -244,7 +271,63 @@ final class InterventionTypeController extends AbstractController
 
         $this->em->flush();
 
-        return $this->json($this->serialize($type, null));
+        return $this->json($this->serialize($type, null, $this->firmLinks->effectiveLinkCount($type)));
+    }
+
+    /**
+     * D-183 — rattache l'intervention à une firme (Référentiel › détail) : crée la prestation
+     * firme × type, ou réactive celle qui avait été retirée. Jamais de doublon d'intervention
+     * ni de prestation. Body : { firmId: int }.
+     */
+    #[Route('/{id}/firm-links', name: 'api_intervention_types_firm_link', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function linkFirm(int $id, Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $type = $this->getTypeOr404($id);
+        if ($type instanceof JsonResponse) {
+            return $type;
+        }
+        $data = json_decode($request->getContent(), true) ?? [];
+        $firmId = $data['firmId'] ?? null;
+        if (!is_int($firmId) || $firmId <= 0) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'firmId est requis.']], 422);
+        }
+
+        $result = $this->firmLinks->link($type, $firmId);
+
+        return $this->json([
+            'offeringId' => $result['offering']->getId(),
+            'firmId' => $firmId,
+            'active' => true,
+            'reactivated' => $result['reactivated'],
+            'interventionType' => $this->serialize($type, null, $this->firmLinks->effectiveLinkCount($type)),
+        ], $result['reactivated'] ? Response::HTTP_OK : Response::HTTP_CREATED);
+    }
+
+    /**
+     * D-183 — retire le rattachement : la prestation est désactivée, jamais supprimée
+     * (tarifs, encodages et facturation historiques intacts) ; l'intervention reste. Sans
+     * autre rattachement effectif, elle revient dans « Interventions sans firme ».
+     */
+    #[Route('/{id}/firm-links/{offeringId}', name: 'api_intervention_types_firm_unlink', methods: ['DELETE'], requirements: ['id' => '\d+', 'offeringId' => '\d+'])]
+    public function unlinkFirm(int $id, int $offeringId): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $type = $this->getTypeOr404($id);
+        if ($type instanceof JsonResponse) {
+            return $type;
+        }
+
+        $offering = $this->firmLinks->unlink($type, $offeringId);
+
+        return $this->json([
+            'offeringId' => $offering->getId(),
+            'firmId' => $offering->getFirm()?->getId(),
+            'active' => false,
+            'interventionType' => $this->serialize($type, null, $this->firmLinks->effectiveLinkCount($type)),
+        ]);
     }
 
     #[Route('/{id}', name: 'api_intervention_types_delete', methods: ['DELETE'], requirements: ['id' => '\d+'])]
@@ -340,7 +423,23 @@ final class InterventionTypeController extends AbstractController
         return $type;
     }
 
-    private function serialize(InterventionType $t, ?int $firmsCount): array
+    /** D-183 — code déjà pris : l'intervention existante est renvoyée pour être réutilisée, jamais dupliquée. */
+    private function codeConflict(InterventionType $existing): JsonResponse
+    {
+        return $this->json(['error' => [
+            'status' => 409,
+            'code' => 'INTERVENTION_TYPE_CODE_EXISTS',
+            'message' => sprintf('Le code « %s » est déjà utilisé par « %s » : utilisez cette intervention existante ou choisissez un autre code.', $existing->getCode(), $existing->getLabel()),
+            'existingInterventionType' => $this->serialize($existing, null),
+        ]], 409);
+    }
+
+    /**
+     * `$effectiveLinks` (D-183) : nombre de firmes réellement rattachées (prestation active d'une
+     * firme active), quand il est connu — `activeFirmsCount`, `withoutFirm` (catégorie
+     * « Interventions sans firme ») et `selectableWithoutFirm` (« Aucune firme » à l'encodage).
+     */
+    private function serialize(InterventionType $t, ?int $firmsCount, ?int $effectiveLinks = null): array
     {
         $data = [
             'id' => $t->getId(),
@@ -354,6 +453,11 @@ final class InterventionTypeController extends AbstractController
 
         if ($firmsCount !== null) {
             $data['firmsCount'] = $firmsCount;
+        }
+        if ($effectiveLinks !== null) {
+            $data['activeFirmsCount'] = $effectiveLinks;
+            $data['withoutFirm'] = $t->isActive() && $effectiveLinks === 0;
+            $data['selectableWithoutFirm'] = InterventionTypeFirmLinkService::selectableWithoutFirm($t, $effectiveLinks);
         }
 
         return $data;

@@ -29,7 +29,9 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 /**
  * D-178 — interventions sans firme. Le manager autorise un type à être encodé « Aucune firme »
- * (Catalogue › Interventions) ; seul ce choix explicite, enregistré sur l'intervention
+ * (Catalogue › Interventions) ; D-183 — un type sans aucun rattachement effectif à une firme
+ * l'est aussi, sans autorisation (les types « non autorisés » ci-dessous sont donc rattachés
+ * à une firme). Seul ce choix explicite, enregistré sur l'intervention
  * (MissionIntervention::$withoutFirm), rend une intervention légitimement sans firme :
  * complétude, calcul financier (jamais MISSING_PRIMARY_FIRM), facturation. Le paramétrage ne
  * s'applique qu'aux nouveaux encodages ; une firme simplement absente (historique) reste une
@@ -118,8 +120,8 @@ final class InterventionWithoutFirmTest extends WebTestCase
         [$surgeon, $instr, $site] = $this->people();
         $mission = $this->mission($surgeon, $instr, $site);
         $allowed = $this->type('QUAD', allowedWithoutFirm: true);
-        $notAllowed = $this->type('LCA');
         $firm = $this->firm('Arthrex');
+        $notAllowed = $this->type('LCA', linkedTo: $firm);
         $token = $this->login($client, $instr);
         $uri = "/api/missions/{$mission->getId()}/interventions";
 
@@ -164,8 +166,8 @@ final class InterventionWithoutFirmTest extends WebTestCase
         $mission = $this->mission($surgeon, $instr, $site);
         $allowed = $this->type('QUAD', allowedWithoutFirm: true);
         $otherAllowed = $this->type('BICEPS', allowedWithoutFirm: true);
-        $notAllowed = $this->type('LCA');
         $firm = $this->firm('Arthrex');
+        $notAllowed = $this->type('LCA', linkedTo: $firm);
         $withFirm = $this->intervention($mission, $allowed, $firm);
         $token = $this->login($client, $instr);
         $uri = "/api/missions/{$mission->getId()}/interventions/{$withFirm->getId()}";
@@ -293,7 +295,8 @@ final class InterventionWithoutFirmTest extends WebTestCase
         [$surgeon, $instr, $site] = $this->people();
         $manager = $this->user('ROLE_MANAGER');
         $mission = $this->mission($surgeon, $instr, $site);
-        $type = $this->type('QUAD', allowedWithoutFirm: true);
+        // D-183 — rattaché à une firme : sans l'autorisation, plus sélectionnable « Aucune firme ».
+        $type = $this->type('QUAD', allowedWithoutFirm: true, linkedTo: $this->firm('Arthrex'));
         $token = $this->login($client, $instr);
         $uri = "/api/missions/{$mission->getId()}/interventions";
 
@@ -383,8 +386,8 @@ final class InterventionWithoutFirmTest extends WebTestCase
         $manager = $this->user('ROLE_MANAGER');
         $mission = $this->mission($surgeon, $instr, $site);
         $allowed = $this->type('QUAD', allowedWithoutFirm: true);
-        $notAllowed = $this->type('LCA');
         $firm = $this->firm('Arthrex');
+        $notAllowed = $this->type('LCA', linkedTo: $firm);
         $token = $this->login($client, $instr);
         $requestsUri = "/api/missions/{$mission->getId()}/intervention-type-requests";
 
@@ -420,24 +423,29 @@ final class InterventionWithoutFirmTest extends WebTestCase
         self::assertSame($instr->getId(), $intervention->getCreatedBy()?->getId(), 'auteur = auteur de la demande');
         self::assertSame([], $this->requirements()->missingFor($intervention));
 
-        // Nouveau type créé à la résolution : autorisation sans firme explicite obligatoire.
+        // D-183 — nouveau type créé à la résolution : sans rattachement, il est sélectionnable
+        // sans firme sans autorisation ; l'autorisation D-178 reste possible, jamais implicite.
         $this->request($client, 'POST', $requestsUri, $this->login($client, $instr), ['label' => 'Autre geste sans firme', 'withoutFirm' => true]);
         $secondId = json_decode((string) $client->getResponse()->getContent(), true)['id'];
         $code = 'SF178-' . strtoupper(bin2hex(random_bytes(3)));
         $this->createdTypeCodes[] = $code;
         $managerToken = $this->login($client, $manager);
         $this->request($client, 'POST', "/api/intervention-type-requests/{$secondId}/resolve", $managerToken, ['newInterventionType' => ['code' => $code, 'label' => 'Autre geste sans firme']]);
-        self::assertSame(422, $client->getResponse()->getStatusCode());
-        $this->em->clear();
-        self::assertNull($this->em->getRepository(InterventionType::class)->findOneBy(['code' => $code]), 'transaction annulée : aucun type créé');
-
-        $this->request($client, 'POST', "/api/intervention-type-requests/{$secondId}/resolve", $managerToken, ['newInterventionType' => ['code' => $code, 'label' => 'Autre geste sans firme', 'allowedWithoutFirm' => true]]);
         self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
         $this->em->clear();
-        self::assertTrue($this->em->getRepository(InterventionType::class)->findOneBy(['code' => $code])->isAllowedWithoutFirm());
+        self::assertFalse($this->em->getRepository(InterventionType::class)->findOneBy(['code' => $code])->isAllowedWithoutFirm(), 'aucune autorisation implicite');
+
+        $this->request($client, 'POST', $requestsUri, $this->login($client, $instr), ['label' => 'Troisième geste sans firme', 'withoutFirm' => true]);
+        $thirdId = json_decode((string) $client->getResponse()->getContent(), true)['id'];
+        $authorisedCode = 'SF178-' . strtoupper(bin2hex(random_bytes(3)));
+        $this->createdTypeCodes[] = $authorisedCode;
+        $this->request($client, 'POST', "/api/intervention-type-requests/{$thirdId}/resolve", $this->login($client, $manager), ['newInterventionType' => ['code' => $authorisedCode, 'label' => 'Troisième geste sans firme', 'allowedWithoutFirm' => true]]);
+        self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+        $this->em->clear();
+        self::assertTrue($this->em->getRepository(InterventionType::class)->findOneBy(['code' => $authorisedCode])->isAllowedWithoutFirm());
     }
 
-    public function test_request_with_a_firm_is_unchanged_and_never_resolved_without_firm(): void
+    public function test_request_with_a_firm_is_resolved_without_firm_only_by_the_managers_explicit_choice(): void
     {
         $client = $this->boot();
         [$surgeon, $instr, $site] = $this->people();
@@ -455,9 +463,20 @@ final class InterventionWithoutFirmTest extends WebTestCase
         self::assertSame(Response::HTTP_CREATED, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
         $requestId = json_decode((string) $client->getResponse()->getContent(), true)['id'];
 
-        // Demande faite avec une firme : la résoudre sans firme reste refusé, même sur un type autorisé.
-        $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $this->login($client, $manager), ['interventionTypeId' => $allowed->getId()]);
+        // Demande faite avec une firme : sans firme NI « Aucune firme » choisi, toujours refusé.
+        $managerToken = $this->login($client, $manager);
+        $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['interventionTypeId' => $allowed->getId()]);
         self::assertSame(422, $client->getResponse()->getStatusCode());
+        // D-183 — une firme ET « Aucune firme » : refus.
+        $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['interventionTypeId' => $allowed->getId(), 'withoutFirm' => true, 'firmId' => $firm->getId()]);
+        self::assertSame(422, $client->getResponse()->getStatusCode());
+        // D-183 — « Aucune firme » choisi explicitement par le manager : résolue sans firme.
+        $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, ['interventionTypeId' => $allowed->getId(), 'withoutFirm' => true]);
+        self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+        $this->em->clear();
+        $intervention = $this->em->find(MissionIntervention::class, json_decode((string) $client->getResponse()->getContent(), true)['missionInterventionId']);
+        self::assertNull($intervention->getPrimaryFirm());
+        self::assertTrue($intervention->isWithoutFirm());
     }
 
     // ── Droits et suggestions ───────────────────────────────────────────
@@ -469,7 +488,7 @@ final class InterventionWithoutFirmTest extends WebTestCase
         $manager = $this->user('ROLE_MANAGER');
         $stranger = $this->user('ROLE_INSTRUMENTIST');
         $mission = $this->mission($surgeon, $instr, $site);
-        $type = $this->type('QUAD', allowedWithoutFirm: true);
+        $type = $this->type('QUAD', allowedWithoutFirm: true, linkedTo: $this->firm('Arthrex'));
         $past = $this->mission($surgeon, $this->user('ROLE_INSTRUMENTIST'), $site);
         $this->intervention($past, $type, null, withoutFirm: true);
         // Firme simplement absente : jamais suggérée sous « Aucune firme ».
@@ -554,7 +573,8 @@ final class InterventionWithoutFirmTest extends WebTestCase
         return $f;
     }
 
-    private function type(string $code, bool $allowedWithoutFirm = false): InterventionType
+    /** `$linkedTo` (D-183) : rattachement effectif (prestation active) à cette firme. */
+    private function type(string $code, bool $allowedWithoutFirm = false, ?Firm $linkedTo = null): InterventionType
     {
         $t = new InterventionType();
         $t->setCode($code . '-' . bin2hex(random_bytes(4)));
@@ -562,6 +582,13 @@ final class InterventionWithoutFirmTest extends WebTestCase
         $t->setAllowedWithoutFirm($allowedWithoutFirm);
         $this->em->persist($t); $this->em->flush();
         $this->createdIds['types'][] = $t->getId();
+        if ($linkedTo !== null) {
+            $offering = new FirmServiceOffering();
+            $offering->setFirm($this->em->getReference(Firm::class, $linkedTo->getId()));
+            $offering->setInterventionType($t);
+            $this->em->persist($offering); $this->em->flush();
+            $this->createdIds['offerings'][] = $offering->getId();
+        }
         return $t;
     }
 

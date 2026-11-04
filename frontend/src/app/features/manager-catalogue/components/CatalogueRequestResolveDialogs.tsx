@@ -433,8 +433,8 @@ export function ResolveInterventionDialog({
   const [offeringDecision, setOfferingDecision] = React.useState<OfferingDecision | null>(null);
   const [representativePresent, setRepresentativePresent] = React.useState<boolean | null>(null);
   const [choiceId, setChoiceId] = React.useState<number | null>(null);
-  /** D-178 — nouvelle intervention créée pour une demande sans firme : autorisation explicite. */
-  const [newTypeAllowedWithoutFirm, setNewTypeAllowedWithoutFirm] = React.useState(false);
+  /** D-183 — « Firme associée » : une firme, ou « Aucune firme » choisi explicitement par le manager. */
+  const [noFirmChosen, setNoFirmChosen] = React.useState(false);
 
   const firmsQuery = useQuery({ queryKey: ["firms"], queryFn: getFirms, enabled: open });
   const typesQuery = useQuery({ queryKey: ["intervention-types", "active"], queryFn: () => getInterventionTypes(true), enabled: open });
@@ -462,7 +462,7 @@ export function ResolveInterventionDialog({
     setOfferingDecision(null);
     setRepresentativePresent(null);
     setChoiceId(null);
-    setNewTypeAllowedWithoutFirm(false);
+    setNoFirmChosen(false);
   }, [open, request, firmsQuery.data]);
 
   React.useEffect(() => {
@@ -484,10 +484,12 @@ export function ResolveInterventionDialog({
   if (!request) return null;
 
   const firms = firmsQuery.data ?? [];
-  // D-178 — demande faite « Aucune firme » : résolue sans firme, uniquement sur un type autorisé
-  // sans firme (mêmes contrôles qu'un encodage direct, appliqués aussi par le serveur).
-  const withoutFirm = request.withoutFirm === true;
-  const types = (typesQuery.data ?? []).filter((t) => !withoutFirm || t.allowedWithoutFirm === true);
+  // D-178 — demande faite « Aucune firme » : résolue sans firme. D-183 — le manager peut aussi
+  // choisir « Aucune firme » pour toute demande. Seuls les types sélectionnables sans firme
+  // (calculé par le serveur ; mêmes contrôles qu'un encodage direct, appliqués par le serveur).
+  const requestedWithoutFirm = request.withoutFirm === true;
+  const withoutFirm = requestedWithoutFirm || noFirmChosen;
+  const types = (typesQuery.data ?? []).filter((t) => !withoutFirm || t.selectableWithoutFirm === true);
   const locked = !!request.mission?.locked;
 
   // La prestation firme × intervention existe-t-elle ? (lecture du catalogue, jamais déduite)
@@ -502,7 +504,7 @@ export function ResolveInterventionDialog({
 
   const typeComplete = typeMode === "existing" ? typeId != null : newCode.trim() !== "" && newLabel.trim() !== "";
   const canSubmit = withoutFirm
-    ? !resolving && !locked && typeComplete && (typeMode === "existing" || newTypeAllowedWithoutFirm)
+    ? !resolving && !locked && typeComplete
     : !resolving && !locked && typeComplete && firmDecisionComplete(firm) && offeringKnown
     && (!offeringMissing || offeringDecision != null)
     && (!representativeRequired || representativePresent != null)
@@ -511,9 +513,10 @@ export function ResolveInterventionDialog({
   const submit = () => {
     if (!canSubmit) return;
     if (withoutFirm) {
-      onResolve(typeMode === "existing"
-        ? { interventionTypeId: typeId! }
-        : { newInterventionType: { code: newCode.trim(), label: newLabel.trim(), allowedWithoutFirm: true } });
+      onResolve({
+        withoutFirm: true,
+        ...(typeMode === "existing" ? { interventionTypeId: typeId! } : { newInterventionType: { code: newCode.trim(), label: newLabel.trim() } }),
+      });
       return;
     }
     onResolve({
@@ -542,9 +545,21 @@ export function ResolveInterventionDialog({
           <LockedMissionAlert mission={request.mission} />
           {error ? <Alert severity="error">{error.message}</Alert> : null}
 
-          {withoutFirm ? (
+          {requestedWithoutFirm ? (
             <Alert severity="info">
-              Demande faite « Aucune firme » : l'intervention sera créée sans firme. Seules les interventions autorisées sans firme peuvent être retenues. Si elle a en réalité été réalisée avec une firme, ignorez la demande.
+              Demande faite « Aucune firme » : l'intervention sera enregistrée sans firme, sans prestation ni tarif. Seules les interventions sans firme (ou autorisées sans firme) peuvent être retenues. Si elle a en réalité été réalisée avec une firme, ignorez la demande.
+            </Alert>
+          ) : (<>
+          <FormControl>
+            <FormLabel sx={{ fontSize: 14, fontWeight: 600 }}>Firme associée</FormLabel>
+            <RadioGroup row value={noFirmChosen ? "none" : "firm"} onChange={(e) => setNoFirmChosen(e.target.value === "none")}>
+              <FormControlLabel value="firm" control={<Radio size="small" />} label={<Typography variant="body2">Une firme</Typography>} disabled={resolving} />
+              <FormControlLabel value="none" control={<Radio size="small" />} label={<Typography variant="body2">Aucune firme</Typography>} disabled={resolving} />
+            </RadioGroup>
+          </FormControl>
+          {noFirmChosen ? (
+            <Alert severity="info" data-testid="resolve-without-firm-info">
+              L'intervention sera enregistrée sans firme : aucune prestation, aucun tarif. Seules les interventions sans firme (ou autorisées sans firme) peuvent être retenues ; une nouvelle intervention apparaîtra dans « Interventions sans firme ».
             </Alert>
           ) : (<>
           <FirmDecisionField
@@ -558,6 +573,7 @@ export function ResolveInterventionDialog({
           <Typography variant="caption" color="text.secondary">
             La firme validée s'applique uniquement à cette nouvelle intervention, jamais aux autres interventions de la mission.
           </Typography>
+          </>)}
           </>)}
 
           <ToggleButtonGroup exclusive size="small" value={typeMode} onChange={(_, v) => v && setTypeMode(v)}>
@@ -582,14 +598,7 @@ export function ResolveInterventionDialog({
             </Stack>
           )}
 
-          {withoutFirm && typeMode === "create" ? (
-            <FormControlLabel
-              control={<Checkbox size="small" checked={newTypeAllowedWithoutFirm} onChange={(e) => setNewTypeAllowedWithoutFirm(e.target.checked)} />}
-              label={<Typography variant="body2">Autoriser cette nouvelle intervention sans firme (obligatoire pour cette demande)</Typography>}
-            />
-          ) : null}
-
-          {offeringMissing ? (
+          {!withoutFirm && offeringMissing ? (
             <FormControl>
               <FormLabel sx={{ fontSize: 14, fontWeight: 600 }}>
                 La prestation « {typeMode === "existing" ? types.find((t) => t.id === typeId)?.label : newLabel.trim()} » n'est pas encore configurée chez {firmName || "cette firme"}. Que décidez-vous ?
@@ -602,7 +611,7 @@ export function ResolveInterventionDialog({
             </FormControl>
           ) : null}
 
-          {representativeRequired ? (
+          {!withoutFirm && representativeRequired ? (
             <FormControl>
               <FormLabel sx={{ fontSize: 14, fontWeight: 600 }}>Un délégué de {firmName} était-il présent ?</FormLabel>
               <RadioGroup row value={representativePresent == null ? "" : String(representativePresent)} onChange={(e) => setRepresentativePresent(e.target.value === "true")}>
@@ -613,7 +622,7 @@ export function ResolveInterventionDialog({
             </FormControl>
           ) : null}
 
-          {choiceGroup ? (
+          {!withoutFirm && choiceGroup ? (
             <FormControl>
               <FormLabel sx={{ fontSize: 14, fontWeight: 600 }}>{choiceGroup.question}</FormLabel>
               <RadioGroup value={choiceId == null ? "" : String(choiceId)} onChange={(e) => setChoiceId(Number(e.target.value))}>

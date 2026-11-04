@@ -10,6 +10,7 @@ use App\Service\CatalogueResolutionGuard;
 use App\Service\ChoiceMaterialExclusivityService;
 use App\Service\EncodingContentCompletenessService;
 use App\Service\InterventionRequirementsService;
+use App\Service\InterventionTypeFirmLinkService;
 use App\Service\MissionEntryOrderAllocator;
 use App\Service\MissionInterventionDraftService;
 use App\Service\RepresentativePolicyResolver;
@@ -31,6 +32,7 @@ final class CatalogueRequestServiceFactory
             new RepresentativePolicyResolver($em),
             new RequiredChoiceGroupResolver($em),
             new ChoiceMaterialExclusivityService(),
+            new InterventionTypeFirmLinkService($em, new ActiveFirmResolver($em)),
         );
     }
 

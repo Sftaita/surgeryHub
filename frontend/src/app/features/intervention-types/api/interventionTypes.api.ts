@@ -6,11 +6,26 @@ export interface InterventionType {
   label: string;
   specialty: string | null;
   active: boolean;
-  /** D-178 — encodable « Aucune firme » (nouveaux encodages seulement). */
+  /** D-178 — autorisée « Aucune firme » par le manager (indépendant des rattachements). */
   allowedWithoutFirm?: boolean;
   mergedIntoId?: number | null;
   /** Présent uniquement sur GET (liste) — nombre de firmes ayant une prestation sur ce type. */
   firmsCount?: number;
+  /** D-183 — calculés par le serveur à partir des rattachements effectifs (prestation active d'une firme active). */
+  activeFirmsCount?: number;
+  /** D-183 — catégorie « Interventions sans firme » : active, sans aucun rattachement effectif. */
+  withoutFirm?: boolean;
+  /** D-183 — proposée « Aucune firme » à l'encodage : sans rattachement effectif, ou autorisée (D-178). */
+  selectableWithoutFirm?: boolean;
+}
+
+/** D-183 — rattachement d'une intervention à une firme (prestation firme × type). */
+export interface InterventionTypeFirmLinkResult {
+  offeringId: number;
+  firmId: number;
+  active: boolean;
+  reactivated?: boolean;
+  interventionType: InterventionType;
 }
 
 export type SimilarityConfidence = "HIGH" | "MEDIUM" | "LOW";
@@ -65,6 +80,8 @@ export async function createInterventionType(body: {
   code: string;
   label: string;
   specialty?: string;
+  /** D-183 — « Firme associée » : null = « Aucune firme » (aucune prestation, aucun tarif). */
+  firmId?: number | null;
 }): Promise<InterventionType> {
   const res = await apiClient.post("/api/intervention-types", body);
   return res.data;
@@ -75,6 +92,18 @@ export async function updateInterventionType(
   body: { label?: string; specialty?: string | null; active?: boolean; allowedWithoutFirm?: boolean },
 ): Promise<InterventionType> {
   const res = await apiClient.patch(`/api/intervention-types/${id}`, body);
+  return res.data;
+}
+
+/** D-183 — rattache l'intervention à une firme (crée la prestation, ou réactive celle retirée). */
+export async function linkInterventionTypeFirm(id: number, firmId: number): Promise<InterventionTypeFirmLinkResult> {
+  const res = await apiClient.post(`/api/intervention-types/${id}/firm-links`, { firmId });
+  return res.data;
+}
+
+/** D-183 — retire le rattachement (prestation désactivée, jamais supprimée ; l'intervention reste). */
+export async function unlinkInterventionTypeFirm(id: number, offeringId: number): Promise<InterventionTypeFirmLinkResult> {
+  const res = await apiClient.delete(`/api/intervention-types/${id}/firm-links/${offeringId}`);
   return res.data;
 }
 
