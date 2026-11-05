@@ -1010,8 +1010,8 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Le manager n'avait aucune vue des heures encodées et validées par instrumentiste ni de leur coût estimé.",
-      "status": "fusionne",
-      "statusSince": "2026-11-04",
+      "status": "deploye",
+      "statusSince": "2026-11-05",
       "refs": {
         "branches": [
           "feat/heures-instrumentistes-manager"
@@ -1031,12 +1031,14 @@
         {
           "type": "validation",
           "status": "en-attente",
-          "validation": "accord explicite",
-          "description": "Déploiement de main (8707cd1, D-180 seul par rapport à la production e97d879, aucune migration), puis tag daté + deploy.sh mark après contrôles."
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : affichage réel de la carte Top 5 (et « En savoir plus »), de la page Facturation → Heures instrumentistes (filtres mois / site / recherche, aucune donnée périmée) et du tiroir avec une session manager réelle, à confirmer par l'utilisateur."
         }
       ],
-      "nextAction": "PR #70 fusionnée (8707cd1). Déploiement de main complet sur accord explicite ; validation fonctionnelle manager après déploiement.",
-      "lastReviewed": "2026-11-04"
+      "nextAction": "Officialisé v2026.11.05-prod (8707cd1). Clôturer la réserve visuelle après confirmation de l'utilisateur. Rollback : deploy/deploy.sh rollback e97d879a1f5cbd4975484dd7b0f135c018352c63.",
+      "lastReviewed": "2026-11-05",
+      "validationNeeded": "Contrôles API et financiers validés en production (418 contrôles, 0 erreur). Validation visuelle par l'utilisateur avec une session manager réelle encore ouverte.",
+      "prodEvidence": "v2026.11.05-prod (8707cd1) : 0 migration (99/99) ; activate 2026-11-05 07:46 UTC ; mark OFFICIAL ; /api/version = OFFICIAL v2026.11.05-prod · 8707cd1 ; 418 contrôles API en lecture seule sans erreur : voir docs/production.md."
     }
   ]
 }
