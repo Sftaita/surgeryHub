@@ -16884,3 +16884,41 @@ les requêtes du suivi côté écran (seul le badge l'était, pour les validatio
   n'est jamais `SUBMITTED` (D-182 renvoie d'abord l'encodage en correction).
 - Aucune donnée modifiée : les missions annulées restent en base, avec leurs heures, encodages
   archivés et audits.
+
+## D-185 — Interface manager / admin utilisable sur téléphone (2026-11-06)
+
+**Constat.** L'interface manager/admin (`DesktopLayout`) n'avait pas de version mobile : sidebar
+permanente de 248 px quelle que soit la largeur, tableaux à colonnes fixes débordant de la page,
+tiroirs de 400 à 560 px, en-têtes et filtres sur une seule ligne. Relevé à la recette D-165
+(390 px), puis noté comme « chantier séparé » en D-120 et D-180 (`UX-MANAGER-MOBILE`).
+
+**Décision.**
+- **Navigation.** Sous 900 px (seuil `md`, `docs/design/components/navigation.md` « Sidebar
+  (desktop ≥ 900px) »), `DesktopLayout` affiche une barre supérieure collante : bouton « Ouvrir
+  le menu », nom de l'application, cloche « Notifications » avec le nombre de non lues (même
+  compteur serveur que la sidebar). Le menu est la même navigation dans un tiroir temporaire
+  (`#manager-nav`), refermé à chaque changement de page ; le menu compte reste en bas du tiroir.
+  À 900 px et au-delà, rien ne change (sidebar permanente de 248 px). Pas de second layout : le
+  shell manager/admin reste unique, distinct du `MobileLayout` instrumentiste/chirurgien.
+- **Superposition.** La barre a un `z-index` de 15 : au-dessus des en-têtes `sticky` des pages,
+  sous les panneaux maison (tiroir du Suivi des encodages, filtres : 20 ; guide iOS : 800) et sous
+  tous les tiroirs/modales MUI. Sa hauteur est publiée dans la variable CSS
+  `--app-header-height` (0 au-delà de 900 px) ; les en-têtes collants l'utilisent comme `top`.
+- **Pages.** Aucun changement de contenu ni de règle métier, uniquement de mise en page :
+  tableaux sans conteneur enveloppés dans un défilement horizontal ; colonnes DataGrid (Missions,
+  Instrumentistes, Chirurgiens) avec largeur minimale ; table du Suivi des encodages défilante
+  dans sa carte (largeur minimale 880 px, colonnes de la maquette D-120 conservées) ; tiroirs à
+  100 % de largeur sur téléphone ; en-têtes et barres de filtres qui passent à la ligne ; marges
+  doublées supprimées sur téléphone ; Planning V2 (liste des chirurgiens au-dessus du détail,
+  inspecteur sous la liste, navigation des paramètres au-dessus, onglets défilants) ; Prestations
+  (liste des firmes au-dessus du contenu, grilles défilantes, barre haute qui passe à la ligne).
+
+**Vérification.** Tests `DesktopLayout` (écran étroit : barre, ouverture/fermeture du menu,
+cloche, menu compte). Recette navigateur réelle sur la branche (base jetable) : les 21 pages
+manager et les 5 pages admin chargées dans un cadre de 390 px, sans aucun débordement
+horizontal ; menu ouvert (17 liens), navigation puis fermeture ; à 1280 et 900 px la sidebar
+de 248 px est inchangée, la bascule a lieu à 899 px.
+
+**Limites.** Les écrans restent conçus pour le bureau : sur téléphone, les tableaux larges se
+consultent en défilant horizontalement, ils ne sont pas convertis en cartes. Aucune migration,
+aucun changement backend.

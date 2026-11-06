@@ -19,7 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getAdminOutboundNotification } from "../api/admin.api";
 import type { OutboundNotificationDetail, OutboundNotificationStatus } from "../api/admin.types";
 
-const DRAWER_WIDTH = 480;
+const DRAWER_WIDTH = { xs: "100%", sm: 480 } as const;
 
 interface Props {
   id: number | null;

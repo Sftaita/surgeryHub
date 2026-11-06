@@ -276,40 +276,42 @@ export default function DocumentFinancePanel({ resource, document, lines, correc
         <Box sx={{ px: 2, py: 1.5, bgcolor: "grey.50" }}>
           <Typography variant="subtitle2" fontWeight={700}>Paiements & remboursements ({paymentsQuery.data?.length ?? 0})</Typography>
         </Box>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Date</TableCell>
-              <TableCell>Mouvement</TableCell>
-              <TableCell>Méthode</TableCell>
-              <TableCell>Référence</TableCell>
-              <TableCell align="right">Montant</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {(paymentsQuery.data ?? []).length === 0 && (
-              <TableRow><TableCell colSpan={5} align="center" sx={{ py: 3, color: "text.secondary" }}>Aucun mouvement</TableCell></TableRow>
-            )}
-            {(paymentsQuery.data ?? []).map((p) => (
-              <TableRow key={p.id}>
-                <TableCell>{p.paidAt}</TableCell>
-                <TableCell>
-                  <Chip
-                    size="small"
-                    label={p.direction === "INBOUND" ? "Paiement" : "Remboursement"}
-                    color={p.direction === "INBOUND" ? "success" : "error"}
-                    variant="outlined"
-                  />
-                </TableCell>
-                <TableCell>{METHOD_LABELS[p.method]}</TableCell>
-                <TableCell>{p.reference ?? "—"}</TableCell>
-                <TableCell align="right">
-                  <strong>{p.direction === "OUTBOUND" ? "-" : ""}{Number(p.amount).toFixed(2)} {p.currency}</strong>
-                </TableCell>
+        <Box sx={{ overflowX: "auto" }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Date</TableCell>
+                <TableCell>Mouvement</TableCell>
+                <TableCell>Méthode</TableCell>
+                <TableCell>Référence</TableCell>
+                <TableCell align="right">Montant</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {(paymentsQuery.data ?? []).length === 0 && (
+                <TableRow><TableCell colSpan={5} align="center" sx={{ py: 3, color: "text.secondary" }}>Aucun mouvement</TableCell></TableRow>
+              )}
+              {(paymentsQuery.data ?? []).map((p) => (
+                <TableRow key={p.id}>
+                  <TableCell>{p.paidAt}</TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={p.direction === "INBOUND" ? "Paiement" : "Remboursement"}
+                      color={p.direction === "INBOUND" ? "success" : "error"}
+                      variant="outlined"
+                    />
+                  </TableCell>
+                  <TableCell>{METHOD_LABELS[p.method]}</TableCell>
+                  <TableCell>{p.reference ?? "—"}</TableCell>
+                  <TableCell align="right">
+                    <strong>{p.direction === "OUTBOUND" ? "-" : ""}{Number(p.amount).toFixed(2)} {p.currency}</strong>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
 
         <Divider />
         <Box sx={{ p: 2 }}>
@@ -387,35 +389,37 @@ export default function DocumentFinancePanel({ resource, document, lines, correc
             </Typography>
           </Box>
 
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Numéro</TableCell>
-                <TableCell>Type</TableCell>
-                <TableCell>Statut</TableCell>
-                <TableCell align="right">Montant</TableCell>
-                <TableCell align="right"></TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {(correctionsQuery.data ?? []).length === 0 && (
-                <TableRow><TableCell colSpan={5} align="center" sx={{ py: 3, color: "text.secondary" }}>Aucune correction</TableCell></TableRow>
-              )}
-              {(correctionsQuery.data ?? []).map((c) => (
-                <TableRow key={c.id} hover>
-                  <TableCell>{c.number ?? `#${c.id}`}</TableCell>
-                  <TableCell>
-                    <Chip size="small" label={c.documentType === "CREDIT_NOTE" ? "Crédit" : "Débit"} color={c.documentType === "CREDIT_NOTE" ? "error" : "info"} variant="outlined" />
-                  </TableCell>
-                  <TableCell>{c.status}</TableCell>
-                  <TableCell align="right">{Number(c.totalAmount).toFixed(2)} {document.currency}</TableCell>
-                  <TableCell align="right">
-                    <Button size="small" onClick={() => navigate(`${correctionsBasePath}/${c.id}`)}>Détail</Button>
-                  </TableCell>
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Numéro</TableCell>
+                  <TableCell>Type</TableCell>
+                  <TableCell>Statut</TableCell>
+                  <TableCell align="right">Montant</TableCell>
+                  <TableCell align="right"></TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHead>
+              <TableBody>
+                {(correctionsQuery.data ?? []).length === 0 && (
+                  <TableRow><TableCell colSpan={5} align="center" sx={{ py: 3, color: "text.secondary" }}>Aucune correction</TableCell></TableRow>
+                )}
+                {(correctionsQuery.data ?? []).map((c) => (
+                  <TableRow key={c.id} hover>
+                    <TableCell>{c.number ?? `#${c.id}`}</TableCell>
+                    <TableCell>
+                      <Chip size="small" label={c.documentType === "CREDIT_NOTE" ? "Crédit" : "Débit"} color={c.documentType === "CREDIT_NOTE" ? "error" : "info"} variant="outlined" />
+                    </TableCell>
+                    <TableCell>{c.status}</TableCell>
+                    <TableCell align="right">{Number(c.totalAmount).toFixed(2)} {document.currency}</TableCell>
+                    <TableCell align="right">
+                      <Button size="small" onClick={() => navigate(`${correctionsBasePath}/${c.id}`)}>Détail</Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
 
           {!canCorrect && document.status === "GENERATED" && (
             <Box sx={{ p: 2 }}>

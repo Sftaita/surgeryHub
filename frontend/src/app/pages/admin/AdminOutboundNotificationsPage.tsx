@@ -182,7 +182,7 @@ export default function AdminOutboundNotificationsPage() {
         />
       </Stack>
 
-      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }} flexWrap="wrap" useFlexGap>
         <Typography variant="caption" color="text.secondary">
           « Accepté par le fournisseur » ne garantit pas que le message a été lu.
         </Typography>

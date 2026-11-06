@@ -233,3 +233,23 @@
 .switchBox { width: 22px; height: 22px; border-radius: 6px; flex: none; display: flex; align-items: center; justify-content: center; cursor: pointer; border: none; padding: 0; background: #fff; box-shadow: inset 0 0 0 1.5px var(--pr-gray-300); }
 .switchBoxOn { background: var(--pr-green-600); color: #fff; box-shadow: none; }
 .switchLabel { font-size: 13.5px; font-weight: 600; color: var(--pr-gray-600); cursor: pointer; }
+
+/* ── Écran étroit (< 900px, seuil de la navigation manager) ───────────────────
+   La sidebar firmes passe au-dessus du contenu, les grilles de lignes défilent
+   horizontalement dans leur carte plutôt que d'écraser leurs colonnes. */
+@media (max-width: 899.95px) {
+  .body { flex-direction: column; min-height: 0; }
+  .sidebar { width: auto; border-right: none; border-bottom: 1px solid var(--pr-border-subtle); }
+  .sidebarList { max-height: 240px; }
+  .content, .referentielContent { padding: 16px; }
+  .topNav { flex-wrap: wrap; }
+  .topNavDest { flex: 1 1 140px; min-width: 0; padding: 8px 12px 10px; }
+  .tabs { display: flex; flex-wrap: wrap; }
+  .firmHeader, .refToolbar, .refDetailHead, .panelIntro { flex-wrap: wrap; }
+  .materialTable, .refTable { overflow-x: auto; }
+  .materialRow { min-width: 520px; }
+  .refRow { min-width: 560px; }
+  .fieldRow { flex-wrap: wrap; }
+  .modalWrap { padding: 12px; }
+  .modal { padding: 18px; max-width: 100%; box-sizing: border-box; }
+}

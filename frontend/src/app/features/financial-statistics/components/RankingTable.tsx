@@ -67,23 +67,25 @@ export default function RankingTable<T>({
       {isLoading ? (
         <Box sx={{ p: 4, textAlign: "center" }}><CircularProgress size={24} /></Box>
       ) : (
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              {columns.map((c) => <TableCell key={c.key} align={c.align ?? "left"}>{c.label}</TableCell>)}
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.length === 0 && (
-              <TableRow><TableCell colSpan={columns.length} align="center" sx={{ py: 4, color: "text.secondary" }}>{emptyLabel ?? "Aucune donnée"}</TableCell></TableRow>
-            )}
-            {rows.map((row, idx) => (
-              <TableRow key={idx} hover>
-                {columns.map((c) => <TableCell key={c.key} align={c.align ?? "left"}>{c.render(row)}</TableCell>)}
+        <Box sx={{ overflowX: "auto" }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                {columns.map((c) => <TableCell key={c.key} align={c.align ?? "left"}>{c.label}</TableCell>)}
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {rows.length === 0 && (
+                <TableRow><TableCell colSpan={columns.length} align="center" sx={{ py: 4, color: "text.secondary" }}>{emptyLabel ?? "Aucune donnée"}</TableCell></TableRow>
+              )}
+              {rows.map((row, idx) => (
+                <TableRow key={idx} hover>
+                  {columns.map((c) => <TableCell key={c.key} align={c.align ?? "left"}>{c.render(row)}</TableCell>)}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
       )}
 
       {totalPages > 1 && (

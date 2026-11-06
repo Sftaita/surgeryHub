@@ -196,7 +196,7 @@ export default function HospitalsPage() {
   const currentPhoto = pendingPhotoUrl;
 
   return (
-    <Box sx={{ p: 3, maxWidth: 960 }}>
+    <Box sx={{ p: { xs: 0, md: 3 }, maxWidth: 960 }}>
 
       {/* Header */}
       <PageHeader

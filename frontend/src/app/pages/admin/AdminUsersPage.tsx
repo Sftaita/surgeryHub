@@ -61,7 +61,7 @@ export default function AdminUsersPage() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 3 }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1.5} sx={{ mb: 3 }}>
         <Typography variant="h5" fontWeight={600}>Utilisateurs</Typography>
         <Button variant="contained" startIcon={<AddIcon />} onClick={() => setCreateOpen(true)}>
           Créer un utilisateur
@@ -69,12 +69,12 @@ export default function AdminUsersPage() {
       </Stack>
 
       {/* Filtres */}
-      <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap">
+      <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
         <SearchBox
           placeholder="Rechercher…"
           value={search}
           onChange={setSearch}
-          sx={{ width: 260 }}
+          sx={{ width: 260, maxWidth: "100%" }}
         />
         <Select
           size="small"

@@ -40,33 +40,35 @@ export default function DrilldownTable({ rows, total, page, limit, isLoading, on
       {isLoading ? (
         <Box sx={{ p: 4, textAlign: "center" }}><CircularProgress size={24} /></Box>
       ) : (
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Date</TableCell>
-              <TableCell>Bénéficiaire</TableCell>
-              <TableCell>Type</TableCell>
-              <TableCell>Statut</TableCell>
-              <TableCell align="right">Montant</TableCell>
-              <TableCell align="right">ID source</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.length === 0 && (
-              <TableRow><TableCell colSpan={6} align="center" sx={{ py: 4, color: "text.secondary" }}>Aucune donnée</TableCell></TableRow>
-            )}
-            {rows.map((row) => (
-              <TableRow key={`${row.sourceType}-${row.sourceId}`} hover>
-                <TableCell>{new Date(row.date).toLocaleString("fr-BE")}</TableCell>
-                <TableCell>{row.beneficiary}</TableCell>
-                <TableCell><Chip size="small" label={row.sourceType} variant="outlined" /></TableCell>
-                <TableCell>{row.status}</TableCell>
-                <TableCell align="right">{row.amount !== null ? `${Number(row.amount).toFixed(2)} ${row.currency ?? ""}` : "—"}</TableCell>
-                <TableCell align="right">#{row.sourceId}</TableCell>
+        <Box sx={{ overflowX: "auto" }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Date</TableCell>
+                <TableCell>Bénéficiaire</TableCell>
+                <TableCell>Type</TableCell>
+                <TableCell>Statut</TableCell>
+                <TableCell align="right">Montant</TableCell>
+                <TableCell align="right">ID source</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {rows.length === 0 && (
+                <TableRow><TableCell colSpan={6} align="center" sx={{ py: 4, color: "text.secondary" }}>Aucune donnée</TableCell></TableRow>
+              )}
+              {rows.map((row) => (
+                <TableRow key={`${row.sourceType}-${row.sourceId}`} hover>
+                  <TableCell>{new Date(row.date).toLocaleString("fr-BE")}</TableCell>
+                  <TableCell>{row.beneficiary}</TableCell>
+                  <TableCell><Chip size="small" label={row.sourceType} variant="outlined" /></TableCell>
+                  <TableCell>{row.status}</TableCell>
+                  <TableCell align="right">{row.amount !== null ? `${Number(row.amount).toFixed(2)} ${row.currency ?? ""}` : "—"}</TableCell>
+                  <TableCell align="right">#{row.sourceId}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
       )}
 
       {totalPages > 1 && (

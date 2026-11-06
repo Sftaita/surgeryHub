@@ -573,15 +573,28 @@
     },
     {
       "id": "UX-MANAGER-MOBILE",
-      "title": "Interface manager non adaptée au mobile",
-      "description": "Relevé pendant la recette D-165 (390 px) ; préexistant, accepté au déploiement v2026.10.23-prod-2.",
+      "title": "Interface manager / admin utilisable sur téléphone",
+      "description": "Sous 900 px : barre supérieure (menu, cloche) et navigation en tiroir à la place de la sidebar permanente ; tableaux défilants, tiroirs pleine largeur, en-têtes et filtres qui passent à la ligne, Planning V2 et Prestations empilés. Mise en page seulement : aucune règle métier, aucun backend, aucune migration.",
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Manager sur téléphone : écrans difficiles à utiliser.",
-      "status": "a-analyser",
-      "refs": {},
-      "nextAction": "Cadrer le besoin avec l'utilisateur.",
-      "lastReviewed": "2026-10-24"
+      "status": "pr-ouverte",
+      "statusSince": "2026-11-06",
+      "refs": {
+        "branches": [
+          "feat/manager-admin-responsive"
+        ],
+        "decision": "D-185",
+        "worktrees": [
+          "SurgicalHub-responsive"
+        ],
+        "prs": [
+          79
+        ]
+      },
+      "nextAction": "Fusionner puis déployer (accord donné le 2026-11-06).",
+      "lastReviewed": "2026-11-06",
+      "validationNeeded": "Recette navigateur 390 px faite sur base jetable (26 pages, 0 débordement) ; coup d'œil sur un vrai téléphone en production."
     },
     {
       "id": "DEBT-MUI-TOOLTIP",

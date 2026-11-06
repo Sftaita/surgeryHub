@@ -137,8 +137,18 @@ export function SurgeonPostsTab() {
   return (
     <>
       {layout === "split" ? (
-        <Stack direction="row" sx={{ height: "calc(100vh - 230px)", minHeight: 480, mx: { xs: -2, md: -3 }, mt: { xs: -2, md: -3 } }}>
-          <Box sx={{ width: 280, flex: "none", borderRight: `1px solid ${planningV2Colors.cardBorder}`, overflowY: "auto", p: 1.5 }}>
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          sx={{ height: { xs: "auto", md: "calc(100vh - 230px)" }, minHeight: { md: 480 }, mx: { xs: -2, md: -3 }, mt: { xs: -2, md: -3 } }}
+        >
+          {/* Écran étroit : la liste des chirurgiens passe au-dessus du détail (hauteur bornée). */}
+          <Box
+            sx={{
+              width: { xs: "auto", md: 280 }, maxHeight: { xs: 240, md: "none" }, flex: "none", overflowY: "auto", p: 1.5,
+              borderRight: { md: `1px solid ${planningV2Colors.cardBorder}` },
+              borderBottom: { xs: `1px solid ${planningV2Colors.cardBorder}`, md: "none" },
+            }}
+          >
             <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ px: 1, mb: 1 }}>
               <Typography sx={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: planningV2Colors.textSecondary }}>
                 Chirurgiens · {groups.length}
@@ -186,10 +196,10 @@ export function SurgeonPostsTab() {
             </Stack>
           </Box>
 
-          <Box sx={{ flex: 1, overflowY: "auto", p: 4 }}>
+          <Box sx={{ flex: 1, minWidth: 0, overflowY: "auto", p: { xs: 2, md: 4 } }}>
             {selectedGroup ? (
               <>
-                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2.75 }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={1.5} sx={{ mb: 2.75 }}>
                   <Stack direction="row" spacing={1.75} alignItems="center">
                     <PersonAvatar name={selectedGroup.label} size="lg" />
                     <Box>
@@ -246,7 +256,7 @@ export function SurgeonPostsTab() {
                     {g.posts.length} poste{g.posts.length > 1 ? "s" : ""}
                   </Typography>
                 </Stack>
-                <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(296px, 1fr))", gap: 1.75 }}>
+                <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(296px, 100%), 1fr))", gap: 1.75 }}>
                   {g.posts.map((post) => (
                     <PostCard
                       key={post.id}
@@ -282,7 +292,7 @@ export function SurgeonPostsTab() {
                     {g.posts.length} poste{g.posts.length > 1 ? "s" : ""}
                   </Typography>
                 </Stack>
-                <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.card, overflow: "hidden", boxShadow: planningV2Shadows.card }}>
+                <Box sx={{ bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.card, overflowX: "auto", overflowY: "hidden", boxShadow: planningV2Shadows.card }}>
                   {g.posts.map((post, idx) => (
                     <PostRow
                       key={post.id}
@@ -380,7 +390,7 @@ function PostRow({
   return (
     <Stack
       direction="row" alignItems="center" spacing={1.5}
-      sx={{ px: 2.25, py: 1.5, borderBottom: divider ? `1px solid ${planningV2Colors.divider}` : "none", opacity: post.active ? 1 : 0.55 }}
+      sx={{ minWidth: 720, px: 2.25, py: 1.5, borderBottom: divider ? `1px solid ${planningV2Colors.divider}` : "none", opacity: post.active ? 1 : 0.55 }}
     >
       <Box sx={{ width: 3, height: 30, borderRadius: "999px", flex: "none", bgcolor: post.type === "BLOCK" ? planningV2Colors.infoFg : "#7C4FCC" }} />
       <Typography sx={{ width: 120, flex: "none", fontSize: 13.5, fontWeight: 700 }} noWrap>{post.site.name}</Typography>
