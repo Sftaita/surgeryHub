@@ -587,6 +587,9 @@
         "decision": "D-185",
         "worktrees": [
           "SurgicalHub-responsive"
+        ],
+        "prs": [
+          79
         ]
       },
       "nextAction": "Fusionner puis déployer (accord donné le 2026-11-06).",
