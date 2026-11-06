@@ -62,7 +62,7 @@ export function MissionHistoryDrawer({ missionId, open, onClose }: MissionHistor
       anchor="right"
       open={open}
       onClose={onClose}
-      PaperProps={{ sx: { width: 400, p: 0 } }}
+      PaperProps={{ sx: { width: { xs: "100%", sm: 400 }, p: 0 } }}
     >
       <Stack sx={{ height: "100%" }}>
         {/* Header */}

@@ -3,7 +3,7 @@ import { InterventionTypesManager } from "../../features/intervention-types/comp
 
 export default function InterventionTypesPage() {
   return (
-    <Box sx={{ p: 3, maxWidth: 900 }}>
+    <Box sx={{ p: { xs: 0, md: 3 }, maxWidth: 900 }}>
       <InterventionTypesManager />
     </Box>
   );

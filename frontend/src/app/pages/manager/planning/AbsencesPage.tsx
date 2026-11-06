@@ -278,7 +278,7 @@ export default function AbsencesPage() {
     <Stack spacing={3}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1.5}>
         <Typography variant="h6" fontWeight={700}>Gestion des absences</Typography>
-        <Stack direction="row" spacing={1.25}>
+        <Stack direction="row" spacing={1.25} flexWrap="wrap" useFlexGap>
           <Button variant="outlined" startIcon={<MailOutlineIcon />} onClick={() => setRequestDialogOpen(true)}>
             Demander les congés
           </Button>
@@ -292,16 +292,16 @@ export default function AbsencesPage() {
       </Stack>
 
       {/* Filters */}
-      <Stack direction="row" spacing={1.5} flexWrap="wrap" alignItems="center">
+      <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap alignItems="center">
         <TextField
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           size="small"
           placeholder="Rechercher (nom, email, rôle)…"
-          sx={{ minWidth: 260 }}
+          sx={{ minWidth: { xs: "100%", sm: 260 } }}
           slotProps={{ input: { startAdornment: <InputAdornment position="start"><SearchOutlinedIcon fontSize="small" /></InputAdornment> } }}
         />
-        <Stack direction="row" spacing={1}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
           {([
             ["ALL", "Tous", countsByRole.ALL],
             ["INSTRUMENTIST", "Instrumentistes", countsByRole.INSTRUMENTIST],
@@ -343,61 +343,63 @@ export default function AbsencesPage() {
         </Typography>
       ) : (
         <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow sx={{ bgcolor: "grey.50" }}>
-                <TableCell>Personne</TableCell>
-                <TableCell>Du</TableCell>
-                <TableCell>Au</TableCell>
-                <TableCell>Durée</TableCell>
-                <TableCell>Motif</TableCell>
-                <TableCell align="right">Actions</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {visibleAbsences.map((abs: Absence) => {
-                const days = Math.round(
-                  (new Date(abs.dateEnd).getTime() - new Date(abs.dateStart).getTime()) / 86400000 + 1
-                );
-                return (
-                  <TableRow key={abs.id} hover sx={{ opacity: abs.id < 0 ? 0.6 : 1 }}>
-                    <TableCell>
-                      <Stack direction="row" spacing={1.25} alignItems="center">
-                        <PersonAvatar name={personDisplayName(abs.user)} size="sm" />
-                        <Box sx={{ minWidth: 0 }}>
-                          <Typography sx={{ fontWeight: 600, fontSize: 13.5 }} noWrap>
-                            {personDisplayName(abs.user)}
-                            {abs.user.role && (
-                              <Typography component="span" sx={{ fontWeight: 500, color: "text.secondary", fontSize: 12.5 }}>
-                                {" "}({ROLE_LABELS[abs.user.role]})
-                              </Typography>
-                            )}
-                          </Typography>
-                          <Typography sx={{ fontSize: 11.5, color: "text.secondary" }} noWrap>{abs.user.email}</Typography>
-                        </Box>
-                      </Stack>
-                    </TableCell>
-                    <TableCell>{new Date(abs.dateStart + "T00:00:00").toLocaleDateString("fr-BE")}</TableCell>
-                    <TableCell>{new Date(abs.dateEnd + "T00:00:00").toLocaleDateString("fr-BE")}</TableCell>
-                    <TableCell>
-                      <Chip label={`${days} jour${days > 1 ? "s" : ""}`} size="small" variant="outlined" />
-                    </TableCell>
-                    <TableCell>{abs.reason ?? <Typography component="span" color="text.disabled">—</Typography>}</TableCell>
-                    <TableCell align="right">
-                      <IconButton
-                        size="small" color="error"
-                        aria-label="Supprimer"
-                        onClick={() => requestDelete(abs.id)}
-                        disabled={deleteMutation.isPending || deletionInfoMutation.isPending || abs.id < 0}
-                      >
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow sx={{ bgcolor: "grey.50" }}>
+                  <TableCell>Personne</TableCell>
+                  <TableCell>Du</TableCell>
+                  <TableCell>Au</TableCell>
+                  <TableCell>Durée</TableCell>
+                  <TableCell>Motif</TableCell>
+                  <TableCell align="right">Actions</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {visibleAbsences.map((abs: Absence) => {
+                  const days = Math.round(
+                    (new Date(abs.dateEnd).getTime() - new Date(abs.dateStart).getTime()) / 86400000 + 1
+                  );
+                  return (
+                    <TableRow key={abs.id} hover sx={{ opacity: abs.id < 0 ? 0.6 : 1 }}>
+                      <TableCell>
+                        <Stack direction="row" spacing={1.25} alignItems="center">
+                          <PersonAvatar name={personDisplayName(abs.user)} size="sm" />
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography sx={{ fontWeight: 600, fontSize: 13.5 }} noWrap>
+                              {personDisplayName(abs.user)}
+                              {abs.user.role && (
+                                <Typography component="span" sx={{ fontWeight: 500, color: "text.secondary", fontSize: 12.5 }}>
+                                  {" "}({ROLE_LABELS[abs.user.role]})
+                                </Typography>
+                              )}
+                            </Typography>
+                            <Typography sx={{ fontSize: 11.5, color: "text.secondary" }} noWrap>{abs.user.email}</Typography>
+                          </Box>
+                        </Stack>
+                      </TableCell>
+                      <TableCell>{new Date(abs.dateStart + "T00:00:00").toLocaleDateString("fr-BE")}</TableCell>
+                      <TableCell>{new Date(abs.dateEnd + "T00:00:00").toLocaleDateString("fr-BE")}</TableCell>
+                      <TableCell>
+                        <Chip label={`${days} jour${days > 1 ? "s" : ""}`} size="small" variant="outlined" />
+                      </TableCell>
+                      <TableCell>{abs.reason ?? <Typography component="span" color="text.disabled">—</Typography>}</TableCell>
+                      <TableCell align="right">
+                        <IconButton
+                          size="small" color="error"
+                          aria-label="Supprimer"
+                          onClick={() => requestDelete(abs.id)}
+                          disabled={deleteMutation.isPending || deletionInfoMutation.isPending || abs.id < 0}
+                        >
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </Box>
         </Paper>
       )}
 

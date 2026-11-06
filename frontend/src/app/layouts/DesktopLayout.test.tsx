@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
@@ -516,5 +516,64 @@ describe("DesktopLayout — menu compte (Lot 10)", () => {
     await user.click(screen.getByRole("button", { name: /Ada Lovelace/ }));
     const menu = screen.getByRole("menu");
     expect(menu.querySelector("a")).toBeNull();
+  });
+});
+
+describe("DesktopLayout — écran étroit (< 900px)", () => {
+  const originalMatchMedia = window.matchMedia;
+
+  beforeEach(() => {
+    authRole = "MANAGER";
+    // Aucune requête `min-width` ne correspond : largeur de téléphone.
+    window.matchMedia = ((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+  });
+
+  afterEach(() => {
+    window.matchMedia = originalMatchMedia;
+  });
+
+  it("remplace la sidebar par une barre avec un bouton menu, navigation masquée par défaut", () => {
+    renderLayout();
+    expect(screen.getByRole("button", { name: "Ouvrir le menu" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("link", { name: "Dashboard" })).toBeNull();
+    expect(screen.getByText("Missions stub")).toBeInTheDocument();
+  });
+
+  it("le bouton menu ouvre la navigation complète, et choisir une page la referme", async () => {
+    const user = userEvent.setup();
+    renderLayout("/app/m/dashboard");
+
+    await user.click(screen.getByRole("button", { name: "Ouvrir le menu" }));
+    await user.click(await screen.findByRole("link", { name: "Missions" }));
+
+    expect(await screen.findByText("Missions stub")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Dashboard" })).toBeNull());
+  });
+
+  it("la barre donne accès aux notifications avec le compteur de non lues", async () => {
+    fetchUnreadNotificationsCountMock.mockResolvedValue(3);
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(await screen.findByRole("link", { name: "Notifications, 3 non lues" }));
+    expect(await screen.findByText("Notifications stub")).toBeInTheDocument();
+  });
+
+  it("le menu compte reste accessible depuis la navigation ouverte", async () => {
+    const user = userEvent.setup();
+    renderLayout();
+
+    await user.click(screen.getByRole("button", { name: "Ouvrir le menu" }));
+    await user.click(await screen.findByRole("button", { name: /Ada Lovelace/ }));
+    expect(screen.getByRole("menuitem", { name: "Se déconnecter" })).toBeInTheDocument();
   });
 });

@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Outlet, NavLink, useNavigate } from "react-router-dom";
+import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   Badge,
   Box,
   Divider,
   Drawer,
+  IconButton,
   List,
   ListItemButton,
   ListItemText,
@@ -13,7 +14,9 @@ import {
   MenuItem,
   Stack,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
+import MenuIcon from "@mui/icons-material/Menu";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import AssignmentOutlinedIcon from "@mui/icons-material/AssignmentOutlined";
 import BadgeOutlinedIcon from "@mui/icons-material/BadgeOutlined";
@@ -172,6 +175,19 @@ export function DesktopLayout() {
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const menuOpen = Boolean(menuAnchor);
 
+  // Sous 900px (seuil `md`, docs/design/components/navigation.md « Sidebar (desktop ≥ 900px) »),
+  // la sidebar permanente de 248px ne laisse plus de place au contenu : elle devient un tiroir
+  // temporaire ouvert depuis une barre supérieure. Même contenu de navigation, même menu compte.
+  const isCompact = !useMediaQuery("(min-width:900px)", { noSsr: true, defaultMatches: true });
+  const [navOpen, setNavOpen] = useState(false);
+  const { pathname } = useLocation();
+  useEffect(() => {
+    setNavOpen(false);
+  }, [pathname]);
+  useEffect(() => {
+    if (!isCompact) setNavOpen(false);
+  }, [isCompact]);
+
   // Correctif workflow Demandes Catalogue (D-113) — même clé + même queryFn (donc même
   // forme de donnée en cache, {items,total}) que CatalogueRequestsPage : avant ce
   // correctif, ce badge et la liste partageaient la clé ["material-requests","PENDING"]
@@ -208,11 +224,61 @@ export function DesktopLayout() {
     : "";
 
   return (
-    <Box sx={{ display: "flex", ...dvh("minHeight", "100vh") }}>
+    <Box
+      sx={{
+        display: "flex", flexDirection: isCompact ? "column" : "row", ...dvh("minHeight", "100vh"),
+        // Hauteur de la barre supérieure (écran étroit) — lue par les en-têtes `position: sticky`
+        // des pages pour se coller sous la barre plutôt que de passer dessous.
+        "--app-header-height": isCompact ? "calc(56px + env(safe-area-inset-top))" : "0px",
+      }}
+    >
+      {isCompact && (
+        <Box
+          component="header"
+          sx={{
+            // zIndex volontairement bas : au-dessus des en-têtes sticky des pages (1), sous les
+            // panneaux superposés maison (tiroir du Suivi des encodages et filtres à 20, guide
+            // d'installation iOS à 800) et sous tous les tiroirs/modales MUI (≥ 1200).
+            position: "sticky", top: 0, zIndex: 15,
+            display: "flex", alignItems: "center", gap: 1,
+            height: 56, px: 1, pt: "env(safe-area-inset-top)", boxSizing: "content-box",
+            bgcolor: "background.paper", borderBottom: `1px solid ${COLOR.borderSubtle}`,
+          }}
+        >
+          <IconButton
+            aria-label="Ouvrir le menu"
+            aria-controls="manager-nav"
+            aria-expanded={navOpen ? "true" : "false"}
+            onClick={() => setNavOpen(true)}
+          >
+            <MenuIcon />
+          </IconButton>
+          <Typography variant="subtitle2" fontWeight={700} color="primary" sx={{ flex: 1 }}>
+            SurgicalHub
+          </Typography>
+          <IconButton
+            component={NavLink}
+            to="/app/m/notifications"
+            aria-label={
+              unreadNotificationsCount > 0
+                ? `Notifications, ${unreadNotificationsCount} non lue${unreadNotificationsCount > 1 ? "s" : ""}`
+                : "Notifications"
+            }
+          >
+            <Badge badgeContent={unreadNotificationsCount} color="error">
+              <NotificationsActiveOutlinedIcon />
+            </Badge>
+          </IconButton>
+        </Box>
+      )}
       <Drawer
-        variant="permanent"
+        id="manager-nav"
+        variant={isCompact ? "temporary" : "permanent"}
+        open={isCompact ? navOpen : true}
+        onClose={() => setNavOpen(false)}
+        ModalProps={{ keepMounted: true }}
         sx={{
-          width: NAV_WIDTH,
+          width: isCompact ? undefined : NAV_WIDTH,
           flexShrink: 0,
           "& .MuiDrawer-paper": {
             width: NAV_WIDTH,
@@ -422,7 +488,7 @@ export function DesktopLayout() {
         </Stack>
       </Drawer>
 
-      <Box component="main" sx={{ flex: 1, p: 3, minWidth: 0 }}>
+      <Box component="main" sx={{ flex: 1, p: { xs: 2, md: 3 }, minWidth: 0 }}>
         <Outlet />
       </Box>
     </Box>

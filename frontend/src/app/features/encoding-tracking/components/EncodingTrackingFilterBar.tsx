@@ -132,7 +132,7 @@ export default function EncodingTrackingFilterBar({ value, onChange }: Props) {
       <Popper open={open} anchorEl={anchorRef.current} placement="bottom-end" style={{ zIndex: 20 }}>
         <ClickAwayListener onClickAway={() => setOpen(false)}>
           <div style={{
-            width: 420, background: "#fff", borderRadius: 14, border: `1px solid ${GRAY_200}`,
+            width: 420, maxWidth: "calc(100vw - 24px)", boxSizing: "border-box", background: "#fff", borderRadius: 14, border: `1px solid ${GRAY_200}`,
             boxShadow: "0 18px 44px -14px rgba(11,19,32,.35)", marginTop: 6,
           }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: `1px solid ${GRAY_150}` }}>

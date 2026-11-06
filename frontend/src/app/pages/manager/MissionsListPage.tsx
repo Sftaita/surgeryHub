@@ -182,6 +182,7 @@ export default function MissionsListPage() {
         field: "date",
         headerName: "Date / heure",
         flex: 1.5,
+        minWidth: 190,
         sortable: false,
         renderCell: ({ row }) => (
           <Typography variant="body2">
@@ -193,6 +194,7 @@ export default function MissionsListPage() {
         field: "site",
         headerName: "Site",
         flex: 1,
+        minWidth: 140,
         sortable: false,
         // D-156 — libellé de salle facultatif à côté du site.
         valueGetter: (_, row) => `${row.site?.name ?? "—"}${row.roomLabel ? ` · ${row.roomLabel}` : ""}`,
@@ -201,6 +203,7 @@ export default function MissionsListPage() {
         field: "type",
         headerName: "Type",
         flex: 0.9,
+        minWidth: 110,
         sortable: false,
         renderCell: ({ row }) => (
           <Typography variant="body2" color="text.secondary">
@@ -212,6 +215,7 @@ export default function MissionsListPage() {
         field: "surgeon",
         headerName: "Chirurgien",
         flex: 1,
+        minWidth: 140,
         sortable: false,
         valueGetter: (_, row) => formatPersonLabel(row.surgeon),
       },
@@ -219,6 +223,7 @@ export default function MissionsListPage() {
         field: "instrumentist",
         headerName: "Instrumentiste",
         flex: 1,
+        minWidth: 140,
         sortable: false,
         valueGetter: (_, row) => formatPersonLabel(row.instrumentist),
       },
@@ -238,7 +243,7 @@ export default function MissionsListPage() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2.5}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1.5} mb={2.5}>
         <Typography variant="h6" fontWeight={600}>Missions</Typography>
 
         {!isToValidateView && !isRequestsView && (
@@ -256,6 +261,8 @@ export default function MissionsListPage() {
       <Tabs
         value={isRequestsView ? "requests" : isToValidateView ? "to-validate" : "all"}
         onChange={(_, v) => navigate(v === "to-validate" ? "/app/m/missions/to-validate" : v === "requests" ? "/app/m/missions/requests" : "/app/m/missions")}
+        variant="scrollable"
+        scrollButtons={false}
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider", minHeight: 40 }}
       >
         <Tab value="all" label="Toutes" sx={{ minHeight: 40 }} />

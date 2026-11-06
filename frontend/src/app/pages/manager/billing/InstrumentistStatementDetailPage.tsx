@@ -131,43 +131,45 @@ export default function InstrumentistStatementDetailPage() {
         <Box sx={{ px: 2, py: 1.5, bgcolor: "grey.50" }}>
           <Typography variant="subtitle2" fontWeight={700}>Prestations ({stmt.lines?.length ?? 0})</Typography>
         </Box>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Date</TableCell>
-              <TableCell>Type</TableCell>
-              <TableCell>Chirurgien</TableCell>
-              <TableCell>Site</TableCell>
-              <TableCell align="right">Durée/Qté</TableCell>
-              <TableCell align="right">Tarif</TableCell>
-              <TableCell align="right">Total</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {(stmt.lines ?? []).map((line) => (
-              <TableRow key={line.id}>
-                <TableCell>{line.missionDate ?? "—"}</TableCell>
-                <TableCell>
-                  <Chip
-                    label={line.lineType === "BLOC" ? "Bloc" : "Consultation"}
-                    size="small"
-                    color={line.lineType === "BLOC" ? "primary" : "secondary"}
-                    variant="outlined"
-                  />
-                </TableCell>
-                <TableCell>{line.surgeonName ?? "—"}</TableCell>
-                <TableCell>{line.siteName ?? "—"}</TableCell>
-                <TableCell align="right">
-                  {line.lineType === "BLOC"
-                    ? `${line.durationMinutesRounded}min → ${Number(line.quantity).toFixed(2)}h`
-                    : "1 consultation"}
-                </TableCell>
-                <TableCell align="right">{Number(line.rateSnapshot).toFixed(2)} €</TableCell>
-                <TableCell align="right"><strong>{Number(line.totalAmount).toFixed(2)} €</strong></TableCell>
+        <Box sx={{ overflowX: "auto" }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Date</TableCell>
+                <TableCell>Type</TableCell>
+                <TableCell>Chirurgien</TableCell>
+                <TableCell>Site</TableCell>
+                <TableCell align="right">Durée/Qté</TableCell>
+                <TableCell align="right">Tarif</TableCell>
+                <TableCell align="right">Total</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {(stmt.lines ?? []).map((line) => (
+                <TableRow key={line.id}>
+                  <TableCell>{line.missionDate ?? "—"}</TableCell>
+                  <TableCell>
+                    <Chip
+                      label={line.lineType === "BLOC" ? "Bloc" : "Consultation"}
+                      size="small"
+                      color={line.lineType === "BLOC" ? "primary" : "secondary"}
+                      variant="outlined"
+                    />
+                  </TableCell>
+                  <TableCell>{line.surgeonName ?? "—"}</TableCell>
+                  <TableCell>{line.siteName ?? "—"}</TableCell>
+                  <TableCell align="right">
+                    {line.lineType === "BLOC"
+                      ? `${line.durationMinutesRounded}min → ${Number(line.quantity).toFixed(2)}h`
+                      : "1 consultation"}
+                  </TableCell>
+                  <TableCell align="right">{Number(line.rateSnapshot).toFixed(2)} €</TableCell>
+                  <TableCell align="right"><strong>{Number(line.totalAmount).toFixed(2)} €</strong></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
       </Paper>
 
       {/* Solde, paiements, remboursements, notes de crédit/débit (EPIC Exécution & Valorisation, Lots 4-6) */}

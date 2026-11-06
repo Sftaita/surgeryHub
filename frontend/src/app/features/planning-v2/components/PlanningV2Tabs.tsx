@@ -30,6 +30,8 @@ export function PlanningV2Tabs({ value, onChange, alertBadgeCount }: Props) {
       <Tabs
         value={value}
         onChange={(_, v) => onChange(v)}
+        variant="scrollable"
+        scrollButtons={false}
         TabIndicatorProps={{ sx: { backgroundColor: planningV2Colors.brand, height: 2 } }}
         sx={{
           minHeight: 48,

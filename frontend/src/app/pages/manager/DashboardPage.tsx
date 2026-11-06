@@ -133,7 +133,7 @@ export default function DashboardPage() {
   const mainCurrency = overviewQuery.data?.currencies?.[0];
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box sx={{ p: { xs: 0, md: 3 } }}>
       <PageHeader icon={DashboardIcon} title="Dashboard" subtitle="Vue d'ensemble de l'activité manager." />
 
       <Stack spacing={4}>

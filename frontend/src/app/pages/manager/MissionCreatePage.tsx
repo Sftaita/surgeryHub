@@ -71,7 +71,7 @@ export default function MissionCreatePage() {
   }, [surgeonsQ.data]);
 
   return (
-    <Box sx={{ p: 2, maxWidth: 900 }}>
+    <Box sx={{ p: { xs: 0, md: 2 }, maxWidth: 900 }}>
       <Stack
         direction="row"
         justifyContent="space-between"

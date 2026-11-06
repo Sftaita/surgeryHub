@@ -71,7 +71,7 @@ export default function AdminAuditPage() {
         Journal d&apos;audit
       </Typography>
 
-      <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap">
+      <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
         <Select
           size="small"
           value={eventType}

@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Alert,
+  Box,
   Button,
   CircularProgress,
   Divider,
@@ -142,37 +143,39 @@ export default function EligibleLinesStatementWizard({ onCreated, onCancel }: Pr
             <EligibleLinesEmptyState diagnostic={preview.diagnostic} />
           ) : (
             <>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell padding="checkbox"></TableCell>
-                    <TableCell>Mission</TableCell>
-                    <TableCell>Type</TableCell>
-                    <TableCell>Description</TableCell>
-                    <TableCell align="right">Durée</TableCell>
-                    <TableCell align="right">Qté</TableCell>
-                    <TableCell align="right">P.U.</TableCell>
-                    <TableCell align="right">Total</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {preview.lines.map((line) => (
-                    <TableRow
-                      key={line.id} hover onClick={() => toggle(line)}
-                      sx={{ cursor: "pointer", opacity: selectedIds.includes(line.id) ? 1 : 0.4 }}
-                    >
-                      <TableCell padding="checkbox"><input type="checkbox" checked={selectedIds.includes(line.id)} readOnly /></TableCell>
-                      <TableCell>#{line.missionId}</TableCell>
-                      <TableCell>{LINE_TYPE_LABELS[line.lineType] ?? line.lineType}</TableCell>
-                      <TableCell>{line.descriptionSnapshot}</TableCell>
-                      <TableCell align="right">{line.durationMinutes != null ? `${line.durationMinutes}min` : "—"}</TableCell>
-                      <TableCell align="right">{line.quantity}</TableCell>
-                      <TableCell align="right">{Number(line.unitAmount).toFixed(2)} {line.currency}</TableCell>
-                      <TableCell align="right"><strong>{Number(line.totalAmount).toFixed(2)} {line.currency}</strong></TableCell>
+              <Box sx={{ overflowX: "auto" }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell padding="checkbox"></TableCell>
+                      <TableCell>Mission</TableCell>
+                      <TableCell>Type</TableCell>
+                      <TableCell>Description</TableCell>
+                      <TableCell align="right">Durée</TableCell>
+                      <TableCell align="right">Qté</TableCell>
+                      <TableCell align="right">P.U.</TableCell>
+                      <TableCell align="right">Total</TableCell>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHead>
+                  <TableBody>
+                    {preview.lines.map((line) => (
+                      <TableRow
+                        key={line.id} hover onClick={() => toggle(line)}
+                        sx={{ cursor: "pointer", opacity: selectedIds.includes(line.id) ? 1 : 0.4 }}
+                      >
+                        <TableCell padding="checkbox"><input type="checkbox" checked={selectedIds.includes(line.id)} readOnly /></TableCell>
+                        <TableCell>#{line.missionId}</TableCell>
+                        <TableCell>{LINE_TYPE_LABELS[line.lineType] ?? line.lineType}</TableCell>
+                        <TableCell>{line.descriptionSnapshot}</TableCell>
+                        <TableCell align="right">{line.durationMinutes != null ? `${line.durationMinutes}min` : "—"}</TableCell>
+                        <TableCell align="right">{line.quantity}</TableCell>
+                        <TableCell align="right">{Number(line.unitAmount).toFixed(2)} {line.currency}</TableCell>
+                        <TableCell align="right"><strong>{Number(line.totalAmount).toFixed(2)} {line.currency}</strong></TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Box>
 
               <Stack direction="row" justifyContent="space-between" alignItems="center">
                 <Typography variant="body2" color="text.secondary">{selectedIds.length} ligne(s) sélectionnée(s)</Typography>

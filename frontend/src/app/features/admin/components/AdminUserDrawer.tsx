@@ -30,7 +30,7 @@ import { AdminChangeRoleModal } from "./AdminChangeRoleModal";
 import { AdminSuspendModal } from "./AdminSuspendModal";
 import { MedVueIntegrationCard } from "../../medvue-integration/MedVueIntegrationCard";
 
-const DRAWER_WIDTH = 420;
+const DRAWER_WIDTH = { xs: "100%", sm: 420 } as const;
 
 interface Props {
   userId: number | null;
