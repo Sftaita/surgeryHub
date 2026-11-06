@@ -4,8 +4,9 @@
 <meta charset="UTF-8">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  @page { margin: 22px 26px 30px 26px; }
+  html { margin: 22px 26px 30px 26px; }
   body { font-family: DejaVu Sans, sans-serif; font-size: 8.5px; color: #1a1a1a; }
-  .page { padding: 22px 26px; }
   .header { display: table; width: 100%; margin-bottom: 12px; border-bottom: 2px solid #1565C0; padding-bottom: 9px; }
   .header-left { display: table-cell; vertical-align: top; }
   .header-right { display: table-cell; text-align: right; vertical-align: top; color: #666; }
@@ -21,9 +22,12 @@
   .card-label { color: #666; font-size: 7.5px; }
   .card-value { font-size: 12px; font-weight: bold; margin-top: 2px; }
   table.data { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  table.data.next { page-break-before: always; margin-top: 0; }
   table.data thead th { background: #1565C0; color: #fff; padding: 5px 6px; font-size: 7.5px; font-weight: bold; }
-  table.data td { padding: 4px 6px; border-bottom: 1px solid #e6e9f0; white-space: nowrap; }
-  table.data tbody tr:nth-child(even) { background: #f6f8fc; }
+  table.data td { padding: 4px 6px; border-bottom: 1px solid #e6e9f0; word-wrap: break-word; }
+  table.data td.right { white-space: nowrap; }
+  table.data tr { page-break-inside: avoid; }
+  table.data tr.alt { background: #f6f8fc; }
   table.data tfoot td { font-weight: bold; background: #eef2f8; border-top: 2px solid #1565C0; }
   .left { text-align: left; } .right { text-align: right; }
   .pos { color: #2e7d32; } .neg { color: #c62828; } .zero, .muted { color: #888; }
@@ -32,7 +36,7 @@
 </style>
 </head>
 <body>
-<div class="page">
+<div>
   <div class="header">
     <div class="header-left">
       <div class="logo">SURGICALHUB</div>
@@ -72,25 +76,31 @@
       {% endif %}
     {% endfor %}
 
-    <table class="data">
-      <thead>
-        <tr>{% for col in columns %}<th class="{{ col.align }}">{{ col.label }}</th>{% endfor %}</tr>
-      </thead>
-      <tbody>
-        {% for row in rows %}
-          <tr>{% for cell in row.cells %}<td class="{{ columns[loop.index0].align }} {{ cell.class }}">{{ cell.text }}</td>{% endfor %}</tr>
-        {% else %}
-          <tr><td colspan="{{ columns|length }}" class="muted">Aucune donnée</td></tr>
-        {% endfor %}
-      </tbody>
-      {% if totalRows|length > 0 %}
-      <tfoot>
-        {% for row in totalRows %}
-          <tr>{% for cell in row.cells %}<td class="{{ columns[loop.index0].align }} {{ cell.class }}">{{ cell.text }}</td>{% endfor %}</tr>
-        {% endfor %}
-      </tfoot>
-      {% endif %}
-    </table>
+    {# D-186 — un tableau par page PDF, en-tête répété ; ligne(s) TOTAL GÉNÉRAL sous le dernier. #}
+    {% set pageList = pages|length > 0 ? pages : [[]] %}
+    {% for pageRows in pageList %}
+      {% set isLast = loop.last %}
+      <table class="data{{ loop.first ? '' : ' next' }}">
+        <thead>
+          <tr>{% for col in columns %}<th class="{{ col.align }}">{{ col.label }}</th>{% endfor %}</tr>
+        </thead>
+        <tbody>
+          {% for row in pageRows %}
+            <tr{{ row.alt ? ' class="alt"' : '' }}>{% for cell in row.cells %}<td class="{{ columns[loop.index0].align }} {{ cell.class }}">{{ cell.text }}</td>{% endfor %}</tr>
+          {% else %}
+            <tr><td colspan="{{ columns|length }}" class="muted">Aucune donnée sur cette période et ces filtres</td></tr>
+          {% endfor %}
+        </tbody>
+        {% if isLast and totalRows|length > 0 %}
+        <tfoot>
+          {% for row in totalRows %}
+            <tr>{% for cell in row.cells %}<td class="{{ columns[loop.index0].align }} {{ cell.class }}">{{ cell.text }}</td>{% endfor %}</tr>
+          {% endfor %}
+        </tfoot>
+        {% endif %}
+      </table>
+    {% endfor %}
+    <p class="note">{{ rowCount }} ligne(s) exportée(s) — toutes les lignes correspondant aux filtres, dans l'ordre du tri choisi.</p>
     {% if note is defined and note %}<p class="note">{{ note }}</p>{% endif %}
   {% endif %}
 

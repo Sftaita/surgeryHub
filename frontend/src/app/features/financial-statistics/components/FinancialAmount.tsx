@@ -96,8 +96,8 @@ export function ExportPdfButton({ onExport }: { onExport: () => Promise<{ blob: 
     try {
       const { blob, filename } = await onExport();
       downloadBlob(blob, filename);
-    } catch {
-      setError("Export PDF impossible. Réessayez.");
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : "Export PDF impossible. Réessayez.");
     } finally {
       setBusy(false);
     }

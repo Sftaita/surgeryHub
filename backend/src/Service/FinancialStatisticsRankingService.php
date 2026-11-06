@@ -122,7 +122,7 @@ final class FinancialStatisticsRankingService
             );
         }
 
-        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection)
+        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection, 'firmId')
             + ['totals' => $this->totalsByCurrency($items, ['interventionRevenue', 'materialRevenue', 'generatedRevenue', 'invoicedNetAmount', 'paidAmount', 'remainingAmount'])];
     }
 
@@ -216,7 +216,7 @@ final class FinancialStatisticsRankingService
             );
         }
 
-        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection)
+        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection, 'instrumentistId')
             + ['totals' => $this->totalsByCurrency($items, ['hourlyCompensation', 'consultationFees', 'generatedCompensation', 'statementNetAmount', 'paidAmount', 'remainingAmount'])];
     }
 
@@ -266,7 +266,7 @@ final class FinancialStatisticsRankingService
             );
         }
 
-        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection)
+        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection, 'surgeonId')
             + ['totals' => $this->totalsByCurrency($items, ['generatedFirmRevenue', 'generatedInstrumentistCompensation', 'netBalance'])];
     }
 
@@ -412,7 +412,7 @@ final class FinancialStatisticsRankingService
             );
         }
 
-        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection)
+        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection, 'interventionTypeId')
             + ['totals' => $this->interventionTotals($items, $filter)];
     }
 
@@ -488,8 +488,13 @@ final class FinancialStatisticsRankingService
 
     // ── Top matériels (§16) ──────────────────────────────────────────────
 
-    /** @return array{items: MaterialStatisticsDto[], total: int, page: int, limit: int} */
-    public function topMaterials(FinancialStatisticsFilter $filter, int $limit, string $sortBy, string $sortDirection): array
+    /**
+     * `total` = nombre de lignes renvoyées (contrat historique du « top N ») ; `groupCount` =
+     * nombre de matériels filtrés au total, pour parcourir toutes les pages (export PDF).
+     *
+     * @return array{items: MaterialStatisticsDto[], total: int, page: int, limit: int, totals: array<int, array<string, string>>, groupCount: int}
+     */
+    public function topMaterials(FinancialStatisticsFilter $filter, int $limit, string $sortBy, string $sortDirection, int $page = 1): array
     {
         [$missionWhere, $missionParams, $missionTypes] = $this->missionPopulationClause($filter, 'm');
         [$currencyWhere, $currencyParams, $currencyTypes] = $this->currencyClause($filter, 'fcl');
@@ -518,12 +523,12 @@ final class FinancialStatisticsRankingService
                   AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
                   $missionWhere $currencyWhere
                 GROUP BY ml.item_id, fcl.currency, mi2.reference_code
-                ORDER BY $sortColumn " . ($sortDirection === 'ASC' ? 'ASC' : 'DESC') . "
-                LIMIT :limit";
+                ORDER BY $sortColumn " . ($sortDirection === 'ASC' ? 'ASC' : 'DESC') . ", ml.item_id IS NULL, ml.item_id, fcl.currency
+                LIMIT :limit OFFSET :offset";
 
         $rows = $this->connection->fetchAllAssociative($sql, $missionParams + $currencyParams + [
-            'fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to), 'limit' => $limit,
-        ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING, 'limit' => ParameterType::INTEGER]);
+            'fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to), 'limit' => $limit, 'offset' => ($page - 1) * $limit,
+        ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING, 'limit' => ParameterType::INTEGER, 'offset' => ParameterType::INTEGER]);
 
         $items = [];
         foreach ($rows as $row) {
@@ -555,7 +560,21 @@ final class FinancialStatisticsRankingService
         ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
         $totals = array_map(fn (array $r) => ['currency' => $r['currency'], 'generatedRevenue' => $this->money($r['generatedRevenue'])], $totalRows);
 
-        return ['items' => $items, 'total' => count($items), 'page' => 1, 'limit' => $limit, 'totals' => $totals];
+        $groupCount = (int) $this->connection->fetchOne("SELECT COUNT(*) FROM (
+                    SELECT 1
+                    FROM financial_calculation_line fcl
+                    INNER JOIN financial_calculation fc ON fc.id = fcl.financial_calculation_id AND fc.status IN ('CALCULATED','APPROVED','LOCKED')
+                    INNER JOIN mission m ON m.id = fc.mission_id
+                    INNER JOIN material_line ml ON ml.id = fcl.material_line_id
+                    WHERE fcl.line_type = 'FIRM_MATERIAL_FEE'
+                      AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
+                      $missionWhere $currencyWhere
+                    GROUP BY ml.item_id, fcl.currency
+                ) g", $missionParams + $currencyParams + [
+            'fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to),
+        ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
+
+        return ['items' => $items, 'total' => count($items), 'page' => $page, 'limit' => $limit, 'totals' => $totals, 'groupCount' => $groupCount];
     }
 
     // ── Pagination/tri en mémoire sur un résultat déjà agrégé (§22/§30) ──
@@ -565,13 +584,20 @@ final class FinancialStatisticsRankingService
      * @param T[] $items
      * @return array{items: T[], total: int, page: int, limit: int}
      */
-    private function paginate(array $items, int $page, int $limit, string $sortBy, string $sortDirection): array
+    private function paginate(array $items, int $page, int $limit, string $sortBy, string $sortDirection, string $identityField): array
     {
-        usort($items, function ($a, $b) use ($sortBy, $sortDirection) {
+        usort($items, function ($a, $b) use ($sortBy, $sortDirection, $identityField) {
             $va = $a->{$sortBy};
             $vb = $b->{$sortBy};
             $cmp = is_numeric($va) && is_numeric($vb) ? ((float) $va <=> (float) $vb) : ((string) $va <=> (string) $vb);
-            return $sortDirection === 'ASC' ? $cmp : -$cmp;
+            if ($cmp !== 0) {
+                return $sortDirection === 'ASC' ? $cmp : -$cmp;
+            }
+            // D-186 — départage déterministe sur la clé du groupe (identifiant, sans identifiant
+            // en dernier, puis devise) : l'ordre SQL d'un GROUP BY n'est pas garanti, des valeurs
+            // égales ne doivent jamais permuter d'une page à l'autre (ni doublon, ni ligne omise).
+            return [$a->{$identityField} === null, $a->{$identityField}, $a->currency]
+                <=> [$b->{$identityField} === null, $b->{$identityField}, $b->currency];
         });
 
         $total = count($items);

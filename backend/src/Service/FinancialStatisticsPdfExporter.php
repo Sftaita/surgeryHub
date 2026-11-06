@@ -4,6 +4,7 @@ namespace App\Service;
 
 use App\Dto\FinancialStatisticsFilter;
 use App\Enum\StatisticsGranularity;
+use App\Exception\StatisticsExportException;
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -12,6 +13,19 @@ use Doctrine\ORM\EntityManagerInterface;
  * lignes, soldes et totaux sont EXACTEMENT ceux renvoyés à l'écran par
  * FinancialStatisticsQueryService/FinancialStatisticsRankingService (même filtre, même
  * tri), toutes pages confondues. Ce service ne fait que les mettre en forme.
+ *
+ * Exhaustivité : les classements sont relus page par page (PAGE_SIZE) jusqu'au dernier
+ * groupe, dans le tri demandé (départage stable côté service). Chaque page doit annoncer le
+ * même total et les mêmes totaux que la première, et aucune clé de groupe ne peut revenir :
+ * sinon les données ont changé pendant la lecture et l'export est refusé (409), jamais un PDF
+ * incohérent. Les totaux imprimés sont ceux du serveur (identiques à l'écran), jamais
+ * recalculés à partir des lignes.
+ *
+ * Limite technique : dompdf garde tout le document en mémoire et son coût croît plus vite que
+ * le nombre de lignes (mesuré : ~17 s / ~190 Mo pour 1 000 lignes, ~80 s / ~510 Mo pour
+ * 3 000). Au-delà de MAX_ROWS, l'export est refusé avec un message explicite (422) — aucune
+ * troncature silencieuse. Le contrôle est fait dès la première page, avant toute lecture
+ * supplémentaire.
  *
  * Convention d'affichage (identique au frontend) : recette = « + » vert, dépense = « − »
  * rouge (les montants de dépense sont des magnitudes positives dans l'API — le signe est
@@ -31,8 +45,15 @@ final class FinancialStatisticsPdfExporter
         'top-materials' => 'Top matériels',
     ];
 
-    /** Aucune limite fonctionnelle : l'export reprend toutes les lignes filtrées. */
-    private const ALL_ROWS = 100000;
+    /** Taille des pages lues auprès des services de classement. */
+    public const PAGE_SIZE = 200;
+
+    /** Plafond technique du moteur PDF (voir l'en-tête de classe), pas une limite métier. */
+    public const MAX_ROWS = 1000;
+
+    /** Lignes de tableau par page PDF (A4 paysage) ; la première page porte aussi l'en-tête et les totaux. */
+    private const ROWS_PER_PAGE = 28;
+    private const FIRST_PAGE_ROWS = 16;
 
     private const GRANULARITY_LABELS = ['DAY' => 'Jour', 'WEEK' => 'Semaine', 'MONTH' => 'Mois'];
 
@@ -43,12 +64,38 @@ final class FinancialStatisticsPdfExporter
         private readonly PdfService $pdfService,
         private readonly FinancialStatisticsQueryService $queryService,
         private readonly FinancialStatisticsRankingService $rankingService,
+        private readonly int $pageSize = self::PAGE_SIZE,
+        private readonly int $maxRows = self::MAX_ROWS,
     ) {
         $this->connection = $em->getConnection();
     }
 
     /** @return array{pdf: string, rowCount: int, filename: string} */
     public function export(string $view, FinancialStatisticsFilter $filter, StatisticsGranularity $granularity, string $sortBy, string $sortDirection): array
+    {
+        $report = $this->report($view, $filter, $granularity, $sortBy, $sortDirection);
+
+        // Les exports proches de MAX_ROWS dépassent les réglages php-fpm par défaut (128 Mo, 30 s).
+        if ($this->memoryLimitBytes() < 512 * 1024 * 1024) {
+            ini_set('memory_limit', '512M');
+        }
+        set_time_limit(120);
+
+        $pdf = $this->pdfService->generateFromTemplate('pdf/financial_statistics.html.twig', $report, 'landscape',
+            pageFooter: 'SurgicalHub — Statistiques financières — ' . $report['viewTitle'] . ' — généré le ' . $report['generatedAt']);
+
+        return [
+            'pdf' => $pdf,
+            'rowCount' => $report['rowCount'],
+            'filename' => sprintf('statistiques-%s-%s.pdf', $view, $filter->from->format('Y') === '1970' ? 'toutes-dates' : $filter->from->format('Y-m-d')),
+        ];
+    }
+
+    /**
+     * Données du gabarit PDF : lignes déjà mises en forme (dans l'ordre exact du tri), totaux
+     * serveur, période, filtres, date. Public pour vérifier la concordance écran/PDF.
+     */
+    public function report(string $view, FinancialStatisticsFilter $filter, StatisticsGranularity $granularity, string $sortBy, string $sortDirection): array
     {
         $report = match ($view) {
             'overview' => $this->overview($filter),
@@ -65,17 +112,15 @@ final class FinancialStatisticsPdfExporter
             $filters[] = ['label' => 'Granularité', 'value' => self::GRANULARITY_LABELS[$granularity->value]];
         }
 
-        $pdf = $this->pdfService->generateFromTemplate('pdf/financial_statistics.html.twig', $report + [
+        if (isset($report['rows'])) {
+            $report['pages'] = $this->pages($report['rows']);
+        }
+
+        return $report + [
             'viewTitle' => self::VIEW_TITLES[$view],
             'period' => $this->periodLabel($filter),
             'filters' => $filters,
             'generatedAt' => (new \DateTimeImmutable('now', new \DateTimeZone('Europe/Brussels')))->format('d/m/Y H:i'),
-        ], 'landscape');
-
-        return [
-            'pdf' => $pdf,
-            'rowCount' => $report['rowCount'],
-            'filename' => sprintf('statistiques-%s-%s.pdf', $view, $filter->from->format('Y') === '1970' ? 'toutes-dates' : $filter->from->format('Y-m-d')),
         ];
     }
 
@@ -153,6 +198,8 @@ final class FinancialStatisticsPdfExporter
             }
         }
 
+        $this->assertExportable(count($rows));
+
         $totals = $this->queryService->timeseriesTotals($points);
         return [
             'summaries' => $this->summaries($totals, 'generatedFirmRevenue', 'generatedInstrumentistCompensation', 'generatedNetBalance'),
@@ -168,8 +215,7 @@ final class FinancialStatisticsPdfExporter
 
     private function byFirm(FinancialStatisticsFilter $filter, string $sortBy, string $sortDirection): array
     {
-        $result = $this->rankingService->byFirm($filter, 1, self::ALL_ROWS, $sortBy, $sortDirection);
-        return $this->table($result, [
+        return $this->table(fn (int $page, int $limit) => $this->rankingService->byFirm($filter, $page, $limit, $sortBy, $sortDirection), 'firmId', [
             ['Firme', 'firmNameSnapshot', 'text'],
             ['Missions', 'missionCount', 'int'],
             ['CA interventions', 'interventionRevenue', 'revenue'],
@@ -184,8 +230,7 @@ final class FinancialStatisticsPdfExporter
 
     private function byInstrumentist(FinancialStatisticsFilter $filter, string $sortBy, string $sortDirection): array
     {
-        $result = $this->rankingService->byInstrumentist($filter, 1, self::ALL_ROWS, $sortBy, $sortDirection);
-        return $this->table($result, [
+        return $this->table(fn (int $page, int $limit) => $this->rankingService->byInstrumentist($filter, $page, $limit, $sortBy, $sortDirection), 'instrumentistId', [
             ['Instrumentiste', 'instrumentistNameSnapshot', 'text'],
             ['Missions', 'missionCount', 'int'],
             ['Heures', 'executedMinutes', 'minutes'],
@@ -201,8 +246,7 @@ final class FinancialStatisticsPdfExporter
 
     private function bySurgeon(FinancialStatisticsFilter $filter, string $sortBy, string $sortDirection): array
     {
-        $result = $this->rankingService->bySurgeon($filter, 1, self::ALL_ROWS, $sortBy, $sortDirection);
-        return $this->table($result, [
+        return $this->table(fn (int $page, int $limit) => $this->rankingService->bySurgeon($filter, $page, $limit, $sortBy, $sortDirection), 'surgeonId', [
             ['Chirurgien', 'surgeonNameSnapshot', 'text'],
             ['Missions', 'missionCount', 'int'],
             ['Exécutées', 'executedMissionCount', 'int'],
@@ -215,8 +259,7 @@ final class FinancialStatisticsPdfExporter
 
     private function byIntervention(FinancialStatisticsFilter $filter, string $sortBy, string $sortDirection): array
     {
-        $result = $this->rankingService->byIntervention($filter, 1, self::ALL_ROWS, $sortBy, $sortDirection);
-        return $this->table($result, [
+        return $this->table(fn (int $page, int $limit) => $this->rankingService->byIntervention($filter, $page, $limit, $sortBy, $sortDirection), 'interventionTypeId', [
             ['Code', 'interventionCodeSnapshot', 'text'],
             ['Libellé', 'interventionNameSnapshot', 'text'],
             ['Interventions', 'interventionCount', 'int'],
@@ -234,8 +277,11 @@ final class FinancialStatisticsPdfExporter
 
     private function topMaterials(FinancialStatisticsFilter $filter, string $sortBy, string $sortDirection): array
     {
-        $result = $this->rankingService->topMaterials($filter, self::ALL_ROWS, $sortBy, $sortDirection);
-        return $this->table($result, [
+        // Le « top N » de l'écran annonce `total` = lignes renvoyées ; l'export parcourt tous les matériels (`groupCount`).
+        return $this->table(function (int $page, int $limit) use ($filter, $sortBy, $sortDirection) {
+            $result = $this->rankingService->topMaterials($filter, $limit, $sortBy, $sortDirection, $page);
+            return ['total' => $result['groupCount']] + $result;
+        }, 'materialId', [
             ['Référence', 'materialReferenceSnapshot', 'text'],
             ['Matériel', 'materialNameSnapshot', 'text'],
             ['Firme', 'firmSnapshot', 'text'],
@@ -249,23 +295,51 @@ final class FinancialStatisticsPdfExporter
     // ── Mise en forme ────────────────────────────────────────────────────
 
     /**
-     * @param array{items: object[], totals: array<int, array<string, string>>} $result
+     * Lit TOUTES les pages d'un classement, dans l'ordre du tri, et les met en forme au fil de
+     * l'eau (les DTO d'une page ne sont pas conservés).
+     *
+     * @param callable(int, int): array{items: object[], total: int, totals: array<int, array<string, string>>} $fetchPage
      * @param array<int, array{0: string, 1: string, 2: string}> $spec [libellé, propriété, nature]
      */
-    private function table(array $result, array $spec, ?string $revenueField = null, ?string $expenseField = null, ?string $netField = null, ?string $note = null, string $expenseLabel = 'Total dépenses'): array
+    private function table(callable $fetchPage, string $identityField, array $spec, ?string $revenueField = null, ?string $expenseField = null, ?string $netField = null, ?string $note = null, string $expenseLabel = 'Total dépenses'): array
     {
         $columns = array_map(fn (array $s) => $this->col($s[0], $s[2]), $spec);
+
+        $first = $fetchPage(1, $this->pageSize);
+        $expected = $first['total'];
+        $this->assertExportable($expected);
+
         $rows = [];
-        foreach ($result['items'] as $item) {
-            $rows[] = ['cells' => array_map(fn (array $s) => $this->cell($item->{$s[1]}, $s[2], $item->currency), $spec)];
+        $seen = [];
+        $page = 1;
+        $result = $first;
+        while (true) {
+            if ($result['total'] !== $expected || $result['totals'] !== $first['totals']) {
+                throw StatisticsExportException::dataChanged();
+            }
+            foreach ($result['items'] as $item) {
+                $key = $item->{$identityField} . '|' . $item->currency;
+                if (isset($seen[$key])) {
+                    throw StatisticsExportException::dataChanged();
+                }
+                $seen[$key] = true;
+                $rows[] = ['cells' => array_map(fn (array $s) => $this->cell($item->{$s[1]}, $s[2], $item->currency), $spec)];
+            }
+            if (count($rows) >= $expected || $result['items'] === []) {
+                break;
+            }
+            $result = $fetchPage(++$page, $this->pageSize);
+        }
+        if (count($rows) !== $expected) {
+            throw StatisticsExportException::dataChanged();
         }
 
         $totalRows = [];
-        foreach ($result['totals'] as $t) {
+        foreach ($first['totals'] as $t) {
             $cells = [];
             foreach ($spec as $i => $s) {
                 $cells[] = match (true) {
-                    $i === 0 => $this->text('TOTAL GÉNÉRAL' . (count($result['totals']) > 1 ? ' (' . $t['currency'] . ')' : '')),
+                    $i === 0 => $this->text('TOTAL GÉNÉRAL' . (count($first['totals']) > 1 ? ' (' . $t['currency'] . ')' : '')),
                     isset($t[$s[1]]) && in_array($s[2], ['revenue', 'expense', 'net'], true) => $this->money($t[$s[1]], $s[2], $t['currency']),
                     default => $this->text(''),
                 };
@@ -274,13 +348,62 @@ final class FinancialStatisticsPdfExporter
         }
 
         return [
-            'summaries' => $this->summaries($result['totals'], $revenueField, $expenseField, $netField, $expenseLabel),
+            'summaries' => $this->summaries($first['totals'], $revenueField, $expenseField, $netField, $expenseLabel),
             'columns' => $columns,
             'rows' => $rows,
             'totalRows' => $totalRows,
             'note' => $note,
             'rowCount' => count($rows),
         ];
+    }
+
+    private function assertExportable(int $rowCount): void
+    {
+        if ($rowCount > $this->maxRows) {
+            throw StatisticsExportException::tooLarge($rowCount, $this->maxRows);
+        }
+    }
+
+    /**
+     * Découpe en un tableau par page PDF (en-tête répété) : dompdf rend bien plus vite plusieurs
+     * petits tableaux qu'un seul long. Si une ligne déborde (texte sur plusieurs lignes), dompdf
+     * poursuit le tableau sur la page suivante en répétant aussi l'en-tête.
+     *
+     * @param array<int, array{cells: array}> $rows
+     * @return array<int, array<int, array{cells: array, alt: bool}>>
+     */
+    private function pages(array $rows): array
+    {
+        $pages = [];
+        $offset = 0;
+        $size = self::FIRST_PAGE_ROWS;
+        while ($offset < count($rows)) {
+            $chunk = [];
+            foreach (array_slice($rows, $offset, $size) as $i => $row) {
+                $chunk[] = $row + ['alt' => ($offset + $i) % 2 === 1];
+            }
+            $pages[] = $chunk;
+            $offset += $size;
+            $size = self::ROWS_PER_PAGE;
+        }
+
+        return $pages;
+    }
+
+    private function memoryLimitBytes(): int
+    {
+        $raw = trim((string) ini_get('memory_limit'));
+        if ($raw === '-1') {
+            return PHP_INT_MAX;
+        }
+        $value = (int) $raw;
+
+        return match (strtolower(substr($raw, -1))) {
+            'g' => $value * 1024 ** 3,
+            'm' => $value * 1024 ** 2,
+            'k' => $value * 1024,
+            default => $value,
+        };
     }
 
     /** @param array<int, array<string, string>> $totals */

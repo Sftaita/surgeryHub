@@ -16980,6 +16980,16 @@ serveur, signés, en centimes entiers.
   (`FinancialStatisticsPdfExporter`), mêmes services, filtres et tri que l'écran, toutes les lignes,
   totaux, période, filtres, devise, date de génération. `BillingVoter::MANAGE`. Audité
   (`FINANCIAL_STATISTICS_EXPORTED`, `recordGlobal`) : c'est une sortie de données financières.
+- Export exhaustif sans limite arbitraire : lecture page par page (200 groupes) jusqu'au dernier ;
+  chaque page doit annoncer le même total et les mêmes totaux que la première et aucune clé de
+  groupe ne peut revenir, sinon `409 STATISTICS_EXPORT_DATA_CHANGED` (jamais un PDF incohérent).
+  Tri départagé par l'identifiant du groupe puis la devise (écran et export : ni doublon ni trou
+  entre pages à valeurs égales). Totaux = ceux du serveur, jamais recalculés depuis les lignes.
+- Plafond **technique** de 1 000 lignes par PDF (dompdf garde tout le document en mémoire, coût
+  plus que linéaire : ~17 s / ~190 Mo pour 1 000 lignes, ~80 s / ~510 Mo pour 3 000), contrôlé dès
+  la première page : `422 STATISTICS_EXPORT_TOO_LARGE`, message explicite, aucune troncature. Un
+  tableau par page PDF (en-tête répété, « Page X / Y ») : deux fois plus rapide qu'un seul long
+  tableau.
 - Aucune donnée modifiée : ni calculs, ni factures, ni décomptes, ni paiements, ni migrations.
 
 **Limites.** Le chirurgien reste un axe analytique (aucun montant ne lui est versé). Les devises ne

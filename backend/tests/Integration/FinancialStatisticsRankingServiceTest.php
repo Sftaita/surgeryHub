@@ -24,6 +24,11 @@ use App\Enum\MissionType;
 use App\Enum\PricingRuleType;
 use App\Service\FinancialCalculationService;
 use App\Service\FinancialStatisticsRankingService;
+use App\Service\FinancialStatisticsPdfExporter;
+use App\Service\FinancialStatisticsQueryService;
+use App\Service\PdfService;
+use App\Enum\StatisticsGranularity;
+use App\Exception\StatisticsExportException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use App\Tests\Support\DeclaresActualHours;
@@ -552,5 +557,240 @@ final class FinancialStatisticsRankingServiceTest extends KernelTestCase
         self::assertSame($instT['generatedCompensation'], $intT['missionInstrumentistCompensation'], 'la mission à deux types n\'est jamais comptée deux fois.');
         self::assertSame('90.00', $surgT['netBalance']);
         self::assertSame($surgT['netBalance'], $intT['netBalance']);
+    }
+
+    // ── D-186 — export PDF : exhaustivité, ordre, totaux, volume ─────────
+
+    private function exporter(int $pageSize = FinancialStatisticsPdfExporter::PAGE_SIZE, int $maxRows = FinancialStatisticsPdfExporter::MAX_ROWS): FinancialStatisticsPdfExporter
+    {
+        $c = self::getContainer();
+        return new FinancialStatisticsPdfExporter($this->em, $c->get(PdfService::class), $c->get(FinancialStatisticsQueryService::class), $this->ranking, $pageSize, $maxRows);
+    }
+
+    /** @return string[] première cellule de chaque ligne du rapport, dans l'ordre */
+    private function firstColumn(array $report): array
+    {
+        return array_map(static fn (array $row) => $row['cells'][0]['text'], $report['rows']);
+    }
+
+    /** Cinq chirurgiens au solde identique : le départage doit être stable d'une page à l'autre. */
+    private function fiveTiedSurgeons(Firm $firm): void
+    {
+        for ($i = 0; $i < 5; $i++) {
+            $this->makeApprovedMission($firm, '100.00', '0.00', '40.00', new \DateTimeImmutable('2026-05-1' . $i . ' 09:00:00'), 60);
+        }
+    }
+
+    public function test_pagination_with_tied_sort_values_never_duplicates_or_skips_a_row(): void
+    {
+        $firm = $this->makeFirm();
+        $this->fiveTiedSurgeons($firm);
+        $f = $this->filter(firmId: $firm->getId());
+
+        $all = array_map(static fn ($i) => $i->surgeonId, $this->ranking->bySurgeon($f, 1, 100, 'netBalance', 'DESC')['items']);
+        $paged = [];
+        for ($page = 1; $page <= 3; $page++) {
+            foreach ($this->ranking->bySurgeon($f, $page, 2, 'netBalance', 'DESC')['items'] as $item) {
+                $paged[] = $item->surgeonId;
+            }
+        }
+
+        self::assertCount(5, array_unique($all));
+        self::assertSame($all, $paged, 'pages 1 à 3 (2 lignes) = liste complète, même ordre, sans doublon ni trou.');
+        $sorted = $all;
+        sort($sorted);
+        self::assertSame($sorted, $all, 'à valeurs égales, départage par identifiant croissant.');
+    }
+
+    public function test_export_reads_every_page_in_the_selected_sort_order(): void
+    {
+        $firm = $this->makeFirm();
+        $this->fiveTiedSurgeons($firm);
+        $this->makeApprovedMission($firm, '400.00', '0.00', '40.00', new \DateTimeImmutable('2026-05-20 09:00:00'), 60); // +360, en tête
+        $f = $this->filter(firmId: $firm->getId());
+
+        $api = $this->ranking->bySurgeon($f, 1, 100, 'netBalance', 'DESC');
+        $report = $this->exporter(pageSize: 2)->report('by-surgeon', $f, StatisticsGranularity::DAY, 'netBalance', 'DESC');
+
+        self::assertSame(6, $report['rowCount'], 'export > taille de page (2) : les 3 pages sont lues.');
+        self::assertSame(array_map(static fn ($i) => $i->surgeonNameSnapshot, $api['items']), $this->firstColumn($report));
+        self::assertCount(6, array_unique($this->firstColumn($report)));
+        self::assertSame('+360,00 €', $report['rows'][0]['cells'][5]['text']);
+
+        $asc = $this->exporter(pageSize: 2)->report('by-surgeon', $f, StatisticsGranularity::DAY, 'netBalance', 'ASC');
+        self::assertSame(array_map(static fn ($i) => $i->surgeonNameSnapshot, $this->ranking->bySurgeon($f, 1, 100, 'netBalance', 'ASC')['items']), $this->firstColumn($asc));
+    }
+
+    public function test_export_amounts_and_totals_match_the_api_despite_pagination(): void
+    {
+        $firm = $this->makeFirm();
+        $this->makeApprovedMission($firm, '200.00', '0.00', '40.00', new \DateTimeImmutable('2026-05-10 09:00:00'), 60); // +160
+        $this->makeApprovedMission($firm, '50.00', '0.00', '60.00', new \DateTimeImmutable('2026-05-11 09:00:00'), 120); // −70
+        $this->makeApprovedMission($firm, '100.00', '0.00', '0.00', new \DateTimeImmutable('2026-05-12 09:00:00'), 60); // +100, sans frais
+        $f = $this->filter(firmId: $firm->getId());
+
+        $api = $this->ranking->bySurgeon($f, 1, 1, 'generatedFirmRevenue', 'DESC'); // page écran de 1 ligne
+        $report = $this->exporter(pageSize: 1)->report('by-surgeon', $f, StatisticsGranularity::DAY, 'generatedFirmRevenue', 'DESC');
+        $eur = $this->totalsBy($api['totals'])['EUR'];
+
+        self::assertSame(['350.00', '160.00', '190.00'], [$eur['generatedFirmRevenue'], $eur['generatedInstrumentistCompensation'], $eur['netBalance']]);
+        self::assertSame(['+350,00 €', '−160,00 €', '+190,00 €'], array_map(static fn ($c) => $c['text'], $report['summaries'][0]['cards']));
+        $total = $report['totalRows'][0]['cells'];
+        self::assertSame(['TOTAL GÉNÉRAL', '+350,00 €', '−160,00 €', '+190,00 €'], [$total[0]['text'], $total[3]['text'], $total[4]['text'], $total[5]['text']]);
+        self::assertSame(['pos', 'neg', 'pos'], [$total[3]['class'], $total[4]['class'], $total[5]['class']]);
+
+        // Chaque ligne du PDF = la ligne API correspondante, signe appliqué une seule fois.
+        $full = $this->ranking->bySurgeon($f, 1, 100, 'generatedFirmRevenue', 'DESC')['items'];
+        foreach ($full as $k => $item) {
+            $cells = $report['rows'][$k]['cells'];
+            self::assertSame($item->surgeonNameSnapshot, $cells[0]['text']);
+            self::assertSame('+' . number_format((float) $item->generatedFirmRevenue, 2, ',', ' ') . ' €', $cells[3]['text']);
+            $fee = (float) $item->generatedInstrumentistCompensation;
+            self::assertSame(($fee > 0 ? '−' : '') . number_format($fee, 2, ',', ' ') . ' €', $cells[4]['text']);
+        }
+        self::assertSame('−70,00 €', $report['rows'][2]['cells'][5]['text']);
+        self::assertSame('neg', $report['rows'][2]['cells'][5]['class']);
+
+        // Concordance dans le HTML réellement rendu : chaque ligne, dans l'ordre, puis le total.
+        $html = self::getContainer()->get('twig')->render('pdf/financial_statistics.html.twig', $report);
+        $pos = 0;
+        foreach ($full as $item) {
+            $next = strpos($html, $item->surgeonNameSnapshot, $pos);
+            self::assertNotFalse($next, $item->surgeonNameSnapshot . ' absent ou hors ordre');
+            $pos = $next;
+        }
+        self::assertGreaterThan($pos, strpos($html, 'TOTAL GÉNÉRAL'));
+        self::assertStringContainsString('Du 01/05/2026 au 31/05/2026 inclus', $html);
+        self::assertStringContainsString($firm->getName(), $html);
+        self::assertStringContainsString('3 ligne(s) exportée(s)', $html);
+    }
+
+    public function test_export_of_intervention_view_keeps_mission_level_expenses_once(): void
+    {
+        $firm = $this->makeFirm();
+        $this->makeApprovedMission($firm, '100.00', '30.00', '40.00', new \DateTimeImmutable('2026-05-14 09:00:00'), type: $this->makeType(), secondType: $this->makeType(), secondInterventionPrice: '80.00');
+        $this->makeApprovedMission($firm, '50.00', '10.00', '60.00', new \DateTimeImmutable('2026-05-15 09:00:00'), 120);
+        $f = $this->filter(firmId: $firm->getId());
+
+        $api = $this->ranking->byIntervention($f, 1, 1, 'totalRevenue', 'DESC');
+        $report = $this->exporter(pageSize: 1)->report('by-intervention', $f, StatisticsGranularity::DAY, 'totalRevenue', 'DESC');
+
+        self::assertSame(3, $report['rowCount']);
+        self::assertSame(3, $api['total']);
+        self::assertSame(['+270,00 €', '−180,00 €', '+90,00 €'], array_map(static fn ($c) => $c['text'], $report['summaries'][0]['cards']), 'dépenses = 180 (mission à deux types comptée une fois).');
+        self::assertSame('Total dépenses (au niveau mission)', $report['summaries'][0]['cards'][1]['label']);
+        $labels = array_map(static fn ($c) => $c['label'], $report['columns']);
+        self::assertNotContains('Frais instrumentiste', $labels);
+        self::assertNotContains('Solde net', $labels, "aucun solde par intervention : la dépense n'est jamais imputée à un type.");
+    }
+
+    public function test_export_keeps_currencies_separate(): void
+    {
+        $firm = $this->makeFirm();
+        $surgeon = $this->makeUser('ROLE_SURGEON');
+        $this->makeApprovedMission($firm, '100.00', '0.00', '40.00', new \DateTimeImmutable('2026-05-10 09:00:00'), 60, surgeon: $surgeon);
+        $this->makeApprovedMission($firm, '300.00', '0.00', '50.00', new \DateTimeImmutable('2026-05-11 09:00:00'), 60, surgeon: $surgeon, currency: 'USD');
+
+        $report = $this->exporter(pageSize: 1)->report('by-surgeon', $this->filter(surgeonId: $surgeon->getId()), StatisticsGranularity::DAY, 'generatedFirmRevenue', 'DESC');
+
+        self::assertSame(2, $report['rowCount']);
+        self::assertSame(['EUR', 'USD'], array_map(static fn ($s) => $s['currency'], $report['summaries']));
+        self::assertSame(['TOTAL GÉNÉRAL (EUR)', 'TOTAL GÉNÉRAL (USD)'], array_map(static fn ($r) => $r['cells'][0]['text'], $report['totalRows']));
+        self::assertSame(['+60,00 €', '+250,00 USD'], array_map(static fn ($r) => $r['cells'][5]['text'], $report['totalRows']));
+    }
+
+    public function test_top_materials_export_covers_every_material_not_only_the_top_n(): void
+    {
+        $firm = $this->makeFirm();
+        foreach (['10.00', '30.00', '20.00'] as $k => $price) {
+            $this->makeApprovedMission($firm, '0.00', $price, '0.00', new \DateTimeImmutable('2026-05-1' . $k . ' 09:00:00'), 60);
+        }
+        $f = $this->filter(firmId: $firm->getId());
+
+        $top1 = $this->ranking->topMaterials($f, 1, 'generatedRevenue', 'DESC');
+        self::assertCount(1, $top1['items']);
+        self::assertSame(3, $top1['groupCount']);
+
+        $report = $this->exporter(pageSize: 2)->report('top-materials', $f, StatisticsGranularity::DAY, 'generatedRevenue', 'DESC');
+        self::assertSame(3, $report['rowCount']);
+        self::assertSame(['+30,00 €', '+20,00 €', '+10,00 €'], array_map(static fn ($r) => $r['cells'][5]['text'], $report['rows']));
+        self::assertSame('+60,00 €', $report['totalRows'][0]['cells'][5]['text']);
+    }
+
+    public function test_empty_export_renders_a_pdf_without_rows_or_totals(): void
+    {
+        $f = $this->filter(firmId: $this->makeFirm()->getId());
+
+        foreach (['by-firm', 'by-instrumentist', 'by-surgeon', 'by-intervention', 'top-materials'] as $view) {
+            $sort = match ($view) {
+                'by-instrumentist' => 'generatedCompensation', 'by-surgeon' => 'generatedFirmRevenue', 'by-intervention' => 'interventionRevenue', default => 'generatedRevenue',
+            };
+            $report = $this->exporter()->report($view, $f, StatisticsGranularity::DAY, $sort, 'DESC');
+            self::assertSame(0, $report['rowCount'], $view);
+            self::assertSame([], $report['totalRows'], $view);
+        }
+        $export = $this->exporter()->export('by-surgeon', $f, StatisticsGranularity::DAY, 'generatedFirmRevenue', 'DESC');
+        self::assertStringStartsWith('%PDF-', $export['pdf']);
+        self::assertSame(0, $export['rowCount']);
+    }
+
+    public function test_export_above_the_pdf_engine_ceiling_is_refused_explicitly(): void
+    {
+        $firm = $this->makeFirm();
+        for ($i = 0; $i < 3; $i++) {
+            $this->makeApprovedMission($firm, '100.00', '0.00', '40.00', new \DateTimeImmutable('2026-05-1' . $i . ' 09:00:00'), 60);
+        }
+
+        try {
+            $this->exporter(pageSize: 1, maxRows: 2)->report('by-surgeon', $this->filter(firmId: $firm->getId()), StatisticsGranularity::DAY, 'netBalance', 'DESC');
+            self::fail('un export au-delà du plafond doit être refusé, jamais tronqué.');
+        } catch (StatisticsExportException $e) {
+            self::assertSame(StatisticsExportException::TOO_LARGE, $e->getErrorCode());
+            self::assertSame(422, $e->getStatusCode());
+            self::assertSame(['rowCount' => 3, 'maxRows' => 2], $e->getExtra());
+        }
+    }
+
+    public function test_export_is_refused_when_data_changes_between_pages(): void
+    {
+        $table = new \ReflectionMethod(FinancialStatisticsPdfExporter::class, 'table');
+        $row = static fn (int $id) => (object) ['surgeonId' => $id, 'currency' => 'EUR', 'surgeonNameSnapshot' => 'S' . $id];
+        $spec = [['Chirurgien', 'surgeonNameSnapshot', 'text']];
+        $cases = [
+            'totaux modifiés' => fn (int $page) => ['items' => [$row($page)], 'total' => 2, 'totals' => [['currency' => 'EUR', 'x' => $page === 1 ? '1.00' : '2.00']]],
+            'ligne en double' => fn (int $page) => ['items' => [$row(1)], 'total' => 2, 'totals' => []],
+            'ligne disparue' => fn (int $page) => ['items' => $page === 1 ? [$row(1)] : [], 'total' => 2, 'totals' => []],
+        ];
+        foreach ($cases as $label => $fetch) {
+            try {
+                $table->invoke($this->exporter(pageSize: 1), $fetch, 'surgeonId', $spec);
+                self::fail($label);
+            } catch (StatisticsExportException $e) {
+                self::assertSame(StatisticsExportException::DATA_CHANGED, $e->getErrorCode(), $label);
+                self::assertSame(409, $e->getStatusCode(), $label);
+            }
+        }
+    }
+
+    public function test_large_multi_page_export_repeats_headers_and_renders(): void
+    {
+        $f = new FinancialStatisticsFilter(from: new \DateTimeImmutable('2025-01-01'), to: new \DateTimeImmutable('2026-02-05'), firmId: $this->makeFirm()->getId());
+
+        $report = $this->exporter()->report('timeseries', $f, StatisticsGranularity::DAY, '', 'DESC');
+        self::assertSame(400, $report['rowCount'], 'un point par jour, aucun omis.');
+        self::assertSame(400, array_sum(array_map('count', $report['pages'])));
+        $lastPage = $report['pages'][array_key_last($report['pages'])];
+        self::assertSame('01/01/2025', $report['pages'][0][0]['cells'][0]['text']);
+        self::assertSame('04/02/2026', $lastPage[array_key_last($lastPage)]['cells'][0]['text']);
+
+        $html = self::getContainer()->get('twig')->render('pdf/financial_statistics.html.twig', $report);
+        self::assertSame(count($report['pages']), substr_count($html, '<thead>'), 'en-tête répété sur chaque page.');
+
+        $export = $this->exporter()->export('timeseries', $f, StatisticsGranularity::DAY, '', 'DESC');
+        self::assertStringStartsWith('%PDF-', $export['pdf']);
+        self::assertGreaterThanOrEqual(count($report['pages']), preg_match_all('#/Type\s*/Page[^s]#', $export['pdf']));
+
+        $this->expectException(StatisticsExportException::class);
+        $this->exporter(maxRows: 399)->report('timeseries', $f, StatisticsGranularity::DAY, '', 'DESC');
     }
 }

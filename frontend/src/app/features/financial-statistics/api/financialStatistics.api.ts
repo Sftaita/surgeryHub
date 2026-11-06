@@ -208,14 +208,35 @@ export async function exportStatisticsPdf(
   filter: StatisticsFilter,
   extra?: { sortBy?: string; sortDirection?: "ASC" | "DESC"; granularity?: StatisticsGranularity },
 ): Promise<{ blob: Blob; filename: string }> {
-  const res = await apiClient.get("/api/financial-statistics/export", {
-    params: toParams(filter, undefined, { view, ...extra }),
-    responseType: "blob",
-    timeout: 60_000,
-  });
+  let res;
+  try {
+    res = await apiClient.get("/api/financial-statistics/export", {
+      params: toParams(filter, undefined, { view, ...extra }),
+      responseType: "blob",
+      timeout: 120_000,
+    });
+  } catch (err) {
+    throw new Error(await exportErrorMessage(err));
+  }
   const disposition = String(res.headers?.["content-disposition"] ?? "");
   const match = /filename="([^"]+)"/.exec(disposition);
   return { blob: res.data as Blob, filename: match?.[1] ?? `statistiques-${view}.pdf` };
+}
+
+/**
+ * D-186 — message d'erreur du serveur pour un export refusé (trop volumineux, données modifiées
+ * pendant la lecture) : la réponse d'erreur arrive sous forme de Blob JSON.
+ */
+async function exportErrorMessage(err: unknown): Promise<string> {
+  const data = (err as { response?: { data?: unknown } })?.response?.data;
+  try {
+    const text = data instanceof Blob ? await data.text() : typeof data === "string" ? data : JSON.stringify(data ?? {});
+    const message = (JSON.parse(text) as { error?: { message?: string } })?.error?.message;
+    if (message) return message;
+  } catch {
+    // corps non JSON : message générique ci-dessous
+  }
+  return "Export PDF impossible. Réessayez.";
 }
 
 function toParams(filter: StatisticsFilter, pagination?: PaginationParams, extra?: Record<string, string | number | undefined>) {

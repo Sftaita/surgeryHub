@@ -7664,10 +7664,24 @@ Export PDF (A4 paysage) d'une vue. Query params : `view` (`overview`, `timeserie
 exactement les données de l'écran, **toutes les lignes** (sans pagination), la période, les filtres
 actifs, les totaux par devise et la date de génération. Recettes en « + », dépenses en « − ».
 
+**Exhaustivité.** Les classements sont relus page par page (200 groupes) jusqu'au dernier, dans le
+tri demandé ; à valeurs égales, l'ordre est départagé par l'identifiant du groupe puis la devise
+(même règle pour la pagination de l'écran : ni doublon ni ligne omise d'une page à l'autre).
+`top-materials` exporte **tous** les matériels filtrés, pas seulement le « top N » affiché. Les
+totaux imprimés sont ceux du serveur, identiques à l'écran. Chaque page PDF répète l'en-tête du
+tableau et porte « Page X / Y » ; les textes longs passent à la ligne, aucun n'est tronqué.
+
+**Limite technique.** Au-delà de **1 000 lignes**, dompdf dépasse les ressources d'une requête
+(mesuré : ~17 s / ~190 Mo pour 1 000 lignes, ~80 s / ~510 Mo pour 3 000) : l'export est refusé,
+jamais tronqué.
+
 **Réponse — 200 :** `application/pdf`, `Content-Disposition: attachment; filename="statistiques-<vue>-<date>.pdf"`.
 `403` hors manager/admin (`BillingVoter::MANAGE`) ; `422 VALIDATION_FAILED` si `view`, un filtre ou
-le tri est invalide. Chaque export est audité (`FINANCIAL_STATISTICS_EXPORTED` : vue, période,
-filtres, nombre de lignes).
+le tri est invalide ; `422 STATISTICS_EXPORT_TOO_LARGE` au-delà du plafond (`error.rowCount`,
+`error.maxRows`, message invitant à affiner la période ou les filtres) ; `409
+STATISTICS_EXPORT_DATA_CHANGED` si les données changent pendant la lecture page par page (total,
+totaux ou lignes incohérents entre deux pages) — relancer l'export. Chaque export réussi est audité
+(`FINANCIAL_STATISTICS_EXPORTED` : vue, période, filtres, nombre de lignes).
 
 ---
 

@@ -19,6 +19,10 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PricingRuleType;
 use App\Service\FinancialCalculationService;
+use App\Service\FinancialStatisticsPdfExporter;
+use App\Service\FinancialStatisticsQueryService;
+use App\Service\FinancialStatisticsRankingService;
+use App\Service\PdfService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -364,6 +368,28 @@ final class FinancialStatisticsControllerTest extends WebTestCase
 
         $client->request('GET', '/api/financial-statistics/export?view=by-surgeon', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $instrumentist)]);
         self::assertSame(Response::HTTP_FORBIDDEN, $client->getResponse()->getStatusCode());
+    }
+
+    public function test_export_too_large_for_the_pdf_engine_is_refused_with_an_explicit_error(): void
+    {
+        $client = $this->boot();
+        $client->disableReboot();
+        $token = $this->login($client, $this->createUser('ROLE_MANAGER'));
+        // Plafond réduit à 30 lignes (1 000 en production) : 31 jours en granularité DAY le dépassent.
+        $c = static::getContainer();
+        $c->set(FinancialStatisticsPdfExporter::class, new FinancialStatisticsPdfExporter(
+            $this->em, $c->get(PdfService::class), $c->get(FinancialStatisticsQueryService::class), $c->get(FinancialStatisticsRankingService::class), maxRows: 30,
+        ));
+
+        $client->request('GET', '/api/financial-statistics/export?view=timeseries&granularity=DAY&from=2026-05-01&to=2026-06-01', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+
+        $response = $client->getResponse();
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+        $error = json_decode((string) $response->getContent(), true)['error'];
+        self::assertSame('STATISTICS_EXPORT_TOO_LARGE', $error['code']);
+        self::assertSame(31, $error['rowCount']);
+        self::assertSame(30, $error['maxRows']);
+        self::assertStringContainsString('Affinez la période ou les filtres', $error['message']);
     }
 
     public function test_by_firm_supports_pagination_parameters(): void
