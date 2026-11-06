@@ -1052,6 +1052,31 @@
       "lastReviewed": "2026-11-05",
       "validationNeeded": "Contrôles API et financiers validés en production (418 contrôles, 0 erreur). Validation visuelle par l'utilisateur avec une session manager réelle encore ouverte.",
       "prodEvidence": "v2026.11.05-prod (8707cd1) : 0 migration (99/99) ; activate 2026-11-05 07:46 UTC ; mark OFFICIAL ; /api/version = OFFICIAL v2026.11.05-prod · 8707cd1 ; 418 contrôles API en lecture seule sans erreur : voir docs/production.md."
+    },
+    {
+      "id": "STATS-RECETTES-DEPENSES",
+      "title": "Statistiques financières : recettes (+), dépenses (−), solde net, totaux et export PDF",
+      "description": "Convention recettes vertes (+) / dépenses rouges (−) / solde net calculé serveur sur tous les onglets ; un solde par couche (calculé, facturé/décompté, trésorerie) ; totaux par devise sur tout le filtre ; Par chirurgien avec solde net et TOTAL GÉNÉRAL ; Par intervention en recettes uniquement (rémunération instrumentiste liée à la mission, jamais imputée à une intervention ; coût moyen de mission associée indicatif) ; export PDF serveur audité. Aucune migration, aucune donnée source modifiée.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Manager : rentabilité illisible (recettes et dépenses additionnées), pas de totaux ni d'export.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-11-06",
+      "refs": {
+        "branches": [
+          "feat/stats-recettes-depenses"
+        ],
+        "decision": "D-186",
+        "worktrees": [
+          "SurgicalHub-stats-finance"
+        ],
+        "prs": [
+          81
+        ]
+      },
+      "nextAction": "Revue puis fusion ; déploiement uniquement sur accord explicite.",
+      "lastReviewed": "2026-11-06",
+      "validationNeeded": "Recette navigateur faite sur base jetable (exemple Yorick −0,25 € / Julien +67,50 € / Steven +80,00 €) ; contrôle des montants sur données réelles après déploiement."
     }
   ]
 }
