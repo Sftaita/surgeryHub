@@ -17,6 +17,11 @@ namespace App\Dto;
  * InstrumentistStatement est un décaissement réel (l'entreprise paie l'instrumentiste)
  * bien que la colonne porte la même valeur "INBOUND" (elle signifie "règle le
  * document", pas "argent entrant en caisse" — voir D-077 pour la convention complète).
+ *
+ * D-186 — un solde par couche, jamais mélangées : « Calculé » = generatedContributionMargin,
+ * « Facturé / Décompté » = documentedNetBalance (invoicedNetAmount − statementNetAmount),
+ * « Encaissé / Décaissé » = netCashFlow. generatedTotalValue/averageMissionValue
+ * additionnent recettes ET dépenses : conservés pour compatibilité, plus affichés.
  */
 final readonly class FinancialOverviewCurrencyDto
 {
@@ -34,6 +39,7 @@ final readonly class FinancialOverviewCurrencyDto
         public string $statementCreditNotesAmount,
         public string $statementDebitNotesAmount,
         public string $statementNetAmount,
+        public string $documentedNetBalance,
         public string $paymentsIn,
         public string $paymentsOut,
         public string $netCashFlow,

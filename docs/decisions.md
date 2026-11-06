@@ -4680,7 +4680,8 @@ n'est pas non plus dans `FinancialCalculationLine.snapshot` — lu en direct via
 regroupement `by-intervention` attribue `instrumentistCompensation` (qui n'a aucun lien
 direct à une intervention précise) à l'intervention **primaire** de la mission
 (`order_index` minimal) — un choix explicite documenté plutôt qu'une répartition
-proportionnelle non demandée par le lot.
+proportionnelle non demandée par le lot. **Remplacé par D-186** : la rémunération
+instrumentiste appartient à la mission et n'est plus imputée à aucune intervention.
 
 ### Portée non traitée ici
 
@@ -16922,3 +16923,74 @@ de 248 px est inchangée, la bascule a lieu à 899 px.
 **Limites.** Les écrans restent conçus pour le bureau : sur téléphone, les tableaux larges se
 consultent en défilant horizontalement, ils ne sont pas convertis en cartes. Aucune migration,
 aucun changement backend.
+
+## D-186 — Statistiques financières : recettes (+), dépenses (−), solde net par couche, totaux serveur et export PDF (2026-11-06)
+
+**Constat.** L'écran « Statistiques financières » additionnait recettes et dépenses : « Valeur
+totale calculée » et « Valeur moy./mission » (vue d'ensemble, par chirurgien, par intervention)
+valaient `CA firme + rémunération instrumentiste`, ce qui n'a pas de sens économique. Aucun onglet ne
+montrait le solde, les dépenses n'étaient pas distinguées des recettes et les totaux n'existaient
+pas (ou portaient sur la seule page affichée). « Par intervention » imputait la rémunération
+instrumentiste d'une mission à son intervention primaire, sans lien métier.
+
+**Convention de signe (vérifiée).** Dans l'API, toutes les lignes `FinancialCalculationLine`
+(firme comme instrumentiste) sont des magnitudes positives ; `generatedContributionMargin` et
+`netCashFlow` sont déjà des soustractions. Les champs de dépense restent donc positifs dans l'API ; le
+signe « − » n'est appliqué qu'à l'affichage (écran et PDF), une seule fois. Les soldes sont calculés
+serveur, signés, en centimes entiers.
+
+**Décision.**
+- Convention d'affichage commune à tous les onglets : recette « + » vert, dépense « − » rouge, solde
+  vert/rouge/neutre (zéro). Pipeline (compteurs) et drill-down missions/calculs (sans montant) ne sont
+  pas concernés ; drill-down documents : `flow` = `REVENUE` (facture firme) / `EXPENSE` (décompte).
+- Un solde par couche, jamais mélangées : Calculé = `generatedContributionMargin` /
+  `generatedNetBalance` / `netBalance` ; Facturé / Décompté = `documentedNetBalance`
+  (`invoicedNetAmount − statementNetAmount`) ; Encaissé / Décaissé = `netCashFlow`. Le « solde net
+  calculé » reste la contribution D-077 : ni charges, ni TVA, ni frais généraux.
+- Champs ajoutés : `overview.currencies[].documentedNetBalance` ; `timeseries.points[].currencies[]`
+  `generatedNetBalance`/`documentedNetBalance`/`netCashFlow` et `timeseries.totals` ;
+  `by-surgeon.items[].netBalance` ; `by-intervention.items[]` voir ci-dessous. Chaque
+  classement renvoie `totals` (par devise) calculés sur **tout** l'ensemble filtré, avant pagination ;
+  `top-materials.totals` couvre tous les matériels, pas le seul top N.
+- **Règle fondamentale (validée par l'utilisateur, 2026-11-06) : la rémunération instrumentiste est
+  liée exclusivement à la mission, jamais à une intervention individuelle.** Elle n'est imputée, ni en
+  tout ni en partie, à aucun type d'intervention, quel que soit le nombre ou le type d'interventions
+  de la mission ; aucune ventilation de remplacement (une première version « Non ventilé » a été
+  abandonnée). Une dépense n'est rattachée à un axe que par un lien métier fiable : chirurgien
+  (`Mission.surgeon`) → recettes, dépenses et solde ; firme → recettes seulement ; instrumentiste →
+  dépenses seulement.
+- « Par intervention » = recettes par type : `interventionCount` (interventions valorisées),
+  `interventionRevenue`, `materialRevenue`, `totalRevenue`, `averageRevenuePerIntervention`
+  (= totalRevenue / interventionCount), `missionCount`, `averageDurationMinutes`. Indicateur
+  contextuel `averageAssociatedMissionCost` (« Coût moyen de mission associée ») : rémunération
+  TOTALE moyenne des missions comportant ce type ; une mission à plusieurs types figure dans chaque
+  groupe avec son coût entier, une mission comportant le même type deux fois n'y compte qu'une fois.
+  Jamais présenté comme un « coût par intervention ». Les totaux de l'onglet lisent les dépenses au
+  niveau mission (`missionInstrumentistCompensation`, une seule fois par mission) et en déduisent
+  `netBalance` ; la somme des coûts moyens n'est jamais un total. Le matériel non rattaché à une
+  intervention garde sa ligne propre (« Matériel non rattaché à une intervention »).
+  `instrumentistCompensation`, `netBalance` et `averageMissionValue` sont **retirés** des lignes
+  `/by-intervention` (ils reposaient sur l'imputation abandonnée).
+- Moyennes : `averageMissionValue` (recettes + dépenses) et `generatedTotalValue` ne sont plus
+  affichés ; ils restent dans l'API pour compatibilité. Les moyennes distinctes et nommées sont
+  gardées (CA moyen / mission par firme, coût moyen / mission par instrumentiste, CA moyen / unité,
+  durée moyenne).
+- Tri par en-tête de colonne ; whitelists `sortBy` élargies (dont `netBalance`).
+- Export : `GET /api/financial-statistics/export?view=…` — PDF A4 paysage généré serveur
+  (`FinancialStatisticsPdfExporter`), mêmes services, filtres et tri que l'écran, toutes les lignes,
+  totaux, période, filtres, devise, date de génération. `BillingVoter::MANAGE`. Audité
+  (`FINANCIAL_STATISTICS_EXPORTED`, `recordGlobal`) : c'est une sortie de données financières.
+- Export exhaustif sans limite arbitraire : lecture page par page (200 groupes) jusqu'au dernier ;
+  chaque page doit annoncer le même total et les mêmes totaux que la première et aucune clé de
+  groupe ne peut revenir, sinon `409 STATISTICS_EXPORT_DATA_CHANGED` (jamais un PDF incohérent).
+  Tri départagé par l'identifiant du groupe puis la devise (écran et export : ni doublon ni trou
+  entre pages à valeurs égales). Totaux = ceux du serveur, jamais recalculés depuis les lignes.
+- Plafond **technique** de 1 000 lignes par PDF (dompdf garde tout le document en mémoire, coût
+  plus que linéaire : ~17 s / ~190 Mo pour 1 000 lignes, ~80 s / ~510 Mo pour 3 000), contrôlé dès
+  la première page : `422 STATISTICS_EXPORT_TOO_LARGE`, message explicite, aucune troncature. Un
+  tableau par page PDF (en-tête répété, « Page X / Y ») : deux fois plus rapide qu'un seul long
+  tableau.
+- Aucune donnée modifiée : ni calculs, ni factures, ni décomptes, ni paiements, ni migrations.
+
+**Limites.** Le chirurgien reste un axe analytique (aucun montant ne lui est versé). Les devises ne
+sont jamais additionnées entre elles : un total par devise.

@@ -103,6 +103,7 @@ export const AUDIT_EVENT_LABELS: Record<string, string> = {
   FINANCIAL_CALCULATION_SUPERSEDED: "Calcul financier remplacé",
   FINANCIAL_CALCULATION_CANCELLED: "Calcul financier annulé",
   FINANCIAL_CALCULATION_FAILED: "Calcul financier en échec",
+  FINANCIAL_STATISTICS_EXPORTED: "Statistiques financières exportées en PDF",
   FIRM_INVOICE_CREATED_FROM_CALCULATION: "Facture firme créée",
   FIRM_INVOICE_ISSUED: "Facture firme émise",
   FIRM_INVOICE_CANCELLED: "Facture firme annulée",

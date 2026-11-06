@@ -25,6 +25,8 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 final class FinancialStatisticsRankingService
 {
+    public const UNLINKED_MATERIAL_LABEL = 'Matériel non rattaché à une intervention';
+
     private readonly Connection $connection;
 
     public function __construct(EntityManagerInterface $em)
@@ -120,7 +122,8 @@ final class FinancialStatisticsRankingService
             );
         }
 
-        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection);
+        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection, 'firmId')
+            + ['totals' => $this->totalsByCurrency($items, ['interventionRevenue', 'materialRevenue', 'generatedRevenue', 'invoicedNetAmount', 'paidAmount', 'remainingAmount'])];
     }
 
     // ── Par instrumentiste (§13) ─────────────────────────────────────────
@@ -213,7 +216,8 @@ final class FinancialStatisticsRankingService
             );
         }
 
-        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection);
+        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection, 'instrumentistId')
+            + ['totals' => $this->totalsByCurrency($items, ['hourlyCompensation', 'consultationFees', 'generatedCompensation', 'statementNetAmount', 'paidAmount', 'remainingAmount'])];
     }
 
     // ── Par chirurgien (§14) ─────────────────────────────────────────────
@@ -257,39 +261,45 @@ final class FinancialStatisticsRankingService
                 executedMissionCount: (int) $row['executedMissionCount'],
                 generatedFirmRevenue: $this->money($row['firmRevenue']),
                 generatedInstrumentistCompensation: $this->money($row['instrumentistComp']),
+                netBalance: $this->sub($row['firmRevenue'], $row['instrumentistComp']),
                 averageMissionValue: $missionCount > 0 ? number_format((float) $total / $missionCount, 2, '.', '') : '0.00',
             );
         }
 
-        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection);
+        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection, 'surgeonId')
+            + ['totals' => $this->totalsByCurrency($items, ['generatedFirmRevenue', 'generatedInstrumentistCompensation', 'netBalance'])];
     }
 
     // ── Par intervention (§15) ───────────────────────────────────────────
 
     /**
-     * §15 — trois lignées d'attribution distinctes fusionnées par interventionTypeId
-     * (D-077, limite documentée) : interventionRevenue est directe
+     * §15 — recettes par type d'intervention : interventionRevenue est directe
      * (FinancialCalculationLine.missionIntervention.interventionType) ; materialRevenue
      * suit material_line.mission_intervention_id (NULL = matériel non rattaché à une
-     * intervention précise, regroupé sous interventionTypeId=null) ;
-     * instrumentistCompensation n'a AUCUN lien direct à une intervention (une ligne
-     * INSTRUMENTIST_HOURLY/CONSULTATION_FEE est au niveau mission, pas intervention) —
-     * attribuée à l'intervention PRIMAIRE de la mission (order_index minimal), un choix
-     * explicite documenté plutôt qu'une répartition proportionnelle non demandée par le
-     * lot.
+     * intervention, regroupé sous interventionTypeId=null).
      *
-     * @return array{items: InterventionStatisticsDto[], total: int, page: int, limit: int}
+     * D-186 — la rémunération instrumentiste appartient EXCLUSIVEMENT à la mission : elle
+     * n'est jamais imputée, ni en tout ni en partie, à un type d'intervention (la règle
+     * D-077 « intervention primaire » est abandonnée, sans ventilation de remplacement).
+     * Seul indicateur de coût exposé ici : `averageAssociatedMissionCost`, coût
+     * instrumentiste TOTAL moyen des missions comportant ce type — contextuel, une même
+     * mission pouvant appartenir à plusieurs groupes. Ce n'est jamais un « coût par
+     * intervention » et il n'entre dans aucun total : les totaux de dépenses
+     * (`missionInstrumentistCompensation`) sont comptés au niveau mission, une seule fois.
+     *
+     * @return array{items: InterventionStatisticsDto[], total: int, page: int, limit: int, totals: array<int, array<string, string>>}
      */
     public function byIntervention(FinancialStatisticsFilter $filter, int $page, int $limit, string $sortBy, string $sortDirection): array
     {
         [$missionWhere, $missionParams, $missionTypes] = $this->missionPopulationClause($filter, 'm');
         [$currencyWhere, $currencyParams, $currencyTypes] = $this->currencyClause($filter, 'fcl');
-        $fDate = $this->dateParam($filter->from);
-        $tDate = $this->dateParam($filter->to);
+        $params = $missionParams + $currencyParams + ['fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to)];
+        $types = $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING];
 
-        $interventionSql = "SELECT
+        $interventionRows = $this->connection->fetchAllAssociative("SELECT
                     mi.intervention_type_id AS interventionTypeId, fcl.currency,
                     COUNT(DISTINCT fc.mission_id) AS missionCount,
+                    COUNT(DISTINCT fcl.mission_intervention_id) AS interventionCount,
                     SUM(fcl.total_amount) AS interventionRevenue,
                     " . $this->latestSnapshotExpr('fcl.snapshot', '$.interventionCodeSnapshot', 'fcl.effective_at') . " AS codeSnapshot,
                     " . $this->latestSnapshotExpr('fcl.snapshot', '$.interventionLabelSnapshot', 'fcl.effective_at') . " AS labelSnapshot,
@@ -302,11 +312,9 @@ final class FinancialStatisticsRankingService
                 WHERE fcl.line_type = 'FIRM_INTERVENTION_FEE'
                   AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
                   $missionWhere $currencyWhere
-                GROUP BY mi.intervention_type_id, fcl.currency";
+                GROUP BY mi.intervention_type_id, fcl.currency", $params, $types);
 
-        $interventionRows = $this->connection->fetchAllAssociative($interventionSql, $missionParams + $currencyParams + ['fDate' => $fDate, 'tDate' => $tDate], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
-
-        $materialSql = "SELECT
+        $materialRows = $this->connection->fetchAllAssociative("SELECT
                     mi2.intervention_type_id AS interventionTypeId, fcl.currency,
                     SUM(fcl.total_amount) AS materialRevenue
                 FROM financial_calculation_line fcl
@@ -317,23 +325,34 @@ final class FinancialStatisticsRankingService
                 WHERE fcl.line_type = 'FIRM_MATERIAL_FEE'
                   AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
                   $missionWhere $currencyWhere
-                GROUP BY mi2.intervention_type_id, fcl.currency";
+                GROUP BY mi2.intervention_type_id, fcl.currency", $params, $types);
 
-        $materialRows = $this->connection->fetchAllAssociative($materialSql, $missionParams + $currencyParams + ['fDate' => $fDate, 'tDate' => $tDate], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
-
-        $instrumentistSql = "SELECT
-                    (SELECT mi3.intervention_type_id FROM mission_intervention mi3 WHERE mi3.mission_id = fc.mission_id ORDER BY mi3.order_index ASC, mi3.id ASC LIMIT 1) AS interventionTypeId,
-                    fcl.currency,
-                    SUM(fcl.total_amount) AS instrumentistCompensation
-                FROM financial_calculation_line fcl
-                INNER JOIN financial_calculation fc ON fc.id = fcl.financial_calculation_id AND fc.status IN ('CALCULATED','APPROVED','LOCKED')
-                INNER JOIN mission m ON m.id = fc.mission_id
-                WHERE fcl.beneficiary_type = 'INSTRUMENTIST'
-                  AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
-                  $missionWhere $currencyWhere
-                GROUP BY interventionTypeId, fcl.currency";
-
-        $instrumentistRows = $this->connection->fetchAllAssociative($instrumentistSql, $missionParams + $currencyParams + ['fDate' => $fDate, 'tDate' => $tDate], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
+        // Coût TOTAL de chaque mission associée (une fois par mission et par groupe, même si
+        // la mission comporte ce type plusieurs fois) — jamais une fraction de mission.
+        $costRows = $this->connection->fetchAllAssociative("SELECT
+                    x.interventionTypeId, x.currency, COUNT(*) AS associatedMissionCount,
+                    SUM(COALESCE(c.comp, 0)) AS associatedMissionCost
+                FROM (
+                    SELECT DISTINCT mi.intervention_type_id AS interventionTypeId, fcl.currency, fc.id AS calcId
+                    FROM financial_calculation_line fcl
+                    INNER JOIN financial_calculation fc ON fc.id = fcl.financial_calculation_id AND fc.status IN ('CALCULATED','APPROVED','LOCKED')
+                    INNER JOIN mission m ON m.id = fc.mission_id
+                    INNER JOIN mission_intervention mi ON mi.id = fcl.mission_intervention_id
+                    WHERE fcl.line_type = 'FIRM_INTERVENTION_FEE'
+                      AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
+                      $missionWhere $currencyWhere
+                ) x
+                LEFT JOIN (
+                    SELECT financial_calculation_id, currency, SUM(total_amount) AS comp
+                    FROM financial_calculation_line
+                    WHERE beneficiary_type = 'INSTRUMENTIST' AND effective_at >= :fDate AND effective_at < :tDate
+                    GROUP BY financial_calculation_id, currency
+                ) c ON c.financial_calculation_id = x.calcId AND c.currency = x.currency
+                GROUP BY x.interventionTypeId, x.currency", $params, $types);
+        $costByKey = [];
+        foreach ($costRows as $row) {
+            $costByKey[$row['interventionTypeId'] . '|' . $row['currency']] = $row;
+        }
 
         $merged = [];
         foreach ($interventionRows as $row) {
@@ -342,9 +361,9 @@ final class FinancialStatisticsRankingService
                 'interventionTypeId' => $row['interventionTypeId'],
                 'currency' => $row['currency'],
                 'missionCount' => (int) $row['missionCount'],
+                'interventionCount' => (int) $row['interventionCount'],
                 'interventionRevenue' => $this->money($row['interventionRevenue']),
                 'materialRevenue' => '0.00',
-                'instrumentistCompensation' => '0.00',
                 'codeSnapshot' => (string) ($row['codeSnapshot'] ?? '—'),
                 'labelSnapshot' => (string) ($row['labelSnapshot'] ?? '—'),
                 'avgDuration' => (int) round((float) ($row['avgDuration'] ?? 0)),
@@ -352,13 +371,11 @@ final class FinancialStatisticsRankingService
         }
         foreach ($materialRows as $row) {
             $key = $row['interventionTypeId'] . '|' . $row['currency'];
-            $merged[$key] ??= $this->emptyInterventionBucket($row['interventionTypeId'], $row['currency']);
+            $merged[$key] ??= [
+                'interventionTypeId' => $row['interventionTypeId'], 'currency' => $row['currency'], 'missionCount' => 0, 'interventionCount' => 0,
+                'interventionRevenue' => '0.00', 'materialRevenue' => '0.00', 'codeSnapshot' => '—', 'labelSnapshot' => '—', 'avgDuration' => 0,
+            ];
             $merged[$key]['materialRevenue'] = $this->money($row['materialRevenue']);
-        }
-        foreach ($instrumentistRows as $row) {
-            $key = $row['interventionTypeId'] . '|' . $row['currency'];
-            $merged[$key] ??= $this->emptyInterventionBucket($row['interventionTypeId'], $row['currency']);
-            $merged[$key]['instrumentistCompensation'] = $this->money($row['instrumentistCompensation']);
         }
 
         // Complète le code/libellé des buckets qui n'ont jamais eu de ligne FIRM_INTERVENTION_FEE (donc aucun snapshot).
@@ -369,36 +386,86 @@ final class FinancialStatisticsRankingService
         $liveLabels = $this->fetchInterventionTypeLabels($missingIds);
 
         $items = [];
-        foreach ($merged as $b) {
+        foreach ($merged as $key => $b) {
             if ($b['codeSnapshot'] === '—' && $b['interventionTypeId'] !== null && isset($liveLabels[(int) $b['interventionTypeId']])) {
                 [$b['codeSnapshot'], $b['labelSnapshot']] = $liveLabels[(int) $b['interventionTypeId']];
             }
-            $total = $this->add($b['interventionRevenue'], $this->add($b['materialRevenue'], $b['instrumentistCompensation']));
+            if ($b['interventionTypeId'] === null && $b['interventionCount'] === 0) {
+                [$b['codeSnapshot'], $b['labelSnapshot']] = ['—', self::UNLINKED_MATERIAL_LABEL];
+            }
+            $revenue = $this->add($b['interventionRevenue'], $b['materialRevenue']);
+            $cost = $costByKey[$key] ?? null;
+            $associated = $cost !== null ? (int) $cost['associatedMissionCount'] : 0;
             $items[] = new InterventionStatisticsDto(
                 interventionTypeId: $b['interventionTypeId'] !== null ? (int) $b['interventionTypeId'] : null,
                 interventionCodeSnapshot: $b['codeSnapshot'],
                 interventionNameSnapshot: $b['labelSnapshot'],
                 currency: $b['currency'],
                 missionCount: $b['missionCount'],
+                interventionCount: $b['interventionCount'],
                 interventionRevenue: $b['interventionRevenue'],
                 materialRevenue: $b['materialRevenue'],
-                instrumentistCompensation: $b['instrumentistCompensation'],
-                averageMissionValue: $b['missionCount'] > 0 ? number_format((float) $total / $b['missionCount'], 2, '.', '') : '0.00',
+                totalRevenue: $revenue,
+                averageRevenuePerIntervention: $this->divide($revenue, $b['interventionCount']),
+                averageAssociatedMissionCost: $associated > 0 ? $this->divide((string) $cost['associatedMissionCost'], $associated) : null,
                 averageDurationMinutes: $b['avgDuration'],
             );
         }
 
-        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection);
+        return $this->paginate($items, $page, $limit, $sortBy, $sortDirection, 'interventionTypeId')
+            + ['totals' => $this->interventionTotals($items, $filter)];
     }
 
-    /** @return array{interventionTypeId: mixed, currency: string, missionCount: int, interventionRevenue: string, materialRevenue: string, instrumentistCompensation: string, codeSnapshot: string, labelSnapshot: string, avgDuration: int} */
-    private function emptyInterventionBucket(mixed $interventionTypeId, string $currency): array
+    /**
+     * D-186 — totaux de l'onglet : recettes additionnées sur les groupes (chaque ligne de
+     * recette appartient à un seul groupe) ; dépenses lues au niveau MISSION sur la même
+     * population, une seule fois par mission — jamais la somme des coûts moyens associés.
+     *
+     * @param InterventionStatisticsDto[] $items
+     * @return array<int, array<string, string>>
+     */
+    private function interventionTotals(array $items, FinancialStatisticsFilter $filter): array
     {
-        return [
-            'interventionTypeId' => $interventionTypeId, 'currency' => $currency, 'missionCount' => 0,
-            'interventionRevenue' => '0.00', 'materialRevenue' => '0.00', 'instrumentistCompensation' => '0.00',
-            'codeSnapshot' => '—', 'labelSnapshot' => '—', 'avgDuration' => 0,
-        ];
+        $revenueTotals = [];
+        foreach ($this->totalsByCurrency($items, ['interventionRevenue', 'materialRevenue', 'totalRevenue']) as $t) {
+            $revenueTotals[$t['currency']] = $t;
+        }
+
+        [$missionWhere, $missionParams, $missionTypes] = $this->missionPopulationClause($filter, 'm');
+        [$currencyWhere, $currencyParams, $currencyTypes] = $this->currencyClause($filter, 'fcl');
+        $rows = $this->connection->fetchAllAssociative("SELECT fcl.currency, SUM(fcl.total_amount) AS comp
+                FROM financial_calculation_line fcl
+                INNER JOIN financial_calculation fc ON fc.id = fcl.financial_calculation_id AND fc.status IN ('CALCULATED','APPROVED','LOCKED')
+                INNER JOIN mission m ON m.id = fc.mission_id
+                WHERE fcl.beneficiary_type = 'INSTRUMENTIST'
+                  AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
+                  $missionWhere $currencyWhere
+                GROUP BY fcl.currency", $missionParams + $currencyParams + [
+            'fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to),
+        ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
+        $expenses = array_column(array_map(fn (array $r) => [$r['currency'], $this->money($r['comp'])], $rows), 1, 0);
+
+        $currencies = array_unique(array_merge(array_keys($revenueTotals), array_keys($expenses)));
+        sort($currencies);
+        $totals = [];
+        foreach ($currencies as $currency) {
+            $r = $revenueTotals[$currency] ?? ['interventionRevenue' => '0.00', 'materialRevenue' => '0.00', 'totalRevenue' => '0.00'];
+            $comp = $expenses[$currency] ?? '0.00';
+            $totals[] = [
+                'currency' => $currency,
+                'interventionRevenue' => $r['interventionRevenue'],
+                'materialRevenue' => $r['materialRevenue'],
+                'totalRevenue' => $r['totalRevenue'],
+                'missionInstrumentistCompensation' => $comp,
+                'netBalance' => $this->sub($r['totalRevenue'], $comp),
+            ];
+        }
+        return $totals;
+    }
+
+    private function divide(string $amount, int $count): string
+    {
+        return $count > 0 ? number_format(round((float) $amount / $count, 2), 2, '.', '') : '0.00';
     }
 
     /** @param int[] $ids @return array<int, array{0: string, 1: string}> */
@@ -421,8 +488,13 @@ final class FinancialStatisticsRankingService
 
     // ── Top matériels (§16) ──────────────────────────────────────────────
 
-    /** @return array{items: MaterialStatisticsDto[], total: int, page: int, limit: int} */
-    public function topMaterials(FinancialStatisticsFilter $filter, int $limit, string $sortBy, string $sortDirection): array
+    /**
+     * `total` = nombre de lignes renvoyées (contrat historique du « top N ») ; `groupCount` =
+     * nombre de matériels filtrés au total, pour parcourir toutes les pages (export PDF).
+     *
+     * @return array{items: MaterialStatisticsDto[], total: int, page: int, limit: int, totals: array<int, array<string, string>>, groupCount: int}
+     */
+    public function topMaterials(FinancialStatisticsFilter $filter, int $limit, string $sortBy, string $sortDirection, int $page = 1): array
     {
         [$missionWhere, $missionParams, $missionTypes] = $this->missionPopulationClause($filter, 'm');
         [$currencyWhere, $currencyParams, $currencyTypes] = $this->currencyClause($filter, 'fcl');
@@ -451,12 +523,12 @@ final class FinancialStatisticsRankingService
                   AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
                   $missionWhere $currencyWhere
                 GROUP BY ml.item_id, fcl.currency, mi2.reference_code
-                ORDER BY $sortColumn " . ($sortDirection === 'ASC' ? 'ASC' : 'DESC') . "
-                LIMIT :limit";
+                ORDER BY $sortColumn " . ($sortDirection === 'ASC' ? 'ASC' : 'DESC') . ", ml.item_id IS NULL, ml.item_id, fcl.currency
+                LIMIT :limit OFFSET :offset";
 
         $rows = $this->connection->fetchAllAssociative($sql, $missionParams + $currencyParams + [
-            'fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to), 'limit' => $limit,
-        ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING, 'limit' => ParameterType::INTEGER]);
+            'fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to), 'limit' => $limit, 'offset' => ($page - 1) * $limit,
+        ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING, 'limit' => ParameterType::INTEGER, 'offset' => ParameterType::INTEGER]);
 
         $items = [];
         foreach ($rows as $row) {
@@ -474,7 +546,35 @@ final class FinancialStatisticsRankingService
             );
         }
 
-        return ['items' => $items, 'total' => count($items), 'page' => 1, 'limit' => $limit];
+        // D-186 — totaux sur TOUS les matériels filtrés, jamais sur le seul top N affiché.
+        $totalRows = $this->connection->fetchAllAssociative("SELECT fcl.currency, SUM(fcl.total_amount) AS generatedRevenue
+                FROM financial_calculation_line fcl
+                INNER JOIN financial_calculation fc ON fc.id = fcl.financial_calculation_id AND fc.status IN ('CALCULATED','APPROVED','LOCKED')
+                INNER JOIN mission m ON m.id = fc.mission_id
+                WHERE fcl.line_type = 'FIRM_MATERIAL_FEE'
+                  AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
+                  $missionWhere $currencyWhere
+                GROUP BY fcl.currency
+                ORDER BY fcl.currency", $missionParams + $currencyParams + [
+            'fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to),
+        ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
+        $totals = array_map(fn (array $r) => ['currency' => $r['currency'], 'generatedRevenue' => $this->money($r['generatedRevenue'])], $totalRows);
+
+        $groupCount = (int) $this->connection->fetchOne("SELECT COUNT(*) FROM (
+                    SELECT 1
+                    FROM financial_calculation_line fcl
+                    INNER JOIN financial_calculation fc ON fc.id = fcl.financial_calculation_id AND fc.status IN ('CALCULATED','APPROVED','LOCKED')
+                    INNER JOIN mission m ON m.id = fc.mission_id
+                    INNER JOIN material_line ml ON ml.id = fcl.material_line_id
+                    WHERE fcl.line_type = 'FIRM_MATERIAL_FEE'
+                      AND fcl.effective_at >= :fDate AND fcl.effective_at < :tDate
+                      $missionWhere $currencyWhere
+                    GROUP BY ml.item_id, fcl.currency
+                ) g", $missionParams + $currencyParams + [
+            'fDate' => $this->dateParam($filter->from), 'tDate' => $this->dateParam($filter->to),
+        ], $missionTypes + $currencyTypes + ['fDate' => ParameterType::STRING, 'tDate' => ParameterType::STRING]);
+
+        return ['items' => $items, 'total' => count($items), 'page' => $page, 'limit' => $limit, 'totals' => $totals, 'groupCount' => $groupCount];
     }
 
     // ── Pagination/tri en mémoire sur un résultat déjà agrégé (§22/§30) ──
@@ -484,19 +584,55 @@ final class FinancialStatisticsRankingService
      * @param T[] $items
      * @return array{items: T[], total: int, page: int, limit: int}
      */
-    private function paginate(array $items, int $page, int $limit, string $sortBy, string $sortDirection): array
+    private function paginate(array $items, int $page, int $limit, string $sortBy, string $sortDirection, string $identityField): array
     {
-        usort($items, function ($a, $b) use ($sortBy, $sortDirection) {
+        usort($items, function ($a, $b) use ($sortBy, $sortDirection, $identityField) {
             $va = $a->{$sortBy};
             $vb = $b->{$sortBy};
             $cmp = is_numeric($va) && is_numeric($vb) ? ((float) $va <=> (float) $vb) : ((string) $va <=> (string) $vb);
-            return $sortDirection === 'ASC' ? $cmp : -$cmp;
+            if ($cmp !== 0) {
+                return $sortDirection === 'ASC' ? $cmp : -$cmp;
+            }
+            // D-186 — départage déterministe sur la clé du groupe (identifiant, sans identifiant
+            // en dernier, puis devise) : l'ordre SQL d'un GROUP BY n'est pas garanti, des valeurs
+            // égales ne doivent jamais permuter d'une page à l'autre (ni doublon, ni ligne omise).
+            return [$a->{$identityField} === null, $a->{$identityField}, $a->currency]
+                <=> [$b->{$identityField} === null, $b->{$identityField}, $b->currency];
         });
 
         $total = count($items);
         $offset = ($page - 1) * $limit;
 
         return ['items' => array_slice($items, $offset, $limit), 'total' => $total, 'page' => $page, 'limit' => $limit];
+    }
+
+    /**
+     * D-186 — totaux par devise sur l'ensemble filtré (AVANT pagination), en centimes
+     * entiers : jamais de dérive flottante, jamais de total mélangeant deux devises.
+     *
+     * @param object[] $items
+     * @param string[] $fields propriétés monétaires (chaînes décimales) à additionner
+     * @return array<int, array<string, string>>
+     */
+    private function totalsByCurrency(array $items, array $fields): array
+    {
+        $cents = [];
+        foreach ($items as $item) {
+            foreach ($fields as $field) {
+                $cents[$item->currency][$field] = ($cents[$item->currency][$field] ?? 0) + (int) round((float) $item->{$field} * 100);
+            }
+        }
+        ksort($cents);
+
+        $totals = [];
+        foreach ($cents as $currency => $byField) {
+            $row = ['currency' => (string) $currency];
+            foreach ($fields as $field) {
+                $row[$field] = number_format(($byField[$field] ?? 0) / 100, 2, '.', '');
+            }
+            $totals[] = $row;
+        }
+        return $totals;
     }
 
     // ── Utilisateurs (chirurgiens) — nom d'affichage vivant (§14, aucun snapshot disponible) ──
@@ -619,5 +755,11 @@ final class FinancialStatisticsRankingService
     private function add(string $a, string $b): string
     {
         return number_format((float) $a + (float) $b, 2, '.', '');
+    }
+
+    /** D-186 — solde net = recettes − dépenses, calculé en centimes entiers (signé). */
+    private function sub(mixed $revenue, mixed $expenses): string
+    {
+        return number_format(((int) round((float) ($revenue ?? 0) * 100) - (int) round((float) ($expenses ?? 0) * 100)) / 100, 2, '.', '');
     }
 }
