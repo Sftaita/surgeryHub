@@ -7517,6 +7517,9 @@ Vue d'ensemble par devise (§7 du lot).
 ```
 
 `activity` n'est jamais dupliqué par devise (une mission n'a pas de devise propre).
+D-186 — `documentedNetBalance` = `invoicedNetAmount − statementNetAmount` (solde de la couche
+« Facturé / Décompté », sans paiement). `generatedTotalValue`/`averageMissionValue` additionnent
+recettes et dépenses : conservés pour compatibilité, plus affichés.
 `generatedContributionMargin` — voir D-077, jamais un "bénéfice net" (n'intègre ni
 charges, ni TVA, ni frais généraux). `paymentsIn`/`paymentsOut` dérivent de
 `(documentType, direction)`, jamais de `direction` seule (voir D-077 §20).
@@ -7542,6 +7545,10 @@ Série temporelle (§11 du lot). Query param additionnel : `granularity`
   ]
 }
 ```
+
+D-186 — chaque bloc devise porte aussi `generatedNetBalance`, `documentedNetBalance` et
+`netCashFlow` (signés), et la réponse un tableau `totals` (un objet par devise, mêmes champs,
+somme de tous les buckets).
 
 Les buckets sans donnée sont présents avec des valeurs à zéro, jamais omis. Fenêtre
 limitée à 730 buckets (`422 VALIDATION_FAILED` au-delà — réduire `from`/`to` ou
@@ -7573,10 +7580,10 @@ Classements (§12-16 du lot). Réponse commune : `{ "items": [...], "total": N, 
 
 | Endpoint | `sortBy` autorisés (défaut en gras) |
 |---|---|
-| `/by-firm` | **generatedRevenue**, invoicedNetAmount, remainingAmount, missionCount, firmNameSnapshot |
-| `/by-instrumentist` | **generatedCompensation**, statementNetAmount, remainingAmount, missionCount, instrumentistNameSnapshot |
-| `/by-surgeon` | **generatedFirmRevenue**, generatedInstrumentistCompensation, missionCount, surgeonNameSnapshot |
-| `/by-intervention` | **interventionRevenue**, materialRevenue, missionCount, interventionCodeSnapshot |
+| `/by-firm` | **generatedRevenue**, interventionRevenue, materialRevenue, invoicedNetAmount, paidAmount, remainingAmount, missionCount, firmNameSnapshot |
+| `/by-instrumentist` | **generatedCompensation**, hourlyCompensation, consultationFees, executedMinutes, statementNetAmount, paidAmount, remainingAmount, missionCount, instrumentistNameSnapshot |
+| `/by-surgeon` | **generatedFirmRevenue**, generatedInstrumentistCompensation, netBalance, missionCount, executedMissionCount, surgeonNameSnapshot |
+| `/by-intervention` | **interventionRevenue**, materialRevenue, totalRevenue, interventionCount, averageRevenuePerIntervention, averageAssociatedMissionCost, missionCount, averageDurationMinutes, interventionCodeSnapshot, interventionNameSnapshot |
 | `/top-materials` | **generatedRevenue**, quantity, missionCount, averageUnitRevenue |
 
 Chaque ligne expose un champ `currency` explicite — un même bénéficiaire actif dans
@@ -7589,6 +7596,40 @@ firme renommée/supprimée ne modifie jamais l'historique). Exceptions document�
 direct) et `materialReferenceSnapshot` (idem, lu en direct via `MaterialItem.
 referenceCode`). `/by-surgeon` n'expose jamais `paidAmount`/`remainingAmount` — le
 chirurgien est un axe analytique, jamais un bénéficiaire financier (§14 du lot).
+
+**D-186 — soldes et totaux.** Les montants de recettes et de dépenses sont des magnitudes
+positives ; le signe « − » d'une dépense n'est appliqué qu'à l'affichage. Champs signés ajoutés :
+`/by-surgeon` `netBalance` (= `generatedFirmRevenue − generatedInstrumentistCompensation`) ;
+`averageMissionValue` (recettes + dépenses) y est conservé pour compatibilité mais n'est plus affiché.
+
+`/by-intervention` — **recettes uniquement** : la rémunération instrumentiste appartient à la
+mission, jamais à une intervention. Chaque ligne : `interventionCount` (interventions valorisées de ce
+type), `missionCount`, `interventionRevenue`, `materialRevenue`, `totalRevenue` (= intervention +
+matériel), `averageRevenuePerIntervention` (= `totalRevenue / interventionCount`),
+`averageAssociatedMissionCost` (rémunération instrumentiste TOTALE moyenne des missions comportant ce
+type — indicateur contextuel, une mission à plusieurs types figure dans chaque groupe ; `null` sans
+mission associée ; ce n'est pas un coût par intervention), `averageDurationMinutes`. Une ligne
+`interventionTypeId: null` regroupe le matériel non rattaché à une intervention. **Retirés** :
+`instrumentistCompensation`, `netBalance`, `averageMissionValue` (imputation abandonnée).
+
+Chaque classement renvoie `totals`, un objet par devise, calculé sur **tout** l'ensemble filtré
+(indépendant de `page`/`limit` ; pour `/top-materials`, tous les matériels, pas seulement les N
+renvoyés) :
+
+```json
+{ "items": [...], "total": 25, "page": 2, "limit": 20,
+  "totals": [ { "currency": "EUR", "generatedFirmRevenue": "2000.00",
+                "generatedInstrumentistCompensation": "1500.00", "netBalance": "500.00" } ] }
+```
+
+Champs de `totals` : `/by-firm` interventionRevenue, materialRevenue, generatedRevenue,
+invoicedNetAmount, paidAmount, remainingAmount ; `/by-instrumentist` hourlyCompensation,
+consultationFees, generatedCompensation, statementNetAmount, paidAmount, remainingAmount ;
+`/by-surgeon` generatedFirmRevenue, generatedInstrumentistCompensation, netBalance ;
+`/by-intervention` interventionRevenue, materialRevenue, totalRevenue,
+`missionInstrumentistCompensation` (dépenses lues au niveau mission, une seule fois par mission —
+jamais la somme des coûts moyens associés) et `netBalance` (= `totalRevenue −
+missionInstrumentistCompensation`) ; `/top-materials` generatedRevenue.
 
 ### `GET /api/financial-statistics/missions`, `.../calculations`, `.../documents`
 
@@ -7607,10 +7648,26 @@ source d'un chiffre affiché. `sortBy` unique autorisé : `date`.
 }
 ```
 
+D-186 — chaque élément porte `flow` : `REVENUE` (facture firme), `EXPENSE` (décompte
+instrumentiste) ou `null` (mission, calcul).
+
 `currency`/`amount` sont `null` pour `.../missions` et `.../calculations` (une mission/
 un calcul n'a pas de montant unique — voir les lignes détaillées via les autres
 endpoints). `.../documents` couvre uniquement les documents `STANDARD` (une correction
 a sa propre forme, voir `GET .../corrections`, Lot 6).
+
+### `GET /api/financial-statistics/export` (D-186)
+
+Export PDF (A4 paysage) d'une vue. Query params : `view` (`overview`, `timeseries`, `by-firm`,
+`by-instrumentist`, `by-surgeon`, `by-intervention`, `top-materials`), les filtres communs,
+`sortBy`/`sortDirection` (mêmes whitelists que la vue) et `granularity` (`timeseries`). Reprend
+exactement les données de l'écran, **toutes les lignes** (sans pagination), la période, les filtres
+actifs, les totaux par devise et la date de génération. Recettes en « + », dépenses en « − ».
+
+**Réponse — 200 :** `application/pdf`, `Content-Disposition: attachment; filename="statistiques-<vue>-<date>.pdf"`.
+`403` hors manager/admin (`BillingVoter::MANAGE`) ; `422 VALIDATION_FAILED` si `view`, un filtre ou
+le tri est invalide. Chaque export est audité (`FINANCIAL_STATISTICS_EXPORTED` : vue, période,
+filtres, nombre de lignes).
 
 ---
 

@@ -11,15 +11,23 @@ use App\Dto\InstrumentistStatisticsDto;
 use App\Dto\InterventionStatisticsDto;
 use App\Dto\MaterialStatisticsDto;
 use App\Dto\SurgeonStatisticsDto;
+use App\Entity\User;
+use App\Enum\AuditEventType;
+use App\Exception\InvalidStatisticsFilterException;
 use App\Security\Voter\BillingVoter;
+use App\Service\AuditService;
 use App\Service\FinancialStatisticsDrilldownService;
+use App\Service\FinancialStatisticsPdfExporter;
 use App\Service\FinancialStatisticsQueryService;
 use App\Service\FinancialStatisticsRankingService;
 use App\Service\FinancialStatisticsRequestParser;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Http\Attribute\CurrentUser;
 
 /**
  * EPIC Pilotage financier, Lot 7 (D-077) — §23/§26/§27 du lot : contrôleur fin, toute la
@@ -31,16 +39,29 @@ use Symfony\Component\Routing\Attribute\Route;
  *
  * §28 du lot — la consultation de statistiques n'est volontairement PAS auditée (pas de
  * AuditService ici) : auditer une lecture polluerait le journal d'audit sans valeur
- * métier (seule une future exportation le serait).
+ * métier. D-186 — seule l'exportation PDF (GET .../export) l'est
+ * (FINANCIAL_STATISTICS_EXPORTED) : elle fait sortir des données financières de l'application.
  */
 #[Route('/api/financial-statistics')]
 final class FinancialStatisticsController extends AbstractController
 {
+    /** Whitelists de tri (§30), partagées entre la lecture paginée et l'export PDF (D-186). */
+    private const SORTS = [
+        'by-firm' => [['generatedRevenue', 'interventionRevenue', 'materialRevenue', 'invoicedNetAmount', 'paidAmount', 'remainingAmount', 'missionCount', 'firmNameSnapshot'], 'generatedRevenue'],
+        'by-instrumentist' => [['generatedCompensation', 'hourlyCompensation', 'consultationFees', 'executedMinutes', 'statementNetAmount', 'paidAmount', 'remainingAmount', 'missionCount', 'instrumentistNameSnapshot'], 'generatedCompensation'],
+        'by-surgeon' => [['generatedFirmRevenue', 'generatedInstrumentistCompensation', 'netBalance', 'missionCount', 'executedMissionCount', 'surgeonNameSnapshot'], 'generatedFirmRevenue'],
+        'by-intervention' => [['interventionRevenue', 'materialRevenue', 'totalRevenue', 'interventionCount', 'averageRevenuePerIntervention', 'averageAssociatedMissionCost', 'missionCount', 'averageDurationMinutes', 'interventionCodeSnapshot', 'interventionNameSnapshot'], 'interventionRevenue'],
+        'top-materials' => [['generatedRevenue', 'quantity', 'missionCount', 'averageUnitRevenue'], 'generatedRevenue'],
+    ];
+
     public function __construct(
         private readonly FinancialStatisticsRequestParser $parser,
         private readonly FinancialStatisticsQueryService $queryService,
         private readonly FinancialStatisticsRankingService $rankingService,
         private readonly FinancialStatisticsDrilldownService $drilldownService,
+        private readonly FinancialStatisticsPdfExporter $pdfExporter,
+        private readonly AuditService $audit,
+        private readonly EntityManagerInterface $em,
     ) {}
 
     #[Route('/overview', name: 'api_financial_statistics_overview', methods: ['GET'])]
@@ -61,6 +82,7 @@ final class FinancialStatisticsController extends AbstractController
         return $this->json([
             'granularity' => $granularity->value,
             'points' => array_map($this->serializeTimeSeriesPoint(...), $points),
+            'totals' => $this->queryService->timeseriesTotals($points),
         ]);
     }
 
@@ -77,7 +99,7 @@ final class FinancialStatisticsController extends AbstractController
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
         $filter = $this->parser->parseFilter($request);
-        $pagination = $this->parser->parsePagination($request, ['generatedRevenue', 'invoicedNetAmount', 'remainingAmount', 'missionCount', 'firmNameSnapshot'], 'generatedRevenue');
+        $pagination = $this->parser->parsePagination($request, self::SORTS['by-firm'][0], self::SORTS['by-firm'][1]);
         $result = $this->rankingService->byFirm($filter, $pagination['page'], $pagination['limit'], $pagination['sortBy'], $pagination['sortDirection']);
         return $this->json($this->serializePage($result, $this->serializeFirm(...)));
     }
@@ -87,7 +109,7 @@ final class FinancialStatisticsController extends AbstractController
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
         $filter = $this->parser->parseFilter($request);
-        $pagination = $this->parser->parsePagination($request, ['generatedCompensation', 'statementNetAmount', 'remainingAmount', 'missionCount', 'instrumentistNameSnapshot'], 'generatedCompensation');
+        $pagination = $this->parser->parsePagination($request, self::SORTS['by-instrumentist'][0], self::SORTS['by-instrumentist'][1]);
         $result = $this->rankingService->byInstrumentist($filter, $pagination['page'], $pagination['limit'], $pagination['sortBy'], $pagination['sortDirection']);
         return $this->json($this->serializePage($result, $this->serializeInstrumentist(...)));
     }
@@ -97,7 +119,7 @@ final class FinancialStatisticsController extends AbstractController
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
         $filter = $this->parser->parseFilter($request);
-        $pagination = $this->parser->parsePagination($request, ['generatedFirmRevenue', 'generatedInstrumentistCompensation', 'missionCount', 'surgeonNameSnapshot'], 'generatedFirmRevenue');
+        $pagination = $this->parser->parsePagination($request, self::SORTS['by-surgeon'][0], self::SORTS['by-surgeon'][1]);
         $result = $this->rankingService->bySurgeon($filter, $pagination['page'], $pagination['limit'], $pagination['sortBy'], $pagination['sortDirection']);
         return $this->json($this->serializePage($result, $this->serializeSurgeon(...)));
     }
@@ -107,7 +129,7 @@ final class FinancialStatisticsController extends AbstractController
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
         $filter = $this->parser->parseFilter($request);
-        $pagination = $this->parser->parsePagination($request, ['interventionRevenue', 'materialRevenue', 'missionCount', 'interventionCodeSnapshot'], 'interventionRevenue');
+        $pagination = $this->parser->parsePagination($request, self::SORTS['by-intervention'][0], self::SORTS['by-intervention'][1]);
         $result = $this->rankingService->byIntervention($filter, $pagination['page'], $pagination['limit'], $pagination['sortBy'], $pagination['sortDirection']);
         return $this->json($this->serializePage($result, $this->serializeIntervention(...)));
     }
@@ -117,7 +139,7 @@ final class FinancialStatisticsController extends AbstractController
     {
         $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
         $filter = $this->parser->parseFilter($request);
-        $pagination = $this->parser->parsePagination($request, ['generatedRevenue', 'quantity', 'missionCount', 'averageUnitRevenue'], 'generatedRevenue', maxLimit: 100);
+        $pagination = $this->parser->parsePagination($request, self::SORTS['top-materials'][0], self::SORTS['top-materials'][1], maxLimit: 100);
         $result = $this->rankingService->topMaterials($filter, $pagination['limit'], $pagination['sortBy'], $pagination['sortDirection']);
         return $this->json($this->serializePage($result, $this->serializeMaterial(...)));
     }
@@ -152,6 +174,49 @@ final class FinancialStatisticsController extends AbstractController
         return $this->json($this->serializePage($result, $this->serializeDrilldownItem(...)));
     }
 
+    /**
+     * D-186 — GET /api/financial-statistics/export?view=<vue>&<filtres>&sortBy&sortDirection[&granularity]
+     * PDF A4 paysage de la vue demandée : mêmes services, mêmes filtres, même tri que
+     * l'écran, toutes les lignes (aucune pagination). Audité (FINANCIAL_STATISTICS_EXPORTED).
+     */
+    #[Route('/export', name: 'api_financial_statistics_export', methods: ['GET'])]
+    public function export(Request $request, #[CurrentUser] User $actor): Response
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $view = (string) $request->query->get('view', '');
+        if (!in_array($view, FinancialStatisticsPdfExporter::VIEWS, true)) {
+            throw new InvalidStatisticsFilterException(sprintf('view invalide — valeurs autorisées : %s.', implode(', ', FinancialStatisticsPdfExporter::VIEWS)));
+        }
+        $filter = $this->parser->parseFilter($request);
+        $granularity = $this->parser->parseGranularity($request);
+        [$sortBy, $sortDirection] = ['', 'DESC'];
+        if (isset(self::SORTS[$view])) {
+            $pagination = $this->parser->parsePagination($request, self::SORTS[$view][0], self::SORTS[$view][1]);
+            [$sortBy, $sortDirection] = [$pagination['sortBy'], $pagination['sortDirection']];
+        }
+
+        $export = $this->pdfExporter->export($view, $filter, $granularity, $sortBy, $sortDirection);
+
+        $this->audit->recordGlobal($actor, AuditEventType::FINANCIAL_STATISTICS_EXPORTED, [
+            'view' => $view,
+            'from' => $filter->from->format(\DateTimeInterface::ATOM),
+            'to' => $filter->to->format(\DateTimeInterface::ATOM),
+            'siteId' => $filter->siteId,
+            'surgeonId' => $filter->surgeonId,
+            'instrumentistId' => $filter->instrumentistId,
+            'firmId' => $filter->firmId,
+            'interventionTypeId' => $filter->interventionTypeId,
+            'currency' => $filter->currency,
+            'rowCount' => $export['rowCount'],
+        ]);
+        $this->em->flush();
+
+        return new Response($export['pdf'], 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => sprintf('attachment; filename="%s"', $export['filename']),
+        ]);
+    }
+
     // ── Serializers ───────────────────────────────────────────────────
 
     private function serializeOverview(FinancialOverviewDto $dto): array
@@ -179,6 +244,7 @@ final class FinancialStatisticsController extends AbstractController
                 'statementCreditNotesAmount' => $c->statementCreditNotesAmount,
                 'statementDebitNotesAmount' => $c->statementDebitNotesAmount,
                 'statementNetAmount' => $c->statementNetAmount,
+                'documentedNetBalance' => $c->documentedNetBalance,
                 'paymentsIn' => $c->paymentsIn,
                 'paymentsOut' => $c->paymentsOut,
                 'netCashFlow' => $c->netCashFlow,
@@ -199,10 +265,13 @@ final class FinancialStatisticsController extends AbstractController
                 'currency' => $c->currency,
                 'generatedFirmRevenue' => $c->generatedFirmRevenue,
                 'generatedInstrumentistCompensation' => $c->generatedInstrumentistCompensation,
+                'generatedNetBalance' => $c->generatedNetBalance,
                 'invoicedNetAmount' => $c->invoicedNetAmount,
                 'statementNetAmount' => $c->statementNetAmount,
+                'documentedNetBalance' => $c->documentedNetBalance,
                 'paymentsIn' => $c->paymentsIn,
                 'paymentsOut' => $c->paymentsOut,
+                'netCashFlow' => $c->netCashFlow,
             ], $dto->currencies),
         ];
     }
@@ -267,6 +336,7 @@ final class FinancialStatisticsController extends AbstractController
             'executedMissionCount' => $dto->executedMissionCount,
             'generatedFirmRevenue' => $dto->generatedFirmRevenue,
             'generatedInstrumentistCompensation' => $dto->generatedInstrumentistCompensation,
+            'netBalance' => $dto->netBalance,
             'averageMissionValue' => $dto->averageMissionValue,
         ];
     }
@@ -279,10 +349,12 @@ final class FinancialStatisticsController extends AbstractController
             'interventionNameSnapshot' => $dto->interventionNameSnapshot,
             'currency' => $dto->currency,
             'missionCount' => $dto->missionCount,
+            'interventionCount' => $dto->interventionCount,
             'interventionRevenue' => $dto->interventionRevenue,
             'materialRevenue' => $dto->materialRevenue,
-            'instrumentistCompensation' => $dto->instrumentistCompensation,
-            'averageMissionValue' => $dto->averageMissionValue,
+            'totalRevenue' => $dto->totalRevenue,
+            'averageRevenuePerIntervention' => $dto->averageRevenuePerIntervention,
+            'averageAssociatedMissionCost' => $dto->averageAssociatedMissionCost,
             'averageDurationMinutes' => $dto->averageDurationMinutes,
         ];
     }
@@ -313,17 +385,28 @@ final class FinancialStatisticsController extends AbstractController
             'status' => $dto->status,
             'sourceType' => $dto->sourceType,
             'sourceId' => $dto->sourceId,
+            // D-186 — sens financier du montant pour SurgicalHub (facture = recette, décompte = dépense).
+            'flow' => match ($dto->sourceType) {
+                'FIRM_INVOICE' => 'REVENUE',
+                'INSTRUMENTIST_STATEMENT' => 'EXPENSE',
+                default => null,
+            },
         ];
     }
 
-    /** @param array{items: object[], total: int, page: int, limit: int} $result */
+    /** @param array{items: object[], total: int, page: int, limit: int, totals?: array<int, array<string, string>>} $result */
     private function serializePage(array $result, callable $itemSerializer): array
     {
-        return [
+        $page = [
             'items' => array_map($itemSerializer, $result['items']),
             'total' => $result['total'],
             'page' => $result['page'],
             'limit' => $result['limit'],
         ];
+        // D-186 — totaux par devise sur TOUT l'ensemble filtré, indépendants de la page affichée.
+        if (isset($result['totals'])) {
+            $page['totals'] = $result['totals'];
+        }
+        return $page;
     }
 }

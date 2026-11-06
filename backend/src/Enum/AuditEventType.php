@@ -195,6 +195,9 @@ enum AuditEventType: string
     case FINANCIAL_CALCULATION_CANCELLED     = 'FINANCIAL_CALCULATION_CANCELLED';
     case FINANCIAL_CALCULATION_FAILED        = 'FINANCIAL_CALCULATION_FAILED';
 
+    // D-186 — export PDF d'une vue « Statistiques financières » (lecture globale, recordGlobal()).
+    case FINANCIAL_STATISTICS_EXPORTED       = 'FINANCIAL_STATISTICS_EXPORTED';
+
     // Exécution & Valorisation, Lot 4 (D-074) — bascule des documents financiers vers
     // les lignes figées de FinancialCalculation. CREATED_FROM_CALCULATION est émis
     // uniquement par la génération d'un brouillon (generateDraft(), D-137 — l'ancien

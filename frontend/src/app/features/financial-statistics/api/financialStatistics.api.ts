@@ -46,6 +46,8 @@ export interface OverviewCurrency {
   statementCreditNotesAmount: string;
   statementDebitNotesAmount: string;
   statementNetAmount: string;
+  /** D-186 — invoicedNetAmount − statementNetAmount (couche « Facturé / Décompté »). */
+  documentedNetBalance: string;
   paymentsIn: string;
   paymentsOut: string;
   netCashFlow: string;
@@ -65,10 +67,13 @@ export interface TimeSeriesCurrencyAmounts {
   currency: string;
   generatedFirmRevenue: string;
   generatedInstrumentistCompensation: string;
+  generatedNetBalance: string;
   invoicedNetAmount: string;
   statementNetAmount: string;
+  documentedNetBalance: string;
   paymentsIn: string;
   paymentsOut: string;
+  netCashFlow: string;
 }
 
 export interface TimeSeriesPoint {
@@ -81,6 +86,8 @@ export interface TimeSeriesPoint {
 export interface TimeSeriesResponse {
   granularity: StatisticsGranularity;
   points: TimeSeriesPoint[];
+  /** D-186 — totaux par devise de toute la série (calculés serveur). */
+  totals: TimeSeriesCurrencyAmounts[];
 }
 
 export interface FinancialPipeline {
@@ -132,6 +139,8 @@ export interface SurgeonStatistic {
   executedMissionCount: number;
   generatedFirmRevenue: string;
   generatedInstrumentistCompensation: string;
+  /** D-186 — generatedFirmRevenue − generatedInstrumentistCompensation (signé). */
+  netBalance: string;
   averageMissionValue: string;
 }
 
@@ -141,10 +150,18 @@ export interface InterventionStatistic {
   interventionNameSnapshot: string;
   currency: string;
   missionCount: number;
+  /** D-186 — interventions valorisées de ce type. */
+  interventionCount: number;
   interventionRevenue: string;
   materialRevenue: string;
-  instrumentistCompensation: string;
-  averageMissionValue: string;
+  /** D-186 — interventionRevenue + materialRevenue. */
+  totalRevenue: string;
+  averageRevenuePerIntervention: string;
+  /**
+   * D-186 — rémunération instrumentiste TOTALE moyenne des missions comportant ce type
+   * (indicatif, une mission peut être dans plusieurs groupes). Jamais un coût par intervention.
+   */
+  averageAssociatedMissionCost: string | null;
   averageDurationMinutes: number;
 }
 
@@ -169,6 +186,8 @@ export interface DrilldownItem {
   status: string;
   sourceType: string;
   sourceId: number;
+  /** D-186 — sens du montant pour SurgicalHub (facture = recette, décompte = dépense). */
+  flow: "REVENUE" | "EXPENSE" | null;
 }
 
 export interface Page<T> {
@@ -176,6 +195,27 @@ export interface Page<T> {
   total: number;
   page: number;
   limit: number;
+  /** D-186 — totaux par devise sur TOUT l'ensemble filtré (classements uniquement). */
+  totals?: Array<{ currency: string } & Record<string, string>>;
+}
+
+export type ExportableView =
+  | "overview" | "timeseries" | "by-firm" | "by-instrumentist" | "by-surgeon" | "by-intervention" | "top-materials";
+
+/** D-186 — PDF généré serveur : mêmes données, filtres et tri que l'écran, toutes les lignes. */
+export async function exportStatisticsPdf(
+  view: ExportableView,
+  filter: StatisticsFilter,
+  extra?: { sortBy?: string; sortDirection?: "ASC" | "DESC"; granularity?: StatisticsGranularity },
+): Promise<{ blob: Blob; filename: string }> {
+  const res = await apiClient.get("/api/financial-statistics/export", {
+    params: toParams(filter, undefined, { view, ...extra }),
+    responseType: "blob",
+    timeout: 60_000,
+  });
+  const disposition = String(res.headers?.["content-disposition"] ?? "");
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return { blob: res.data as Blob, filename: match?.[1] ?? `statistiques-${view}.pdf` };
 }
 
 function toParams(filter: StatisticsFilter, pagination?: PaginationParams, extra?: Record<string, string | number | undefined>) {

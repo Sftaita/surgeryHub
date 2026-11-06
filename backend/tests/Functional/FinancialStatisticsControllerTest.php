@@ -311,6 +311,61 @@ final class FinancialStatisticsControllerTest extends WebTestCase
         self::assertSame('MISSION', $body['items'][0]['sourceType']);
     }
 
+    // ── D-186 — soldes, totaux et export PDF ─────────────────────────────
+
+    public function test_by_surgeon_exposes_net_balance_and_totals_independent_of_page(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token = $this->login($client, $manager);
+        [, $surgeon] = $this->makeApprovedMission($manager);
+
+        $response = $this->getJson($client, $token, '/api/financial-statistics/by-surgeon?from=2026-05-01&to=2026-06-01&surgeonId=' . $surgeon->getId() . '&sortBy=netBalance&sortDirection=ASC&page=2&limit=1');
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $body = json_decode((string) $response->getContent(), true);
+        self::assertSame([], $body['items'], 'page 2 vide (un seul chirurgien)…');
+        self::assertSame([['currency' => 'EUR', 'generatedFirmRevenue' => '120.00', 'generatedInstrumentistCompensation' => '35.00', 'netBalance' => '85.00']], $body['totals'], '…mais les totaux couvrent tout le filtre.');
+    }
+
+    public function test_manager_exports_a_view_as_pdf_and_the_export_is_audited(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token = $this->login($client, $manager);
+        [, $surgeon] = $this->makeApprovedMission($manager);
+
+        foreach (['overview', 'timeseries', 'by-firm', 'by-instrumentist', 'by-surgeon', 'by-intervention', 'top-materials'] as $view) {
+            $client->request('GET', '/api/financial-statistics/export?view=' . $view . '&from=2026-05-01&to=2026-06-01&surgeonId=' . $surgeon->getId(), server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+            $response = $client->getResponse();
+            self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $view . ' : ' . substr((string) $response->getContent(), 0, 300));
+            self::assertSame('application/pdf', $response->headers->get('Content-Type'));
+            self::assertStringStartsWith('%PDF', (string) $response->getContent());
+        }
+
+        $this->em->clear();
+        $events = $this->em->getRepository(AuditEvent::class)->findBy(['actor' => $manager->getId(), 'eventType' => \App\Enum\AuditEventType::FINANCIAL_STATISTICS_EXPORTED]);
+        self::assertCount(7, $events);
+        $payload = $events[0]->getPayload();
+        self::assertSame($surgeon->getId(), $payload['surgeonId']);
+        self::assertArrayHasKey('rowCount', $payload);
+    }
+
+    public function test_export_rejects_unknown_view_and_non_manager(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+
+        $client->request('GET', '/api/financial-statistics/export?view=pipeline', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $manager)]);
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $client->getResponse()->getStatusCode());
+
+        $client->request('GET', '/api/financial-statistics/export?view=by-surgeon&sortBy=nope', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $manager)]);
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $client->getResponse()->getStatusCode());
+
+        $client->request('GET', '/api/financial-statistics/export?view=by-surgeon', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $instrumentist)]);
+        self::assertSame(Response::HTTP_FORBIDDEN, $client->getResponse()->getStatusCode());
+    }
+
     public function test_by_firm_supports_pagination_parameters(): void
     {
         $client = $this->boot();
