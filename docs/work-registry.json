@@ -1060,7 +1060,7 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Manager : rentabilité illisible (recettes et dépenses additionnées), pas de totaux ni d'export.",
-      "status": "pr-ouverte",
+      "status": "deploye",
       "statusSince": "2026-11-06",
       "refs": {
         "branches": [
@@ -1072,11 +1072,23 @@
         ],
         "prs": [
           81
+        ],
+        "commits": [
+          "2d2d37e02092cf0aee12357433cc3e7ec2687de8"
         ]
       },
-      "nextAction": "Revue puis fusion ; déploiement uniquement sur accord explicite.",
+      "nextAction": "Officialisé v2026.11.06-prod-2 (2d2d37e). Clôturer la réserve après retour de l'utilisateur. Rollback : deploy/deploy.sh rollback ad45ef6582360ebe3c0184874ebad61e066ef190 (voir docs/production.md : audits FINANCIAL_STATISTICS_EXPORTED illisibles par ad45ef6).",
       "lastReviewed": "2026-11-06",
-      "validationNeeded": "Recette navigateur faite sur base jetable (exemple Yorick −0,25 € / Julien +67,50 € / Steven +80,00 €) ; contrôle des montants sur données réelles après déploiement."
+      "validationNeeded": "Contrôles de santé et tests ciblés validés en production par l'API publique (comptes jetables) ; retour de l'utilisateur sur les montants réels attendu.",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : lecture des montants réels à l'écran et d'un export PDF avec une session manager réelle, à confirmer par l'utilisateur."
+        }
+      ],
+      "prodEvidence": "v2026.11.06-prod-2 (2d2d37e) : 0 migration (99/99) ; activate 2026-11-06 17:59 UTC ; mark OFFICIAL ; vue d'ensemble identique avant/après, 7 exports PDF 200, permissions 403/401 : voir docs/production.md."
     }
   ]
 }
