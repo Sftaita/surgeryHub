@@ -578,7 +578,7 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Manager sur téléphone : écrans difficiles à utiliser.",
-      "status": "pr-ouverte",
+      "status": "deploye",
       "statusSince": "2026-11-06",
       "refs": {
         "branches": [
@@ -590,11 +590,23 @@
         ],
         "prs": [
           79
+        ],
+        "commits": [
+          "ad45ef6582360ebe3c0184874ebad61e066ef190"
         ]
       },
-      "nextAction": "Fusionner puis déployer (accord donné le 2026-11-06).",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : utilisation réelle de l'interface manager/admin sur un vrai téléphone (menu, tableaux défilants, tiroirs), à confirmer par l'utilisateur."
+        }
+      ],
+      "nextAction": "Officialisé v2026.11.06-prod (ad45ef6). Clôturer la réserve après retour de l'utilisateur sur téléphone. Rollback : deploy/deploy.sh rollback 8707cd16ef3620bb550c5a3d67e4d070cc15ff27.",
       "lastReviewed": "2026-11-06",
-      "validationNeeded": "Recette navigateur 390 px faite sur base jetable (26 pages, 0 débordement) ; coup d'œil sur un vrai téléphone en production."
+      "validationNeeded": "Contrôles de santé validés en production ; recette 390 px faite en local. Retour de l'utilisateur sur un vrai téléphone encore attendu.",
+      "prodEvidence": "v2026.11.06-prod (ad45ef6) : 0 migration (99/99) ; activate 2026-11-06 07:34 UTC ; mark OFFICIAL ; bundle servi contenant la barre mobile ; /api/me MANAGER : voir docs/production.md."
     },
     {
       "id": "DEBT-MUI-TOOLTIP",
