@@ -306,7 +306,7 @@
       "kind": "feature",
       "priority": "P3",
       "userImpact": "Manager : on ne sait pas qui a résolu une demande catalogue ni quand exactement.",
-      "status": "pr-ouverte",
+      "status": "fusionne",
       "statusSince": "2026-11-07",
       "refs": {
         "decision": "D-139",
@@ -318,10 +318,63 @@
         ],
         "worktrees": [
           "SurgicalHub-catalogue-comment"
+        ],
+        "commits": [
+          "f82edb7843e9607581cf4e403f8325c5d9950ae6"
         ]
       },
       "validationNeeded": "Tests backend (25 + 17) et frontend (60) verts sur base jetable ; après déploiement, vérifier une demande résolue récente (« Par <manager> le <date> ») et une ancienne (aucun décideur affiché).",
-      "nextAction": "PR #4 reprise sur main (2026-11-07) : backend déjà en production via D-146 bis (v2026.10.12-prod), seuls restent l'affichage « Par X le … » des demandes résolues, les tests de traçabilité et l'ADR. Fusion et déploiement sur accord explicite.",
+      "nextAction": "PR #4 fusionnée (f82edb7, 2026-11-07), NON déployée. Backend déjà en production via D-146 bis (v2026.10.12-prod) ; restent à déployer l'affichage « Par X le … » des demandes résolues, les tests de traçabilité et l'ADR. Aucune migration, aucun nouveau type d'audit. Déploiement sur accord explicite, avec tout main (pas de déploiement partiel).",
+      "lastReviewed": "2026-11-07"
+    },
+    {
+      "id": "D-181-LIBELLES-NEUTRES",
+      "title": "Réaffectation : messages de blocage en formulation neutre",
+      "description": "Correctif de libellés de D-181 (PR #74) : « Le changement d'instrumentiste n'est plus autorisé pour une mission soumise / validée » et repli « Le changement d'instrumentiste n'est pas possible pour cette mission. » (MissionReassignmentPolicy, ChangeInstrumentistDialog). Aucune règle métier modifiée, aucune migration.",
+      "kind": "fix",
+      "priority": "P3",
+      "userImpact": "Manager : messages de blocage accordés au genre de l'instrumentiste (« remplacée », « changée »).",
+      "status": "fusionne",
+      "statusSince": "2026-11-07",
+      "refs": {
+        "decision": "D-181",
+        "branches": [
+          "fix/neutral-reassignment-blocked-reasons"
+        ],
+        "prs": [
+          74
+        ],
+        "commits": [
+          "ec1b40396ef7647c5cf485b871f0511442de16d1"
+        ]
+      },
+      "validationNeeded": "Tests unitaires 16/16, réaffectation urgente 13/13, tiroir mission 55/55 ; après déploiement, lire le message sur une mission soumise ou validée.",
+      "nextAction": "PR #74 fusionnée (ec1b403, 2026-11-07), NON déployée. D-181 lui-même est déployé depuis v2026.11.04-prod. Déploiement sur accord explicite, avec tout main.",
+      "lastReviewed": "2026-11-07"
+    },
+    {
+      "id": "D-183-RESOLUTION-DEMANDES",
+      "title": "Demandes d'intervention résolues : firme demandée et résolution effective",
+      "description": "Complément de D-183 (PR #76) : GET /api/intervention-type-requests expose resolution { withoutFirm, firm } lue sur l'intervention réellement créée à la résolution, distincte de la firme indiquée par l'instrumentiste (conservée) ; écran Catalogue › Demandes : « Demandée : … », « Créée sans firme » / « Associée à … ». null pour une demande non résolue ou ancienne sans intervention liée (rien n'est reconstitué). Aucune migration.",
+      "kind": "feature",
+      "priority": "P3",
+      "userImpact": "Manager : impossible de voir, sur une demande résolue, quelle firme a réellement été retenue.",
+      "status": "fusionne",
+      "statusSince": "2026-11-07",
+      "refs": {
+        "decision": "D-183",
+        "branches": [
+          "feat/demandes-resolution-firme"
+        ],
+        "prs": [
+          76
+        ],
+        "commits": [
+          "d3d877fb23095d70d6ef30d977cb3996a0f42cab"
+        ]
+      },
+      "validationNeeded": "Tests backend 8/8 et 16/16, frontend 59/59 ; après déploiement, vérifier une demande résolue sans firme, une associée à une firme et une ancienne (aucune résolution affichée).",
+      "nextAction": "PR #76 fusionnée (d3d877f, 2026-11-07), NON déployée. D-183 lui-même est déployé depuis v2026.11.04-prod-2. Déploiement sur accord explicite, avec tout main.",
       "lastReviewed": "2026-11-07"
     },
     {
@@ -658,14 +711,14 @@
     {
       "id": "TEST-VITEST-TIMEOUTS",
       "title": "Délais dépassés Vitest sous charge",
-      "description": "10 à 11 tests en timeout lors des suites complètes (GeneratePlanningTab, PlanningSchedulePage…), verts en isolé.",
+      "description": "10 à 11 tests en timeout lors des suites complètes (GeneratePlanningTab, PlanningSchedulePage…), verts en isolé. 2026-11-07 : CatalogueRequestsPage.test.tsx échoue aussi SEUL sur le poste local, de façon reproductible (4 tests de la modal Ignorer, D-113 : 4,6 à 5,8 s chacun pour un délai de 5 s ; machine au repos, CPU 3 %) — même durée sur ce30c40 (avant #74/#76/#4), verts avec --testTimeout=30000 et en CI. ManagerMissionDrawer (annulation) : timeout en suite complète, vert seul.",
       "kind": "test",
       "priority": "P3",
       "userImpact": "Aucun ; bruit dans les rapports de tests.",
       "status": "a-analyser",
       "refs": {},
       "nextAction": "Augmenter le testTimeout des fichiers lents ou alléger leurs rendus.",
-      "lastReviewed": "2026-10-24"
+      "lastReviewed": "2026-11-07"
     },
     {
       "id": "DOC-HEALTHZ",
