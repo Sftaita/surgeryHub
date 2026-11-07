@@ -934,6 +934,16 @@ deploy/deploy.sh rollback legacy            # retour à la configuration d'avant
 Le rollback restaure ensemble le code backend et frontend, les Dockerfiles, la configuration
 nginx et le compose de la release visée.
 
+**Compatibilité des données (D-187).** Avant toute modification, `rollback` (et `activate`)
+vérifie dans l'image cible que son code sait lire toutes les valeurs d'énumération déjà en base ;
+sinon la bascule est **refusée** avec la liste des valeurs, et rien n'est modifié. Ne jamais
+supprimer ni réécrire ces lignes : basculer vers une release corrective compatible
+([`deployment-versioning.md`](deployment-versioning.md) §4.4). Contrôle seul :
+`deploy/deploy.sh compat <SHA>`. **Retour arrière de D-186 (`v2026.11.06-prod-2`)** :
+`deploy/deploy.sh rollback ad45ef6…` est refusé dès qu'un export a été audité ; release
+corrective prête : branche `rollback/ad45ef6-compat` (à préparer, construire et activer par
+`deploy.sh`, procédure §4.4).
+
 Il ne touche jamais à la base, à `.env`, aux volumes ni au registre des versions (D-162).
 `/api/version` affiche le commit restauré : son tag s'il avait été enregistré, sinon
 « en cours de validation ». Une version abandonnée n'est jamais affichée.

@@ -11,6 +11,16 @@ img_file() { local n="${1//\//_}"; echo "$STATE/images/${n//:/_}"; } # « : » i
 
 case "${1:-}" in
   compose)
+    # D-187 — contrôle de compatibilité des données : STUB_COMPAT=ok (défaut) | incompatible | error.
+    if printf '%s\n' "$@" | grep -qx /tmp/enum-compat.php; then
+      echo "compat image=${IMAGE_TAG:-} checker=$(printf '%s\n' "$@" | grep -c ':/tmp/enum-compat.php:ro$')" >> "$STUB_LOG"
+      case "${STUB_COMPAT:-ok}" in
+        incompatible) echo "INCOMPATIBLE : cette release ne sait pas lire 1 valeur(s) présente(s) en base :"
+                      echo "  - audit_event.event_type = FINANCIAL_STATISTICS_EXPORTED (8 ligne(s)) : inconnue de App\\Enum\\AuditEventType"; exit 3 ;;
+        error) echo "contrôle de compatibilité impossible : panne simulée" >&2; exit 1 ;;
+        *) echo "compatible : 42 colonne(s) d'énumération vérifiée(s), toutes les valeurs sont connues de cette release."; exit 0 ;;
+      esac
+    fi
     if printf '%s\n' "$@" | grep -qx build; then
       [ "${STUB_BUILD_FAIL:-0}" = 1 ] && { echo "build failed (stub)" >&2; exit 1; }
       echo "${IMAGE_TAG:?}" > "$(img_file "surgicalhub-php:$IMAGE_TAG")"

@@ -8,10 +8,12 @@
 #   deploy/deploy.sh stage    <sha>           extraction vérifiée dans releases/<sha> + fichiers retirés
 #   deploy/deploy.sh build    <sha>           images :<sha>, sans toucher au service
 #   deploy/deploy.sh migrations <sha>         dry-run des migrations sur la nouvelle image
-#   deploy/deploy.sh activate <sha>           sauvegardes, bascule, redémarrage, contrôle du code exécuté
+#   deploy/deploy.sh compat   <sha>           la release <sha> sait-elle lire les données en base ? (D-187, lecture seule)
+#   deploy/deploy.sh activate <sha>           compatibilité des données, sauvegardes, bascule, redémarrage, contrôle du code exécuté
 #   deploy/deploy.sh migrate  <sha>           migrations réelles (après relecture du dry-run), cache, redémarrages
 #   deploy/deploy.sh mark     <sha> <tag>     version officielle (APRÈS tests de santé et tag Git poussé)
-#   deploy/deploy.sh rollback <sha|legacy>    release précédente, sa configuration et ses images
+#   deploy/deploy.sh rollback <sha|legacy>    release précédente, sa configuration et ses images (refusé si elle ne
+#                                             sait pas lire les données en base : release corrective, D-187)
 #   deploy/deploy.sh status
 #   deploy/deploy.sh pending  [<sha>]         travaux non fusionnés / non déployés / non installés (D-169) ;
 #                                             avec <sha> : correctifs P0/P1 absents de cette release, conflits
@@ -146,6 +148,19 @@ cmd_upload() {
 
 cmd_stage() { need_sha "${1:-}"; remote stage "$1" "$(expected_sha256 "$1")"; }
 
+# D-187 — le contrôle de compatibilité des données vient toujours de CE dépôt (jamais de la release
+# active ni de la cible, qui peut lui être antérieure) ; remote.sh l'exécute dans l'image cible.
+push_compat_checker() {
+  local src="$ROOT/deploy/rollback/enum-compat.php"
+  [ -f "$src" ] || die "deploy/rollback/enum-compat.php introuvable : bascule refusée."
+  if [ "$DEPLOY_HOST" = local ]; then
+    mkdir -p "$APP_ROOT/incoming" && cp "$src" "$APP_ROOT/incoming/enum-compat.php"
+  else
+    ssh -o ConnectTimeout=20 "$DEPLOY_HOST" "mkdir -p '$APP_ROOT/incoming'"
+    scp -q "$src" "$DEPLOY_HOST:$APP_ROOT/incoming/enum-compat.php" || die "envoi du contrôle de compatibilité échoué : bascule refusée."
+  fi
+}
+
 cmd_mark() {
   need_sha "${1:-}"; local sha="$1" tag="${2:-}"
   [[ "$tag" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}-prod(-[1-9][0-9]*)?$ ]] || die "tag de production attendu (vYYYY.MM.DD-prod[-N])."
@@ -160,10 +175,11 @@ case "$cmd" in
   prepare) cmd_prepare "$@" ;;
   upload) cmd_upload "$@" ;;
   stage) cmd_stage "$@" ;;
-  build|migrations|migrate|activate|diff) need_sha "${1:-}"; remote "$cmd" "$1" ;;
-  rollback) [ "${1:-}" = legacy ] || need_sha "${1:-}"; remote rollback "$1" ;;
+  build|migrations|migrate|diff) need_sha "${1:-}"; remote "$cmd" "$1" ;;
+  activate|compat) need_sha "${1:-}"; push_compat_checker; remote "$cmd" "$1" ;;
+  rollback) [ "${1:-}" = legacy ] || need_sha "${1:-}"; push_compat_checker; remote rollback "$1" ;;
   mark) cmd_mark "$@" ;;
   status) remote status ;;
   pending) cmd_pending "$@" ;;
-  *) sed -n '2,22p' "$0"; exit 2 ;;
+  *) sed -n '2,23p' "$0"; exit 2 ;;
 esac
