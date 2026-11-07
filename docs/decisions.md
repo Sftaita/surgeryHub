@@ -17084,3 +17084,66 @@ mémoire à 512 Mo ; php-fpm a 5 processus, aucun conteneur n'a de limite mémoi
 - Verrou local au conteneur php (seul à générer des exports) ; avec plusieurs conteneurs php, passer
   à un verrou partagé (MySQL `GET_LOCK`).
 - Aucun paramètre global modifié (php-fpm, nginx, Traefik, Docker).
+
+## D-188 — Centre de notifications : texte et état métier rédigés par le serveur (2026-11-07)
+
+**Constat (audit du 2026-11-07, code + agrégats lecture seule de la production).**
+- `NotificationEvent` ne stocke que `eventType` + un payload brut ; le titre et la phrase étaient
+  rédigés par le frontend (`notificationFormat.ts`), en contradiction avec la règle « le frontend
+  reflète le serveur ». Sa table de titres ignorait 17 types de l'enum (`CATALOGUE_REQUEST_*`,
+  `MISSION_UNCOVERED_ESCALATION`, `SURGEON_MISSION_OPEN_PUBLISHED`, `SURGEON_MISSION_REQUEST_ACCEPTED`…)
+  et le type historique `PLANNING_ALERT_RAISED` (932 lignes en production) : tous affichés
+  « Notification ».
+- Payloads trop pauvres à la source : `ABSENCE_IMPACT_SUMMARY` (162 lignes) sans dates ni missions,
+  `MISSION_DECLARED` (71) sans date, horaires, déclarant ni chirurgien ; `SURGEON_MISSION_OPEN_PUBLISHED`
+  avec un jour en anglais.
+- Les deux écrans appelaient `markAllSeen()` à l'ouverture : la distinction lu / non lu disparaissait.
+  Aucune notion d'action à faire / traitée.
+- Cibles manquantes : absences, anciennes alertes (mission seulement dans le payload) ; l'offre du pool
+  menait au détail de mission, qui n'expose pas la prise de mission.
+- Doublons observés : (a) mission #626 publiée deux fois au pool à 4 s d'intervalle le 29/10 — déjà
+  corrigé par la garde D-177 de `publishToPool()` ; (b) résumés d'absence en double du 11/09, antérieurs
+  au dispatcher ; (c) **toujours actif** : un chirurgien dont la demande est acceptée recevait
+  « Votre demande acceptée » ET « Nouvelle mission ouverte » pour le même acte (8 cas). Les retries
+  Messenger sont sans effet (clé d'idempotence unique type + destinataire + sujet + épisode, corrélation
+  conservée par `CorrelationStamp`).
+
+**Décision.**
+1. `App\Notification\NotificationPresenter` rédige, à la lecture, `title`, `body`, `category`,
+   `actionLabel`, `businessState` (`INFO` | `ACTION_REQUIRED` | `DONE`), `stateLabel`, `legacy`,
+   `missions` et complète `targetUrl` (`NotificationTargetResolver` reste la source des cibles
+   génériques). Faits tirés du payload instantané, puis de la Mission liée ; jamais de patient ni de
+   montant. Ressources chargées par lot (une requête par famille). Aucune migration : les notifications
+   historiques sont présentées avec le même code ; quand leur contexte n'a pas été conservé, elles le
+   disent (`legacy: true`), sans contexte inventé, et ne sont jamais « À traiter ».
+2. L'état métier est lu sur la ressource actuelle (mission déclarée, offre nominative en attente pour
+   ce destinataire, demande catalogue / chirurgien, alerte, signalement, encodage, couverture des
+   missions d'une absence). Il est indépendant de `seenAt` : lire ne traite rien, et une notification
+   lue reste « À traiter » tant que la ressource l'exige.
+3. API : `GET /api/notifications?filter=all|unread|action&offset=` (+ `hasMore`, `actionRequiredCount`),
+   `GET /api/notifications/{id}` (destinataire seul, 404 sinon). Ouvrir l'écran ne marque plus rien lu.
+   Performance mesurée (1 239 notifications synthétiques dont 932 `PLANNING_ALERT_RAISED`) : 10 à 17
+   requêtes par appel quel que soit le volume (missions, personnes, sites, publications chargés par
+   lot ; avant correction ~180, N+1), garanti par un test fonctionnel. « À traiter » examine les 2 000
+   notifications actionnables les plus récentes : avec 200, 71 étaient comptées au lieu de 319.
+   Aucun cache : l'état métier est relu à chaque appel. Une notification d'encodage sur une mission
+   que l'instrumentiste ne détient plus n'est ni « À traiter » ni un lien (l'écran la refuserait).
+   Une ressource liée disparue est présentée sans elle, jamais une erreur.
+4. Payloads enrichis à la source pour les nouvelles notifications : `ABSENCE_IMPACT_SUMMARY`
+   (`dateStart`, `dateEnd`, `missions` des rubriques « action requise », 50 au plus) ;
+   `MISSION_DECLARED*` (date, horaires, site, chirurgien, déclarant) ; `SURGEON_MISSION_OPEN_PUBLISHED`
+   (date, horaires).
+5. Navigation : impact d'absence → tiroir de la mission s'il n'y en a qu'une, sinon page Absences avec
+   l'absence mise en évidence et la liste des missions impactées (statut actuel), chacune cliquable ;
+   offre du pool → Offres.
+6. Doublon chirurgien (validé par l'utilisateur) : une publication issue de l'acceptation de SA demande
+   (`MissionPublishedMessage::$fromSurgeonRequestId`) ne lui envoie plus `SURGEON_MISSION_OPEN_PUBLISHED` ;
+   l'avis d'acceptation précise « Elle est encore sans instrumentiste » uniquement si c'est vrai à
+   l'envoi (`withoutInstrumentist`). Le pool d'instrumentistes est sollicité comme avant ; une
+   publication ultérieure, distincte de l'acceptation, prévient toujours le chirurgien.
+7. Frontend : `NotificationCenter` unique (desktop et mobile) — icône, titre, phrase, date, point non
+   lu, pastille d'état métier, action ; filtres Toutes / Non lues / À traiter ; « Tout marquer comme
+   lu ». `notificationFormat.ts` est supprimé.
+
+**Hors périmètre.** Aucun workflow de mission modifié, aucune préférence modifiée, aucun envoi
+supplémentaire (e-mail / push). Les notifications historiques ne sont ni réécrites ni dédoublonnées.

@@ -88,6 +88,11 @@ final class AbsenceImpactSummaryMessageHandler
                         'actionRequiredCount' => $actionRequiredCount,
                         'automaticCount'      => $automaticCount,
                         'toAnticipateCount'   => $toAnticipateCount,
+                        // Centre de notifications — de quoi dire qui, quand et quelles missions,
+                        // et d'ouvrir directement les missions à couvrir.
+                        'dateStart'           => $message->dateStart,
+                        'dateEnd'             => $message->dateEnd,
+                        'missions'            => self::actionMissions($message),
                     ],
                     email: new EmailContent($subject, 'emails/absence_manager_impact_summary.html.twig', $context + [
                         'recipientName' => self::name($manager),
@@ -116,6 +121,35 @@ final class AbsenceImpactSummaryMessageHandler
             'DELETED' => sprintf('Planning mis à jour — absence de %s supprimée', $message->absentUserName),
             default   => sprintf('Impact planning — absence de %s', $message->absentUserName),
         };
+    }
+
+    /**
+     * The missions behind "Action requise" (released, restored but uncovered, drafts to
+     * re-cover, manager decisions), as snapshotted by their originating service: id, date,
+     * time, site, surgeon — never a patient, never an amount. Capped: the email lists all.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function actionMissions(AbsenceImpactSummaryMessage $message): array
+    {
+        $out = [];
+        foreach (['missionsReleased', 'missionsRestoredOpen', 'draftsToCover', 'managerDecisions'] as $bucket) {
+            foreach ($message->{$bucket} as $item) {
+                if (!is_array($item) || !isset($item['missionId']) || isset($out[(int) $item['missionId']])) {
+                    continue;
+                }
+                $out[(int) $item['missionId']] = [
+                    'missionId'   => (int) $item['missionId'],
+                    'bucket'      => $bucket,
+                    'date'        => $item['date'] ?? null,
+                    'horaire'     => $item['horaire'] ?? null,
+                    'siteName'    => $item['siteName'] ?? null,
+                    'surgeonName' => $item['surgeonName'] ?? null,
+                ];
+            }
+        }
+
+        return array_slice(array_values($out), 0, 50);
     }
 
     /** Occurrence dates arrive as raw 'Y-m-d' — reformatted to the French display convention. */

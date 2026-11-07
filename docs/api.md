@@ -7903,22 +7903,63 @@ le détail des décisions.
 ### 41.1 Historique des notifications internes
 
 ```
-GET /api/notifications?limit=30
+GET /api/notifications?limit=30&offset=0&filter=all|unread|action
 ```
 
 Notifications `IN_APP` de l'utilisateur courant, triées par `sentAt` décroissant.
-`limit` par défaut 30, plafonné à 100.
+`limit` par défaut 30, plafonné à 100 ; `offset` (D-188, défaut 0) pagine côté serveur et
+`hasMore` indique qu'une page suivante existe. `filter` (D-188) : `all` (défaut), `unread`
+(`seenAt` nul), `action` (état métier `ACTION_REQUIRED`) ; toute autre valeur → `422`.
+`action` et `actionRequiredCount` sont calculés sur les 2 000 notifications de types
+actionnables les plus récentes du destinataire (une notification plus ancienne n'y figure
+pas). Le nombre de requêtes SQL ne dépend pas du volume (ressources chargées par lot).
 
 **Réponse 200 :**
 
 ```json
 {
   "items": [
-    { "id": 1, "eventType": "PLANNING_MISSION_REASSIGNED", "missionId": 42, "targetUrl": "/app/i/missions/42", "payload": {"siteName": "CHU", "missionDate": "2026-08-01"}, "sentAt": "2026-07-29T10:00:00+00:00", "seenAt": null }
+    {
+      "id": 1, "eventType": "MISSION_DECLARED", "missionId": 42,
+      "title": "Mission déclarée à valider",
+      "body": "Une mission a été déclarée par Sophie Colette pour le Dr Jean Deltour le 13 novembre 2026 de 08h00 à 13h00 à Delta.",
+      "category": "mission", "actionLabel": "Consulter la mission",
+      "businessState": "ACTION_REQUIRED", "stateLabel": "À valider", "legacy": false, "missions": null,
+      "targetUrl": "/app/m/missions/42", "payload": {"missionId": 42, "siteName": "Delta"},
+      "sentAt": "2026-11-07T10:00:00+00:00", "seenAt": null
+    }
   ],
-  "unreadCount": 3
+  "hasMore": false,
+  "unreadCount": 3,
+  "actionRequiredCount": 1
 }
 ```
+
+**Centre de notifications (D-188).** Chaque item est rédigé **côté serveur**
+(`App\Notification\NotificationPresenter`), jamais par le frontend :
+
+| Champ | Contenu |
+|---|---|
+| `title`, `body` | Titre explicite et phrase contextualisée (qui, quand, où, quelle mission / absence / demande), tirés du payload instantané puis, à défaut, de la Mission liée. Jamais de donnée patient ni de montant. |
+| `category` | Famille d'icône : `mission`, `offer`, `absence`, `planning`, `alert`, `encoding`, `catalogue`, `request`, `room`, `info`. |
+| `actionLabel` | Libellé de ce qu'ouvre le clic (`null` si `targetUrl` est nul). |
+| `businessState` | `INFO` \| `ACTION_REQUIRED` \| `DONE`, lu sur la ressource **actuelle** (statut de la mission déclarée, de la demande catalogue ou chirurgien, de l'alerte, de l'offre nominative, de l'encodage, couverture des missions d'une absence…). Indépendant de `seenAt` : lire ne traite rien. |
+| `stateLabel` | Libellé court de l'état (« À valider », « 2 à couvrir », « Validée », « Plus disponible »…), ou `null`. |
+| `legacy` | `true` pour une ancienne notification dont le contexte n'a pas été conservé : `body` le dit explicitement, sans contexte inventé. |
+| `missions` | `ABSENCE_IMPACT_SUMMARY` seulement : missions à couvrir ou à décider (`missionId`, `dateLabel`, `timeLabel`, `siteName`, `surgeonName`, `impactLabel`, `statusLabel` actuel, `covered`, `targetUrl`). |
+
+Cibles propres au centre : impact d'absence → tiroir de la mission s'il n'y en a qu'une, sinon
+`/app/m/planning/absences?absenceId={id}&notification={notificationId}` (absence mise en évidence,
+missions impactées listées et cliquables) ; absence déclarée → `/app/m/planning/absences?absenceId={id}` ;
+offre du pool (`OPEN_MISSION_AVAILABLE`) → `/app/i/offers` (le détail de mission n'expose pas la prise
+de mission) ; ancienne alerte `PLANNING_ALERT_RAISED` → tiroir de sa mission (manager).
+
+```
+GET /api/notifications/{id}
+```
+
+Une notification présentée (même forme qu'un item). `404` si elle n'appartient pas à
+l'utilisateur courant, quel que soit son rôle.
 
 **`targetUrl`** (Point 4, audit UX — cliquer sur une notification n'ouvrait rien) — cible
 de navigation calculée côté serveur (`NotificationTargetResolver`), jamais reconstruite
@@ -7937,8 +7978,10 @@ Réponse : `{ "unreadCount": 3 }` — utilisé pour le badge de la cloche/sideba
 POST /api/notifications/{id}/seen
 ```
 
-Marque une notification comme lue (`seenAt = now`), idempotent. `404` si l'id
-n'appartient pas à l'utilisateur courant ou n'existe pas.
+Marque une notification comme lue (`seenAt = now`), idempotent, et renvoie l'item présenté
+(son `businessState` est inchangé). `404` si l'id n'appartient pas à l'utilisateur courant
+ou n'existe pas. Depuis D-188, ouvrir l'écran Notifications ne marque plus rien comme lu :
+seuls le clic sur une notification et « Tout marquer comme lu » le font.
 
 ```
 POST /api/notifications/mark-all-seen

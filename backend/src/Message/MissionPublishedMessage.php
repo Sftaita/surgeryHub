@@ -21,5 +21,9 @@ final class MissionPublishedMessage
         public readonly int $missionId,
         public readonly int $actorId,
         public readonly \DateTimeImmutable $occurredAt,
+        // Centre de notifications — set when the publication is part of accepting the
+        // surgeon's own request (SurgeonMissionRequestService::accept()): the surgeon is then
+        // told once, by SURGEON_MISSION_REQUEST_ACCEPTED. The pool is solicited as always.
+        public readonly ?int $fromSurgeonRequestId = null,
     ) {}
 }

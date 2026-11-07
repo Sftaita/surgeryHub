@@ -1183,6 +1183,28 @@
       "lastReviewed": "2026-11-07",
       "validationNeeded": "Contrôles de santé, compatibilité et exports concurrents validés en production le 2026-11-07.",
       "prodEvidence": "v2026.11.07-prod (e24a8f9) : 0 migration (99/99) ; activate 2026-11-07 08:16 UTC ; mark OFFICIAL ; compat ad45ef6 INCOMPATIBLE (FINANCIAL_STATISTICS_EXPORTED), e24a8f9 et 2d2d37e compatibles ; 3 exports lourds simultanés → 200/200/429 ; voir docs/production.md."
+    },
+    {
+      "id": "NOTIFICATION-CENTER",
+      "title": "Centre de notifications : notifications contextualisées, cliquables et à traiter",
+      "description": "Titre, phrase, catégorie, état métier (INFO / ACTION_REQUIRED / DONE) et cible rédigés côté serveur (NotificationPresenter) au lieu du frontend ; 17 types + PLANNING_ALERT_RAISED ne s'affichent plus « Notification » ; payloads enrichis (impact d'absence, mission déclarée, mission publiée) ; filtres Toutes / Non lues / À traiter ; ouvrir l'écran ne marque plus tout lu ; page Absences ouverte sur l'absence et ses missions impactées ; doublon chirurgien supprimé à l'acceptation de sa demande. Aucune migration, aucun workflow de mission modifié.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Tous les rôles : notifications « Notification » sans contexte, aucun accès direct à l'élément concerné, tout marqué lu à l'ouverture.",
+      "status": "developpe",
+      "statusSince": "2026-11-07",
+      "refs": {
+        "branches": [
+          "feat/notification-center"
+        ],
+        "decision": "D-188",
+        "worktrees": [
+          "SurgicalHub-notification-center"
+        ]
+      },
+      "nextAction": "Relecture utilisateur, puis PR. Ne pas déployer sans accord.",
+      "lastReviewed": "2026-11-07",
+      "validationNeeded": "Validation visuelle utilisateur (desktop + mobile) ; tests backend et frontend verts sur base temporaire."
     }
   ]
 }

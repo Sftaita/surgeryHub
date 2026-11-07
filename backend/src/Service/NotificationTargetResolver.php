@@ -78,7 +78,9 @@ final class NotificationTargetResolver
         // vit sur l'écran Offres (MissionDetailPage n'expose aucun bouton claim) — jamais une
         // route de détail où l'instrumentiste ne pourrait rien faire. La Mission reste liée au
         // NotificationEvent pour le contexte.
-        if ($type === NotificationType::ROOM_TAKEOVER_MISSION_OFFER && $isInstrumentist) {
+        // Centre de notifications — même raisonnement pour une offre du pool rattachée à SA
+        // mission (H3) : le détail de mission n'expose pas la prise de mission.
+        if (in_array($type, [NotificationType::ROOM_TAKEOVER_MISSION_OFFER, NotificationType::OPEN_MISSION_AVAILABLE], true) && $isInstrumentist) {
             return '/app/i/offers';
         }
 

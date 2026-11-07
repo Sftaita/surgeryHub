@@ -4,11 +4,10 @@ namespace App\Controller\Api;
 
 use App\Entity\NotificationEvent;
 use App\Entity\User;
-use App\Enum\CatalogueRequestKind;
-use App\Enum\NotificationType;
 use App\Enum\PublicationChannel;
-use App\Service\NotificationTargetResolver;
+use App\Notification\NotificationPresenter;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\QueryBuilder;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -24,16 +23,23 @@ use Symfony\Component\Security\Http\Attribute\CurrentUser;
  *
  * Toujours scopé à `#[CurrentUser]`, comme PushSubscriptionController — pas de voter
  * dédié nécessaire, une notification n'appartient qu'à son destinataire.
+ *
+ * Centre de notifications — chaque item porte son texte, sa catégorie, sa cible et son
+ * état métier calculés côté serveur (NotificationPresenter). `filter` : all (défaut) |
+ * unread | action (« À traiter » = état métier ACTION_REQUIRED, jamais déduit de seenAt).
  */
 #[Route('/api/notifications')]
 final class NotificationController extends AbstractController
 {
     private const DEFAULT_LIMIT = 30;
     private const MAX_LIMIT = 100;
+    /** Fenêtre examinée pour « À traiter » : les notifications actionnables les plus récentes. */
+    private const ACTION_WINDOW = 2000;
+    private const FILTERS = ['all', 'unread', 'action'];
 
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly NotificationTargetResolver $targetResolver,
+        private readonly NotificationPresenter $presenter,
     ) {
     }
 
@@ -41,23 +47,41 @@ final class NotificationController extends AbstractController
     public function list(Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $limit = max(1, min(self::MAX_LIMIT, (int) $request->query->get('limit', self::DEFAULT_LIMIT)));
+        $filter = (string) $request->query->get('filter', 'all');
+        if (!in_array($filter, self::FILTERS, true)) {
+            return $this->json(['error' => 'filter must be one of: ' . implode(', ', self::FILTERS)], 422);
+        }
 
-        $items = $this->em->createQueryBuilder()
-            ->select('n')
-            ->from(NotificationEvent::class, 'n')
-            ->where('n.user = :user')
-            ->andWhere('n.channel = :channel')
-            ->setParameter('user', $user)
-            ->setParameter('channel', PublicationChannel::IN_APP)
-            ->orderBy('n.sentAt', 'DESC')
-            ->setMaxResults($limit)
-            ->getQuery()
-            ->getResult();
+        $offset = max(0, (int) $request->query->get('offset', 0));
+
+        $actionItems = $this->actionRequiredItems($user);
+        if ($filter === 'action') {
+            $items = array_slice($actionItems, $offset, $limit);
+            $hasMore = count($actionItems) > $offset + $limit;
+        } else {
+            // One row more than asked: tells whether a next page exists, without a COUNT.
+            $qb = $this->baseQuery($user)->orderBy('n.sentAt', 'DESC')->addOrderBy('n.id', 'DESC')
+                ->setFirstResult($offset)->setMaxResults($limit + 1);
+            if ($filter === 'unread') {
+                $qb->andWhere('n.seenAt IS NULL');
+            }
+            $rows = $qb->getQuery()->getResult();
+            $hasMore = count($rows) > $limit;
+            $items = $this->presenter->presentMany(array_slice($rows, 0, $limit), $user);
+        }
 
         return $this->json([
-            'items' => array_map($this->toArray(...), $items),
+            'items' => $items,
+            'hasMore' => $hasMore,
             'unreadCount' => $this->countUnread($user),
+            'actionRequiredCount' => count($actionItems),
         ]);
+    }
+
+    #[Route('/{id}', name: 'api_notifications_show', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function show(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        return $this->json($this->presenter->presentMany([$this->ownedOr404($id, $user)], $user)[0]);
     }
 
     #[Route('/unread-count', name: 'api_notifications_unread_count', methods: ['GET'])]
@@ -69,18 +93,14 @@ final class NotificationController extends AbstractController
     #[Route('/{id}/seen', name: 'api_notifications_mark_seen', methods: ['POST'], requirements: ['id' => '\d+'])]
     public function markSeen(int $id, #[CurrentUser] User $user): JsonResponse
     {
-        $notification = $this->em->getRepository(NotificationEvent::class)->find($id);
-
-        if (!$notification || $notification->getUser()?->getId() !== $user->getId()) {
-            throw $this->createNotFoundException('Notification introuvable.');
-        }
+        $notification = $this->ownedOr404($id, $user);
 
         if ($notification->getSeenAt() === null) {
             $notification->setSeenAt(new \DateTimeImmutable());
             $this->em->flush();
         }
 
-        return $this->json($this->toArray($notification));
+        return $this->json($this->presenter->presentMany([$notification], $user)[0]);
     }
 
     #[Route('/mark-all-seen', name: 'api_notifications_mark_all_seen', methods: ['POST'])]
@@ -103,45 +123,49 @@ final class NotificationController extends AbstractController
 
     private function countUnread(User $user): int
     {
-        return (int) $this->em->createQueryBuilder()
+        return (int) $this->baseQuery($user)
             ->select('COUNT(n.id)')
-            ->from(NotificationEvent::class, 'n')
-            ->where('n.user = :user')
-            ->andWhere('n.channel = :channel')
             ->andWhere('n.seenAt IS NULL')
-            ->setParameter('user', $user)
-            ->setParameter('channel', PublicationChannel::IN_APP)
             ->getQuery()
             ->getSingleScalarResult();
     }
 
-    private function toArray(NotificationEvent $n): array
+    /** @return list<array<string, mixed>> presented items whose business state is ACTION_REQUIRED, most recent first */
+    private function actionRequiredItems(User $user): array
     {
-        $recipient = $n->getUser();
-        $type = NotificationType::tryFrom($n->getEventType());
-        $payload = $n->getPayload() ?? [];
-        $targetUrl = ($type !== null && $recipient !== null)
-            ? $this->targetResolver->resolve(
-                $type,
-                $n->getMission(),
-                $recipient,
-                isset($payload['requestId']) ? (int) $payload['requestId'] : null,
-                isset($payload['kind']) ? CatalogueRequestKind::tryFrom((string) $payload['kind']) : null,
-                isset($payload['roomSlotId']) ? (int) $payload['roomSlotId'] : null,
-            )
-            : null;
+        $candidates = $this->baseQuery($user)
+            ->andWhere('n.eventType IN (:types)')
+            ->setParameter('types', NotificationPresenter::ACTIONABLE_TYPES)
+            ->orderBy('n.sentAt', 'DESC')->addOrderBy('n.id', 'DESC')
+            ->setMaxResults(self::ACTION_WINDOW)
+            ->getQuery()
+            ->getResult();
 
-        return [
-            'id' => $n->getId(),
-            'eventType' => $n->getEventType(),
-            'missionId' => $n->getMission()?->getId(),
-            // Point 4 (audit UX) — cible de navigation calculée côté serveur, jamais
-            // reconstruite côté frontend à partir de missionId/eventType. null = non
-            // actionnable (purement informatif, ou pas de cible connue).
-            'targetUrl' => $targetUrl,
-            'payload' => $n->getPayload(),
-            'sentAt' => $n->getSentAt()?->format(DATE_ATOM),
-            'seenAt' => $n->getSeenAt()?->format(DATE_ATOM),
-        ];
+        return array_values(array_filter(
+            $this->presenter->presentMany($candidates, $user),
+            static fn (array $item) => $item['businessState'] === NotificationPresenter::STATE_ACTION_REQUIRED,
+        ));
+    }
+
+    private function baseQuery(User $user): QueryBuilder
+    {
+        return $this->em->createQueryBuilder()
+            ->select('n')
+            ->from(NotificationEvent::class, 'n')
+            ->where('n.user = :user')
+            ->andWhere('n.channel = :channel')
+            ->setParameter('user', $user)
+            ->setParameter('channel', PublicationChannel::IN_APP);
+    }
+
+    private function ownedOr404(int $id, User $user): NotificationEvent
+    {
+        $notification = $this->em->getRepository(NotificationEvent::class)->find($id);
+        if (!$notification instanceof NotificationEvent || $notification->getUser()?->getId() !== $user->getId()
+            || $notification->getChannel() !== PublicationChannel::IN_APP) {
+            throw $this->createNotFoundException('Notification introuvable.');
+        }
+
+        return $notification;
     }
 }

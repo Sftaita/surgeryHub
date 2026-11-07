@@ -87,6 +87,18 @@ final class MissionPublishedMessageHandler
             return;
         }
 
+        // Centre de notifications — publication issue de l'acceptation de SA demande : il en
+        // est informé une seule fois, par SURGEON_MISSION_REQUEST_ACCEPTED (qui précise si la
+        // mission est encore sans instrumentiste). `?? null` : un message mis en file avant ce
+        // champ n'a pas la propriété initialisée.
+        if (($message->fromSurgeonRequestId ?? null) !== null) {
+            $this->logger->info('MissionPublished: surgeon told by the request acceptance — no separate notice', [
+                'missionId' => $mission->getId(),
+                'requestId' => $message->fromSurgeonRequestId,
+            ]);
+            return;
+        }
+
         // H5a — via NotificationDispatcher : in-app, push d'abord, repli email (politique
         // FALLBACK_WHEN_PUSH_NOT_SENT, orchestration D-083 inchangée), chaque canal tracé,
         // idempotent par publication.
@@ -99,6 +111,9 @@ final class MissionPublishedMessageHandler
                     'missionId' => $mission->getId(),
                     'dayLabel'  => $mission->getStartAt()?->format('l'),
                     'siteName'  => $mission->getSite()?->getName(),
+                    'missionDate' => $mission->getStartAt()?->format('Y-m-d'),
+                    'startTime'   => $mission->getStartAt()?->format('H:i'),
+                    'endTime'     => $mission->getEndAt()?->format('H:i'),
                 ],
                 mission: $mission,
                 email: $this->notificationService->missionOpenSurgeonEmail($mission, $surgeon),

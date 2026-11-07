@@ -24,6 +24,8 @@ final class OpenMissionPoolSingleEntryTest extends TestCase
         'src/Activity/Recorder/NotificationActivityRecorder.php',
         // D-177 — read-only: lists the deliveries of the pool solicitations in a room's history.
         'src/Service/ReleasedRoomSlotHistoryService.php',
+        // D-188 — read-only: words the in-app item already produced by the notifier.
+        'src/Notification/NotificationPresenter.php',
     ];
 
     public function test_only_the_notifier_builds_open_mission_available(): void

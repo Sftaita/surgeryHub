@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import AbsencesPage, { getIsolatedDatesToSubmit } from "./AbsencesPage";
 import type { Absence } from "../../../features/planning-manager/api/planning.api";
 
@@ -25,6 +26,15 @@ vi.mock("../../../features/manager-surgeons/api/surgeons.api", () => ({
   getSurgeons: vi.fn().mockResolvedValue({ items: [], total: 0 }),
 }));
 
+const { fetchNotificationMock, mockNavigate } = vi.hoisted(() => ({ fetchNotificationMock: vi.fn(), mockNavigate: vi.fn() }));
+vi.mock("../../../features/notifications/api/notifications.api", () => ({
+  fetchNotification: (...args: unknown[]) => fetchNotificationMock(...args),
+}));
+vi.mock("react-router-dom", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router-dom")>();
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
 vi.mock("../../../ui/toast/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn() }),
 }));
@@ -45,11 +55,13 @@ function makeAbsence(overrides: Partial<Absence> = {}): Absence {
   };
 }
 
-function renderPage() {
+function renderPage(url = "/app/m/planning/absences") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <AbsencesPage />
+      <MemoryRouter initialEntries={[url]}>
+        <AbsencesPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -731,4 +743,52 @@ describe("AbsencesPage — mode Jours isolés (Cas 3)", () => {
     expect(screen.getByText("04/07/2026")).toBeInTheDocument();
     expect(screen.getByText("18/07/2026")).toBeInTheDocument();
   }, 10000);
+});
+
+// Centre de notifications — ouverte depuis une notification d'absence (données fictives).
+describe("AbsencesPage — ouverte depuis une notification d'absence", () => {
+  const notification = {
+    id: 31, eventType: "ABSENCE_IMPACT_SUMMARY", missionId: null,
+    title: "Absence de Sophie Colette — planning impacté",
+    body: "Sophie Colette est absent·e le 12 novembre 2026. Deux missions à Delta sont à couvrir ou à décider.",
+    category: "absence", actionLabel: "Voir les missions concernées", businessState: "ACTION_REQUIRED", stateLabel: "1 à couvrir", legacy: false,
+    targetUrl: "/app/m/planning/absences?absenceId=5&notification=31", payload: null, sentAt: null, seenAt: null,
+    missions: [
+      { missionId: 101, dateLabel: "12 novembre 2026", timeLabel: "de 08h00 à 13h00", siteName: "Delta", surgeonName: "Jean Deltour", impactLabel: "Instrumentiste retirée — à recouvrir", statusLabel: "Sans instrumentiste", covered: false, targetUrl: "/app/m/missions/101" },
+      { missionId: 102, dateLabel: "12 novembre 2026", timeLabel: "de 13h00 à 17h00", siteName: "Delta", surgeonName: "Jean Deltour", impactLabel: "Instrumentiste retirée — à recouvrir", statusLabel: "Couverte — Lea Martin", covered: true, targetUrl: "/app/m/missions/102" },
+    ],
+  };
+
+  it("met l'absence en évidence et liste les missions impactées, chacune ouvrant son détail", async () => {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([
+      makeAbsence({ id: 5, user: { id: 9, email: "sophie@test.com", firstname: "Sophie", lastname: "Colette", role: "INSTRUMENTIST" } }),
+      makeAbsence({ id: 6 }),
+    ]);
+    fetchNotificationMock.mockResolvedValue(notification);
+    const user = userEvent.setup();
+
+    renderPage("/app/m/planning/absences?absenceId=5&notification=31");
+
+    const panel = await screen.findByLabelText("Missions concernées");
+    expect(await within(panel).findByText(notification.body)).toBeInTheDocument();
+    expect(within(panel).getByText("Sans instrumentiste")).toBeInTheDocument();
+    expect(within(panel).getByText("Couverte — Lea Martin")).toBeInTheDocument();
+    expect(fetchNotificationMock).toHaveBeenCalledWith(31);
+
+    const focused = (await screen.findByText("sophie@test.com")).closest("tr")!;
+    expect(focused).toHaveAttribute("aria-current", "true");
+
+    await user.click(within(panel).getByText("12 novembre 2026 de 08h00 à 13h00 — Delta"));
+    expect(mockNavigate).toHaveBeenCalledWith("/app/m/missions/101");
+  });
+
+  it("une absence passée est cherchée dans l'historique", async () => {
+    vi.mocked(planningApi.getAbsences).mockResolvedValue([]);
+    fetchNotificationMock.mockResolvedValue({ ...notification, missions: [] });
+
+    renderPage("/app/m/planning/absences?absenceId=5");
+
+    await waitFor(() => expect(planningApi.getAbsences).toHaveBeenCalledWith(undefined));
+    expect(screen.queryByLabelText("Missions concernées")).not.toBeInTheDocument();
+  });
 });
