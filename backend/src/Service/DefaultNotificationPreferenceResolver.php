@@ -55,9 +55,20 @@ use Doctrine\ORM\EntityManagerInterface;
  *   - SURGEON_MISSION_REQUEST_CREATED
  *     (Lot 5, D-099):                       inApp=true, email=false (manager side, same reasoning
  *                                           as CATALOGUE_REQUEST_CREATED — not urgent)
+ *   - ROOM_SLOT_AVAILABLE (D-161):         inApp=true, email=false, push=true — push by default,
+ *                                           email only when the surgeon opts in.
+ *   - ROOM_TAKEOVER_MISSION_OFFER (D-177): inApp=true, email=true, push=true — exclusive 48 h
+ *                                           priority of the usual instrumentist: every channel by
+ *                                           default (email alongside push, not as a fallback).
  *   - All others (pool, coverage, updates): inApp=true, email=false (informational)
  *
- * push: always false by default — requires an explicit device subscription (PushSubscription).
+ *   - ENCODING_REMINDER_D1 (H5a):          inApp=true (no in-app item exists), email=true, push=true —
+ *                                           push first, email as fallback, as before H5a.
+ *   - mandatory-email types (H5a, NotificationType::emailIsMandatory()): the email ignores
+ *                                           this resolver altogether (NotificationEmailPolicy::MANDATORY).
+ *
+ * push: false by default — except PUSH_ON_BY_DEFAULT (OPEN_MISSION_AVAILABLE, H3/D-129); a push
+ * is only ever delivered to a registered device (PushSubscription).
  */
 class DefaultNotificationPreferenceResolver implements NotificationPreferenceResolver
 {
@@ -100,11 +111,70 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
         NotificationType::MISSION_OFFERED,
         NotificationType::MISSION_ASSIGNED_DIRECTLY,
         NotificationType::MISSION_OFFER_DECLINED,
+        // H2 (D-127) — a manager removed you from a published mission: a real change of your
+        // planning, same urgency as PLANNING_MISSION_CANCELLED.
+        NotificationType::PLANNING_MISSION_RELEASED,
+        // H3 (D-129) — a real OPEN mission proposed to the eligible pool: nobody should miss
+        // it for want of opening the app (validated decision, this type only).
+        NotificationType::OPEN_MISSION_AVAILABLE,
+        // H3 (D-129) — the Modification recap was always emailed: unchanged default.
+        NotificationType::PLANNING_CHANGE_SUMMARY,
+        // H5a — retired by D-143 (kept for historical rows): unchanged default.
+        NotificationType::ENCODING_REMINDER_D1,
+        // D-143 — operational encoding reminders (not configurable): the email channel is
+        // always available; EncodingReminderService decides fallback (J+1/J+2) or mandatory (J+4).
+        NotificationType::ENCODING_REMINDER,
+        NotificationType::ENCODING_ESCALATION,
+        // D-136 — rappel des heures : e-mail de secours (non configurable).
+        NotificationType::MISSION_HOURS_REMINDER,
+        // D-151 — a surgeon refusal leaves a mission uncovered, a review request awaits a
+        // manager decision: same urgency as MISSION_OFFER_DECLINED (D-125).
+        NotificationType::ASSIGNMENT_REFUSED_BY_SURGEON,
+        NotificationType::ASSIGNMENT_REVIEW_REQUESTED,
+        // D-177 — exclusive 48 h priority on a taken-over room: the deadline runs from the
+        // offer's creation, so it must not go unnoticed for want of opening the app.
+        NotificationType::ROOM_TAKEOVER_MISSION_OFFER,
+        // D-181 — a manager changed the instrumentist of a published mission (often the same
+        // day): operational, the three people concerned must not miss it.
+        NotificationType::MISSION_REASSIGNMENT_NOTICE,
+    ];
+
+    /**
+     * H3 (D-129) — types whose default is push=true (effective only when the person has a
+     * registered device — otherwise the push delivery is SKIPPED / NO_PUSH_SUBSCRIPTION).
+     * Every other type keeps push=false by default.
+     */
+    private const PUSH_ON_BY_DEFAULT = [
+        NotificationType::OPEN_MISSION_AVAILABLE,
+        // H5a — the encoding reminder was always push first (D-083), before any preference
+        // was consulted: same default, now an actual, changeable preference.
+        NotificationType::ENCODING_REMINDER_D1,
+        // D-143 — the reminder is pushed whenever a device is really subscribed ("push si
+        // opérationnel"), the email being the fallback. Not configurable.
+        NotificationType::ENCODING_REMINDER,
+        // D-136 — the hours reminder was always push first (unconditional): unchanged.
+        NotificationType::MISSION_HOURS_REMINDER,
+        // D-161 — a room that just became available: push is the standard channel; the email
+        // stays off unless the surgeon turns it on (never an automatic fallback).
+        NotificationType::ROOM_SLOT_AVAILABLE,
+        // D-177 — the exclusive 48 h priority offer: pushed whenever a device is subscribed,
+        // in addition to the email.
+        NotificationType::ROOM_TAKEOVER_MISSION_OFFER,
     ];
 
     public function __construct(
         private readonly EntityManagerInterface $em,
     ) {}
+
+    /** The type's product default (no stored preference) — also the "before" of a first save (H5b). */
+    public static function defaultsFor(NotificationType $type): NotificationChannels
+    {
+        return new NotificationChannels(
+            inApp: true,
+            email: in_array($type, self::EMAIL_ON_BY_DEFAULT, strict: true),
+            push:  in_array($type, self::PUSH_ON_BY_DEFAULT, strict: true),
+        );
+    }
 
     public function resolve(User $user, NotificationType $type): NotificationChannels
     {
@@ -112,17 +182,14 @@ class DefaultNotificationPreferenceResolver implements NotificationPreferenceRes
             ->findOneBy(['user' => $user, 'notificationType' => $type]);
 
         if ($preference === null) {
-            return new NotificationChannels(
-                inApp: true,
-                email: in_array($type, self::EMAIL_ON_BY_DEFAULT, strict: true),
-                push:  false,
-            );
+            return self::defaultsFor($type);
         }
 
         return new NotificationChannels(
             $preference->isInAppEnabled(),
             $preference->isEmailEnabled(),
             $preference->isPushEnabled(),
+            NotificationChannels::SOURCE_PREFERENCE,
         );
     }
 }

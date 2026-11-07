@@ -68,7 +68,7 @@ function encodingWith(materialLineCount: number) {
   };
 }
 
-function renderDialog(materialLineCount: number, mission: Mission = MISSION, execution: Record<string, any> = executionInfo()) {
+function renderDialog(materialLineCount: number, mission: Mission = MISSION, execution: Record<string, any> = executionInfo(), onCompleteHours?: () => void) {
   apiGetMock.mockImplementation((url: string) => {
     if (url === `/api/missions/${mission.id}/encoding`) {
       return Promise.resolve({ data: encodingWith(materialLineCount) });
@@ -83,7 +83,7 @@ function renderDialog(materialLineCount: number, mission: Mission = MISSION, exe
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <SubmitDialog open mission={mission} onClose={vi.fn()} onSubmitted={vi.fn()} />
+      <SubmitDialog open mission={mission} onClose={vi.fn()} onSubmitted={vi.fn()} onCompleteHours={onCompleteHours} />
     </QueryClientProvider>,
   );
 }
@@ -180,16 +180,83 @@ describe("SubmitDialog — commentaire requis si aucun matériel encodé (D-070 
  * EditServiceHoursDialog.tsx (formatage centralisé, formatExecutionHours).
  */
 describe("SubmitDialog — ligne Heures du récapitulatif (source de vérité mission-execution)", () => {
-  it("affiche 'Non renseigné' quand aucune saisie n'existe réellement", async () => {
+  it("affiche 'À compléter' quand aucune heure réelle n'existe", async () => {
     renderDialog(1, MISSION, executionInfo({ hasExecutionRecord: false }));
 
-    expect(await screen.findByText("Non renseigné")).toBeInTheDocument();
+    expect(await screen.findByText("Heures prestées")).toBeInTheDocument();
+    expect(screen.getByText("Non renseignées")).toBeInTheDocument();
+    expect(screen.getByTestId("submit-incomplete")).toHaveTextContent("heures prestées (début et fin)");
   });
 
-  it("affiche les heures réellement enregistrées, au même format que l'écran principal", async () => {
+  it("D-143 — une durée seule ne suffit plus : début et fin restent à compléter", async () => {
     renderDialog(1, MISSION, executionInfo({ hasExecutionRecord: true, actualDurationMinutes: 240 }));
 
-    expect(await screen.findByText("4 h")).toBeInTheDocument();
-    expect(screen.queryByText("Non renseigné")).not.toBeInTheDocument();
+    expect(await screen.findByText("Début et fin à compléter")).toBeInTheDocument();
+  });
+
+  it("affiche la durée quand début et fin réels sont connus, sans avertissement", async () => {
+    renderDialog(1, MISSION, executionInfo({
+      hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00Z", actualEndAt: "2026-07-05T12:00:00Z", actualDurationMinutes: 240,
+    }));
+
+    expect(await screen.findByText("10h00 → 14h00 · 4h00")).toBeInTheDocument();
+    expect(screen.queryByTestId("submit-incomplete")).not.toBeInTheDocument();
+  });
+
+  it("D-146 bis — début et fin enregistrés sans durée stockée : affiche les heures prestées, jamais « Non renseignées »", async () => {
+    renderDialog(1, MISSION, executionInfo({
+      hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00Z", actualEndAt: "2026-07-05T11:00:00Z", actualDurationMinutes: null,
+    }));
+
+    expect(await screen.findByText("10h00 → 13h00 · 3h00")).toBeInTheDocument();
+    expect(screen.queryByText(/pause/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Non renseignées")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("submit-incomplete")).not.toBeInTheDocument();
   });
 });
+
+describe("SubmitDialog — refus ENCODING_INCOMPLETE (D-143)", () => {
+  it("affiche ce qui manque et propose d'ouvrir directement la saisie des heures", async () => {
+    const onCompleteHours = vi.fn();
+    renderDialog(1, MISSION, executionInfo({
+      hasExecutionRecord: true, actualStartAt: "2026-07-05T08:00:00Z", actualEndAt: "2026-07-05T12:00:00Z", actualDurationMinutes: 240,
+    }), onCompleteHours);
+    apiPostMock.mockRejectedValue({ response: { status: 422, data: { error: {
+      code: "ENCODING_INCOMPLETE",
+      message: "Il reste une petite étape avant de terminer : pensez à renseigner vos heures réelles de début et de fin.",
+      missing: [{ code: "ACTUAL_END_TIME", label: "Heure réelle de fin", section: "hours" }],
+    } } } });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Valider et clôturer la mission" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Il reste une petite étape avant de terminer");
+    expect(alert).toHaveTextContent("Heure réelle de fin");
+    expect(alert).toHaveTextContent("Tout ce que vous avez déjà encodé est conservé.");
+    await userEvent.click(screen.getByRole("button", { name: "Renseigner mes heures" }));
+    expect(onCompleteHours).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SubmitDialog — activité réalisée sans instrumentiste (D-155)", () => {
+  it("ne montre ni ne réclame aucune heure ; la description sans matériel reste exigée", async () => {
+    renderDialog(0, { ...MISSION, executedWithoutInstrumentist: { declaredAt: "2026-07-20T12:00:00Z", declaredByName: "Jean Dupont" } } as Mission);
+
+    expect(await screen.findByText(/aucune heure n'est déclarée/i)).toBeInTheDocument();
+    expect(screen.queryByText("Heures prestées")).toBeNull();
+    expect(screen.queryByTestId("submit-incomplete")).toBeNull();
+    expect(await screen.findByLabelText(/Décrivez les interventions réalisées/)).toBeInTheDocument();
+  });
+});
+
+describe("SubmitDialog — activité sans instrumentiste : on soumet au manager (D-172)", () => {
+  it("parle de soumission au manager, jamais de validation ni de clôture", async () => {
+    const user = userEvent.setup();
+    renderDialog(1, { ...MISSION, executedWithoutInstrumentist: { declaredAt: "2026-10-23T06:31:00Z", declaredByName: "Arnaud Deltour" } } as Mission);
+    expect(await screen.findByText("Récapitulatif avant soumission")).toBeInTheDocument();
+    expect(screen.queryByText("Valider et clôturer la mission")).toBeNull();
+    expect(screen.getByText(/le manager le vérifiera et le validera/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Soumettre l'encodage au manager" }));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalled());
+  });
+});

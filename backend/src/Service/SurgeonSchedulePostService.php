@@ -28,6 +28,8 @@ class SurgeonSchedulePostService
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
+        // D-152 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionEligibilityService $eligibility = null,
     ) {}
 
     /**
@@ -87,6 +89,7 @@ class SurgeonSchedulePostService
         $post->setStartDate($input['startDate']);
         $post->setEndDate($input['endDate'] ?? null);
         $post->setCreatedBy($createdBy);
+        $this->assertCompatiblePair($post);
 
         $this->em->persist($post);
         $this->em->flush();
@@ -131,9 +134,24 @@ class SurgeonSchedulePostService
             $post->setActive($input['active']);
         }
 
+        $this->assertCompatiblePair($post);
         $this->em->flush();
 
         return $post;
+    }
+
+    /**
+     * D-152 — a recurring post can never be configured with an instrumentist incompatible with
+     * its surgeon. (A post configured before the incompatibility keeps its row: at generation
+     * the slot stays uncovered — MissionEligibilityService rejects the pair.)
+     */
+    private function assertCompatiblePair(SurgeonSchedulePost $post): void
+    {
+        $surgeon       = $post->getSurgeon();
+        $instrumentist = $post->getInstrumentist();
+        if ($surgeon !== null && $instrumentist !== null && $this->eligibility?->isIncompatible($surgeon, $instrumentist)) {
+            throw new UnprocessableEntityHttpException("Cet instrumentiste est incompatible avec ce chirurgien : il ne peut pas lui être associé.");
+        }
     }
 
     public function deactivate(SurgeonSchedulePost $post): void

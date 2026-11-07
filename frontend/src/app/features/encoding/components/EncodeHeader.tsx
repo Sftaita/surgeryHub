@@ -56,6 +56,8 @@ interface EncodeHeaderProps {
   helpTopicId?: string;
   /** Horodatage local de la dernière sauvegarde réussie — voir MissionEncodingPage. */
   savedAt?: Date | null;
+  /** Complément D-156 — titre remplaçant « Mission #id » (prestation multi-salles : une seule journée). */
+  title?: string;
 }
 
 /**
@@ -64,7 +66,7 @@ interface EncodeHeaderProps {
  * qui masque BrandBand sur cette route). Vague fixe animée une seule fois à
  * l'arrivée, pas de morphing par onglet.
  */
-export function EncodeHeader({ missionId, dateLabel, typeLabel, onBack, helpTopicId, savedAt }: EncodeHeaderProps) {
+export function EncodeHeader({ missionId, dateLabel, typeLabel, onBack, helpTopicId, savedAt, title }: EncodeHeaderProps) {
   return (
     <Box
       sx={{
@@ -142,7 +144,7 @@ export function EncodeHeader({ missionId, dateLabel, typeLabel, onBack, helpTopi
 
       <Box sx={{ mt: "14px", position: "relative" }}>
         <Box component="h1" sx={{ m: 0, fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em", color: "#fff" }}>
-          Mission #{missionId}
+          {title ?? `Mission #${missionId}`}
         </Box>
         <Box sx={{ display: "flex", gap: "8px", mt: "13px", flexWrap: "wrap" }}>
           <Box sx={{ display: "inline-flex", alignItems: "center", gap: "7px", height: 28, px: "12px", borderRadius: "999px", background: "rgba(255,255,255,.14)", color: "#fff", fontSize: 12.5, fontWeight: 600 }}>

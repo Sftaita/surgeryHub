@@ -206,7 +206,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     /**
      * Nom d'affichage utilisé dans les communications d'absence (D-114) : "Dr {Prénom Nom}",
      * ou "Dr {email}" en repli si aucun prénom/nom n'est renseigné. Centralisé ici pour être
-     * partagé entre RoomReleaseCommunicationService et BlockManagementCommunicationService
+     * partagé entre BlockManagementCommunicationService et l'historique « Libération de salle » (retiré par D-161)
      * sans dupliquer la logique de repli.
      */
     public function getDrName(): string

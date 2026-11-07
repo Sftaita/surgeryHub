@@ -47,6 +47,9 @@ vi.mock("../../features/notifications/api/notifications.api", () => ({
 
 // AvatarCropDialog needs canvas/Image APIs jsdom doesn't implement — same bypass
 // pattern as pages/instrumentist/ProfilePage.test.tsx.
+vi.mock("../../features/app-version/AppVersionLine", () => ({
+  AppVersionLine: () => <div data-testid="app-version" />,
+}));
 vi.mock("../../ui/avatar/AvatarCropDialog", () => ({
   AvatarCropDialog: ({ open, onConfirm }: any) =>
     open ? (
@@ -104,6 +107,12 @@ describe("ProfilePage (manager/admin) — identité", () => {
   it("affiche un indicateur de chargement avant résolution", () => {
     renderPage();
     expect(document.querySelector(".MuiCircularProgress-root")).toBeInTheDocument();
+  });
+
+  it("D-162 — affiche la version en bas des paramètres", async () => {
+    renderPage();
+    await screen.findByText("Ada Lovelace");
+    expect(screen.getByTestId("app-version")).toBeInTheDocument();
   });
 
   it("affiche le nom complet", async () => {

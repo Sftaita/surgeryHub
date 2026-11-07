@@ -2,18 +2,22 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\PrestationGrouping;
+
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningAlert;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
 use App\Enum\MissionStatus;
+use App\Enum\PlanningAlertStatus;
 use App\Enum\PlanningAlertType;
 use App\Message\PlanningAlertRaisedMessage;
 use App\Repository\UserRepository;
 use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\QueryBuilder;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
@@ -94,7 +98,55 @@ class PlanningConflictDetectionService
      * hasConflictInPool() instead to stay within the project's fixed-query-budget
      * discipline (see PlanningGeneratorServiceV2).
      */
-    public function findConflict(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): ?Mission
+    public function findConflict(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): ?Mission
+    {
+        // D-156 — the INSTRUMENTIST-role check of a mission ($multiRoomContext) skips the
+        // legitimate multi-room overlaps: filtered in PHP (findConflicts()), never in DQL.
+        if ($multiRoomContext !== null) {
+            return $this->findConflicts($person, $start, $end, $excludeMissionId, $doubleRoomSite, $multiRoomContext)[0] ?? null;
+        }
+
+        return $this->conflictQuery($person, $start, $end, $excludeMissionId, $doubleRoomSite)
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+    }
+
+    /**
+     * D-167 — every other active mission of $person overlapping [$start, $end), not just the
+     * first: each conflicting pair is its own alert. Same rules as findConflict().
+     *
+     * D-156 — with $multiRoomContext (the checked mission, INSTRUMENTIST role only), the
+     * legitimate multi-room overlaps (BLOC, same surgeon, same site, same local date —
+     * PrestationGrouping::isMultiRoomSlot()) are skipped. Filtered in PHP on the (few)
+     * overlapping rows, so the rule stays the single shared one, never re-encoded in DQL.
+     *
+     * @return Mission[]
+     */
+    public function findConflicts(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): array
+    {
+        /** @var Mission[] $conflicts */
+        $conflicts = $this->conflictQuery($person, $start, $end, $excludeMissionId, $doubleRoomSite)
+            ->addOrderBy('m.id', 'ASC')
+            ->getQuery()
+            ->getResult();
+        if ($multiRoomContext === null) {
+            return $conflicts;
+        }
+
+        return array_values(array_filter(
+            $conflicts,
+            static fn (Mission $candidate) => !self::isMultiRoomOverlap($candidate, $person, $multiRoomContext, $start, $end),
+        ));
+    }
+
+    /** D-156 — $existing vs the slot [$start,$end) of $context, for $person as instrumentist. */
+    private static function isMultiRoomOverlap(Mission $existing, User $person, Mission $context, \DateTimeImmutable $start, \DateTimeImmutable $end): bool
+    {
+        return PrestationGrouping::isMultiRoomSlot($existing, $person, $context->getSurgeon(), $context->getSite(), $context->getType(), $start, $end);
+    }
+
+    private function conflictQuery(User $person, \DateTimeImmutable $start, \DateTimeImmutable $end, ?int $excludeMissionId, ?Hospital $doubleRoomSite): QueryBuilder
     {
         $qb = $this->em->createQueryBuilder()
             ->select('m')
@@ -107,8 +159,7 @@ class PlanningConflictDetectionService
             ->setParameter('start', $start)
             ->setParameter('end', $end)
             ->setParameter('statuses', self::ACTIVE_STATUSES)
-            ->orderBy('m.startAt', 'ASC')
-            ->setMaxResults(1);
+            ->orderBy('m.startAt', 'ASC');
 
         if ($excludeMissionId !== null) {
             $qb->andWhere('m.id != :excludeId')->setParameter('excludeId', $excludeMissionId);
@@ -120,7 +171,7 @@ class PlanningConflictDetectionService
                 ->setParameter('doubleRoomSite', $doubleRoomSite);
         }
 
-        return $qb->getQuery()->getOneOrNullResult();
+        return $qb;
     }
 
     /**
@@ -141,7 +192,7 @@ class PlanningConflictDetectionService
                 ? $this->findConflict($surgeon, $start, $end, $mission->getId(), $mission->getSite())
                 : null,
             'instrumentist' => $instrumentist !== null
-                ? $this->findConflict($instrumentist, $start, $end, $mission->getId())
+                ? $this->findConflict($instrumentist, $start, $end, $mission->getId(), null, $mission)
                 : null,
         ];
     }
@@ -187,9 +238,25 @@ class PlanningConflictDetectionService
      * $doubleRoomSite carve-out as findConflict() — pass the checked mission's site only
      * when $personId is being checked in their SURGEON role, null for INSTRUMENTIST.
      */
-    public function hasConflictInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null): ?Mission
+    public function hasConflictInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): ?Mission
     {
+        return $this->findConflictsInPool($personId, $start, $end, $pool, $excludeMissionId, $doubleRoomSite, $multiRoomContext)[0] ?? null;
+    }
+
+    /**
+     * D-167 — every overlapping mission of the pool, in pool order (see findConflicts()).
+     *
+     * @return Mission[]
+     */
+    public function findConflictsInPool(int $personId, \DateTimeImmutable $start, \DateTimeImmutable $end, array $pool, ?int $excludeMissionId = null, ?Hospital $doubleRoomSite = null, ?Mission $multiRoomContext = null): array
+    {
+        $conflicts = [];
         foreach ($pool[$personId] ?? [] as $mission) {
+            // D-156 — same multi-room exception as findConflict(), for the INSTRUMENTIST role.
+            if ($multiRoomContext !== null && $mission->getInstrumentist()?->getId() === $personId
+                && self::isMultiRoomOverlap($mission, $mission->getInstrumentist(), $multiRoomContext, $start, $end)) {
+                continue;
+            }
             if ($excludeMissionId !== null && $mission->getId() === $excludeMissionId) {
                 continue;
             }
@@ -200,22 +267,33 @@ class PlanningConflictDetectionService
                 continue;
             }
             if ($mission->getStartAt() < $end && $mission->getEndAt() > $start) {
-                return $mission;
+                $conflicts[] = $mission;
             }
         }
-        return null;
+        return $conflicts;
     }
 
-    // ── Alert lifecycle (sync — create/resolve, never delete) ──────────────────
+    // ── Alert lifecycle (sync — create/refresh/resolve, never delete) ─────────────
     //
-    // A conflict alert is always anchored on the LOWER-id mission of the conflicting pair,
-    // so mission A vs mission B (or B vs A, whichever is synced first/again) always
-    // resolves to exactly one PlanningAlert row — never a duplicate A→B and B→A pair.
+    // D-167 — one alert per conflicting PAIR (anchor mission, other mission, person, type).
+    // It is held by the LOWER-id mission of the pair, so A vs B (or B vs A, whichever is
+    // synced first/again) always resolves to exactly one active PlanningAlert row — never a
+    // duplicate A→B and B→A pair. The pair is read from snapshotJson (`conflictingMissionId`,
+    // `personId`), which every conflict alert has carried since D-091: no schema change.
+    //
+    // Every sync ends by re-evaluating EVERY active conflict alert that involves the synced
+    // mission on either side — never only the alerts it happens to hold — against the
+    // persisted state of BOTH missions. Before D-167, a sync of the higher-id mission only
+    // looked for an alert on itself, so the alert held by the lower-id mission outlived the
+    // conflict it described (case of 2026-10-23: IN_PROGRESS mission, the other one moved).
 
     /**
      * Detects and syncs SURGEON_CONFLICT/INSTRUMENTIST_CONFLICT alerts for one mission
      * against the CURRENT real-time DB state. Idempotent — safe to call repeatedly (e.g.
      * once per touched mission after every apply()). Never mutates the Mission itself.
+     * Flushes its own alert changes (D-167): a caller is never trusted to flush for it —
+     * PlanningModificationService::apply() never did, and every automatic resolution made
+     * on the save path was silently lost.
      *
      * A manager-authorized MissionConflictWaiver (D-091 follow-up) is consulted here too,
      * not just at deploy-time revalidation — otherwise a waived INSTRUMENTIST_CONFLICT
@@ -223,21 +301,28 @@ class PlanningConflictDetectionService
      * it and deployed (found during this same audit, 2026-09-13). Never re-derives the
      * waiver's own eligibility rule here — findActiveWaiver() already owns that.
      *
+     * A mission that no longer counts (CANCELLED, CLOSED…) raises nothing; its existing
+     * conflict alerts are only re-evaluated, and resolved since the conflict is gone.
+     *
      * @return array{created: PlanningAlert[], resolved: PlanningAlert[]}
      */
     public function syncAlertsForMission(Mission $mission): array
     {
-        $created  = [];
-        $resolved = [];
+        $created = [];
 
-        foreach ($this->personChecks($mission) as [$person, $type]) {
-            $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
-            $conflict = $this->findConflict($person, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), $doubleRoomSite);
-            if ($conflict !== null && $this->conflictWaiver->findActiveWaiver($mission, $conflict) !== null) {
-                $conflict = null;
+        if (in_array($mission->getStatus(), self::ACTIVE_STATUSES, true)) {
+            foreach ($this->personChecks($mission) as [$person, $type]) {
+                $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
+                $multiRoom = $type === PlanningAlertType::INSTRUMENTIST_CONFLICT ? $mission : null;
+                foreach ($this->findConflicts($person, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), $doubleRoomSite, $multiRoom) as $conflict) {
+                    if ($this->conflictWaiver->findActiveWaiver($mission, $conflict) === null) {
+                        $this->raiseOrRefresh($mission, $person, $type, $conflict, $created);
+                    }
+                }
             }
-            $this->applySync($mission, $person, $type, $conflict, $created, $resolved);
         }
+
+        $resolved = $this->reconcileConflictAlertsInvolving([(int) $mission->getId()]);
 
         return ['created' => $created, 'resolved' => $resolved];
     }
@@ -271,20 +356,54 @@ class PlanningConflictDetectionService
             $version->getPeriodEnd()->format('Y-m-d'),
         );
 
-        $created  = [];
-        $resolved = [];
+        $created = [];
         foreach ($missions as $mission) {
             foreach ($this->personChecks($mission) as [$person, $type]) {
                 $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $mission->getSite() : null;
-                $conflict = $this->hasConflictInPool($person->getId(), $mission->getStartAt(), $mission->getEndAt(), $pool, $mission->getId(), $doubleRoomSite);
-                if ($conflict !== null && $this->conflictWaiver->findActiveWaiver($mission, $conflict) !== null) {
-                    $conflict = null;
+                $multiRoom = $type === PlanningAlertType::INSTRUMENTIST_CONFLICT ? $mission : null;
+                foreach ($this->findConflictsInPool($person->getId(), $mission->getStartAt(), $mission->getEndAt(), $pool, $mission->getId(), $doubleRoomSite, $multiRoom) as $conflict) {
+                    if ($this->conflictWaiver->findActiveWaiver($mission, $conflict) === null) {
+                        $this->raiseOrRefresh($mission, $person, $type, $conflict, $created);
+                    }
                 }
-                $this->applySync($mission, $person, $type, $conflict, $created, $resolved);
             }
         }
 
+        $resolved = $this->reconcileConflictAlertsInvolving(array_map(static fn (Mission $m) => (int) $m->getId(), $missions));
+
         return ['created' => $created, 'resolved' => $resolved];
+    }
+
+    /**
+     * D-167 — re-evaluates every OPEN/ACKNOWLEDGED conflict alert involving one of these
+     * missions (as the alert holder OR as its conflicting mission) against the persisted
+     * state of both missions, and resolves — never deletes — the ones whose conflict no
+     * longer exists. A still-real conflict is left untouched (never closed, never
+     * duplicated). RESOLVED/IGNORED alerts are history: never read back here, never reopened.
+     * Used by every sync above and by « Vérifier les conflits » (PlanningVersionAuditService),
+     * which reconciles the whole version this way. Flushes its own changes.
+     *
+     * @param int[] $missionIds
+     * @return PlanningAlert[] the alerts resolved by this call
+     */
+    public function reconcileConflictAlertsInvolving(array $missionIds): array
+    {
+        $resolved = [];
+        foreach ($this->alertService->findActiveConflictAlertsInvolving($missionIds) as $alert) {
+            // The identity map may hold an alert already resolved earlier in this same unit
+            // of work (not flushed yet): never resolve — or count — it twice.
+            if (!$alert->isOpenOrAcknowledged()) {
+                continue;
+            }
+            $reason = $this->obsolescenceReason($alert);
+            if ($reason !== null) {
+                $alert->resolve(null, $reason);
+                $resolved[] = $alert;
+            }
+        }
+        $this->em->flush();
+
+        return $resolved;
     }
 
     /** @return list<array{0: User, 1: PlanningAlertType}> */
@@ -301,60 +420,140 @@ class PlanningConflictDetectionService
     }
 
     /**
-     * Shared create/resolve decision, used by both the real-time and pool-based paths.
-     * Only the mission with the LOWER id ever HOLDS the active alert for a given pair —
-     * that is what guarantees "never A→B and B→A". Critically, the alert is always
-     * created on that anchor regardless of WHICH of the two missions triggered this sync
-     * call: callers only ever sync the mission(s) they actually touched (e.g.
-     * PlanningModificationService::apply() only syncs the edited mission), so if the
-     * touched mission happens to be the higher-id side, nothing else would ever visit
-     * the lower-id side to raise the alert there. createIfNotDuplicate() still guards
-     * against re-creating it if an earlier sync (from either side) already did.
+     * Shared create/refresh decision for one real conflict, used by both the real-time and
+     * pool-based paths. The alert is always held by the lower-id mission of the pair,
+     * regardless of WHICH of the two missions triggered this sync call.
+     *
+     *  - An active alert already covers this pair → kept; its snapshot is refreshed when
+     *    the schedules changed (the overlap was moved or reduced, but still exists).
+     *  - The manager IGNORED this exact conflict and neither mission's schedule changed
+     *    since → nothing is raised again (an ignored alert is never reopened arbitrarily).
+     *  - Otherwise → a new alert, and its notification.
      */
-    private function applySync(Mission $mission, User $person, PlanningAlertType $type, ?Mission $conflict, array &$created, array &$resolved): void
+    private function raiseOrRefresh(Mission $mission, User $person, PlanningAlertType $type, Mission $conflict, array &$created): void
     {
-        if ($conflict !== null) {
-            $anchor = $mission->getId() < $conflict->getId() ? $mission : $conflict;
-            $other  = $anchor === $mission ? $conflict : $mission;
+        $anchor = $mission->getId() < $conflict->getId() ? $mission : $conflict;
+        $other  = $anchor === $mission ? $conflict : $mission;
 
-            // Concurrency guard (D-109, found via a live two-simultaneous-scans test):
-            // createIfNotDuplicate() is a plain check-then-create — without serialization,
-            // two callers racing on the exact same pair (e.g. two "Vérifier les conflits"
-            // scans fired at once) can both read "no active alert yet" before either commits
-            // its INSERT, producing duplicate alerts. Locking the anchor mission's row for the
-            // duration of the check-then-create — the same PESSIMISTIC_WRITE convention
-            // already used everywhere else in this codebase for Mission-adjacent mutations
-            // (see MissionPostDeployService) — makes the second caller block until the first
-            // commits, so it then correctly finds the alert already created.
-            $result = $this->em->wrapInTransaction(function () use ($anchor, $type, $other, $person) {
-                $this->em->lock($anchor, LockMode::PESSIMISTIC_WRITE);
-                return $this->alertService->createIfNotDuplicate(
-                    $anchor, $type, null, $this->buildSnapshot($type, $anchor, $other, $person),
-                );
-            });
-            if ($result['created']) {
-                $created[] = $result['alert'];
-                $this->dispatchNotification($result['alert'], $anchor, $other, $type);
-            }
+        // Concurrency guard (D-109, found via a live two-simultaneous-scans test): the
+        // lookup-then-create below is a plain check-then-create — without serialization,
+        // two callers racing on the exact same pair (e.g. two "Vérifier les conflits"
+        // scans fired at once) can both read "no active alert yet" before either commits
+        // its INSERT, producing duplicate alerts. Locking the anchor mission's row for the
+        // duration of the check-then-create — the same PESSIMISTIC_WRITE convention
+        // already used everywhere else in this codebase for Mission-adjacent mutations
+        // (see MissionPostDeployService) — makes the second caller block until the first
+        // commits, so it then correctly finds the alert already created.
+        $alert = $this->em->wrapInTransaction(function () use ($anchor, $type, $other, $person): ?PlanningAlert {
+            $this->em->lock($anchor, LockMode::PESSIMISTIC_WRITE);
+            $snapshot = $this->buildSnapshot($type, $anchor, $other, $person);
+            $existing = $this->alertService->findConflictAlertsForPair($anchor, $type, (int) $other->getId(), (int) $person->getId());
 
-            // $mission itself is never the alert holder when it isn't the anchor — if it
-            // was carrying a now-stale row (e.g. it used to be the lower-id side of a
-            // different pairing), that row no longer reflects reality either.
-            if ($mission !== $anchor) {
-                $staleHere = $this->alertService->findActiveAlert($mission, $type, null);
-                if ($staleHere !== null) {
-                    $staleHere->resolve(null, 'Conflit résolu : ancré désormais sur une autre mission.');
-                    $resolved[] = $staleHere;
+            foreach ($existing as $alert) {
+                if ($alert->isOpenOrAcknowledged()) {
+                    if ($alert->getSnapshotJson() !== $snapshot) {
+                        $alert->setSnapshotJson($snapshot);
+                    }
+                    return null;
                 }
             }
-            return;
+            foreach ($existing as $alert) {
+                if ($alert->getStatus() === PlanningAlertStatus::IGNORED && self::sameSchedule($alert->getSnapshotJson(), $snapshot)) {
+                    return null;
+                }
+            }
+
+            $alert = new PlanningAlert();
+            $alert->setMission($anchor);
+            $alert->setType($type);
+            $alert->setSnapshotJson($snapshot);
+            $this->em->persist($alert);
+            return $alert;
+        });
+
+        if ($alert !== null) {
+            $created[] = $alert;
+            $this->dispatchNotification($alert, $anchor, $other, $type);
+        }
+    }
+
+    /**
+     * Why this conflict alert no longer describes reality — null while the conflict is still
+     * real. Reads both missions as persisted; re-runs the exact detection rule of
+     * findConflict() (overlap math, statuses, double-room carve-out) from either side of the
+     * pair, so the result never depends on which mission holds the alert or has the lower id.
+     */
+    private function obsolescenceReason(PlanningAlert $alert): ?string
+    {
+        $snapshot = $alert->getSnapshotJson();
+        $anchor   = $alert->getMission();
+        $other    = isset($snapshot['conflictingMissionId']) ? $this->em->find(Mission::class, (int) $snapshot['conflictingMissionId']) : null;
+        $person   = isset($snapshot['personId']) ? $this->em->find(User::class, (int) $snapshot['personId']) : null;
+        $prefix   = 'Conflit horaire résolu automatiquement après modification du planning';
+
+        if ($anchor === null || $other === null || $person === null) {
+            return $prefix . " : la mission ou la personne en conflit n'existe plus.";
+        }
+        foreach ([$anchor, $other] as $m) {
+            if (!in_array($m->getStatus(), self::ACTIVE_STATUSES, true)) {
+                return sprintf("%s : la mission #%d n'est plus active (%s).", $prefix, $m->getId(), $m->getStatus()->value);
+            }
+        }
+        if (!self::involves($anchor, $person) || !self::involves($other, $person)) {
+            return sprintf("%s : %s n'est plus sur les missions #%d et #%d à la fois.", $prefix, self::displayName($person), $anchor->getId(), $other->getId());
         }
 
-        $existingHere = $this->alertService->findActiveAlert($mission, $type, null);
-        if ($existingHere !== null) {
-            $existingHere->resolve(null, 'Conflit résolu : plus de chevauchement actif.');
-            $resolved[] = $existingHere;
+        $type = $alert->getType();
+        if ($type === PlanningAlertType::INSTRUMENTIST_CONFLICT
+            && self::isMultiRoomOverlap($other, $person, $anchor, $anchor->getStartAt(), $anchor->getEndAt())) {
+            return sprintf('%s : les missions #%d et #%d forment une prestation multi-salles du même chirurgien (D-156).', $prefix, $anchor->getId(), $other->getId());
         }
+        if (!$this->pairConflicts($anchor, $other, $person, $type) && !$this->pairConflicts($other, $anchor, $person, $type)) {
+            return sprintf('%s : les missions #%d et #%d ne se chevauchent plus.', $prefix, $anchor->getId(), $other->getId());
+        }
+        if ($this->conflictWaiver->findActiveWaiver($anchor, $other) !== null) {
+            return sprintf('Conflit horaire couvert par une dérogation du manager (missions #%d et #%d).', $anchor->getId(), $other->getId());
+        }
+
+        return null;
+    }
+
+    /**
+     * Would syncing $checked report $against as a $type conflict for $person? Same rule as
+     * syncAlertsForMission(): $person holds the $type role on $checked, and $against —
+     * where $person is surgeon or instrumentist — overlaps it (hasConflictInPool(), so the
+     * overlap math and the double-room carve-out are never duplicated).
+     */
+    private function pairConflicts(Mission $checked, Mission $against, User $person, PlanningAlertType $type): bool
+    {
+        $role = $type === PlanningAlertType::SURGEON_CONFLICT ? $checked->getSurgeon() : $checked->getInstrumentist();
+        if ($role?->getId() !== $person->getId()) {
+            return false;
+        }
+        $doubleRoomSite = $type === PlanningAlertType::SURGEON_CONFLICT ? $checked->getSite() : null;
+        // D-156 — a legitimate multi-room pair is not (or no longer) a conflict.
+        $multiRoom = $type === PlanningAlertType::INSTRUMENTIST_CONFLICT ? $checked : null;
+
+        return $this->hasConflictInPool(
+            (int) $person->getId(), $checked->getStartAt(), $checked->getEndAt(),
+            [(int) $person->getId() => [$against]], $checked->getId(), $doubleRoomSite, $multiRoom,
+        ) !== null;
+    }
+
+    private static function involves(Mission $mission, User $person): bool
+    {
+        return $mission->getSurgeon()?->getId() === $person->getId()
+            || $mission->getInstrumentist()?->getId() === $person->getId();
+    }
+
+    private static function sameSchedule(array $a, array $b): bool
+    {
+        foreach (['missionStartAt', 'missionEndAt', 'conflictingStartAt', 'conflictingEndAt'] as $key) {
+            if (($a[$key] ?? null) !== ($b[$key] ?? null)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private function buildSnapshot(PlanningAlertType $type, Mission $anchor, Mission $other, User $person): array
@@ -381,14 +580,14 @@ class PlanningConflictDetectionService
     }
 
     /**
-     * Recipients: every active manager/admin, same as AbsenceImpactService — no
+     * Recipients: every operational manager/admin (D-149), same as AbsenceImpactService — no
      * surgeon/instrumentist-facing notification UX exists yet for planning alerts, so the
      * conflicting person themself is deliberately not notified here either.
      */
     private function dispatchNotification(PlanningAlert $alert, Mission $anchor, Mission $other, PlanningAlertType $type): void
     {
         $recipients = [];
-        foreach ($this->userRepository->findManagersAndAdmins(true) as $manager) {
+        foreach ($this->userRepository->findOperationalManagers() as $manager) {
             $recipients[$manager->getId()] = true;
         }
 

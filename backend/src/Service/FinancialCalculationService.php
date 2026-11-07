@@ -2,7 +2,9 @@
 
 namespace App\Service;
 
+use App\Enum\EffectiveDurationSource;
 use App\Dto\FinancialCalculationAnomaly;
+use App\Dto\MissionFinancialEvaluation;
 use App\Dto\RepresentativePolicy;
 use App\Entity\FinancialCalculation;
 use App\Entity\FinancialCalculationLine;
@@ -21,6 +23,14 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Exception\FinancialCalculationAnomaliesException;
 use App\Exception\FinancialCalculationIneligibleException;
+use App\Exception\InstrumentistRateConflictException;
+use App\Exception\PricingRuleConflictException;
+use App\Entity\WorkedPresence;
+use App\Service\Prestation\PrestationEncodingService;
+use App\Service\Prestation\PrestationGrouping;
+use App\Service\Prestation\PrestationGroupResolver;
+use App\Service\Prestation\PresenceAllocator;
+use App\Service\Prestation\WorkedPresenceService;
 use Doctrine\DBAL\LockMode;
 use Doctrine\ORM\EntityManagerInterface;
 
@@ -46,7 +56,13 @@ final class FinancialCalculationService
         private readonly RepresentativePolicyResolver $representativePolicyResolver,
         private readonly RequiredChoiceGroupResolver $choiceGroupResolver,
         private readonly AuditService $audit,
-    ) {}
+        private readonly ?InstrumentistRateStalenessService $tariffStaleness = null,
+        ?PrestationGroupResolver $prestationGroups = null,
+    ) {
+        $this->prestationGroups = $prestationGroups ?? new PrestationGroupResolver($em);
+    }
+
+    private readonly PrestationGroupResolver $prestationGroups;
 
     /**
      * §9 du lot — la seule règle de date, centralisée : horaires réels si connus,
@@ -55,6 +71,10 @@ final class FinancialCalculationService
     public function resolveEffectiveAt(Mission $mission): \DateTimeImmutable
     {
         $execution = $mission->getExecution();
+        // D-156 — mission liée à une présence partagée : le début réel est celui de la présence.
+        if ($execution?->getPresence()?->getActualStartAt() !== null) {
+            return $execution->getPresence()->getActualStartAt();
+        }
         if ($execution?->getActualStartAt() !== null) {
             return $execution->getActualStartAt();
         }
@@ -78,7 +98,7 @@ final class FinancialCalculationService
                 );
             }
 
-            $calculation = $this->buildAndPersist($mission, $actor, version: 1, anomaliesOut: $anomalies);
+            $calculation = $this->buildAndPersist($mission, $actor, version: $this->nextVersion($mission), anomaliesOut: $anomalies);
             if ($calculation === null) {
                 return; // anomalies déjà auditées par buildAndPersist ; transaction validée quand même.
             }
@@ -132,7 +152,7 @@ final class FinancialCalculationService
                 throw new FinancialCalculationIneligibleException('This mission\'s calculation is LOCKED and can no longer be recalculated.');
             }
 
-            $new = $this->buildAndPersist($mission, $actor, version: $current->getVersion() + 1, anomaliesOut: $anomalies);
+            $new = $this->buildAndPersist($mission, $actor, version: $this->nextVersion($mission), anomaliesOut: $anomalies);
             if ($new === null) {
                 return; // anomalies déjà auditées par buildAndPersist ; l'ancien calcul reste actif, inchangé.
             }
@@ -166,7 +186,24 @@ final class FinancialCalculationService
         if ($calculation->getStatus() !== FinancialCalculationStatus::CALCULATED) {
             throw new FinancialCalculationIneligibleException('Only a CALCULATED calculation can be approved.');
         }
+        $this->assertNotObsolete($calculation);
+        $this->assertTariffStillApplicable($calculation);
 
+        // D-156 — a calculation valued on a shared presence is approved only if that presence
+        // did not change since (checked under the presence's lock, in the same transaction).
+        if (!$this->hasSharedPresenceLine($calculation)) {
+            return $this->doApprove($calculation, $actor);
+        }
+
+        return $this->em->wrapInTransaction(function () use ($calculation, $actor): FinancialCalculation {
+            $this->assertSharedPresenceStillCurrent($calculation);
+
+            return $this->doApprove($calculation, $actor);
+        });
+    }
+
+    private function doApprove(FinancialCalculation $calculation, User $actor): FinancialCalculation
+    {
         $calculation->setStatus(FinancialCalculationStatus::APPROVED);
         $calculation->setApprovedAt(new \DateTimeImmutable());
         $calculation->setApprovedBy($actor);
@@ -177,12 +214,25 @@ final class FinancialCalculationService
         return $calculation;
     }
 
+    private function hasSharedPresenceLine(FinancialCalculation $calculation): bool
+    {
+        foreach ($calculation->getLines() as $line) {
+            if (isset($line->getSnapshot()['presenceId'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /** §19 — un calcul LOCKED ne peut plus être superseded ; voir aussi MissionEncodingWorkflowService::reopen(). */
     public function lock(FinancialCalculation $calculation, User $actor): FinancialCalculation
     {
         if ($calculation->getStatus() !== FinancialCalculationStatus::APPROVED) {
             throw new FinancialCalculationIneligibleException('Only an APPROVED calculation can be locked.');
         }
+        $this->assertNotObsolete($calculation);
+        $this->assertTariffStillApplicable($calculation);
 
         $calculation->setStatus(FinancialCalculationStatus::LOCKED);
         $calculation->setLockedAt(new \DateTimeImmutable());
@@ -213,6 +263,47 @@ final class FinancialCalculationService
     }
 
     /**
+     * D-182 — a mission cancelled by a manager did not take place: the calculations a reopen
+     * left CALCULATED / APPROVED (obsolete) are cancelled, each one audited, so that no
+     * statistic, worklist or rate check ever reads them again. A LOCKED calculation never
+     * reaches here (MissionCancellationPolicy refuses a billed mission).
+     */
+    public function cancelOpenCalculationsOfCancelledMission(Mission $mission, User $actor): int
+    {
+        $count = 0;
+        foreach ($mission->getFinancialCalculations() as $calculation) {
+            if (in_array($calculation->getStatus(), [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED], true)) {
+                $this->cancel($calculation, $actor, 'Mission annulée : aucune prestation à facturer.');
+                ++$count;
+            }
+        }
+
+        return $count;
+    }
+
+    public const OBSOLETE_MESSAGE = "Ce calcul est obsolète : l'encodage de la mission a été rouvert depuis. Recalculez-le après revalidation de l'encodage.";
+
+    /** D-153 — un calcul rendu obsolète par une réouverture n'avance plus dans le workflow. */
+    private function assertNotObsolete(FinancialCalculation $calculation): void
+    {
+        if ($calculation->isObsolete()) {
+            throw new FinancialCalculationIneligibleException(self::OBSOLETE_MESSAGE);
+        }
+    }
+
+    /**
+     * D-172 — un calcul dont le tarif instrumentiste applicable a changé depuis (date d'effet
+     * modifiée) n'est jamais approuvé ni verrouillé avec l'ancien montant : recalculer d'abord.
+     */
+    private function assertTariffStillApplicable(FinancialCalculation $calculation): void
+    {
+        $reason = $this->tariffStaleness?->staleReasonOfCalculation($calculation);
+        if ($reason !== null) {
+            throw new FinancialCalculationIneligibleException($reason);
+        }
+    }
+
+    /**
      * §20 — exposée pour les consommateurs API/UI qui doivent savoir si une réouverture
      * est possible avant de l'offrir. MissionEncodingWorkflowService::reopen() applique
      * le même contrôle par une requête directe (pas de dépendance à ce service complet
@@ -234,27 +325,244 @@ final class FinancialCalculationService
         if ($mission->getStatus() !== MissionStatus::VALIDATED) {
             throw new FinancialCalculationIneligibleException('Mission must be VALIDATED to be financially calculated.');
         }
-        if ($mission->getInstrumentist() === null) {
+        // D-155 — sans instrumentiste, seule une activité déclarée exécutée sans instrumentiste
+        // est valorisable (lignes firme uniquement : evaluate() ne produit la ligne
+        // instrumentiste que si une instrumentiste est affectée). Une mission classique reste
+        // refusée comme avant.
+        if (!$mission->hasEncodableActivity()) {
             throw new FinancialCalculationIneligibleException('Mission has no assigned instrumentist.');
         }
     }
 
-    private function findActiveCalculation(Mission $mission): ?FinancialCalculation
+    /** Le calcul principal actif (D-171 : jamais un calcul complémentaire instrumentiste). */
+    public function findActiveCalculation(Mission $mission): ?FinancialCalculation
     {
         return $this->em->getRepository(FinancialCalculation::class)->findOneBy(
-            ['mission' => $mission, 'status' => [
-                FinancialCalculationStatus::CALCULATED,
-                FinancialCalculationStatus::APPROVED,
-                FinancialCalculationStatus::LOCKED,
-            ]],
+            ['mission' => $mission, 'supplementOf' => null, 'status' => self::ACTIVE_STATUSES],
+            ['version' => 'DESC'],
+        );
+    }
+
+    private const ACTIVE_STATUSES = [
+        FinancialCalculationStatus::CALCULATED,
+        FinancialCalculationStatus::APPROVED,
+        FinancialCalculationStatus::LOCKED,
+    ];
+
+    /** D-171 — le calcul complémentaire instrumentiste actif d'un calcul principal, s'il existe. */
+    public function findActiveSupplement(FinancialCalculation $main): ?FinancialCalculation
+    {
+        return $this->em->getRepository(FinancialCalculation::class)->findOneBy(
+            ['supplementOf' => $main, 'status' => self::ACTIVE_STATUSES],
             ['version' => 'DESC'],
         );
     }
 
     /**
-     * Résout tous les tarifs, collecte TOUTES les anomalies (jamais un échec au premier
-     * élément), et soit persiste un calcul complet, soit ne persiste rien du tout (§14
-     * du lot). Ne lève jamais d'exception elle-même : EntityManager::wrapInTransaction()
+     * D-171 — pourquoi la prestation instrumentiste ne peut PAS être valorisée maintenant par un
+     * calcul complémentaire (null = possible). Seule règle de l'endpoint, du service et de
+     * l'indicateur servi au tiroir. Le complément n'existe que pour un calcul principal VERROUILLÉ
+     * (facture émise) calculé sans heures : sinon, un simple recalcul suffit.
+     */
+    public function instrumentistSupplementBlockedReason(Mission $mission): ?string
+    {
+        if ($mission->getStatus() !== MissionStatus::VALIDATED || $mission->getInstrumentist() === null || $mission->isExecutedWithoutInstrumentist()) {
+            return "Aucune prestation d'instrumentiste à valoriser pour cette mission.";
+        }
+        $main = $this->findActiveCalculation($mission);
+        if ($main === null || !$main->isInstrumentistHoursPending()) {
+            return "Le calcul de la mission comprend déjà la prestation de l'instrumentiste (ou n'existe pas encore).";
+        }
+        if ($main->getStatus() !== FinancialCalculationStatus::LOCKED) {
+            return "Le calcul n'est pas verrouillé : recalculez-le pour y ajouter la prestation de l'instrumentiste.";
+        }
+        if ($this->findActiveSupplement($main) !== null) {
+            return "La prestation de l'instrumentiste a déjà été calculée.";
+        }
+        if (MissionExecutionService::resolveDuration($mission)->source === EffectiveDurationSource::PLANNED) {
+            return "Les heures prestées de l'instrumentiste ne sont pas encore déclarées.";
+        }
+
+        return null;
+    }
+
+    /**
+     * D-171 — calcul complémentaire : la seule prestation instrumentiste, une fois ses heures
+     * déclarées, d'une mission dont le calcul principal (sans heures) est verrouillé par une
+     * facture firme. Mêmes contrôles que calculate() (verrou de la mission, tarif instrumentiste,
+     * durée valide, échec global structuré) ; les lignes firme ne sont jamais recalculées.
+     */
+    public function calculateInstrumentistSupplement(Mission $mission, User $actor): FinancialCalculation
+    {
+        $result = null;
+        $anomalies = null;
+
+        $this->em->wrapInTransaction(function () use (&$result, &$anomalies, $mission, $actor): void {
+            $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+            $this->assertEligible($mission);
+            $blocked = $this->instrumentistSupplementBlockedReason($mission);
+            if ($blocked !== null) {
+                throw new FinancialCalculationIneligibleException($blocked);
+            }
+            $main = $this->findActiveCalculation($mission);
+
+            $supplement = $this->buildAndPersist($mission, $actor, version: $this->nextVersion($mission), anomaliesOut: $anomalies, supplementOf: $main);
+            if ($supplement === null) {
+                return;
+            }
+
+            $this->audit->record($mission, $actor, AuditEventType::FINANCIAL_CALCULATION_CREATED, $this->summaryPayload($supplement));
+            $this->em->flush();
+            $result = $supplement;
+        });
+
+        if ($anomalies !== null) {
+            throw new FinancialCalculationAnomaliesException($anomalies);
+        }
+
+        return $result;
+    }
+
+    /** D-171 — nouvelle version d'un calcul complémentaire non verrouillé (l'ancien passe SUPERSEDED). */
+    public function recalculateInstrumentistSupplement(FinancialCalculation $current, User $actor): FinancialCalculation
+    {
+        $mission = $current->getMission();
+        $result = null;
+        $anomalies = null;
+
+        $this->em->wrapInTransaction(function () use (&$result, &$anomalies, $mission, $actor, $current): void {
+            $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
+            $this->assertEligible($mission);
+            $current = $this->em->createQueryBuilder()
+                ->select('c')->from(FinancialCalculation::class, 'c')
+                ->where('c.id = :id')->setParameter('id', $current->getId())
+                ->getQuery()
+                ->setLockMode(LockMode::PESSIMISTIC_WRITE)
+                ->setHint(\Doctrine\ORM\Query::HINT_REFRESH, true)
+                ->getOneOrNullResult();
+            if (!in_array($current?->getStatus(), [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED], true)) {
+                throw new FinancialCalculationIneligibleException('Ce complément est verrouillé ou a changé entre-temps : il ne peut plus être recalculé.');
+            }
+
+            $new = $this->buildAndPersist($mission, $actor, version: $this->nextVersion($mission), anomaliesOut: $anomalies, supplementOf: $current->getSupplementOf());
+            if ($new === null) {
+                return;
+            }
+            $current->setStatus(FinancialCalculationStatus::SUPERSEDED);
+            $current->setSupersededAt(new \DateTimeImmutable());
+            $current->setSupersededByCalculation($new);
+            $this->audit->record($mission, $actor, AuditEventType::FINANCIAL_CALCULATION_SUPERSEDED, [
+                'financialCalculationId' => $current->getId(),
+                'version' => $current->getVersion(),
+                'supersededByCalculationId' => $new->getId(),
+            ]);
+            $this->audit->record($mission, $actor, AuditEventType::FINANCIAL_CALCULATION_RECALCULATED, $this->summaryPayload($new) + [
+                'previousCalculationId' => $current->getId(),
+            ]);
+            $this->em->flush();
+            $result = $new;
+        });
+
+        if ($anomalies !== null) {
+            throw new FinancialCalculationAnomaliesException($anomalies);
+        }
+
+        return $result;
+    }
+
+    private function nextVersion(Mission $mission): int
+    {
+        return 1 + (int) $this->em->createQueryBuilder()
+            ->select('COALESCE(MAX(c.version), 0)')->from(FinancialCalculation::class, 'c')
+            ->where('c.mission = :mission')->setParameter('mission', $mission)
+            ->getQuery()->getSingleScalarResult();
+    }
+
+    /**
+     * Évaluation en LECTURE SEULE de la mission avec la configuration et l'encodage
+     * actuels : résout tous les tarifs et collecte TOUTES les anomalies (jamais un échec au
+     * premier élément), sans rien persister ni auditer, sans verrou. C'est exactement ce
+     * que buildAndPersist() persiste : il n'existe qu'un seul chemin de résolution.
+     * Consommée en lecture par les explications d'anomalies (D-141) pour dire si une cause
+     * existe encore et ce qu'un recalcul produirait — jamais pour afficher un montant validé.
+     */
+    public function evaluate(Mission $mission, bool $instrumentistOnly = false): MissionFinancialEvaluation
+    {
+        $effectiveAt = $this->resolveEffectiveAt($mission);
+
+        /** @var FinancialCalculationAnomaly[] $anomalies */
+        $anomalies = [];
+        $lineSpecs = [];
+        $outcomes = [];
+        $hoursPending = false;
+
+        // D-171 — calcul complémentaire : la seule prestation instrumentiste.
+        foreach ($instrumentistOnly ? [] : $mission->getInterventions() as $intervention) {
+            $before = count($anomalies);
+            $spec = $this->resolveFirmInterventionLine($intervention, $effectiveAt, $anomalies);
+            if ($spec !== null) {
+                $lineSpecs[] = $spec;
+            }
+            $outcomes['MISSION_INTERVENTION:' . $intervention->getId()] = $this->outcome($spec, array_slice($anomalies, $before),
+                $intervention->getPrimaryFirm() === null && $intervention->isWithoutFirm() ? MissionFinancialEvaluation::WITHOUT_FIRM : MissionFinancialEvaluation::FEE_NOT_APPLICABLE);
+        }
+
+        foreach ($instrumentistOnly ? [] : $mission->getMaterialLines() as $materialLine) {
+            $before = count($anomalies);
+            $spec = $this->resolveFirmMaterialLine($materialLine, $effectiveAt, $anomalies);
+            if ($spec !== null) {
+                $lineSpecs[] = $spec;
+            }
+            $outcomes['MATERIAL_LINE:' . $materialLine->getId()] = $this->outcome($spec, array_slice($anomalies, $before), MissionFinancialEvaluation::MATERIAL_NOT_BILLABLE);
+        }
+
+        $instrumentist = $mission->getInstrumentist();
+        if ($instrumentist !== null) {
+            if ($mission->getType() === MissionType::CONSULTATION) {
+                $spec = $this->resolveInstrumentistConsultationLine($instrumentist, $effectiveAt, $anomalies);
+            } else {
+                $spec = $this->resolveInstrumentistHourlyLine($mission, $instrumentist, $effectiveAt, $anomalies, $hoursPending);
+            }
+            if ($spec !== null) {
+                $lineSpecs[] = $spec;
+            }
+        }
+
+        return new MissionFinancialEvaluation($effectiveAt, $lineSpecs, $anomalies, $outcomes, $hoursPending);
+    }
+
+    /**
+     * Issue d'un élément : une ligne, une anomalie, ou — sans ligne ni anomalie — la seule
+     * exclusion métier possible de ce type d'élément (feeApplicable=false pour une
+     * intervention, NOT_BILLABLE pour un matériel).
+     *
+     * @param FinancialCalculationAnomaly[] $own
+     */
+    private function outcome(?array $spec, array $own, string $exclusionKind): array
+    {
+        if ($own !== []) {
+            return ['kind' => MissionFinancialEvaluation::ANOMALY, 'rule' => null, 'unitAmount' => null, 'totalAmount' => null, 'currency' => null, 'adjustmentReason' => null,
+                'anomalyCodes' => array_values(array_map(static fn (FinancialCalculationAnomaly $a) => $a->code, $own))];
+        }
+        if ($spec === null) {
+            return ['kind' => $exclusionKind, 'rule' => null, 'unitAmount' => null, 'totalAmount' => null, 'currency' => null, 'adjustmentReason' => null, 'anomalyCodes' => []];
+        }
+
+        return [
+            'kind' => MissionFinancialEvaluation::LINE,
+            'rule' => PricingRuleResolver::snapshotRules([$spec['pricingRule']])[0],
+            'unitAmount' => $spec['unitAmount'],
+            'totalAmount' => $spec['totalAmount'],
+            'currency' => $spec['currency'],
+            'adjustmentReason' => $spec['snapshot']['adjustmentReasonSnapshot'] ?? null,
+            'anomalyCodes' => [],
+        ];
+    }
+
+    /**
+     * Persiste l'évaluation : soit un calcul complet, soit rien du tout (§14 du lot — une
+     * seule anomalie bloque tout le calcul, aucun montant partiel n'est jamais enregistré).
+     * Ne lève jamais d'exception elle-même : EntityManager::wrapInTransaction()
      * ferme l'EntityManager dans son bloc finally dès qu'une exception le traverse (voir
      * EntityManager::wrapInTransaction()), ce qui rendrait tout audit ultérieur
      * impossible sur ce même EntityManager. calculate()/recalculate() restent donc dans
@@ -264,37 +572,12 @@ final class FinancialCalculationService
      *
      * @param FinancialCalculationAnomaly[]|null $anomaliesOut renseigné uniquement en cas d'échec
      */
-    private function buildAndPersist(Mission $mission, User $actor, int $version, ?array &$anomaliesOut): ?FinancialCalculation
+    private function buildAndPersist(Mission $mission, User $actor, int $version, ?array &$anomaliesOut, ?FinancialCalculation $supplementOf = null): ?FinancialCalculation
     {
-        $effectiveAt = $this->resolveEffectiveAt($mission);
-
-        /** @var FinancialCalculationAnomaly[] $anomalies */
-        $anomalies = [];
-        $lineSpecs = [];
-
-        foreach ($mission->getInterventions() as $intervention) {
-            $spec = $this->resolveFirmInterventionLine($intervention, $effectiveAt, $anomalies);
-            if ($spec !== null) {
-                $lineSpecs[] = $spec;
-            }
-        }
-
-        foreach ($mission->getMaterialLines() as $materialLine) {
-            $spec = $this->resolveFirmMaterialLine($materialLine, $effectiveAt, $anomalies);
-            if ($spec !== null) {
-                $lineSpecs[] = $spec;
-            }
-        }
-
-        $instrumentist = $mission->getInstrumentist();
-        if ($mission->getType() === MissionType::CONSULTATION) {
-            $spec = $this->resolveInstrumentistConsultationLine($instrumentist, $effectiveAt, $anomalies);
-        } else {
-            $spec = $this->resolveInstrumentistHourlyLine($mission, $instrumentist, $effectiveAt, $anomalies);
-        }
-        if ($spec !== null) {
-            $lineSpecs[] = $spec;
-        }
+        $evaluation = $this->evaluate($mission, $supplementOf !== null);
+        $effectiveAt = $evaluation->effectiveAt;
+        $anomalies = $evaluation->anomalies;
+        $lineSpecs = $evaluation->lineSpecs;
 
         if (count($anomalies) > 0) {
             $anomaliesOut = $anomalies;
@@ -316,6 +599,8 @@ final class FinancialCalculationService
         $calculation->setEffectiveAt($effectiveAt);
         $calculation->setCalculatedAt(new \DateTimeImmutable());
         $calculation->setCalculatedBy($actor);
+        $calculation->setInstrumentistHoursPending($evaluation->instrumentistHoursPending);
+        $calculation->setSupplementOf($supplementOf);
 
         foreach ($lineSpecs as $spec) {
             $line = $this->hydrateLine($spec);
@@ -342,6 +627,12 @@ final class FinancialCalculationService
         $firm = $intervention->getPrimaryFirm();
         $interventionType = $intervention->getInterventionType();
 
+        // D-178 — « Aucune firme » explicitement enregistré : aucune prestation de firme, donc
+        // aucune ligne firme et aucune anomalie (son matériel garde sa propre firme). Une firme
+        // simplement absente reste l'anomalie MISSING_PRIMARY_FIRM.
+        if ($firm === null && $intervention->isWithoutFirm()) {
+            return null;
+        }
         if ($firm === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_PRIMARY_FIRM',
@@ -395,12 +686,28 @@ final class FinancialCalculationService
             return null;
         }
 
-        $rule = $this->pricingRuleResolver->resolveInterventionFee($firm, $interventionType, $effectiveAt, $selectedChoiceOption);
+        try {
+            $rule = $this->pricingRuleResolver->resolveInterventionFee($firm, $interventionType, $effectiveAt, $selectedChoiceOption);
+        } catch (PricingRuleConflictException $conflict) {
+            // D-138 — tarifs contradictoires : jamais un choix arbitraire, une anomalie.
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'CONFLICTING_FIRM_INTERVENTION_RATE',
+                $conflict->getMessage(),
+                ['missionInterventionId' => $intervention->getId(), 'firmId' => $firm->getId(), 'interventionTypeId' => $interventionType->getId(),
+                    'choiceOptionId' => $selectedChoiceOption?->getId(), 'conflictingRules' => $conflict->rulesSnapshot()],
+            );
+            return null;
+        }
         if ($rule === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_FIRM_INTERVENTION_RATE',
                 sprintf('No active INTERVENTION_FEE PricingRule for firm=%d, interventionType=%d at %s.', $firm->getId(), $interventionType->getId(), $effectiveAt->format('Y-m-d')),
-                ['missionInterventionId' => $intervention->getId(), 'firmId' => $firm->getId(), 'interventionTypeId' => $interventionType->getId()],
+                // D-141 — contexte explicatif audité : un forfait était attendu (feeApplicable),
+                // la prestation était-elle configurée, et quelles règles existaient pour cette
+                // cible hors de la date (période de validité, règle désactivée).
+                ['missionInterventionId' => $intervention->getId(), 'firmId' => $firm->getId(), 'interventionTypeId' => $interventionType->getId(),
+                    'choiceOptionId' => $selectedChoiceOption?->getId(), 'feeApplicable' => true, 'offeringConfigured' => $policy->offeringConfigured,
+                    'targetRules' => PricingRuleResolver::snapshotRules($this->pricingRuleResolver->interventionFeeRulesFor($firm, $interventionType, $selectedChoiceOption))],
             );
             return null;
         }
@@ -476,12 +783,25 @@ final class FinancialCalculationService
             return null;
         }
 
-        $rule = $this->pricingRuleResolver->resolveMaterialFee($item, $effectiveAt);
+        try {
+            $rule = $this->pricingRuleResolver->resolveMaterialFee($item, $effectiveAt);
+        } catch (PricingRuleConflictException $conflict) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'CONFLICTING_FIRM_MATERIAL_RATE',
+                $conflict->getMessage(),
+                ['materialLineId' => $materialLine->getId(), 'materialItemId' => $item->getId(), 'firmId' => $firm->getId(),
+                    'conflictingRules' => $conflict->rulesSnapshot()],
+            );
+            return null;
+        }
         if ($rule === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_FIRM_MATERIAL_RATE',
                 sprintf('No active MATERIAL_FEE PricingRule for materialItem=%d at %s.', $item->getId(), $effectiveAt->format('Y-m-d')),
-                ['materialLineId' => $materialLine->getId(), 'materialItemId' => $item->getId(), 'firmId' => $firm->getId()],
+                ['materialLineId' => $materialLine->getId(), 'materialItemId' => $item->getId(), 'firmId' => $firm->getId(),
+                    'missionInterventionId' => $materialLine->getMissionIntervention()?->getId(),
+                    'billingStatus' => $item->getBillingStatus()->value,
+                    'targetRules' => PricingRuleResolver::snapshotRules($this->pricingRuleResolver->materialFeeRulesFor($item))],
             );
             return null;
         }
@@ -604,9 +924,38 @@ final class FinancialCalculationService
      *
      * @param FinancialCalculationAnomaly[] &$anomalies
      */
-    private function resolveInstrumentistHourlyLine(Mission $mission, User $instrumentist, \DateTimeImmutable $effectiveAt, array &$anomalies): ?array
+    private function resolveInstrumentistHourlyLine(Mission $mission, User $instrumentist, \DateTimeImmutable $effectiveAt, array &$anomalies, bool &$hoursPending): ?array
     {
         $duration = $this->missionExecutionService->resolveEffectiveDuration($mission);
+
+        // D-143 (intégration) — une prestation n'est JAMAIS valorisée sur les seuls horaires
+        // planifiés : aucune durée n'est fabriquée. D-171 — l'absence d'heures ne bloque plus la
+        // facturation firme : la prestation horaire n'est simplement pas valorisée, le calcul
+        // est marqué « heures instrumentiste en attente » (recalcul, ou calcul complémentaire
+        // si la facture firme a déjà verrouillé ce calcul, une fois les heures déclarées).
+        if ($duration->source === EffectiveDurationSource::PLANNED) {
+            $hoursPending = true;
+            return null;
+        }
+
+        // D-156 — prestation regroupée multi-salles : la présence réelle unique est valorisée
+        // UNE fois, puis ventilée entre les missions (heures ET centimes) — jamais deux fois.
+        if ($duration->source === EffectiveDurationSource::PRESENCE_SHARE) {
+            return $this->resolveSharedPresenceHourlyLine($mission, $instrumentist, $effectiveAt, $duration->minutes, $anomalies);
+        }
+
+        // D-156 — anciennes heures propres de plusieurs missions d'une même prestation (saisies
+        // avant le regroupement) : leur somme compterait deux fois des heures simultanées.
+        $siblingsWithOwnHours = $this->siblingsWithOwnHours($mission);
+        if ($siblingsWithOwnHours !== []) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'OVERLAPPING_HOURS_IN_PRESTATION',
+                sprintf('Mission #%d and simultaneous mission(s) #%s of the same multi-room prestation each carry their own actual hours: declare the shared presence once before valuing.', $mission->getId(), implode(', #', $siblingsWithOwnHours)),
+                ['missionId' => $mission->getId(), 'siblingMissionIds' => $siblingsWithOwnHours],
+            );
+            return null;
+        }
+
         if ($duration->minutes <= 0) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'INVALID_EFFECTIVE_DURATION',
@@ -616,7 +965,12 @@ final class FinancialCalculationService
             return null;
         }
 
-        $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::HOURLY_RATE, $effectiveAt);
+        try {
+            $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::HOURLY_RATE, $effectiveAt);
+        } catch (InstrumentistRateConflictException $conflict) {
+            $anomalies[] = $this->instrumentistRateConflictAnomaly($instrumentist, InstrumentistRateType::HOURLY_RATE, $conflict);
+            return null;
+        }
         if ($rate === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_INSTRUMENTIST_RATE',
@@ -660,10 +1014,197 @@ final class FinancialCalculationService
         ];
     }
 
+    /**
+     * D-156 — ligne horaire d'une mission liée à une présence partagée.
+     *
+     * - la part enregistrée doit être celle que la présence ACTUELLE produit (sinon
+     *   SHARED_PRESENCE_STALE : jamais valoriser une ventilation obsolète) ;
+     * - le montant de la présence entière est calculé UNE fois (durée totale × tarif,
+     *   arrondi au centime) puis réparti au centime près entre les missions (plus grand
+     *   reste) : la somme des lignes du groupe vaut exactement ce montant, sans écart ;
+     * - une mission sœur dont le calcul est déjà approuvé/verrouillé sur une autre révision
+     *   de la présence bloque (SHARED_PRESENCE_SETTLED) : aucune donnée arrêtée n'est
+     *   contredite en silence, la régularisation reste explicite.
+     *
+     * @param FinancialCalculationAnomaly[] &$anomalies
+     */
+    private function resolveSharedPresenceHourlyLine(Mission $mission, User $instrumentist, \DateTimeImmutable $effectiveAt, int $storedShare, array &$anomalies): ?array
+    {
+        $presence = $mission->getExecution()->getPresence();
+        $members = $presence->getMissions();
+        $shares = WorkedPresenceService::sharesFor($presence, $members);
+        $missionId = (int) $mission->getId();
+
+        if ($shares === null || !array_key_exists($missionId, $shares) || $shares[$missionId] !== $storedShare) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'SHARED_PRESENCE_STALE',
+                sprintf('The imputed share of mission #%d no longer matches its shared presence #%d: the presence must be saved again before valuing.', $missionId, $presence->getId()),
+                ['missionId' => $missionId, 'presenceId' => $presence->getId(), 'storedMinutes' => $storedShare, 'expectedMinutes' => $shares[$missionId] ?? null],
+            );
+            return null;
+        }
+
+        // Part nulle (mission entièrement couverte par ses sœurs mieux classées, ou présence
+        // plus courte que prévu) : rien à valoriser ici, la présence est intégralement payée
+        // sur les autres missions (voir leur snapshot imputedMinutesByMission). Aucune ligne
+        // de 0 minute n'est créée (chk_fcl_duration_minutes_positive).
+        if ($storedShare === 0) {
+            return null;
+        }
+
+        $settled = $this->settledSiblingLines($mission, $members);
+        foreach ($settled as $line) {
+            if ((int) ($line->getSnapshot()['presenceRevision'] ?? -1) !== $presence->getRevision()) {
+                $anomalies[] = new FinancialCalculationAnomaly(
+                    'SHARED_PRESENCE_SETTLED',
+                    sprintf('A simultaneous mission (#%d) of the same prestation is already approved or locked on another version of the shared presence #%d: regularise it explicitly first.', $line->getFinancialCalculation()->getMission()->getId(), $presence->getId()),
+                    ['missionId' => $missionId, 'presenceId' => $presence->getId(), 'settledMissionId' => $line->getFinancialCalculation()->getMission()->getId()],
+                );
+                return null;
+            }
+        }
+
+        try {
+            $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::HOURLY_RATE, $effectiveAt);
+        } catch (InstrumentistRateConflictException $conflict) {
+            $anomalies[] = $this->instrumentistRateConflictAnomaly($instrumentist, InstrumentistRateType::HOURLY_RATE, $conflict);
+            return null;
+        }
+        if ($rate === null) {
+            $anomalies[] = new FinancialCalculationAnomaly(
+                'MISSING_INSTRUMENTIST_RATE',
+                sprintf('No active HOURLY_RATE InstrumentistRate for instrumentist=%d at %s.', $instrumentist->getId(), $effectiveAt->format('Y-m-d')),
+                ['instrumentistId' => $instrumentist->getId(), 'rateType' => InstrumentistRateType::HOURLY_RATE->value],
+            );
+            return null;
+        }
+
+        $totalMinutes = (int) $presence->getTotalMinutes();
+        // Same rounding as a single hourly line (hours to 4 decimals × rate, to the cent),
+        // applied ONCE to the whole presence.
+        $presenceTotalCents = (int) round((float) $this->roundMoney(round($totalMinutes / 60, 4) * (float) $rate->getAmount()) * 100);
+        $order = PresenceAllocator::rankOrder(PrestationGrouping::allocationMembers($members));
+        $cents = PresenceAllocator::allocateCents($presenceTotalCents, $shares, $order);
+        $hours = round($storedShare / 60, 4);
+        $memberIds = PrestationGrouping::ids($members);
+
+        return [
+            'beneficiaryType' => FinancialBeneficiaryType::INSTRUMENTIST,
+            'beneficiaryFirm' => null,
+            'beneficiaryInstrumentist' => $instrumentist,
+            'lineType' => FinancialLineType::INSTRUMENTIST_HOURLY,
+            'sourceType' => FinancialLineSourceType::MISSION_EXECUTION,
+            'missionIntervention' => null,
+            'materialLine' => null,
+            'pricingRule' => null,
+            'instrumentistRate' => $rate,
+            'descriptionSnapshot' => sprintf('Prestation horaire (part multi-salles) — %s', $this->displayName($instrumentist)),
+            'quantity' => number_format($hours, 4, '.', ''),
+            'durationMinutes' => $storedShare,
+            'unitAmount' => $rate->getAmount(),
+            'totalAmount' => number_format($cents[$missionId] / 100, 2, '.', ''),
+            'currency' => $rate->getCurrency(),
+            'effectiveAt' => $effectiveAt,
+            'snapshot' => [
+                'instrumentistRateId' => $rate->getId(),
+                'rateType' => $rate->getRateType()->value,
+                'validFrom' => $rate->getValidFrom()->format('Y-m-d'),
+                'validTo' => $rate->getValidTo()?->format('Y-m-d'),
+                'instrumentistId' => $instrumentist->getId(),
+                'instrumentistNameSnapshot' => $this->displayName($instrumentist),
+                'durationMinutes' => $storedShare,
+                'effectiveDurationSource' => EffectiveDurationSource::PRESENCE_SHARE->value,
+                'presenceId' => $presence->getId(),
+                'presenceRevision' => $presence->getRevision(),
+                'presenceActualStartAt' => $presence->getActualStartAt()?->format(\DateTimeInterface::ATOM),
+                'presenceActualEndAt' => $presence->getActualEndAt()?->format(\DateTimeInterface::ATOM),
+                'presenceTotalMinutes' => $totalMinutes,
+                'presenceTotalAmount' => number_format($presenceTotalCents / 100, 2, '.', ''),
+                'prestationMissionIds' => $memberIds,
+                'imputedMinutesByMission' => $shares,
+                'imputedAmountByMission' => array_map(static fn (int $c) => number_format($c / 100, 2, '.', ''), $cents),
+                'allocationRule' => PresenceAllocator::RULE,
+            ],
+        ];
+    }
+
+    /**
+     * Lignes horaires approuvées/verrouillées des missions sœurs d'une présence.
+     *
+     * @param list<Mission> $members
+     * @return FinancialCalculationLine[]
+     */
+    private function settledSiblingLines(Mission $mission, array $members): array
+    {
+        $siblings = array_values(array_filter($members, static fn (Mission $m) => $m->getId() !== $mission->getId()));
+        if ($siblings === []) {
+            return [];
+        }
+
+        return $this->em->createQueryBuilder()
+            ->select('l', 'c')
+            ->from(FinancialCalculationLine::class, 'l')
+            ->join('l.financialCalculation', 'c')
+            ->andWhere('c.mission IN (:siblings)')
+            ->andWhere('c.status IN (:settled)')
+            ->andWhere('l.lineType = :hourly')
+            ->setParameter('siblings', $siblings)
+            ->setParameter('settled', [FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED])
+            ->setParameter('hourly', FinancialLineType::INSTRUMENTIST_HOURLY)
+            ->getQuery()
+            ->getResult();
+    }
+
+    /**
+     * D-156 — ids des missions de la même prestation dynamique qui portent, comme $mission,
+     * leurs propres heures réelles (aucune présence partagée) : situation historique où une
+     * même heure simultanée serait comptée deux fois.
+     *
+     * @return list<int>
+     */
+    private function siblingsWithOwnHours(Mission $mission): array
+    {
+        if (!PrestationEncodingService::hasOwnHours($mission)) {
+            return [];
+        }
+        $ids = [];
+        foreach ($this->prestationGroups->groupOf($mission) as $sibling) {
+            if ($sibling->getId() !== $mission->getId() && PrestationEncodingService::hasOwnHours($sibling)) {
+                $ids[] = (int) $sibling->getId();
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * D-156 — une ligne horaire calculée sur une présence partagée n'est approuvable que si
+     * la présence n'a pas changé depuis (même révision) : sinon le calcul doit être refait.
+     * La présence est verrouillée pour sérialiser l'approbation avec une correction d'heures.
+     */
+    private function assertSharedPresenceStillCurrent(FinancialCalculation $calculation): void
+    {
+        foreach ($calculation->getLines() as $line) {
+            $snapshot = $line->getSnapshot();
+            if ($line->getLineType() !== FinancialLineType::INSTRUMENTIST_HOURLY || !isset($snapshot['presenceId'])) {
+                continue;
+            }
+            $presence = $this->em->find(WorkedPresence::class, (int) $snapshot['presenceId'], LockMode::PESSIMISTIC_WRITE);
+            if ($presence === null || $presence->getRevision() !== (int) $snapshot['presenceRevision']) {
+                throw new FinancialCalculationIneligibleException('The shared presence of this multi-room prestation changed since this calculation: recalculate it before approving.');
+            }
+        }
+    }
+
     /** @param FinancialCalculationAnomaly[] &$anomalies */
     private function resolveInstrumentistConsultationLine(User $instrumentist, \DateTimeImmutable $effectiveAt, array &$anomalies): ?array
     {
-        $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::CONSULTATION_FEE, $effectiveAt);
+        try {
+            $rate = $this->instrumentistRateResolver->resolve($instrumentist, InstrumentistRateType::CONSULTATION_FEE, $effectiveAt);
+        } catch (InstrumentistRateConflictException $conflict) {
+            $anomalies[] = $this->instrumentistRateConflictAnomaly($instrumentist, InstrumentistRateType::CONSULTATION_FEE, $conflict);
+            return null;
+        }
         if ($rate === null) {
             $anomalies[] = new FinancialCalculationAnomaly(
                 'MISSING_INSTRUMENTIST_RATE',
@@ -744,6 +1285,15 @@ final class FinancialCalculationService
     }
 
     /** §25 du lot — contenu minimal de chaque événement FINANCIAL_CALCULATION_*. */
+    private function instrumentistRateConflictAnomaly(User $instrumentist, InstrumentistRateType $rateType, InstrumentistRateConflictException $conflict): FinancialCalculationAnomaly
+    {
+        return new FinancialCalculationAnomaly(
+            'CONFLICTING_INSTRUMENTIST_RATE',
+            $conflict->getMessage(),
+            ['instrumentistId' => $instrumentist->getId(), 'rateType' => $rateType->value, 'conflictingRules' => $conflict->ratesSnapshot()],
+        );
+    }
+
     private function summaryPayload(FinancialCalculation $calculation): array
     {
         return [
@@ -752,6 +1302,8 @@ final class FinancialCalculationService
             'status' => $calculation->getStatus()->value,
             'effectiveAt' => $calculation->getEffectiveAt()?->format('Y-m-d'),
             'totalsByCurrency' => $calculation->totalsByCurrency(),
+            'instrumentistHoursPending' => $calculation->isInstrumentistHoursPending(),
+            'supplementOfCalculationId' => $calculation->getSupplementOf()?->getId(),
         ];
     }
 }

@@ -62,7 +62,7 @@ final class MissionHoursReminderControllerTest extends WebTestCase
 
             foreach ($this->createdMissionIds as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
 
@@ -231,16 +231,22 @@ final class MissionHoursReminderControllerTest extends WebTestCase
         $handler($message);
 
         // Aucun abonnement Push en test → Push tracé non livré, puis repli email tracé et lié.
+        // Intégration H1–H8 : via NotificationDispatcher, le canal in-app est lui aussi tracé
+        // (SKIPPED / NOT_APPLICABLE — ce rappel n'a pas d'élément in-app, comme en D-136).
         $this->em->clear();
         $notifications = $this->em->getRepository(\App\Entity\OutboundNotification::class)->findBy(
             ['recipientUser' => $instr->getId(), 'mission' => $mission->getId()],
             ['id' => 'ASC'],
         );
-        self::assertCount(2, $notifications);
-        self::assertSame(['MISSION_HOURS_REMINDER', 'MISSION_HOURS_REMINDER'], array_map(static fn ($n) => $n->getNotificationType(), $notifications));
-        self::assertSame(\App\Enum\OutboundNotificationChannel::PUSH, $notifications[0]->getChannel());
-        self::assertSame(\App\Enum\OutboundNotificationChannel::EMAIL, $notifications[1]->getChannel());
-        self::assertSame($notifications[0]->getId(), $notifications[1]->getFallbackOf()?->getId());
+        $byChannel = [];
+        foreach ($notifications as $n) {
+            $byChannel[$n->getChannel()->value] = $n;
+        }
+        self::assertCount(3, $notifications);
+        self::assertSame(['MISSION_HOURS_REMINDER'], array_values(array_unique(array_map(static fn ($n) => $n->getNotificationType(), $notifications))));
+        self::assertSame(\App\Enum\OutboundNotificationStatus::SKIPPED, $byChannel['IN_APP']->getStatus());
+        self::assertSame(\App\Enum\OutboundNotificationStatus::SKIPPED, $byChannel['PUSH']->getStatus());
+        self::assertSame($byChannel['PUSH']->getId(), $byChannel['EMAIL']->getFallbackOf()?->getId());
 
         /** @var InMemoryTransport $transport */
         $transport = static::getContainer()->get('messenger.transport.async');
@@ -250,11 +256,11 @@ final class MissionHoursReminderControllerTest extends WebTestCase
         ));
         self::assertCount(1, $emails);
         self::assertSame($instr->getEmail(), $emails[0]->to);
-        self::assertSame('SurgicalHub — Heures réelles à renseigner', $emails[0]->subject);
+        self::assertSame('SurgicalHub — Heures prestées à renseigner', $emails[0]->subject);
 
         // Rendu réel du gabarit : message explicite sur les heures, aucune donnée patient.
         $html = static::getContainer()->get('twig')->render($emails[0]->htmlTemplate, $emails[0]->context);
-        self::assertStringContainsString('heures réellement prestées', $html);
+        self::assertStringContainsString('vos heures prestées', $html);
         self::assertStringContainsString("/app/i/missions/{$mission->getId()}", $html);
         self::assertStringNotContainsString('finaliser', $html, "ce n'est pas la relance d'encodage");
     }

@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Service\BillingDocumentMailer;
 use App\Dto\CorrectionLineInput;
 use App\Entity\Firm;
 use App\Entity\FirmInvoice;
@@ -16,7 +17,6 @@ use App\Service\DocumentPaymentService;
 use App\Service\FinancialCorrectionService;
 use App\Service\FirmInvoiceService;
 use App\Service\FirmBilling\FirmBillingWorklistService;
-use App\Service\NotificationService;
 use App\Service\PdfService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -30,12 +30,12 @@ use Symfony\Component\Security\Http\Attribute\CurrentUser;
 class FirmInvoiceController extends AbstractController
 {
     public function __construct(
+        private readonly BillingDocumentMailer $billingMailer,
         private readonly FirmInvoiceService $invoiceService,
         private readonly DocumentPaymentService $paymentService,
         private readonly FinancialCorrectionService $correctionService,
         private readonly PdfService $pdfService,
         private readonly EntityManagerInterface $em,
-        private readonly NotificationService $notificationService,
         private readonly FirmBillingWorklistService $worklist,
     ) {}
 
@@ -333,8 +333,38 @@ class FirmInvoiceController extends AbstractController
             return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => $e->getMessage()]], 409);
         }
 
-        $pdf = $this->pdfService->generateFromTemplate('pdf/firm_invoice.html.twig', ['invoice' => $invoice]);
-        $this->notificationService->sendFirmInvoiceEmail($invoice, $emailTo, $emailCc, $pdf);
+        // H5b (D-132) — frozen PDF + FIRM_INVOICE_SENT + traced delivery (BillingDocumentMailer).
+        $this->billingMailer->sendFirmInvoiceEmail($invoice, $emailTo, $emailCc, $actor);
+
+        return $this->json($this->serializeInvoiceDetail($invoice));
+    }
+
+    /**
+     * H5b (D-132) — send an issued invoice again (e.g. after a FAILED delivery, or on request):
+     * the SAME frozen PDF as the first send (same sha256), a FIRM_INVOICE_RESENT event and a new
+     * traced delivery. No status change. Default recipients: the snapshot of the first send.
+     */
+    #[Route('/{id}/resend', name: 'api_firm_invoices_resend', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function resend(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $invoice = $this->em->find(FirmInvoice::class, $id);
+        if (!$invoice) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Facture introuvable.']], 404);
+        }
+        if (!in_array($invoice->getStatus(), [\App\Enum\InvoiceStatus::SENT, \App\Enum\InvoiceStatus::PAID], true)) {
+            return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => 'Seule une facture déjà envoyée peut être renvoyée.']], 409);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $emailTo = $data['emailTo'] ?? $invoice->getBillingEmailTo();
+        $emailCc = $data['emailCc'] ?? $invoice->getBillingEmailCc() ?? [];
+        if (!$emailTo) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'emailTo requis.']], 422);
+        }
+
+        $this->billingMailer->sendFirmInvoiceEmail($invoice, $emailTo, $emailCc, $actor, resend: true);
 
         return $this->json($this->serializeInvoiceDetail($invoice));
     }

@@ -9,6 +9,10 @@ use App\Dto\Request\Response\UserSlimDto;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Service\Prestation\MissionEncodingDataGuard;
+use App\Service\Prestation\MissionListAnnotator;
+use App\Service\Prestation\PrestationGroupResolver;
+use Symfony\Component\Clock\Clock;
 
 final class MissionMapper
 {
@@ -16,9 +20,44 @@ final class MissionMapper
         private readonly MissionActionsService $actions,
         private readonly PlanningCoverageService $coverage,
         private readonly EncodingReminderService $reminders,
+        // D-151 — optional only so plain unit tests can build the mapper; always autowired.
+        private readonly ?MissionAssignmentService $assignments = null,
+        // D-171 — optional for the same reason.
+        private readonly ?EncodingTakeoverService $takeovers = null,
+        // D-172 — optional for the same reason.
+        private readonly ?MissionEncodingOverviewService $encodingOverview = null,
+        // Complément D-156 — optional for the same reason.
+        private readonly ?PrestationGroupResolver $prestationGroups = null,
+        // D-181 — optional for the same reason.
+        private readonly ?MissionReassignmentService $relays = null,
     ) {}
 
-    public function toListDto(Mission $m, User $viewer): MissionListDto
+    /**
+     * D-172 — a page of missions: the managers' encoding block is computed once for the page
+     * (fixed number of queries), never per mission.
+     *
+     * D-156 — $annotations (MissionListAnnotator::annotate(), also per page) carry each
+     * mission's prestation and real schedule conflicts, keyed by mission id.
+     *
+     * @param list<Mission> $missions
+     * @param array<int, array{prestation: ?array<string,mixed>, scheduleConflictMissionIds: list<int>}> $annotations
+     * @return list<MissionListDto>
+     */
+    public function toListDtos(array $missions, User $viewer, array $annotations = []): array
+    {
+        $overview = self::isManager($viewer) && $this->encodingOverview !== null
+            ? $this->encodingOverview->overviewOf($missions, Clock::get()->now())
+            : [];
+
+        return array_map(fn (Mission $m) => $this->toListDto($m, $viewer, $overview[(int) $m->getId()] ?? null, $annotations[(int) $m->getId()] ?? null), $missions);
+    }
+
+    /**
+     * @param array<string,mixed>|null $encoding D-172 — see toListDtos()
+     * @param array{prestation: ?array<string,mixed>, scheduleConflictMissionIds: list<int>}|null $annotation
+     *        D-156 — MissionListAnnotator, calculé par page (jamais par mission)
+     */
+    public function toListDto(Mission $m, User $viewer, ?array $encoding = null, ?array $annotation = null): MissionListDto
     {
         return new MissionListDto(
             id: (int) $m->getId(),
@@ -32,15 +71,37 @@ final class MissionMapper
             status: (string) $m->getStatus()?->value,
             surgeon: $this->toUserSlim($m->getSurgeon()),
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
-            allowedActions: $this->actions->allowedActions($m, $viewer),
+            allowedActions: $this->actions->allowedActions($m, $viewer, (int) ($annotation['prestation']['size'] ?? 1)),
             covered: $this->coverage->isCovered($m),
             targetedOffer: $this->targetedOffer($m),
+            encoding: $encoding,
+            roomLabel: $m->getRoomLabel(),
+            prestation: $annotation['prestation'] ?? null,
+            scheduleConflictMissionIds: $annotation['scheduleConflictMissionIds'] ?? [],
+            // D-182 — why 'cancel' is missing from allowedActions: the planning shows the action
+            // disabled with this reason, never an operation refused afterwards.
+            cancellation: self::isManager($viewer) ? $this->cancellation($m, (int) ($annotation['prestation']['size'] ?? 1)) : null,
         );
+    }
+
+    private static function isManager(User $user): bool
+    {
+        return in_array('ROLE_MANAGER', $user->getRoles(), true) || in_array('ROLE_ADMIN', $user->getRoles(), true);
     }
 
     public function toDetailDto(Mission $m, User $viewer): MissionDetailDto
     {
         $lastManualReminder = $this->reminders->lastManualReminder($m);
+        $isManagerViewer = in_array('ROLE_MANAGER', $viewer->getRoles(), true) || in_array('ROLE_ADMIN', $viewer->getRoles(), true);
+        // D-143 — historique des relances automatiques (J+1/J+2/J+4), manager uniquement.
+        $automaticReminders = $isManagerViewer ? $this->reminders->reminderHistory($m) : [];
+        $lastAutomatic = $automaticReminders !== [] ? $automaticReminders[array_key_last($automaticReminders)] : null;
+        // D-171 — reprise manager : révision lue, confirmation, dernière reprise, heures en attente.
+        $completeAndValidate = $isManagerViewer
+            && MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($m, Clock::get()->now()) === null;
+        $seesTakeover = $isManagerViewer || ($m->getInstrumentist() !== null && $m->getInstrumentist()->getId() === $viewer->getId());
+        // Complément D-156 — la prestation multi-salles de la mission (une requête) : révision et résumé.
+        $group = $this->prestationGroups?->groupOf($m) ?? [$m];
 
         return new MissionDetailDto(
             id: (int) $m->getId(),
@@ -54,16 +115,174 @@ final class MissionMapper
             status: (string) $m->getStatus()?->value,
             surgeon: $this->toUserSlim($m->getSurgeon()),
             instrumentist: $m->getInstrumentist() ? $this->toUserSlim($m->getInstrumentist()) : null,
-            allowedActions: $this->actions->allowedActions($m, $viewer),
+            allowedActions: $this->actions->allowedActions($m, $viewer, count($group)),
             noMaterialComment: $m->getNoMaterialComment(),
             submittedWithoutMaterial: $m->isSubmittedWithoutMaterial(),
             covered: $this->coverage->isCovered($m),
-            automaticReminderSentAt: $m->getEncodingReminderSentAt()?->format(\DateTimeInterface::ATOM),
+            // D-143 — dernière relance automatique (historique mission_encoding_reminder) ;
+            // repli sur l'ancien marqueur D-083 pour une mission relancée avant D-143.
+            automaticReminderSentAt: $lastAutomatic['sentAt'] ?? $m->getEncodingReminderSentAt()?->format(\DateTimeInterface::ATOM),
             nextAutomaticReminderAt: $this->reminders->nextAutomaticReminderAt($m),
             lastManualReminderAt: $lastManualReminder !== null ? $lastManualReminder['at'] : null,
             lastManualReminderByName: $lastManualReminder !== null ? $lastManualReminder['byName'] : null,
+            lastManualReminderChannel: $lastManualReminder !== null ? $lastManualReminder['channel'] : null,
+            automaticReminders: $automaticReminders,
+            submittedAt: $m->getSubmittedAt()?->format(\DateTimeInterface::ATOM),
             targetedOffer: $this->targetedOffer($m),
+            encodingCorrectionBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::reopenBlockedReason($m) : null,
+            currentAssignment: $isManagerViewer || $m->getSurgeon()?->getId() === $viewer->getId() ? $this->currentAssignment($m) : null,
+            myAssignmentStatus: $this->myAssignmentStatus($m, $viewer),
+            encodingCorrectionFinancialNotice: $isManagerViewer ? MissionEncodingCorrectionPolicy::financialImpactNotice($m) : null,
+            executedWithoutInstrumentist: $m->isExecutedWithoutInstrumentist() ? [
+                'declaredAt'     => $m->getExecutedWithoutInstrumentistAt()?->format(\DateTimeInterface::ATOM),
+                'declaredByName' => $m->getExecutedWithoutInstrumentistBy() !== null
+                    ? trim(($m->getExecutedWithoutInstrumentistBy()->getFirstname() ?? '') . ' ' . ($m->getExecutedWithoutInstrumentistBy()->getLastname() ?? ''))
+                    : null,
+            ] : null,
+            encodingValidationBlockedReason: $isManagerViewer ? MissionEncodingCorrectionPolicy::validationBlockedReason($m, Clock::get()->now()) : null,
+            // Aussi pour « Valider l'encodage » (SUBMITTED) : la validation porte sur ce que le manager a relu.
+            // Complément D-156 — d'une prestation multi-salles : la révision de TOUTE la prestation.
+            encodingRevision: $completeAndValidate || ($isManagerViewer && $m->getStatus() === \App\Enum\MissionStatus::SUBMITTED)
+                ? $this->takeovers?->prestationRevision($group)
+                : null,
+            encodingTakeover: $completeAndValidate && MissionEncodingCorrectionPolicy::isTakeover($m) ? [
+                'instrumentistName' => trim(($m->getInstrumentist()?->getFirstname() ?? '') . ' ' . ($m->getInstrumentist()?->getLastname() ?? '')),
+                'hoursMissing'      => MissionEncodingCorrectionPolicy::hoursMissing($m),
+            ] : null,
+            lastEncodingTakeover: $seesTakeover ? $this->takeovers?->lastTakeover($m) : null,
+            hoursPendingAfterValidation: $seesTakeover && MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($m),
+            encoding: $isManagerViewer ? $this->encodingOverview?->overviewOfMission($m, Clock::get()->now()) : null,
+            roomLabel: $m->getRoomLabel(),
+            prestation: MissionListAnnotator::summary($group),
+            reassignment: $isManagerViewer ? $this->reassignment($m) : null,
+            relay: $this->relayLinks($m),
+            // D-182 — with its multi-room prestation (D-156), as the guard does.
+            cancellation: $isManagerViewer ? $this->cancellation($m, count($group)) + [
+                'hasEncodingData' => MissionEncodingDataGuard::hasEncodingData($m),
+            ] : null,
+            replacement: $this->replacementLinks($m),
         );
+    }
+
+    /**
+     * D-182 — MissionCancellationPolicy as served to the manager: why the mission cannot be
+     * cancelled (the action is then disabled), else the encoding correction its cancellation
+     * performs first (submitted / validated).
+     *
+     * @return array{blockedReason: ?array{code: string, message: string}, correction: ?array{action: string, message: string}}
+     */
+    private function cancellation(Mission $m, int $prestationSize): array
+    {
+        $blocked = MissionCancellationPolicy::blockedReason($m, $prestationSize);
+
+        return [
+            'blockedReason' => $blocked,
+            'correction'    => $blocked === null ? MissionCancellationPolicy::correction($m) : null,
+        ];
+    }
+
+    /** D-181 — see MissionDetailDto::$reassignment. */
+    private function reassignment(Mission $m): array
+    {
+        $window = MissionReassignmentPolicy::relayWindow($m);
+
+        return [
+            'modes'         => MissionReassignmentPolicy::modes($m, Clock::get()->now()),
+            'blockedReason' => MissionReassignmentPolicy::blockedReason($m),
+            'relayWindow'   => $window !== null ? [
+                'from' => $window['from']->format(\DateTimeInterface::ATOM),
+                'to'   => $window['to']->format(\DateTimeInterface::ATOM),
+            ] : null,
+        ];
+    }
+
+    /** D-182 — see MissionDetailDto::$replacement (one query, detail only). */
+    private function replacementLinks(Mission $m): ?array
+    {
+        $replaces = $this->relays?->replacedMissionIdsOf($m) ?? [];
+        if ($m->getReplacedBy() === null && $replaces === []) {
+            return null;
+        }
+
+        return ['replacedByMissionId' => $m->getReplacedBy()?->getId(), 'replacesMissionIds' => $replaces];
+    }
+
+    /** D-181 — see MissionDetailDto::$relay (one query, detail only). */
+    private function relayLinks(Mission $m): ?array
+    {
+        $relayIds = $this->relays?->relayMissionIdsOf($m) ?? [];
+        if ($m->getRelayOf() === null && $relayIds === []) {
+            return null;
+        }
+
+        return ['relayOfMissionId' => $m->getRelayOf()?->getId(), 'relayMissionIds' => $relayIds];
+    }
+
+    /**
+     * D-151 — what an instrumentist whose affectation ENDED may still see of the mission
+     * (MissionVoter::VIEW_FORMER_ASSIGNMENT): date, time, site, type, surgeon — nobody else's
+     * name, no action, no reason ("Affectation annulée").
+     */
+    public function toFormerAssigneeDetailDto(Mission $m): MissionDetailDto
+    {
+        return new MissionDetailDto(
+            id: (int) $m->getId(),
+            site: $this->toHospitalSlim($m->getSite()),
+            startAt: $m->getStartAt()?->format(\DateTimeInterface::ATOM),
+            endAt: $m->getEndAt()?->format(\DateTimeInterface::ATOM),
+            schedulePrecision: (string) $m->getSchedulePrecision()?->value,
+            type: (string) $m->getType()?->value,
+            status: (string) $m->getStatus()?->value,
+            surgeon: $this->toUserSlim($m->getSurgeon()),
+            instrumentist: null,
+            allowedActions: ['view'],
+            noMaterialComment: null,
+            submittedWithoutMaterial: null,
+            covered: false,
+            automaticReminderSentAt: null,
+            nextAutomaticReminderAt: null,
+            lastManualReminderAt: null,
+            lastManualReminderByName: null,
+            lastManualReminderChannel: null,
+            automaticReminders: [],
+            submittedAt: null,
+            myAssignmentStatus: 'ENDED',
+        );
+    }
+
+    /** @return array<string,mixed>|null */
+    private function currentAssignment(Mission $m): ?array
+    {
+        $current = $this->assignments?->findCurrent($m);
+        if ($current === null) {
+            return null;
+        }
+
+        $instrumentist = $current->getInstrumentist();
+        $name          = trim(($instrumentist->getFirstname() ?? '') . ' ' . ($instrumentist->getLastname() ?? ''));
+        $blocked       = MissionAssignmentRefusalPolicy::blockedReason($m, $current, Clock::get()->now());
+
+        return [
+            'id'                   => $current->getId(),
+            'instrumentist'        => ['id' => $instrumentist->getId(), 'name' => $name !== '' ? $name : $instrumentist->getEmail()],
+            'source'               => $current->getSource()->value,
+            'assignedAt'           => $current->getAssignedAt()->format(\DateTimeInterface::ATOM),
+            'refusalDeadlineAt'    => $current->getSource()->isVoluntaryAcceptance()
+                ? MissionAssignmentRefusalPolicy::deadline($current, $m)->format(\DateTimeInterface::ATOM)
+                : null,
+            'refusable'            => $blocked === null,
+            'refusalBlockedReason' => $blocked,
+            'reviewRequestedAt'    => $current->getReviewRequestedAt()?->format(\DateTimeInterface::ATOM),
+        ];
+    }
+
+    private function myAssignmentStatus(Mission $m, User $viewer): ?string
+    {
+        if (!in_array('ROLE_INSTRUMENTIST', $viewer->getRoles(), true) || $m->getInstrumentist()?->getId() === $viewer->getId()) {
+            return null;
+        }
+
+        return $this->assignments?->hasEndedAffectationOf($m, $viewer) ? 'ENDED' : null;
     }
 
     /**
@@ -88,6 +307,11 @@ final class MissionMapper
             'instrumentist' => $target !== null ? ['id' => $target->getId(), 'name' => $name !== '' ? $name : $target->getEmail()] : null,
             'offeredAt'     => $publication->getPublishedAt()?->format(\DateTimeInterface::ATOM),
             'declinedAt'    => $publication->getDeclinedAt()?->format(\DateTimeInterface::ATOM),
+            // D-177 — exclusive room take-over priority: deadline, and whether the mission
+            // starts before it (manager alert, Cas D). Null / false for a plain D-125 request.
+            'priority'           => $publication->isPriority(),
+            'expiresAt'          => $publication->getExpiresAt()?->format(\DateTimeInterface::ATOM),
+            'startsBeforeExpiry' => RoomTakeoverPriorityService::startsBeforeExpiry($m, $publication),
         ];
     }
 

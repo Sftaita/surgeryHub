@@ -25,6 +25,7 @@ use App\MessageHandler\AbsenceImpactSummaryMessageHandler;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
@@ -36,6 +37,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
 {
+    // D-158 — "now" frozen before the fixture dates: a surgeon absence only cancels a
+    // mission still to come (AbsenceMissionProtectionPolicy).
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'Lot5SummaryTest123!';
 
     private EntityManagerInterface $em;
@@ -43,6 +48,7 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-01-15 00:00:00');
         parent::setUp();
         self::ensureKernelShutdown();
     }
@@ -50,6 +56,14 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // H4 (D-130) — dispatcher decision + per-channel delivery rows of this test's users.
+            if ($this->createdIds['users'] !== []) {
+                $users = implode(',', array_map('intval', $this->createdIds['users']));
+                $conn = $this->em->getConnection();
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($users)");
+            }
             foreach ($this->createdIds['preferences'] as $id) {
                 $e = $this->em->find(NotificationPreference::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
@@ -77,6 +91,9 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
                 }
                 foreach ($this->em->createQueryBuilder()->select('e')->from(AuditEvent::class, 'e')->where('e.mission = :m')->setParameter('m', $mission)->getQuery()->getResult() as $event) {
                     $this->em->remove($event);
+                }
+                foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $mission]) as $assignment) {
+                    $this->em->remove($assignment); // D-150 — affectation history (FK without ON DELETE)
                 }
                 $this->em->remove($mission);
             }
@@ -240,13 +257,23 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
         return json_decode((string) $response->getContent(), true) ?? [];
     }
 
-    /** @return AbsenceImpactSummaryMessage[] */
+    /**
+     * H4 (D-130) — the message is scoped to the managers THIS test created before being
+     * handled: the test database holds ~1500 leaked managers, and since H4 every summary is a
+     * traced dispatcher decision (in-app + email + push rows) — handling the unscoped message
+     * would take tens of minutes for no additional coverage. The recipient computation itself
+     * (every active manager) is still asserted on the unscoped message where relevant.
+     *
+     * @return AbsenceImpactSummaryMessage[]
+     */
     private function summaryMessages(InMemoryTransport $transport): array
     {
         $messages = [];
         foreach ($transport->getSent() as $e) {
-            if ($e->getMessage() instanceof AbsenceImpactSummaryMessage) {
-                $messages[] = $e->getMessage();
+            $m = $e->getMessage();
+            if ($m instanceof AbsenceImpactSummaryMessage) {
+                $mine = array_values(array_intersect($m->recipientManagerIds, $this->createdIds['users']));
+                $messages[] = new AbsenceImpactSummaryMessage(...array_merge(get_object_vars($m), ['recipientManagerIds' => $mine]));
             }
         }
         return $messages;
@@ -255,17 +282,19 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
     /**
      * Scoped to a specific recipient email — the real dev database this suite runs against
      * accumulates managers/admins across the whole session's functional test history, so
-     * findManagersAndAdmins(true) legitimately returns far more than just this test's own
+     * findOperationalManagers() legitimately returns far more than just this test's own
      * fixtures. Counting the raw transport is not meaningful; only per-recipient counts are.
      *
-     * @return SendBillingEmailMessage[]
+     * H4 (D-130): the summary email is queued by NotificationDispatcher (SendTemplatedEmailMessage).
+     *
+     * @return list<SendBillingEmailMessage|\App\Message\SendTemplatedEmailMessage>
      */
     private function emailsTo(InMemoryTransport $transport, string $email): array
     {
         $emails = [];
         foreach ($transport->getSent() as $e) {
             $msg = $e->getMessage();
-            if ($msg instanceof SendBillingEmailMessage && $msg->to === $email) {
+            if (($msg instanceof SendBillingEmailMessage || $msg instanceof \App\Message\SendTemplatedEmailMessage) && $msg->to === $email) {
                 $emails[] = $msg;
             }
         }
@@ -516,7 +545,7 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
 
         $manager = $this->em->find(User::class, $manager->getId());
         $emails = $this->emailsTo($transport, $manager->getEmail());
-        self::assertCount(0, $emails, 'Email channel disabled — must not dispatch SendBillingEmailMessage');
+        self::assertCount(0, $emails, 'Email channel disabled — no email queued');
 
         $notifications = $this->em->createQueryBuilder()
             ->select('n')->from(NotificationEvent::class, 'n')
@@ -569,17 +598,12 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
     // ── §16 — Retry Messenger : garantie actuelle documentée ───────────────────
 
     /**
-     * No idempotency key/outbox exists for this handler (same as Lot 3/4's handlers before
-     * it — see docs/decisions.md D-105). Replaying the same message re-persists a second
-     * NotificationEvent and re-dispatches a second email. This test documents that CURRENT
-     * guarantee rather than papering over it — Messenger's retry_strategy only re-invokes on
-     * failure, and this handler's own per-recipient try/catch means a failure for one
-     * manager never blocks the others, but a full replay of the whole message is not
-     * deduplicated. Building an outbox/idempotency-key mechanism was explicitly out of scope
-     * for this lot (§15 of the spec).
+     * H4 (D-130) — the documented D-105 gap ("a replay is not deduplicated") is closed: the
+     * summary is a NotificationDispatcher decision, idempotent per absence and operation, so
+     * replaying the message creates neither a second feed item nor a second email.
      */
     #[WithoutErrorHandler]
-    public function test_replaying_the_same_message_is_not_deduplicated_documented_current_behavior(): void
+    public function test_replaying_the_same_message_is_deduplicated(): void
     {
         $client = static::createClient();
         $client->disableReboot();
@@ -618,9 +642,9 @@ final class AbsenceImpactSummaryFunctionalTest extends WebTestCase
             ->select('n')->from(NotificationEvent::class, 'n')
             ->where('n.user = :u')->setParameter('u', $manager)
             ->getQuery()->getResult();
-        self::assertCount(2, $notifications, 'Documented current behavior: replaying the message is NOT deduplicated');
+        self::assertCount(1, $notifications, 'H4: a replay creates no second feed item');
 
         $emails = $this->emailsTo($transport, $manager->getEmail());
-        self::assertCount(2, $emails, 'Documented current behavior: replaying the message dispatches a second email too');
+        self::assertCount(1, $emails, 'H4: a replay sends no second email');
     }
 }

@@ -98,6 +98,12 @@ final class WebPushServiceTest extends TestCase
         $qb->method('getQuery')->willReturn($query);
 
         $this->repo->method('createQueryBuilder')->with('ps')->willReturn($qb);
+
+        // H5b — the expiry delete runs in a transaction that also records PUSH_SUBSCRIPTION_REMOVED.
+        $connection = $this->createMock(\Doctrine\DBAL\Connection::class);
+        $connection->method('transactional')->willReturnCallback(static fn (\Closure $fn) => $fn($connection));
+        $connection->method('fetchAllAssociative')->willReturn([]);
+        $this->em->method('getConnection')->willReturn($connection);
     }
 
     private function expectNoDelete(): void
@@ -291,10 +297,16 @@ final class WebPushServiceTest extends TestCase
 
     // ── échec isolé, poursuite vers les abonnements suivants ────────────────
 
-    public function test_one_failing_subscription_does_not_block_the_others_in_the_batch(): void
+    /**
+     * H3 (D-129) — the bulk sendToUsers() was removed (it pushed to a whole user list
+     * without consulting any preference; every push now goes through NotificationDispatcher,
+     * one recipient at a time). The isolation guarantee it tested still holds per recipient:
+     * one failing device never blocks the person's other devices.
+     */
+    public function test_one_failing_subscription_does_not_block_the_others_of_the_same_recipient(): void
     {
-        $users = [new User(), new User()];
-        $subs  = [
+        $user = new User();
+        $subs = [
             $this->subscription('https://push.example.test/failing-endpoint-bbbbbbbbbbbb'),
             $this->subscription('https://push.example.test/working-endpoint-cccccccccccc'),
         ];
@@ -303,19 +315,14 @@ final class WebPushServiceTest extends TestCase
 
         // First subscription: gone (410) → expected, isolated. Second: succeeds (201).
         $service = $this->service(new MockHandler([new Response(410), new Response(201)]));
-
-        $infoCalls = [];
-        $this->logger->method('info')->willReturnCallback(function (string $message, array $context) use (&$infoCalls) {
-            $infoCalls[$message] = $context;
-        });
         $this->logger->expects($this->never())->method('error');
 
-        $service->sendToUsers($users, 'Titre', 'Corps');
+        $result = $service->sendToUserWithAttempts($user, 'Titre', 'Corps');
 
-        self::assertArrayHasKey('push.batch_done', $infoCalls);
-        self::assertSame(1, $infoCalls['push.batch_done']['sent']);
-        self::assertSame(1, $infoCalls['push.batch_done']['failed']);
-        self::assertSame(1, $infoCalls['push.batch_done']['expired']);
+        self::assertSame(1, $result['sent']);
+        self::assertCount(2, $result['attempts']);
+        self::assertFalse($result['attempts'][0]['success']);
+        self::assertTrue($result['attempts'][1]['success']);
     }
 
     // ── suppression sur 404 / 410 ────────────────────────────────────────────

@@ -26,6 +26,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class ResendInvitationConcurrencyTest extends WebTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private const PASSWORD = 'ResendConcurrency28!';
 
     private EntityManagerInterface $em;
@@ -63,6 +65,7 @@ final class ResendInvitationConcurrencyTest extends WebTestCase
             }
             $this->em->flush();
 
+            $this->purgeNotificationTraces($this->em, $this->createdUserIds);
             foreach ($this->createdUserIds as $id) {
                 $e = $this->em->find(User::class, $id);
                 if ($e !== null) { $this->em->remove($e); }

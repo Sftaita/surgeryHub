@@ -5,9 +5,13 @@ import type {
   FirmDTO,
   MaterialItemDTO,
   MaterialItemsListResponseDTO,
+  MaterialRegularisationResponse,
   MaterialRequestDTO,
   MaterialRequestsListResponseDTO,
   MaterialRequestStatus,
+  MaterialDuplicateCandidateDTO,
+  ResolveMaterialRequestBody,
+  ResolveMaterialRequestResultDTO,
   UpdateMaterialItemBody,
 } from "./catalogue.types";
 
@@ -41,6 +45,12 @@ export const getMaterialItems = async (params?: {
   return res.data;
 };
 
+/** D-142 — vue de régularisation du catalogue matériel (lecture seule, manager/admin). */
+export const getMaterialBillingRegularisation = async (): Promise<MaterialRegularisationResponse> => {
+  const res = await apiClient.get("/api/material-items/billing-regularisation");
+  return res.data;
+};
+
 export const createMaterialItem = async (
   body: CreateMaterialItemBody,
 ): Promise<MaterialItemDTO> => {
@@ -63,15 +73,22 @@ export const getMaterialRequests = async (params?: {
   return res.data;
 };
 
+/**
+ * D-146 bis — résolution atomique : création éventuelle de la firme et du matériel,
+ * ligne de matériel avec la quantité validée, traçabilité — tout ou rien côté serveur.
+ */
 export const resolveMaterialRequest = async (
   id: number,
-  materialItemId: number,
-): Promise<MaterialRequestDTO> => {
-  const res = await apiClient.post(
-    `/api/material-item-requests/${id}/resolve`,
-    { materialItemId },
-  );
-  return res.data.request;
+  body: ResolveMaterialRequestBody,
+): Promise<ResolveMaterialRequestResultDTO> => {
+  const res = await apiClient.post(`/api/material-item-requests/${id}/resolve`, body);
+  return res.data;
+};
+
+/** D-146 bis — matériels existants semblables (référence ou nom), firme proposée en tête. */
+export const getMaterialRequestDuplicateCandidates = async (id: number): Promise<MaterialDuplicateCandidateDTO[]> => {
+  const res = await apiClient.get(`/api/material-item-requests/${id}/duplicate-candidates`);
+  return res.data.items ?? [];
 };
 
 /**

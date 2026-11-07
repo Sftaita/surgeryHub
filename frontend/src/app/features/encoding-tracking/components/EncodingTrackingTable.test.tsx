@@ -18,7 +18,7 @@ function item(missionId: number, startAt: string, instrumentist: string): Encodi
     site: { id: 2, name: "Delta" },
     hours: { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" },
     encoding: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
-    financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false },
+    financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false, anomalyCount: 0, anomalyReasons: [] },
   };
 }
 
@@ -84,6 +84,86 @@ describe("EncodingTrackingTable — colonne Heures (D-136)", () => {
     expect(screen.getByText("5 h")).toHaveStyle({ color: "rgb(183, 121, 31)" }); // orange
     // Sans heure réelle : libellé explicite, le planifié n'est jamais présenté comme effectif.
     expect(cells[2]).toHaveTextContent("4 h planifiées");
-    expect(cells[2]).toHaveTextContent("Heures réelles non renseignées");
+    expect(cells[2]).toHaveTextContent("Heures prestées non renseignées");
+  });
+});
+
+describe("EncodingTrackingTable — colonne Finance (D-138)", () => {
+  it("« Anomalie » est toujours accompagnée de sa cause, telle que ventilée par le backend", () => {
+    const one = {
+      ...item(1, "2026-10-01T13:00:00+02:00", "Sophie Collette"),
+      financial: { state: "ANOMALY" as const, label: "Anomalie", isBlocking: true, anomalyCount: 1,
+        anomalyReasons: [{ code: "MISSING_INSTRUMENTIST_RATE", label: "Tarif instrumentiste manquant", count: 1 }] },
+    };
+    const many = {
+      ...item(2, "2026-10-01T08:00:00+02:00", "Salve Decorte"),
+      financial: { state: "ANOMALY" as const, label: "Anomalie", isBlocking: true, anomalyCount: 11,
+        anomalyReasons: [
+          { code: "MISSING_FIRM_MATERIAL_RATE", label: "Tarif matériel manquant", count: 9 },
+          { code: "MISSING_FIRM_INTERVENTION_RATE", label: "Tarif d'intervention manquant", count: 2 },
+        ] },
+    };
+    // Dépassement horaire sans anomalie (cas #1226) : rien sous « À calculer ».
+    const overrun = {
+      ...item(3, "2026-10-01T10:00:00+02:00", "Julie Simon"),
+      hours: { plannedMinutes: 300, effectiveMinutes: 465, effectiveSource: "ACTUAL_EXPLICIT" as const, hasRealHours: true, comparison: "OVER_PLAN" as const },
+      financial: { state: "TO_CALCULATE" as const, label: "À calculer", isBlocking: false, anomalyCount: 0, anomalyReasons: [] },
+    };
+    renderTable([one, many, overrun]);
+
+    const reasons = screen.getAllByTestId("finance-anomaly-reasons");
+    expect(reasons).toHaveLength(2);
+    expect(screen.getByText("Tarif instrumentiste manquant")).toBeInTheDocument();
+    const grouped = screen.getByText("11 problèmes");
+    expect(grouped).toHaveAttribute("aria-label", "11 problèmes : Tarif matériel manquant ×9 · Tarif d'intervention manquant ×2");
+    expect(screen.getByText("À calculer")).toBeInTheDocument();
+  });
+});
+
+describe("EncodingTrackingTable — activité réalisée sans instrumentiste (D-155)", () => {
+  it("n'affiche jamais « Heures prestées non renseignées » ; mission classique inchangée", () => {
+    const base = item(7, "2026-09-12T08:00:00+02:00", "—");
+    const noHours = { plannedMinutes: 240, effectiveMinutes: 240, effectiveSource: "PLANNED", hasRealHours: false, comparison: "NO_REAL_HOURS" } as EncodingTrackingItem["hours"];
+    renderTable([
+      { ...base, instrumentist: null, hours: noHours, executedWithoutInstrumentist: { declaredByName: "Paul Martin" } },
+      { ...item(8, "2026-09-12T10:00:00+02:00", "Instr 8"), hours: noHours },
+    ]);
+
+    const [declared, classic] = screen.getAllByTestId("hours-cell");
+    expect(declared).toHaveAttribute("data-hours-comparison", "NOT_APPLICABLE");
+    expect(declared).toHaveTextContent("Aucune prestation horaire attendue");
+    expect(declared).not.toHaveTextContent("Heures prestées non renseignées");
+    expect(declared).not.toHaveTextContent("planifiées");
+    expect(classic).toHaveTextContent("Heures prestées non renseignées");
+  });
+});
+
+// D-156 — heures planifiées du jour : une prestation multi-salles compte une fois (union).
+describe("EncodingTrackingTable — prestation multi-salles", () => {
+  it("compte l'union planifiée d'une prestation une seule fois, jamais la somme des salles", () => {
+    const a = { ...item(1, "2026-11-04T07:45:00+01:00", "Sophie Colette"), hours: { ...item(1, "", "").hours, plannedMinutes: 315 }, prestation: { key: "p1-2", missionIds: [1, 2], plannedUnionMinutes: 615 } };
+    const b = { ...item(2, "2026-11-04T07:45:00+01:00", "Sophie Colette"), hours: { ...item(2, "", "").hours, plannedMinutes: 615 }, prestation: { key: "p1-2", missionIds: [1, 2], plannedUnionMinutes: 615 } };
+    const other = { ...item(3, "2026-11-04T08:00:00+01:00", "Salve Decorte"), hours: { ...item(3, "", "").hours, plannedMinutes: 240 } };
+    renderTable([a, b, other]);
+
+    // 10h15 (prestation) + 4h (autre) = 14h15 → arrondi 14h ; la somme brute aurait donné 19h.
+    expect(screen.getByText("14h planifiées")).toBeInTheDocument();
+    expect(screen.queryByText("19h planifiées")).not.toBeInTheDocument();
+  });
+});
+
+describe("EncodingTrackingTable — missions annulées affichées sur demande (D-184)", () => {
+  it("affiche le badge « Annulée » sans compter la mission dans le sous-total du jour", () => {
+    const cancelled = { ...item(3, "2026-09-10T15:30:00+02:00", "Ole Salve"), encodingState: "CANCELLED" as const, encodingStateLabel: "Annulée", missionStatus: "CANCELLED" };
+    renderTable([
+      item(1, "2026-09-10T08:00:00+02:00", "Ole Salve"),
+      item(2, "2026-09-10T13:00:00+02:00", "Ole Salve"),
+      cancelled,
+    ]);
+
+    expect(screen.getByText("Annulée")).toBeInTheDocument();
+    expect(screen.queryByText("Sans objet")).toBeNull();
+    expect(screen.getByText(/2 missions · 1 annulée \(non comptée\)/)).toBeInTheDocument();
+    expect(screen.getByText("8h planifiées")).toBeInTheDocument();
   });
 });

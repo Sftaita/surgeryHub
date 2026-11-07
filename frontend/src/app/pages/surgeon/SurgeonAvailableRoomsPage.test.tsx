@@ -14,9 +14,11 @@ import SurgeonAvailableRoomsPage from "./SurgeonAvailableRoomsPage";
  */
 
 const getMyAvailableRoomsMock = vi.fn();
+const getMyAvailableRoomMock = vi.fn();
 
 vi.mock("../../features/planning-v2/api/planningV2.api", () => ({
   getMyAvailableRooms: (...args: unknown[]) => getMyAvailableRoomsMock(...args),
+  getMyAvailableRoom: (...args: unknown[]) => getMyAvailableRoomMock(...args),
 }));
 
 function makeSlot(overrides: Partial<any> = {}) {
@@ -52,6 +54,7 @@ function renderPage(initialEntry = "/app/s/planning/salles-disponibles") {
 
 beforeEach(() => {
   getMyAvailableRoomsMock.mockReset();
+  getMyAvailableRoomMock.mockReset();
   getMyAvailableRoomsMock.mockResolvedValue({ items: [], page: 1, limit: 100, total: 0 });
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-08-27T12:00:00+02:00"));
@@ -196,5 +199,38 @@ describe("SurgeonAvailableRoomsPage — deep link", () => {
     expect(params.siteId).toBe(7);
     expect(params.period).toBe("JOURNEE");
     expect(screen.getByText("Aujourd'hui").closest("div")).toHaveClass("MuiChip-filled");
+  });
+});
+
+describe("SurgeonAvailableRoomsPage — ouverture depuis une notification (D-161)", () => {
+  it("relit le créneau annoncé auprès du serveur et l'affiche en tête, sans doublon dans la liste", async () => {
+    getMyAvailableRoomMock.mockResolvedValue(makeSlot({ id: 42, site: { id: 9, name: "CHIREC - Hôpital Delta" } }));
+    getMyAvailableRoomsMock.mockResolvedValue({ items: [makeSlot({ id: 42 }), makeSlot({ id: 7, site: { id: 2, name: "Site B" } })], page: 1, limit: 100, total: 2 });
+
+    renderPage("/app/s/planning/salles-disponibles?slot=42");
+
+    expect(await screen.findByText("Salle signalée")).toBeInTheDocument();
+    await waitFor(() => expect(getMyAvailableRoomMock).toHaveBeenCalledWith(42));
+    // Le créneau annoncé (en tête) + Site B : jamais deux fois le même créneau.
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Reprendre cette salle" })).toHaveLength(2));
+    expect(screen.getAllByText(/^CHIREC - Hôpital Delta — /)).toHaveLength(1);
+    expect(screen.getAllByText(/^Site B — /)).toHaveLength(1);
+  });
+
+  it("créneau plus disponible (404 serveur) : la page le dit, sans proposer de reprise", async () => {
+    getMyAvailableRoomMock.mockRejectedValue(Object.assign(new Error("Not found"), { isAxiosError: true, response: { status: 404 } }));
+
+    renderPage("/app/s/planning/salles-disponibles?slot=42");
+
+    expect(await screen.findByText("Cette salle n'est plus disponible.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Reprendre/ })).not.toBeInTheDocument();
+  });
+
+  it("un paramètre slot invalide n'interroge jamais le serveur", async () => {
+    renderPage("/app/s/planning/salles-disponibles?slot=abc");
+
+    await waitFor(() => expect(getMyAvailableRoomsMock).toHaveBeenCalled());
+    expect(getMyAvailableRoomMock).not.toHaveBeenCalled();
+    expect(screen.queryByText("Salle signalée")).not.toBeInTheDocument();
   });
 });

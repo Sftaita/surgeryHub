@@ -30,6 +30,27 @@ final class PreviewLineResponse
          * line as the existing reality and locks it. Additive field, null otherwise.
          */
         public ?string $existingMissionStatus = null,
+        /**
+         * D-152 — SURGEON_INCOMPATIBILITY when the line's instrumentist is incompatible with its
+         * surgeon (status CONFLICT, « Bloqué — instrumentiste incompatible »). Additive, null otherwise.
+         */
+        public ?string $blockedReason = null,
+
+        /**
+         * D-156 — informative only: size of the multi-room prestation this line forms with
+         * other simultaneous lines of the same instrumentist (same surgeon, site, day, BLOC),
+         * null when alone. Never a validation step; additive field.
+         */
+        public ?int $multiRoomCount = null,
+        /** D-156 — key of that group (composition + times); null when alone. */
+        public ?string $multiRoomGroupKey = null,
+        /**
+         * D-156 — 'REQUIRED': assignment proposed by the posts, to confirm or reorganise
+         * before deploy; 'CONFIRMED': confirmed in this draft; null when not multi-room.
+         */
+        public ?string $multiRoomConfirmation = null,
+        /** D-156 — date of the post occurrence (original date of a MOVED one); with postId, its stable identity. */
+        public ?string $occurrenceDate = null,
     ) {
     }
 
@@ -56,6 +77,11 @@ final class PreviewLineResponse
             surgeonPhotoPath: $line['surgeonPhotoPath'] ?? null,
             instrumentistPhotoPath: $line['instrumentistPhotoPath'] ?? null,
             existingMissionStatus: $line['existingMissionStatus'] ?? null,
+            blockedReason: $line['blockedReason'] ?? null,
+            multiRoomCount: $line['multiRoomCount'] ?? null,
+            multiRoomGroupKey: $line['multiRoomGroupKey'] ?? null,
+            multiRoomConfirmation: $line['multiRoomConfirmation'] ?? null,
+            occurrenceDate: $line['occurrenceDate'] ?? null,
         );
     }
 }

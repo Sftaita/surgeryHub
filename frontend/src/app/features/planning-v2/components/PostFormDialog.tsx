@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { SurgeonSchedulePostV2, SurgeonPostInput, MissionType, ShiftPeriod } from "../api/planningV2.types";
 import type { Site } from "../../sites/api/sites.api";
 import { getShiftPeriods } from "../api/planningV2.api";
+import { fetchIncompatibilitiesOf } from "../../incompatibilities/api/incompatibilities.api";
 import { SearchableSelect, type SearchableOption } from "./SearchableSelect";
 import {
   RECURRENCE_PRESET_OPTIONS, LAUNCH_RECURRENCE_PRESET_OPTIONS, presetIsMonthly, presetToRecurrence, recurrenceToPreset,
@@ -123,6 +124,23 @@ export function PostFormDialog({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [periodsLoaded, availablePeriods.map((p) => p.value).join(",")]);
+
+  // D-152 — instrumentists blocked for the chosen surgeon stay listed, greyed « Bloqué par le
+  // chirurgien », never selectable (the backend refuses such a post); nobody is selectable
+  // before the surgeon's incompatibilities are known.
+  const incompatibilitiesQuery = useQuery({
+    queryKey: ["incompatibilities", "surgeon", surgeonId],
+    queryFn: () => fetchIncompatibilitiesOf("surgeon", surgeonId as number),
+    enabled: open && surgeonId !== null,
+  });
+  const instrumentistOptions: SearchableOption[] = React.useMemo(() => {
+    if (surgeonId === null) return instrumentists;
+    if (!incompatibilitiesQuery.data) {
+      return instrumentists.map((o) => ({ ...o, disabled: true, badge: "Vérification de l'éligibilité…" }));
+    }
+    const blocked = new Set(incompatibilitiesQuery.data.filter((i) => i.active).map((i) => i.instrumentist.id));
+    return instrumentists.map((o) => (blocked.has(o.id) ? { ...o, disabled: true, badge: "Bloqué par le chirurgien" } : o));
+  }, [instrumentists, surgeonId, incompatibilitiesQuery.data]);
 
   const monthly = presetIsMonthly(preset);
   const canSubmit = surgeonId !== null && siteId !== null && startDate !== ""
@@ -281,7 +299,7 @@ export function PostFormDialog({
         <SearchableSelect
           label="Instrumentiste"
           icon={<PersonOutlineOutlinedIcon sx={{ fontSize: 16, color: planningV2Colors.textSecondary, mr: 0.5 }} />}
-          options={instrumentists}
+          options={instrumentistOptions}
           value={instrumentistId}
           onChange={setInstrumentistId}
           placeholder="Rechercher une instrumentiste…"

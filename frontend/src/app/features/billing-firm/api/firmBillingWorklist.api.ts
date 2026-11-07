@@ -74,6 +74,11 @@ export interface WorklistAnomaly {
   action: { code: AnomalyActionCode; label: string } | null;
   /** La cause n'existe plus dans la configuration actuelle : la mission peut être recalculée. */
   resolved: boolean;
+  /** D-141 — issue actuelle de l'élément selon le moteur (null pour une anomalie de workflow). */
+  currentResolution: { kind: string | null; label: string | null } | null;
+  referenceDate: string;
+  /** D-141 — anomalie qu'un recalcul produirait, absente de l'échec audité. */
+  detectedAfterFailure: boolean;
   calculationId: number | null;
   rowKey: string | null;
   calculationLocked: boolean;
@@ -93,7 +98,10 @@ export interface WorklistSummary {
   notBillable: { lineCount: number };
   toReview: { lineCount: number };
   invoiced: { lineCount: number; amounts: Amount[] };
+  /** D-141 — anomalies qui bloquent encore (hors `resolved`). */
   anomalyCount: number;
+  /** D-141 — anomalies du dernier échec déjà corrigées, en attente de recalcul. */
+  resolvedAnomalyCount: number;
   pendingValidationMissionCount: number;
   invoices: { draft: number; generated: number; sent: number; paid: number; cancelled: number; abandoned: number };
 }

@@ -1,30 +1,32 @@
 import * as React from "react";
 import {
-  Alert, Box, Button, Chip, CircularProgress,
+  Alert, Box, Button, Checkbox, Chip, CircularProgress,
   Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
   MenuItem, Paper, Select, Stack, ToggleButton, ToggleButtonGroup,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField,
-  Typography,
+  Link, Tooltip, Typography,
 } from "@mui/material";
+import { Link as RouterLink } from "react-router-dom";
 import LockOpenIcon   from "@mui/icons-material/LockOpen";
 import BlockIcon      from "@mui/icons-material/Block";
 import SwapHorizIcon  from "@mui/icons-material/SwapHoriz";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchAllMissions } from "../../../features/missions/api/missions.api";
-import { invalidateOperationalPlanning } from "../../../features/missions/dispatch/missionDispatch.api";
+import { dispatchMission, invalidateOperationalPlanning } from "../../../features/missions/dispatch/missionDispatch.api";
 import type { Mission, MissionStatus } from "../../../features/missions/api/missions.types";
 import { fetchSites } from "../../../features/sites/api/sites.api";
 import { useToast } from "../../../ui/toast/useToast";
-import { apiClient } from "../../../api/apiClient";
 import {
-  releaseMission, cancelMission, reassignMission,
+  releaseMission, extractErrorV2,
 } from "../../../features/planning-v2/api/planningV2.api";
 import { CoverageBanner }      from "../../../features/planning-v2/components/CoverageBanner";
 import { MissionHistoryDrawer } from "../../../features/planning-v2/components/MissionHistoryDrawer";
-import { CancelMissionDialog }  from "../../../features/planning-v2/components/CancelMissionDialog";
-import { ReassignMissionDialog } from "../../../features/planning-v2/components/ReassignMissionDialog";
+import { CancelMissionDialog }  from "../../../features/missions/cancellation/CancelMissionDialog";
+import { ChangeInstrumentistDialog } from "../../../features/missions/reassignment/ChangeInstrumentistDialog";
+import { BatchReassignmentDialog } from "../../../features/missions/reassignment/BatchReassignmentDialog";
 import { useRosterEligibility, type RosterSlot } from "../../../features/planning-v2/api/useRosterEligibility";
 import { candidateGhostLabel } from "../../../features/planning-v2/api/eligibilityReasons";
+import { OPERATIONAL_LIVE_QUERY_OPTIONS } from "../../../features/missions/sync/liveQueryOptions";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -52,8 +54,11 @@ function getDayName(dateStr: string): string {
   const s = new Date(dateStr + "T00:00:00").toLocaleDateString("fr-BE", { weekday: "long" });
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-function getPeriod(startTime: string): string {
-  return parseInt(startTime.split(":")[0], 10) < 12 ? "Matin" : "Après-midi";
+function getPeriod(startTime: string, endTime: string): string {
+  const startsMorning = parseInt(startTime.split(":")[0], 10) < 12;
+  // Recette D-156 : une mission 07:45–18:00 n'est pas « Matin » — elle couvre la journée.
+  if (startsMorning && endTime > "13:30") return "Journée";
+  return startsMorning ? "Matin" : "Après-midi";
 }
 function displayName(u: { firstname?: string | null; lastname?: string | null; email?: string } | null | undefined): string {
   if (!u) return "—";
@@ -78,6 +83,8 @@ interface ScheduleRow {
   canEdit:            boolean;
   canRelease:         boolean;
   canCancel:          boolean;
+  /** D-182 — annulation impossible : bouton désactivé avec cette raison (serveur). */
+  cancelBlockedReason: string | null;
   canReassign:        boolean;
 }
 
@@ -96,13 +103,37 @@ function toRow(m: Mission): ScheduleRow {
     instrumentistId:   m.instrumentist?.id ?? null,
     instrumentistName: m.instrumentist ? displayName(m.instrumentist) : null,
     siteId:            m.site?.id ?? null,
-    siteName:          m.site?.name ?? null,
+    // D-156 — libellé de salle facultatif affiché avec le site.
+    siteName:          m.site?.name ? `${m.site.name}${m.roomLabel ? ` · ${m.roomLabel}` : ""}` : null,
     status,
     canEdit:    status === "OPEN",
     canRelease: status === "ASSIGNED",
-    canCancel:  status === "OPEN",
-    canReassign: status === "ASSIGNED",
+    // D-182 — servi par le backend (OPEN, ASSIGNED, mission du jour commencée…), jamais
+    // déduit du statut : plus besoin de remettre la mission au pool avant de l'annuler.
+    canCancel:  (m.allowedActions ?? []).includes("cancel"),
+    // D-182 — mission facturée, clôturée, prestation multi-salles… : jamais une opération
+    // engagée puis refusée, l'action est désactivée avec la raison du serveur.
+    cancelBlockedReason: !(m.allowedActions ?? []).includes("cancel") && m.cancellation?.blockedReason
+      && m.cancellation.blockedReason.code !== "CANCELLATION_NOT_POSSIBLE"
+      ? m.cancellation.blockedReason.message
+      : null,
+    // D-181 — servi par le backend (y compris une mission du jour déjà commencée), jamais déduit du statut.
+    canReassign: (m.allowedActions ?? []).includes("reassign"),
   };
+}
+
+// ── Dates ─────────────────────────────────────────────────────────────────────
+
+/** YYYY-MM-DD of the browser's local calendar day (never the UTC day). */
+function toLocalYmd(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/** The calendar day after `ymd` — turns an inclusive "Au" date into the API's exclusive `to`. */
+function nextLocalYmd(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return toLocalYmd(new Date(y, m - 1, d + 1));
 }
 
 // ── Grouping ──────────────────────────────────────────────────────────────────
@@ -148,6 +179,9 @@ const STATUS_LABEL: Record<string, {
   DRAFT:       { label: "Brouillon",  color: "default"   },
   OPEN:        { label: "À réserver", color: "info"      },
   ASSIGNED:    { label: "Assigné",    color: "success"   },
+  // Recette D-156 — absents, ces statuts (désormais chargés, lot 1) retombaient sur « À réserver ».
+  IN_PROGRESS:          { label: "En cours",          color: "success" },
+  ENCODING_IN_PROGRESS: { label: "Encodage en cours", color: "warning" },
   DECLARED:    { label: "Déclaré",    color: "warning"   },
   REJECTED:    { label: "Rejeté",     color: "error"     },
   SUBMITTED:   { label: "Soumis",     color: "primary"   },
@@ -158,16 +192,14 @@ const STATUS_LABEL: Record<string, {
 
 // ── InstrumentistCell ─────────────────────────────────────────────────────────
 
-interface Instrumentist { id: number; displayName: string }
-
 function ScheduleInstrumentistCell({
-  row, instrumentists, onUpdated,
+  row, onUpdated,
 }: {
   row:            ScheduleRow;
-  instrumentists: Instrumentist[];
   onUpdated:      (missionId: number, instId: number | null, name: string | null) => void;
 }) {
   const toast = useToast();
+  const queryClient = useQueryClient();
 
   // D-102 — real-time eligibility for this mission's exact slot (STRICT_ASSIGNMENT: this
   // is a direct assign, same policy the backend guard applies on assign-instrumentist).
@@ -178,17 +210,20 @@ function ScheduleInstrumentistCell({
   const rosterQuery = useRosterEligibility(slot, "STRICT_ASSIGNMENT");
   const candidates = rosterQuery.data?.candidates ?? null;
 
+  // D-156 lot 1 — only OPEN rows are editable here (canEdit). An OPEN mission is published:
+  // assigning it is the DIRECT dispatch (POST /assign-directly — audit, notification,
+  // OPEN → ASSIGNED), never the DRAFT-only /assign-instrumentist, which always answered
+  // 409 MISSION_NOT_DRAFT on this screen.
   const assignMutation = useMutation({
-    mutationFn: ({ instrumentistId }: { instrumentistId: number | null }) =>
-      apiClient.post(`/api/missions/${row.missionId}/assign-instrumentist`, { instrumentistId }),
+    mutationFn: ({ instrumentistId }: { instrumentistId: number }) =>
+      dispatchMission(row.missionId, { mode: "DIRECT", instrumentistId }),
     onSuccess: (_d, { instrumentistId }) => {
-      const name = instrumentistId
-        ? (instrumentists.find((i) => i.id === instrumentistId)?.displayName ?? null)
-        : null;
+      const name = candidates?.find((c) => c.id === instrumentistId)?.name ?? null;
       onUpdated(row.missionId, instrumentistId, name);
-      toast.success("Instrumentiste mis à jour");
+      void invalidateOperationalPlanning(queryClient, row.missionId);
+      toast.success("Instrumentiste affecté");
     },
-    onError: () => toast.error("Erreur lors de la modification"),
+    onError: (err) => toast.error(extractErrorV2(err)),
   });
 
   if (!row.canEdit) {
@@ -205,7 +240,8 @@ function ScheduleInstrumentistCell({
       value={row.instrumentistId ?? ""}
       onChange={(e) => {
         const val = e.target.value as number | "";
-        assignMutation.mutate({ instrumentistId: val === "" ? null : val });
+        if (val === "") return;
+        assignMutation.mutate({ instrumentistId: val });
       }}
       displayEmpty
       disabled={assignMutation.isPending}
@@ -233,9 +269,16 @@ function ScheduleInstrumentistCell({
               {c.name}{!c.selectable ? ` — ${candidateGhostLabel(c) ?? ""}` : ""}
             </MenuItem>
           ))
-        : instrumentists.map((i) => (
-            <MenuItem key={i.id} value={i.id}>{i.displayName}</MenuItem>
-          ))}
+        : [
+            // D-152 (réserve 1) — while the backend roster loads (or if it failed), only the
+            // current instrumentist: never the whole list of accounts, never an unchecked choice.
+            ...(row.instrumentistId !== null
+              ? [<MenuItem key={row.instrumentistId} value={row.instrumentistId}>{row.instrumentistName ?? `#${row.instrumentistId}`}</MenuItem>]
+              : []),
+            <MenuItem key="roster-pending" disabled data-testid="schedule-instrumentist-roster-pending">
+              {rosterQuery.isError ? "Liste des instrumentistes indisponible" : "Chargement des instrumentistes…"}
+            </MenuItem>,
+          ]}
     </Select>
   );
 }
@@ -248,11 +291,13 @@ export default function PlanningSchedulePage() {
   const queryClient = useQueryClient();
   const toast = useToast();
 
+  // D-156 lot 1 — local calendar dates (toISOString() gave the UTC date: one day off
+  // between midnight and 02:00 in Brussels).
   const [from,         setFrom]         = React.useState(() => {
-    const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setDate(d.getDate() - 7); return toLocalYmd(d);
   });
   const [to,           setTo]           = React.useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() + 1); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setMonth(d.getMonth() + 1); return toLocalYmd(d);
   });
   const [siteId,       setSiteId]       = React.useState<number | "">("");
   const [versionId,    setVersionId]    = React.useState<number | "">("");
@@ -271,35 +316,35 @@ export default function PlanningSchedulePage() {
   const [releaseTarget, setReleaseTarget]       = React.useState<number | null>(null);
   const [cancelTarget,  setCancelTarget]        = React.useState<number | null>(null);
   const [reassignTarget, setReassignTarget]     = React.useState<ScheduleRow | null>(null);
+  // D-181 — réaffectation multiple (absence imprévue sur plusieurs missions).
+  const [selectedIds, setSelectedIds]           = React.useState<number[]>([]);
+  // The missions of the operation are fixed when the dialog opens (the selection is cleared once done).
+  const [batchIds, setBatchIds]                 = React.useState<number[] | null>(null);
 
   const sitesQuery = useQuery({ queryKey: ["sites"], queryFn: fetchSites });
-  const instrumentistsQuery = useQuery({
-    queryKey: ["instrumentists-all"],
-    queryFn: async () => {
-      const r = await apiClient.get("/api/instrumentists", { params: { active: true } });
-      return r.data.items as Instrumentist[];
-    },
-    staleTime: 5 * 60_000,
-  });
-
   const missionsQuery = useQuery({
     queryKey: ["planning-schedule", applied?.from, applied?.to, applied?.siteId],
     queryFn: async () => {
       // Every page — the API caps at 100 per call (D-125).
+      // D-156 lot 1 — "Au" is an inclusive calendar day for the manager, while the API's
+      // `to` is an exclusive bound: send the day after, or that whole day was missing.
       const items = await fetchAllMissions({
-        from: applied!.from, to: applied!.to,
+        from: applied!.from, to: nextLocalYmd(applied!.to),
         ...(applied!.siteId ? { siteId: applied!.siteId as number } : {}),
       });
       return items as Mission[];
     },
     enabled: applied !== null,
     staleTime: 0,
+    ...OPERATIONAL_LIVE_QUERY_OPTIONS,
   });
 
   // Server state → table rows (optimistic mutations below patch `rows` locally, then the
   // invalidation's refetch lands here and replaces them with the backend's truth).
   React.useEffect(() => {
     if (!missionsQuery.data) return;
+    // Published planning: DRAFT (never published) and REJECTED are intentionally absent —
+    // DRAFTs are counted in the banner below so the manager knows why they are not here.
     const filtered = missionsQuery.data.filter((m) => m.status !== "DRAFT" && m.status !== "REJECTED");
     setRows(filtered.map(toRow));
     setLoaded(true);
@@ -345,7 +390,7 @@ export default function PlanningSchedulePage() {
         r.map((row) =>
           row.missionId === missionId
             ? { ...row, status: "OPEN" as MissionStatus, instrumentistId: null, instrumentistName: null,
-                canEdit: true, canRelease: false, canCancel: true, canReassign: false }
+                canEdit: true, canRelease: false, canCancel: true, cancelBlockedReason: null, canReassign: false }
             : row,
         ),
       );
@@ -367,67 +412,13 @@ export default function PlanningSchedulePage() {
     onSettled: () => setReleaseTarget(null),
   });
 
-  // ── Cancel mutation ───────────────────────────────────────────────────────
-
-  const cancelMut = useMutation({
-    mutationFn: ({ id, reason }: { id: number; reason?: string }) => cancelMission(id, reason),
-    onMutate: ({ id }) => {
-      const prev = rows.find((r) => r.missionId === id);
-      setRows((r) =>
-        r.map((row) =>
-          row.missionId === id
-            ? { ...row, status: "CANCELLED" as MissionStatus,
-                canEdit: false, canRelease: false, canCancel: false, canReassign: false }
-            : row,
-        ),
-      );
-      return { prev };
-    },
-    onError: (_e, { id }, ctx) => {
-      if (ctx?.prev) {
-        setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
-      }
-      toast.error("Erreur lors de l'annulation");
-    },
-    onSuccess: () => {
-      toast.success("Mission annulée");
-      invalidateCoverage();
-    },
-    onSettled: () => setCancelTarget(null),
-  });
-
-  // ── Reassign mutation ─────────────────────────────────────────────────────
-
-  const reassignMut = useMutation({
-    mutationFn: ({ id, instrumentistId }: { id: number; instrumentistId: number; instrumentistName: string }) =>
-      reassignMission(id, instrumentistId),
-    onMutate: ({ id, instrumentistId, instrumentistName }) => {
-      const prev = rows.find((r) => r.missionId === id);
-      setRows((r) =>
-        r.map((row) =>
-          row.missionId === id
-            ? { ...row, instrumentistId, instrumentistName }
-            : row,
-        ),
-      );
-      return { prev };
-    },
-    onError: (_e, { id }, ctx) => {
-      if (ctx?.prev) {
-        setRows((r) => r.map((row) => (row.missionId === id ? ctx.prev! : row)));
-      }
-      toast.error("Erreur lors de la réassignation");
-    },
-    onSuccess: () => {
-      toast.success("Mission réassignée");
-      invalidateCoverage();
-    },
-    onSettled: () => setReassignTarget(null),
-  });
-
   const filteredRows = statusFilter === "ALL" ? rows : rows.filter((r) => r.status === statusFilter);
+  const draftCount = (missionsQuery.data ?? []).filter((m) => m.status === "DRAFT").length;
   const weeks = groupRows(filteredRows);
-  const instrumentists = instrumentistsQuery.data ?? [];
+  const selectable = new Set(rows.filter((r) => r.canReassign).map((r) => r.missionId));
+  const selection = selectedIds.filter((id) => selectable.has(id));
+  const toggleSelected = (id: number) =>
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
   return (
     <Stack spacing={3}>
@@ -436,10 +427,21 @@ export default function PlanningSchedulePage() {
       {/* Coverage banner — shown when a versionId is provided */}
       {versionId !== "" && <CoverageBanner versionId={versionId as number} />}
 
+      {/* D-156 lot 1 — a manual mission saved as draft exists in Missions but is not part of
+          the published planning until it is published: say so instead of leaving it invisible. */}
+      {draftCount > 0 && (
+        <Alert severity="info" data-testid="schedule-draft-notice">
+          {draftCount === 1
+            ? "1 mission en brouillon sur cette période n'est pas encore publiée : elle n'apparaît pas dans ce planning."
+            : `${draftCount} missions en brouillon sur cette période ne sont pas encore publiées : elles n'apparaissent pas dans ce planning.`}{" "}
+          <Link component={RouterLink} to="/app/m/missions?status=DRAFT&period=all">Voir les brouillons dans Missions</Link>
+        </Alert>
+      )}
+
       {/* Filters */}
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
         <Stack spacing={2}>
-          <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="flex-end">
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-end">
             <TextField
               label="Du" type="date" size="small" value={from}
               onChange={(e) => setFrom(e.target.value)}
@@ -479,7 +481,7 @@ export default function PlanningSchedulePage() {
           </Stack>
 
           {/* Status filter */}
-          <Stack direction="row" alignItems="center" spacing={1}>
+          <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
             <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
               Statut :
             </Typography>
@@ -498,6 +500,20 @@ export default function PlanningSchedulePage() {
           </Stack>
         </Stack>
       </Paper>
+
+      {/* D-181 — réaffectation multiple */}
+      {selection.length > 0 && (
+        <Stack direction="row" spacing={1.5} alignItems="center" data-testid="schedule-selection-bar">
+          <Typography variant="body2" fontWeight={600}>
+            {selection.length} mission{selection.length > 1 ? "s" : ""} sélectionnée{selection.length > 1 ? "s" : ""}
+          </Typography>
+          <Button size="small" variant="contained" disableElevation startIcon={<SwapHorizIcon fontSize="small" />}
+            onClick={() => setBatchIds(selection)} data-testid="schedule-batch-reassign">
+            Réaffecter la sélection
+          </Button>
+          <Button size="small" onClick={() => setSelectedIds([])}>Tout désélectionner</Button>
+        </Stack>
+      )}
 
       {/* Empty states */}
       {!loaded && !missionsQuery.isFetching && (
@@ -535,6 +551,7 @@ export default function PlanningSchedulePage() {
             <Table size="small" sx={{ tableLayout: "fixed" }}>
               <TableHead>
                 <TableRow sx={{ bgcolor: "grey.50" }}>
+                  <TableCell sx={{ width: 36, px: 0.5 }} aria-label="Sélection" />
                   <TableCell sx={{ width: 88,  fontWeight: 700, fontSize: 12 }}>Jour</TableCell>
                   <TableCell sx={{ width: 90,  fontWeight: 700, fontSize: 12 }}>Date</TableCell>
                   <TableCell sx={{ width: 150, fontWeight: 700, fontSize: 12 }}>Chirurgien</TableCell>
@@ -567,6 +584,14 @@ export default function PlanningSchedulePage() {
                           },
                         }}
                       >
+                        <TableCell sx={{ px: 0.5 }} onClick={(e) => e.stopPropagation()}>
+                          {row.canReassign && (
+                            <Checkbox
+                              size="small" checked={selection.includes(row.missionId)} onChange={() => toggleSelected(row.missionId)}
+                              inputProps={{ "aria-label": "Sélectionner pour réaffectation", "data-testid": `schedule-select-${row.missionId}` } as React.InputHTMLAttributes<HTMLInputElement>}
+                            />
+                          )}
+                        </TableCell>
                         {isFirst && (
                           <TableCell rowSpan={dayRows.length} sx={{ fontWeight: 700, verticalAlign: "top", pt: "9px !important" }}>
                             {getDayName(date)}
@@ -579,12 +604,17 @@ export default function PlanningSchedulePage() {
                         )}
 
                         <TableCell sx={{ fontWeight: 500 }}>{row.surgeonName}</TableCell>
-                        <TableCell sx={{ color: "text.secondary" }}>{getPeriod(row.startTime)}</TableCell>
+                        <TableCell sx={{ color: "text.secondary" }}>
+                          {getPeriod(row.startTime, row.endTime)}
+                          {/* D-156 — deux salles simultanées restent identifiables : l'horaire est affiché. */}
+                          <Box component="span" sx={{ display: "block", fontSize: 12, fontVariantNumeric: "tabular-nums" }}>
+                            {row.startTime.replace(":", "h")}–{row.endTime.replace(":", "h")}
+                          </Box>
+                        </TableCell>
 
                         <TableCell sx={{ py: "2px !important" }} onClick={(e) => e.stopPropagation()}>
                           <ScheduleInstrumentistCell
                             row={row}
-                            instrumentists={instrumentists}
                             onUpdated={handleUpdated}
                           />
                         </TableCell>
@@ -617,18 +647,25 @@ export default function PlanningSchedulePage() {
                                 Pool
                               </Button>
                             )}
-                            {row.canCancel && (
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                color="error"
-                                startIcon={<BlockIcon fontSize="small" />}
-                                aria-label="Annuler la mission"
-                                onClick={() => setCancelTarget(row.missionId)}
-                                sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
-                              >
-                                Annuler
-                              </Button>
+                            {(row.canCancel || row.cancelBlockedReason) && (
+                              <Tooltip title={row.cancelBlockedReason ? `Annulation impossible : ${row.cancelBlockedReason}` : ""} arrow>
+                                {/* span : un bouton désactivé ne reçoit pas le survol de l'infobulle. */}
+                                <span>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="error"
+                                    startIcon={<BlockIcon fontSize="small" />}
+                                    aria-label="Annuler la mission"
+                                    disabled={!row.canCancel}
+                                    data-testid={`cancel-mission-${row.missionId}`}
+                                    onClick={() => setCancelTarget(row.missionId)}
+                                    sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
+                                  >
+                                    Annuler
+                                  </Button>
+                                </span>
+                              </Tooltip>
                             )}
                             {row.canReassign && (
                               <Button
@@ -636,7 +673,7 @@ export default function PlanningSchedulePage() {
                                 variant="outlined"
                                 color="info"
                                 startIcon={<SwapHorizIcon fontSize="small" />}
-                                aria-label="Réassigner la mission"
+                                aria-label="Changer d'instrumentiste"
                                 onClick={() => setReassignTarget(row)}
                                 sx={{ fontSize: 11, py: 0.3, px: 1, minWidth: 0 }}
                               >
@@ -680,26 +717,25 @@ export default function PlanningSchedulePage() {
         </DialogActions>
       </Dialog>
 
-      {/* Cancel dialog */}
+      {/* D-182 — annulation : programme annulé ou mission remplacée par une mission existante */}
       <CancelMissionDialog
         open={cancelTarget !== null}
-        loading={cancelMut.isPending}
-        onClose={() => setCancelTarget(null)}
-        onConfirm={(reason) =>
-          cancelTarget !== null && cancelMut.mutate({ id: cancelTarget, reason })
-        }
+        missionId={cancelTarget}
+        onClose={() => { setCancelTarget(null); invalidateCoverage(); }}
+        onCancelled={() => toast.success("Mission annulée")}
       />
 
-      {/* Reassign dialog */}
-      <ReassignMissionDialog
+      {/* D-181 — « Changer d'instrumentiste » (une mission) et réaffectation multiple */}
+      <ChangeInstrumentistDialog
         open={reassignTarget !== null}
-        loading={reassignMut.isPending}
         missionId={reassignTarget?.missionId ?? null}
-        onClose={() => setReassignTarget(null)}
-        onConfirm={(instrumentistId, instrumentistName) =>
-          reassignTarget !== null &&
-          reassignMut.mutate({ id: reassignTarget.missionId, instrumentistId, instrumentistName })
-        }
+        onClose={() => { setReassignTarget(null); invalidateCoverage(); }}
+      />
+      <BatchReassignmentDialog
+        open={batchIds !== null}
+        missionIds={batchIds ?? []}
+        onClose={() => { setBatchIds(null); invalidateCoverage(); }}
+        onDone={() => setSelectedIds([])}
       />
 
       {/* Mission history drawer */}

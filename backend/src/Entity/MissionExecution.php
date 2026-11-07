@@ -62,12 +62,32 @@ class MissionExecution
     /**
      * Toujours cohérente avec actualStartAt/actualEndAt quand les deux sont renseignés
      * (recalculée et écrasée par MissionExecutionService à chaque écriture des horaires
-     * réels — jamais deux sources de vérité en parallèle). Peut aussi être renseignée
-     * seule, sans horaires réels connus (durée déclarée explicite).
+     * réels — jamais deux sources de vérité en parallèle) : fin − début − pause (D-143).
+     * Peut aussi être renseignée seule, sans horaires réels connus (durée déclarée
+     * explicite, saisies antérieures à D-143).
      */
     #[ORM\Column(name: 'actual_duration_minutes', type: 'integer', nullable: true)]
     #[Groups(['execution:read', 'execution:read_manager'])]
     private ?int $actualDurationMinutes = null;
+
+    /**
+     * D-143 — pause déclarée pendant la plage réelle (minutes). Seule information qui
+     * sépare la plage début → fin de la durée prestée ; null = aucune pause déclarée.
+     */
+    #[ORM\Column(name: 'break_minutes', type: 'integer', nullable: true)]
+    #[Groups(['execution:read', 'execution:read_manager'])]
+    private ?int $breakMinutes = null;
+
+    /**
+     * D-156 — présence réelle partagée (prestation regroupée multi-salles). Quand elle est
+     * renseignée, la présence est la SEULE source des heures réelles de cette mission :
+     * actualStartAt/actualEndAt restent nuls (CHECK en base) et actualDurationMinutes porte
+     * la part imputée à cette mission, dérivée de la présence (PresenceAllocator), écrite
+     * uniquement par WorkedPresenceService.
+     */
+    #[ORM\ManyToOne(targetEntity: WorkedPresence::class, inversedBy: 'executions')]
+    #[ORM\JoinColumn(name: 'presence_id', nullable: true, onDelete: 'RESTRICT')]
+    private ?WorkedPresence $presence = null;
 
     #[ORM\Column(name: 'hours_source', enumType: HoursSource::class, nullable: true)]
     #[Groups(['execution:read', 'execution:read_manager'])]
@@ -129,6 +149,42 @@ class MissionExecution
     public function setActualDurationMinutes(?int $actualDurationMinutes): static
     {
         $this->actualDurationMinutes = $actualDurationMinutes;
+        return $this;
+    }
+
+    public function getBreakMinutes(): ?int
+    {
+        return $this->breakMinutes;
+    }
+
+    public function setBreakMinutes(?int $breakMinutes): static
+    {
+        $this->breakMinutes = $breakMinutes;
+        return $this;
+    }
+
+    /**
+     * D-143 — début ET fin réels connus : seule forme acceptée à la soumission.
+     * D-156 — pour une mission liée à une présence partagée, ce sont les horaires de la
+     * présence (la mission n'a pas d'horaires propres).
+     */
+    public function hasCompleteActualTimes(): bool
+    {
+        if ($this->presence !== null) {
+            return $this->presence->hasCompleteTimes();
+        }
+
+        return $this->actualStartAt !== null && $this->actualEndAt !== null;
+    }
+
+    public function getPresence(): ?WorkedPresence
+    {
+        return $this->presence;
+    }
+
+    public function setPresence(?WorkedPresence $presence): static
+    {
+        $this->presence = $presence;
         return $this;
     }
 

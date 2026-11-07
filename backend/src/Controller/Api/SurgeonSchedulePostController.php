@@ -8,6 +8,7 @@ use App\Enum\MissionType;
 use App\Enum\RecurrenceFrequency;
 use App\Enum\ShiftPeriod;
 use App\Security\Voter\PlanningVoter;
+use App\Service\MissionEligibilityService;
 use App\Service\SurgeonSchedulePostService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -23,6 +24,7 @@ class SurgeonSchedulePostController extends AbstractController
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly SurgeonSchedulePostService $service,
+        private readonly MissionEligibilityService $eligibility,
     ) {}
 
     #[Route('/api/planning/surgeon-posts', name: 'api_planning_surgeon_posts_list', methods: ['GET'])]
@@ -48,8 +50,12 @@ class SurgeonSchedulePostController extends AbstractController
         }
 
         $posts = $this->service->search($filters);
+        // D-152 — one query for every listed post's surgeon, never one per post.
+        $blockedPairs = $this->eligibility->activeIncompatiblePairs(
+            array_map(static fn (SurgeonSchedulePost $p) => (int) $p->getSurgeon()->getId(), $posts),
+        );
 
-        return $this->json(['items' => array_map(fn (SurgeonSchedulePost $p) => $this->serialize($p), $posts)]);
+        return $this->json(['items' => array_map(fn (SurgeonSchedulePost $p) => $this->serialize($p, $blockedPairs), $posts)]);
     }
 
     #[Route('/api/planning/surgeon-posts', name: 'api_planning_surgeon_posts_create', methods: ['POST'])]
@@ -206,10 +212,14 @@ class SurgeonSchedulePostController extends AbstractController
         }
     }
 
-    private function serialize(SurgeonSchedulePost $post): array
+    /** @param array<string, true>|null $blockedPairs active incompatible pairs (read for this post when null) */
+    private function serialize(SurgeonSchedulePost $post, ?array $blockedPairs = null): array
     {
         $recurrence = $post->getRecurrence();
         $instrumentist = $post->getInstrumentist();
+        $blockedPairs ??= $instrumentist !== null
+            ? $this->eligibility->activeIncompatiblePairs([(int) $post->getSurgeon()->getId()])
+            : [];
 
         return [
             'id'         => $post->getId(),
@@ -218,6 +228,11 @@ class SurgeonSchedulePostController extends AbstractController
             'type'       => $post->getType()->value,
             'period'     => $post->getPeriod()->value,
             'instrumentist' => $instrumentist !== null ? $this->serializeUserRef($instrumentist) : null,
+            // D-152 — the post's default instrumentist has since become incompatible with its
+            // surgeon (a post configured before the block): generation leaves the slot
+            // uncovered; the manager corrects the post (another instrumentist or none).
+            'instrumentistBlocked' => $instrumentist !== null
+                && isset($blockedPairs[$post->getSurgeon()->getId() . '-' . $instrumentist->getId()]),
             'startDate'  => $post->getStartDate()->format('Y-m-d'),
             'endDate'    => $post->getEndDate()?->format('Y-m-d'),
             'active'     => $post->isActive(),

@@ -2,6 +2,8 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\MissionListAnnotator;
+
 use App\Dto\Request\Response\InstrumentistMissionSyncResponse;
 use App\Entity\Mission;
 use App\Entity\SiteMembership;
@@ -29,6 +31,7 @@ class InstrumentistMissionSyncService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MissionMapper $mapper,
+        private readonly ?MissionListAnnotator $listAnnotator = null,
     ) {}
 
     /**
@@ -64,16 +67,17 @@ class InstrumentistMissionSyncService
         $removed = $qbRemoved->getQuery()->getResult();
 
         // Fusion offers + mine, dédoublonnage par id
-        $missions = [];
-        $seen = [];
+        $unique = [];
         foreach ([...$offers, ...$mine] as $mission) {
             /** @var Mission $mission */
-            $id = (int) $mission->getId();
-            if (isset($seen[$id])) {
-                continue;
-            }
-            $seen[$id] = true;
-            $missions[] = $this->mapper->toListDto($mission, $user);
+            $unique[(int) $mission->getId()] ??= $mission;
+        }
+        // D-156 — same server-side prestation/conflict annotation as GET /api/missions: a
+        // synced item patched into a cached list must never drop its prestation summary.
+        $annotations = $this->listAnnotator?->annotate(array_values($unique)) ?? [];
+        $missions = [];
+        foreach ($unique as $id => $mission) {
+            $missions[] = $this->mapper->toListDto($mission, $user, annotation: $annotations[$id] ?? null);
         }
 
         $removedMissionIds = [];
@@ -134,7 +138,8 @@ class InstrumentistMissionSyncService
                 $qb->expr()->andX(
                     'p.scope = :elig_scopeTargeted',
                     'p.targetInstrumentist = :elig_me',
-                    'p.declinedAt IS NULL' // D-125 — a declined request is no longer an offer
+                    'p.declinedAt IS NULL', // D-125 — a declined request is no longer an offer
+                    'p.closedAt IS NULL'     // D-177 — nor an accepted / expired / lifted one
                 ),
                 $qb->expr()->andX(
                     'p.scope = :elig_scopePool',

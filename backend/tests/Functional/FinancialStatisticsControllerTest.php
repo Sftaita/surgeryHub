@@ -19,11 +19,17 @@ use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PricingRuleType;
 use App\Service\FinancialCalculationService;
+use App\Service\FinancialStatisticsPdfExporter;
+use App\Service\FinancialStatisticsQueryService;
+use App\Service\FinancialStatisticsRankingService;
+use App\Service\StatisticsExportSlots;
+use App\Service\PdfService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Pilotage financier, Lot 7 (D-077) — §27/§30/§31 du lot : permissions
@@ -32,6 +38,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class FinancialStatisticsControllerTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'FinStats77!';
 
     private EntityManagerInterface $em;
@@ -174,6 +182,7 @@ final class FinancialStatisticsControllerTest extends WebTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -305,6 +314,137 @@ final class FinancialStatisticsControllerTest extends WebTestCase
         self::assertSame(5, $body['limit']);
         self::assertCount(1, $body['items']);
         self::assertSame('MISSION', $body['items'][0]['sourceType']);
+    }
+
+    // ── D-186 — soldes, totaux et export PDF ─────────────────────────────
+
+    public function test_by_surgeon_exposes_net_balance_and_totals_independent_of_page(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token = $this->login($client, $manager);
+        [, $surgeon] = $this->makeApprovedMission($manager);
+
+        $response = $this->getJson($client, $token, '/api/financial-statistics/by-surgeon?from=2026-05-01&to=2026-06-01&surgeonId=' . $surgeon->getId() . '&sortBy=netBalance&sortDirection=ASC&page=2&limit=1');
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $body = json_decode((string) $response->getContent(), true);
+        self::assertSame([], $body['items'], 'page 2 vide (un seul chirurgien)…');
+        self::assertSame([['currency' => 'EUR', 'generatedFirmRevenue' => '120.00', 'generatedInstrumentistCompensation' => '35.00', 'netBalance' => '85.00']], $body['totals'], '…mais les totaux couvrent tout le filtre.');
+    }
+
+    public function test_manager_exports_a_view_as_pdf_and_the_export_is_audited(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $token = $this->login($client, $manager);
+        [, $surgeon] = $this->makeApprovedMission($manager);
+
+        foreach (['overview', 'timeseries', 'by-firm', 'by-instrumentist', 'by-surgeon', 'by-intervention', 'top-materials'] as $view) {
+            $client->request('GET', '/api/financial-statistics/export?view=' . $view . '&from=2026-05-01&to=2026-06-01&surgeonId=' . $surgeon->getId(), server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+            $response = $client->getResponse();
+            self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $view . ' : ' . substr((string) $response->getContent(), 0, 300));
+            self::assertSame('application/pdf', $response->headers->get('Content-Type'));
+            self::assertStringStartsWith('%PDF', (string) $response->getContent());
+        }
+
+        $this->em->clear();
+        $events = $this->em->getRepository(AuditEvent::class)->findBy(['actor' => $manager->getId(), 'eventType' => \App\Enum\AuditEventType::FINANCIAL_STATISTICS_EXPORTED]);
+        self::assertCount(7, $events);
+        $payload = $events[0]->getPayload();
+        self::assertSame($surgeon->getId(), $payload['surgeonId']);
+        self::assertArrayHasKey('rowCount', $payload);
+    }
+
+    public function test_export_rejects_unknown_view_and_non_manager(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+
+        $client->request('GET', '/api/financial-statistics/export?view=pipeline', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $manager)]);
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $client->getResponse()->getStatusCode());
+
+        $client->request('GET', '/api/financial-statistics/export?view=by-surgeon&sortBy=nope', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $manager)]);
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $client->getResponse()->getStatusCode());
+
+        $client->request('GET', '/api/financial-statistics/export?view=by-surgeon', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $instrumentist)]);
+        self::assertSame(Response::HTTP_FORBIDDEN, $client->getResponse()->getStatusCode());
+    }
+
+    public function test_export_too_large_for_the_pdf_engine_is_refused_with_an_explicit_error(): void
+    {
+        $client = $this->boot();
+        $client->disableReboot();
+        $token = $this->login($client, $this->createUser('ROLE_MANAGER'));
+        // Plafond réduit à 30 lignes (1 000 en production) : 31 jours en granularité DAY le dépassent.
+        $c = static::getContainer();
+        $c->set(FinancialStatisticsPdfExporter::class, new FinancialStatisticsPdfExporter(
+            $this->em, $c->get(PdfService::class), $c->get(FinancialStatisticsQueryService::class), $c->get(FinancialStatisticsRankingService::class), maxRows: 30,
+        ));
+
+        $client->request('GET', '/api/financial-statistics/export?view=timeseries&granularity=DAY&from=2026-05-01&to=2026-06-01', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+
+        $response = $client->getResponse();
+        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+        $error = json_decode((string) $response->getContent(), true)['error'];
+        self::assertSame('STATISTICS_EXPORT_TOO_LARGE', $error['code']);
+        self::assertSame(31, $error['rowCount']);
+        self::assertSame(30, $error['maxRows']);
+        self::assertStringContainsString('Affinez la période ou les filtres', $error['message']);
+    }
+
+    /**
+     * D-187 — capacité d'exports simultanés atteinte : refus explicite (429, Retry-After), rien
+     * n'est audité, la consultation et les permissions ne changent pas ; l'emplacement libéré,
+     * l'export repart. L'export « en cours » est tenu par un autre processus (= un autre worker
+     * php-fpm), comme en production.
+     */
+    public function test_export_is_refused_while_all_export_slots_are_busy_and_resumes_once_freed(): void
+    {
+        $client = $this->boot();
+        $client->disableReboot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+        $token = $this->login($client, $manager);
+        $this->makeApprovedMission($manager);
+
+        $dir = sys_get_temp_dir() . '/sh-export-slots-' . bin2hex(random_bytes(4));
+        mkdir($dir, 0775, true);
+        static::getContainer()->set(StatisticsExportSlots::class, new StatisticsExportSlots($dir, 1));
+        $holder = sprintf('$h = fopen(%s, "c"); flock($h, LOCK_EX); echo "held\n"; fflush(STDOUT); sleep(60);', var_export($dir . '/slot-1.lock', true));
+        $proc = proc_open([PHP_BINARY, '-r', $holder], [1 => ['pipe', 'w']], $pipes);
+        self::assertSame("held\n", fgets($pipes[1]));
+        $audited = fn () => count($this->em->getRepository(AuditEvent::class)->findBy(['actor' => $manager->getId(), 'eventType' => \App\Enum\AuditEventType::FINANCIAL_STATISTICS_EXPORTED]));
+
+        try {
+            $client->request('GET', '/api/financial-statistics/export?view=by-surgeon&from=2026-05-01&to=2026-06-01', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+            $response = $client->getResponse();
+            self::assertSame(Response::HTTP_TOO_MANY_REQUESTS, $response->getStatusCode());
+            self::assertSame('30', $response->headers->get('Retry-After'));
+            $error = json_decode((string) $response->getContent(), true)['error'];
+            self::assertSame('STATISTICS_EXPORT_BUSY', $error['code']);
+            self::assertSame(1, $error['capacity']);
+            self::assertStringContainsString('Réessayez dans quelques instants', $error['message']);
+            self::assertSame(0, $audited(), "un export refusé n'est pas audité");
+
+            self::assertSame(Response::HTTP_OK, $this->getJson($client, $token, '/api/financial-statistics/by-surgeon?from=2026-05-01&to=2026-06-01')->getStatusCode(), "la consultation n'est jamais bloquée");
+            $client->request('GET', '/api/financial-statistics/export?view=by-surgeon', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $instrumentist)]);
+            self::assertSame(Response::HTTP_FORBIDDEN, $client->getResponse()->getStatusCode(), 'les permissions passent avant la capacité');
+        } finally {
+            proc_terminate($proc, 9);
+            fclose($pipes[1]);
+            proc_close($proc);
+        }
+
+        $deadline = microtime(true) + 5;
+        do {
+            $client->request('GET', '/api/financial-statistics/export?view=by-surgeon&from=2026-05-01&to=2026-06-01', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+        } while ($client->getResponse()->getStatusCode() === Response::HTTP_TOO_MANY_REQUESTS && microtime(true) < $deadline && usleep(100_000) === null);
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode());
+        self::assertSame('application/pdf', $client->getResponse()->headers->get('Content-Type'));
+        self::assertSame(1, $audited(), "l'export réussi est audité une fois");
+        @unlink($dir . '/slot-1.lock');
+        @rmdir($dir);
     }
 
     public function test_by_firm_supports_pagination_parameters(): void

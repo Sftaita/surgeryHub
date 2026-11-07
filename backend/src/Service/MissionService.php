@@ -3,6 +3,7 @@
 
 namespace App\Service;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Dto\Request\DeclareMissionRequest;
 use App\Dto\Request\MissionCreateRequest;
 use App\Dto\Request\MissionFilter;
@@ -14,7 +15,10 @@ use App\Entity\Mission;
 use App\Entity\PlanningVersion;
 use App\Entity\SiteMembership;
 use App\Entity\User;
+use App\Enum\AuditEventType;
 use App\Enum\EmploymentType;
+use App\Enum\MissionAssignmentEndReason;
+use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PublicationScope;
@@ -28,10 +32,14 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
+use Symfony\Component\Clock\Clock;
 
 class MissionService
 {
     private const DEFAULT_TIMEZONE = 'Europe/Brussels';
+
+    /** D-150 — writer of the instrumentist (and affectation history) of a published mission. */
+    private readonly MissionAssignmentService $assignments;
 
     public function __construct(
         private readonly EntityManagerInterface $em,
@@ -41,7 +49,11 @@ class MissionService
         private readonly MissionEncodingWorkflowService $encodingWorkflowService,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly PlanningVersionOperationalScope $operationalScope,
-    ) {}
+        ?MissionAssignmentService $assignments = null,
+    ) {
+        // D-150 — always autowired; a plain unit test that omits it still gets the real writer.
+        $this->assignments = $assignments ?? new MissionAssignmentService($em);
+    }
 
     public function create(MissionCreateRequest $dto, User $creator): Mission
     {
@@ -69,6 +81,17 @@ class MissionService
             ->setEndAt($dto->endAt);
 
         $this->em->persist($mission);
+        $this->em->flush();
+
+        // H5b (D-132) — who added this mission by hand (no notification: a DRAFT is not communicated).
+        $this->auditService->record($mission, $creator, AuditEventType::MISSION_CREATED_MANUALLY, [
+            'startAt' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
+            'endAt' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+            'type' => $mission->getType()?->value,
+            'surgeonId' => $surgeon->getId(), 'surgeonName' => $surgeon->getDrName(),
+            'instrumentistId' => $instrumentist?->getId(),
+            'instrumentistName' => $instrumentist !== null ? trim(($instrumentist->getFirstname() ?? '') . ' ' . ($instrumentist->getLastname() ?? '')) : null,
+        ]);
         $this->em->flush();
 
         return $mission;
@@ -102,7 +125,6 @@ class MissionService
             ->setType($dto->type)
             ->setSchedulePrecision($dto->schedulePrecision)
             ->setSurgeon($surgeon)
-            ->setInstrumentist($currentUser)
             ->setCreatedBy($currentUser)
             ->setStatus(MissionStatus::DECLARED)
             ->setDeclaredAt(new \DateTimeImmutable())
@@ -113,18 +135,36 @@ class MissionService
         // ⚠️ strict: aucune MissionPublication créée
 
         $this->em->persist($mission);
+        // D-150 — a declared mission is a real affectation of its declarer, from the start.
+        $this->assignments->assign($mission, $currentUser, MissionAssignmentSource::DECLARED, $currentUser);
 
         // ✅ Lot B4 — Audit + Notifications (sans changer la logique métier)
         $this->auditService->missionDeclared($mission, $currentUser);
-        $this->notificationService->missionDeclaredNotifyManagersAdmins($mission);
 
         $this->em->flush();
+        // H5b (D-132) — after the flush: the dispatcher needs the mission's id.
+        $this->notificationService->missionDeclaredNotifyManagersAdmins($mission);
 
         return $mission;
     }
 
     // ✅ Lot B4 — actor explicite (Option A) pour l’audit trail "who"
     public function approveDeclared(Mission $mission, User $actor): Mission
+    {
+        $this->applyApproveDeclared($mission, $actor);
+
+        $this->em->flush();
+        $this->notificationService->missionDeclaredApprovedNotifyInstrumentist($mission);
+
+        return $mission;
+    }
+
+    /**
+     * approveDeclared()'s mutation and audit only — no flush, no notification. D-182:
+     * MissionReplacementService approves a replacement mission inside its own transaction and
+     * tells the instrumentist itself (one confirmation, never two emails).
+     */
+    public function applyApproveDeclared(Mission $mission, User $actor): void
     {
         if ($mission->getStatus() !== MissionStatus::DECLARED) {
             throw new ConflictHttpException('Mission is not DECLARED');
@@ -134,11 +174,6 @@ class MissionService
 
         // ✅ Lot B4 — Audit + Notifications
         $this->auditService->missionDeclaredApproved($mission, $actor);
-        $this->notificationService->missionDeclaredApprovedNotifyInstrumentist($mission);
-
-        $this->em->flush();
-
-        return $mission;
     }
 
     // ✅ Lot B4 — actor explicite (Option A) pour l’audit trail "who"
@@ -159,10 +194,11 @@ class MissionService
             $this->purgeDeclaredEncoding($mission);
 
             $mission->setStatus(MissionStatus::REJECTED);
+            // D-150 — statut définitif : l'affectation se ferme, l'instrumentiste reste sur la mission.
+            $this->assignments->endOnFinalStatus($mission, MissionAssignmentEndReason::REJECTED, $actor);
 
             // ✅ Lot B4 — Audit + Notifications
             $this->auditService->missionDeclaredRejected($mission, $actor);
-            $this->notificationService->missionDeclaredRejectedNotifyInstrumentist($mission);
 
             $this->em->flush();
 
@@ -170,6 +206,8 @@ class MissionService
             $this->em->refresh($mission);
 
             $conn->commit();
+            // H5b (D-132) — after the commit: through the dispatcher.
+            $this->notificationService->missionDeclaredRejectedNotifyInstrumentist($mission);
 
             return $mission;
         } catch (\Throwable $e) {
@@ -238,6 +276,10 @@ class MissionService
         if ($mission->getStatus() !== MissionStatus::DRAFT) {
             throw new ConflictHttpException('Mission not editable');
         }
+        $before = [
+            'fromSiteId' => $mission->getSite()?->getId(), 'fromType' => $mission->getType()?->value,
+            'fromStartAt' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM), 'fromEndAt' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+        ];
 
         if ($dto->siteId !== null) {
             $site = $this->em->find(Hospital::class, $dto->siteId) ?? throw new NotFoundHttpException('Site not found');
@@ -282,6 +324,15 @@ class MissionService
             throw new UnprocessableEntityHttpException('endAt must be after startAt');
         }
 
+        // H5b (D-132) — only when something really changed (before → after of the edited facts).
+        $after = [
+            'toSiteId' => $mission->getSite()?->getId(), 'toType' => $mission->getType()?->value,
+            'toStartAt' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM), 'toEndAt' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+        ];
+        if (array_values($before) !== array_values($after)) {
+            $this->auditService->record($mission, $actor, AuditEventType::MISSION_DRAFT_UPDATED, $before + $after);
+        }
+
         $this->em->flush();
         return $mission;
     }
@@ -296,11 +347,12 @@ class MissionService
      * recipient), so — consistent with create() and patch() — this method intentionally does
      * not audit or notify.
      */
-    public function assignInstrumentistDraft(Mission $mission, ?int $instrumentistId): Mission
+    public function assignInstrumentistDraft(Mission $mission, ?int $instrumentistId, ?User $actor = null): Mission
     {
         if ($mission->getStatus() !== MissionStatus::DRAFT) {
             throw new MissionNotDraftException('Utilisez /release ou /reassign pour les missions déployées.');
         }
+        $previous = $mission->getInstrumentist();
 
         if ($instrumentistId === null) {
             $mission->setInstrumentist(null);
@@ -318,6 +370,16 @@ class MissionService
             $mission->setInstrumentist($instrumentist);
         }
 
+        // H5b (D-132) — the affectation of a DRAFT (no notification, no communication).
+        $current = $mission->getInstrumentist();
+        if ($actor !== null && $previous?->getId() !== $current?->getId()) {
+            $name = static fn (?User $u) => $u !== null ? trim(($u->getFirstname() ?? '') . ' ' . ($u->getLastname() ?? '')) : null;
+            $this->auditService->record($mission, $actor, AuditEventType::MISSION_DRAFT_INSTRUMENTIST_CHANGED, [
+                'fromInstrumentistId' => $previous?->getId(), 'fromInstrumentistName' => $name($previous),
+                'toInstrumentistId' => $current?->getId(), 'toInstrumentistName' => $name($current),
+            ]);
+        }
+
         $this->em->flush();
 
         return $mission;
@@ -331,6 +393,28 @@ class MissionService
      * still recomputes whether material lines exist itself, `$dto->noMaterial` stays
      * unused/informational, never trusted as the source of truth).
      */
+    /**
+     * D-156 — libellé de salle facultatif. Purement descriptif (aucune règle ne le lit),
+     * audité avant/après, jamais exigé. Vide = retiré.
+     */
+    public function updateRoomLabel(Mission $mission, User $actor, ?string $roomLabel): Mission
+    {
+        $label = $roomLabel !== null ? trim($roomLabel) : '';
+        $label = $label === '' ? null : $label;
+        if ($label !== null && mb_strlen($label) > 60) {
+            throw new UnprocessableEntityHttpException('Le libellé de salle ne peut pas dépasser 60 caractères.');
+        }
+
+        $previous = $mission->getRoomLabel();
+        if ($previous !== $label) {
+            $mission->setRoomLabel($label);
+            $this->auditService->record($mission, $actor, AuditEventType::MISSION_ROOM_LABEL_CHANGED, ['before' => $previous, 'after' => $label]);
+            $this->em->flush();
+        }
+
+        return $mission;
+    }
+
     public function submit(Mission $mission, MissionSubmitRequest $dto, User $actor): Mission
     {
         return $this->encodingWorkflowService->complete($mission, $actor, $dto->comment);
@@ -389,8 +473,33 @@ class MissionService
         // intent consistent for ties.
         if ($filter->eligibleToMe === true) {
             $qb->orderBy('m.startAt', 'ASC')->addOrderBy('m.id', 'ASC');
+        } elseif ($filter->order === 'asc') {
+            $qb->orderBy('m.startAt', 'ASC')->addOrderBy('m.id', 'ASC');
         } else {
             $qb->orderBy('m.startAt', 'DESC')->addOrderBy('m.id', 'DESC');
+        }
+
+        // D-147 — free-text search. Each whitespace-separated term must match one of the
+        // searchable fields (AND across terms, OR across fields), so "dupont clinique"
+        // narrows instead of widening. A purely numeric term (optionally `#`-prefixed)
+        // also matches the mission id exactly.
+        $q = $this->normalizeNullableString($filter->q);
+        if ($q !== null) {
+            $terms = preg_split('/\s+/u', mb_strtolower($q)) ?: [];
+            foreach (array_values(array_filter($terms, static fn (string $t) => $t !== '')) as $i => $term) {
+                $param = 'q' . $i;
+                $or = $qb->expr()->orX(
+                    "LOWER(CONCAT(COALESCE(surgeon.firstname, ''), ' ', COALESCE(surgeon.lastname, ''))) LIKE :{$param}",
+                    "LOWER(CONCAT(COALESCE(instr.firstname, ''), ' ', COALESCE(instr.lastname, ''))) LIKE :{$param}",
+                    "LOWER(s.name) LIKE :{$param}",
+                );
+                $digits = ltrim($term, '#');
+                if ($digits !== '' && ctype_digit($digits)) {
+                    $or->add("m.id = :{$param}Id");
+                    $qb->setParameter($param . 'Id', (int) $digits);
+                }
+                $qb->andWhere($or)->setParameter($param, '%' . addcslashes($term, '%_\\') . '%');
+            }
         }
 
         if ($filter->siteId) {
@@ -429,7 +538,8 @@ class MissionService
                     $qb->expr()->andX(
                         'p.scope = :scopeTargeted',
                         'p.targetInstrumentist = :me',
-                        'p.declinedAt IS NULL' // D-125 — a declined request is no longer an offer
+                        'p.declinedAt IS NULL', // D-125 — a declined request is no longer an offer
+                        'p.closedAt IS NULL'     // D-177 — nor an accepted / expired / lifted one
                     ),
                     // V1 POOL: freelancer always eligible; employee needs site membership
                     $qb->expr()->andX(
@@ -454,6 +564,23 @@ class MissionService
             $qb->setParameter('isFreelancer', $isFreelancer);
             $qb->setParameter('scopeTargeted', PublicationScope::TARGETED);
             $qb->setParameter('scopePool', PublicationScope::POOL);
+
+            // D-151 — same rules as MissionEligibilityService::evaluate() (claim gate): never a
+            // mission that has already started, never one whose surgeon refused me on it. The
+            // "now" is labelled Europe/Brussels like the stored startAt (D-066), as in
+            // MissionStartDueCommand.
+            $qb->andWhere('m.startAt > :eligibleNow')
+                ->setParameter('eligibleNow', Clock::get()->now()->setTimezone(new \DateTimeZone(self::DEFAULT_TIMEZONE)));
+            $qb->andWhere('NOT EXISTS (
+                    SELECT refusal.id FROM App\Entity\MissionAssignment refusal
+                    WHERE refusal.mission = m AND refusal.instrumentist = :me AND refusal.endReason = :refusedBySurgeon
+                )')
+                ->setParameter('refusedBySurgeon', MissionAssignmentEndReason::REFUSED_BY_SURGEON);
+            // D-152 — never a mission of a surgeon I am incompatible with.
+            $qb->andWhere('NOT EXISTS (
+                    SELECT incompatibility.id FROM App\Entity\SurgeonInstrumentistIncompatibility incompatibility
+                    WHERE incompatibility.surgeon = m.surgeon AND incompatibility.instrumentist = :me AND incompatibility.liftedAt IS NULL
+                )');
 
             // Lot 6 (offers "unread" badge) — programmatic-only filter, see MissionFilter.
             if ($filter->createdAfter !== null) {
@@ -505,10 +632,14 @@ class MissionService
 
         if ($useRange) {
             if ($filter->toProvided === true && $filter->to !== null) {
-                $qb->andWhere('m.startAt < :to')->setParameter('to', $filter->to);
+                // D-156 lot 1 — bound as a business datetime: m.startAt/endAt are Brussels
+                // wall-clock (D-066), so an instant sent with `Z`/an offset must be converted to
+                // Brussels before comparison — an untyped binding wrote it with its own offset
+                // (1–2 h skew on every day boundary).
+                $qb->andWhere('m.startAt < :to')->setParameter('to', $filter->to, BusinessDateTimeImmutableType::NAME);
             }
             if ($filter->fromProvided === true && $filter->from !== null) {
-                $qb->andWhere('m.endAt > :from')->setParameter('from', $filter->from);
+                $qb->andWhere('m.endAt > :from')->setParameter('from', $filter->from, BusinessDateTimeImmutableType::NAME);
             }
         } else {
             // Legacy behaviour unchanged
@@ -550,6 +681,22 @@ class MissionService
                 ->andWhere('vwcFc.id IS NULL');
         }
 
+        if ($filter->withoutInstrumentist === true) {
+            $qb->andWhere('m.instrumentist IS NULL');
+        }
+
+        // D-172 — annulées masquées sur demande ; le nombre masqué est servi pour que le compteur
+        // dise exactement ce qu'il exclut. Un filtre de statut explicite prime.
+        $cancelledExcluded = null;
+        if ($filter->excludeCancelled === true && $statusList === null) {
+            $cancelledExcluded = (int) (clone $qb)
+                ->select('COUNT(DISTINCT m.id)')
+                ->resetDQLPart('orderBy')
+                ->andWhere('m.status = :cancelledOnly')->setParameter('cancelledOnly', MissionStatus::CANCELLED)
+                ->getQuery()->getSingleScalarResult();
+            $qb->andWhere('m.status != :excludedCancelled')->setParameter('excludedCancelled', MissionStatus::CANCELLED);
+        }
+
         $page = max(1, (int) ($filter->page ?? 1));
         $limit = max(1, min(100, (int) ($filter->limit ?? 20)));
 
@@ -562,6 +709,7 @@ class MissionService
             'total' => count($paginator),
             'page' => $page,
             'limit' => $limit,
+            'cancelledExcluded' => $cancelledExcluded,
         ];
     }
 

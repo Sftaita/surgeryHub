@@ -22,6 +22,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Exécution & Valorisation, Lot 3 (D-073) — §23/§24 du lot : endpoints
@@ -29,6 +30,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class FinancialCalculationControllerTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'FinCalc73!';
 
     private EntityManagerInterface $em;
@@ -172,6 +175,7 @@ final class FinancialCalculationControllerTest extends WebTestCase
         $m->setStatus(MissionStatus::VALIDATED);
         $m->setInstrumentist($instrumentist);
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
 
         $intervention = new MissionIntervention();
@@ -200,6 +204,7 @@ final class FinancialCalculationControllerTest extends WebTestCase
         $m->setEndAt(new \DateTimeImmutable('2026-06-01 09:00:00'));
         $m->setStatus(MissionStatus::ASSIGNED); // pas VALIDATED
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
         return $m;
     }
@@ -365,6 +370,7 @@ final class FinancialCalculationControllerTest extends WebTestCase
         $m->setStatus(MissionStatus::VALIDATED);
         $m->setInstrumentist($instrumentist);
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
 
         $token = $this->login($client, $manager);

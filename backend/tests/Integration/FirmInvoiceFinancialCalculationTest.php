@@ -33,6 +33,7 @@ use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistStatementService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Exécution & Valorisation, Lot 4 (D-074) — §34 du lot : sélection des lignes
@@ -42,6 +43,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private array $connectionParams;
     private FinancialCalculationService $calcService;
@@ -248,6 +251,7 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -343,6 +347,7 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -670,6 +675,7 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -721,6 +727,7 @@ final class FirmInvoiceFinancialCalculationTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();

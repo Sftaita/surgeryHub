@@ -7,7 +7,7 @@ namespace App\Message;
  *
  * Routing: async (messenger.yaml). Handler: MissionPublishedMessageHandler.
  *
- * Point 8 (audit UX) — replaces the synchronous `WebPushService::sendToSiteInstrumentists()`
+ * Point 8 (audit UX) — replaced the former synchronous site-wide push (removed in H3, D-129 — the pool now goes through OpenMissionPoolNotifier)
  * call that used to live directly in MissionController::publish() (known tech debt,
  * D-081 §"envoi push synchrone dans MissionController::publish()") and adds the surgeon
  * notification the manager-created OPEN mission never triggered before this lot.

@@ -10,6 +10,7 @@ use App\Enum\ShiftPeriod;
 use App\Repository\ReleasedOperatingRoomSlotRepository;
 use App\Security\Voter\PlanningVoter;
 use App\Security\Voter\ReleasedRoomSlotVoter;
+use App\Service\ReleasedRoomSlotHistoryService;
 use App\Service\ReleasedRoomSlotTakeoverService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -36,6 +37,7 @@ class AvailableRoomsController extends AbstractController
     public function __construct(
         private readonly ReleasedOperatingRoomSlotRepository $slots,
         private readonly ReleasedRoomSlotTakeoverService $takeovers,
+        private readonly ReleasedRoomSlotHistoryService $history,
     ) {
     }
 
@@ -97,6 +99,22 @@ class AvailableRoomsController extends AbstractController
         ]);
     }
 
+    /**
+     * D-177 — permanent chronological history of one released room (absence, availability,
+     * request, take-over, publication, priority and its end, pool, final assignment, and every
+     * later take-over), with its current operational state and next automatic action.
+     * Managers only (PlanningVoter::PLANNING_MANAGE, like the list).
+     */
+    #[Route('/api/planning/available-rooms/{id}/history', name: 'api_available_rooms_manager_history', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function managerHistory(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $slot = $this->slots->find($id) ?? throw $this->createNotFoundException('Créneau introuvable.');
+
+        return $this->json($this->history->history($slot));
+    }
+
     #[Route('/api/me/available-rooms', name: 'api_me_available_rooms_list', methods: ['GET'])]
     public function myList(Request $request, #[CurrentUser] User $currentUser): JsonResponse
     {
@@ -131,6 +149,28 @@ class AvailableRoomsController extends AbstractController
             'limit' => $f['limit'],
             'total' => $result['total'],
         ]);
+    }
+
+    /**
+     * D-161 — le créneau annoncé par une notification « Salle opératoire disponible », relu
+     * au moment de l'ouverture : mêmes règles de visibilité que `myList()` (sites affiliés,
+     * jamais le passé, jamais une salle reprise par un confrère). 404 `ROOM_SLOT_UNAVAILABLE`
+     * quand il ne l'est plus — le frontend n'en déduit rien d'autre ; la reprise elle-même
+     * reste revérifiée sous verrou par `take-over`.
+     */
+    #[Route('/api/me/available-rooms/{id}', name: 'api_me_available_rooms_show', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function myShow(int $id, #[CurrentUser] User $currentUser): JsonResponse
+    {
+        if (!in_array('ROLE_SURGEON', $currentUser->getRoles(), true)) {
+            throw $this->createAccessDeniedException();
+        }
+
+        $slot = $this->slots->findVisibleToSurgeon($id, $this->affiliatedSiteIds($currentUser), (int) $currentUser->getId());
+        if ($slot === null) {
+            return $this->json(['error' => ['code' => 'ROOM_SLOT_UNAVAILABLE', 'message' => 'Cette salle n\'est plus disponible.']], 404);
+        }
+
+        return $this->json($this->toPayload($slot));
     }
 
     /**
@@ -263,6 +303,9 @@ class AvailableRoomsController extends AbstractController
             'claimedAt' => $s->getClaimedAt()?->format(\DateTimeInterface::ATOM),
             'claimedByMe' => $viewer !== null && $s->getClaimedBy()?->getId() === $viewer->getId(),
             'takeoverMission' => $this->takeoverMissionPayload($s->getTakeoverMission()),
+            // D-177 — priority pending (recipient, deadline, mission starting before it) /
+            // pool open / instrumentist confirmed… decided server-side only.
+            'operational' => ReleasedRoomSlotHistoryService::operationalState($s),
             // Le backend tranche : le frontend n'affiche un CTA que si l'action est ici à true.
             'allowedActions' => $this->takeovers->allowedActions($s),
         ];

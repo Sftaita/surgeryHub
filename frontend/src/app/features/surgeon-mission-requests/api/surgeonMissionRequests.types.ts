@@ -1,3 +1,4 @@
+import type { ReleasedRoomMatch } from "../../room-takeover/roomTakeover.types";
 import type { MissionType } from "../../missions/api/missions.types";
 
 /**
@@ -19,6 +20,8 @@ export interface SurgeonMissionRequest {
   reviewedAt: string | null;
   reviewComment: string | null;
   createdMissionId: number | null;
+  /** D-177 — released room(s) this PENDING request designates (server-computed). */
+  releasedRoomMatch?: ReleasedRoomMatch | null;
 }
 
 export interface CreateSurgeonMissionRequestBody {

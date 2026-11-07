@@ -10,6 +10,7 @@ use App\Enum\CatalogueRequestKind;
 use App\Message\CatalogueRequestProcessedMessage;
 use App\Security\Voter\BillingVoter;
 use App\Service\MaterialItemMapper;
+use App\Service\CatalogueResolutionGuard;
 use App\Service\MaterialItemRequestService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -28,6 +29,7 @@ final class MaterialItemRequestManagerController extends AbstractController
         private readonly MaterialItemMapper $mapper,
         private readonly MessageBusInterface $bus,
         private readonly MaterialItemRequestService $requestService,
+        private readonly CatalogueResolutionGuard $resolutionGuard,
     ) {}
 
     /**
@@ -63,10 +65,34 @@ final class MaterialItemRequestManagerController extends AbstractController
     }
 
     /**
+     * GET /api/material-item-requests/{id}/duplicate-candidates
+     * D-146 bis — aide à la détection des doublons (lecture seule) : matériels actifs dont
+     * le nom ou la référence ressemble à la demande, toutes firmes, firme proposée d'abord.
+     */
+    #[Route('/{id}/duplicate-candidates', name: 'api_material_item_requests_duplicate_candidates', methods: ['GET'], requirements: ['id' => '\d+'])]
+    public function duplicateCandidates(int $id): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $req = $this->em->getRepository(MaterialItemRequest::class)->find($id);
+        if (!$req instanceof MaterialItemRequest) {
+            return $this->json(['message' => 'Request not found'], Response::HTTP_NOT_FOUND);
+        }
+
+        return $this->json(['items' => array_map(MaterialItemRequestService::itemSummary(...), $this->requestService->duplicateCandidates($req))]);
+    }
+
+    /**
      * POST /api/material-item-requests/{id}/resolve
-     * Résout une demande en la liant à un MaterialItem existant.
-     * Crée une MaterialLine sur la mission concernée.
-     * Body: { materialItemId: int }
+     * D-146 bis — résolution ATOMIQUE (une seule transaction) :
+     *  - associer un matériel existant : { materialItemId, quantity? } — sa firme et ses
+     *    tarifs réels sont repris, jamais modifiés ;
+     *  - OU créer la référence : { newItem: {label, unit, referenceCode?, isImplant?,
+     *    firmId? | newFirmName?}, quantity?, confirmPossibleDuplicate? } — matériel
+     *    `UNSPECIFIED`, aucun tarif ; firme créée seulement si le manager le demande.
+     * `quantity` : quantité validée (défaut : celle de la demande). Crée la MaterialLine sur
+     * la cible de la demande. Refus explicites : 409 mission verrouillée, doublon,
+     * matériel incompatible ; 422 firme/quantité manquante.
      */
     #[Route('/{id}/resolve', name: 'api_material_item_requests_resolve', methods: ['POST'], requirements: ['id' => '\d+'])]
     public function resolve(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
@@ -78,23 +104,15 @@ final class MaterialItemRequestManagerController extends AbstractController
             return $this->json(['message' => 'Request not found'], Response::HTTP_NOT_FOUND);
         }
 
-        $body           = json_decode($request->getContent(), true) ?? [];
-        $materialItemId = $body['materialItemId'] ?? null;
-
-        if (!$materialItemId) {
-            return $this->json(['message' => 'materialItemId is required'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        $body = json_decode($request->getContent(), true);
+        if (!is_array($body)) {
+            $body = [];
         }
 
-        $mi = $this->em->getRepository(MaterialItem::class)->find((int) $materialItemId);
-        if (!$mi instanceof MaterialItem) {
-            return $this->json(['message' => 'MaterialItem not found'], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
-
-        // Verrouillage pessimiste + vérification PENDING délégués au service (§ 7 de
-        // l'audit — deux managers ouvrant simultanément la même demande) ; une demande
-        // déjà traitée lève MaterialItemRequestAlreadyProcessedException, traduite en 409
-        // par ApiExceptionSubscriber.
-        [$req, $line] = $this->requestService->resolve($req, $mi, $user);
+        // Verrouillage pessimiste, vérification PENDING, garde mission, création éventuelle
+        // firme/matériel, ligne et traçabilité : tout est délégué au service, dans une seule
+        // transaction (rien n'est partiellement enregistré en cas de refus).
+        [$req, $line, $created] = $this->requestService->resolve($req, $body, $user);
 
         // D-093 — prévient l'instrumentiste (jamais bloquant, voir handler async).
         $this->bus->dispatch(new CatalogueRequestProcessedMessage(
@@ -105,11 +123,20 @@ final class MaterialItemRequestManagerController extends AbstractController
             missionId: $req->getMission()->getId(),
             label: $req->getLabel(),
             occurredAt: new \DateTimeImmutable(),
+            resolution: [
+                'name'         => $line->getItem()->getLabel(),
+                'reference'    => $line->getItem()->getReferenceCode() ?: null,
+                'firm'         => $line->getItem()->getFirm()?->getName(),
+                'quantity'     => $line->getQuantity(),
+                'existingItem' => !$created['createdItem'],
+            ],
         ));
 
         return $this->json([
             'request'      => $this->serialize($req),
-            'materialLine' => ['id' => $line->getId()],
+            'materialLine' => ['id' => $line->getId(), 'quantity' => $line->getQuantity()],
+            'createdFirm'  => $created['createdFirm'],
+            'createdItem'  => $created['createdItem'],
         ]);
     }
 
@@ -166,16 +193,41 @@ final class MaterialItemRequestManagerController extends AbstractController
         $mi        = $r->getMaterialItem();
         $decidedBy = $r->getDecidedBy();
 
+        $proposedFirm = $r->getProposedFirm();
+        $target       = $r->getMissionIntervention();
+        $draft        = $r->getInterventionDraft();
+
         return [
             'id'            => $r->getId(),
             'status'        => $r->getStatus(),
             'label'         => $r->getLabel(),
             'referenceCode' => $r->getReferenceCode(),
             'comment'       => $r->getComment(),
+            // D-146 bis — ce que l'instrumentiste a déclaré : firme proposée (existante ou
+            // nom libre) et quantité. NULL pour les demandes antérieures (jamais recueilli).
+            'proposedFirm'     => $proposedFirm ? ['id' => $proposedFirm->getId(), 'name' => $proposedFirm->getName(), 'active' => $proposedFirm->isActive()] : null,
+            'proposedFirmName' => $r->getProposedFirmName(),
+            'quantity'         => $r->getQuantity(),
+            'target'           => $target ? [
+                'kind'  => 'INTERVENTION',
+                'id'    => $target->getId(),
+                'label' => $target->getLabel(),
+                'firm'  => $target->getPrimaryFirm() ? ['id' => $target->getPrimaryFirm()->getId(), 'name' => $target->getPrimaryFirm()->getName()] : null,
+            ] : ($draft ? [
+                'kind'  => 'DRAFT',
+                'id'    => $draft->getId(),
+                'label' => $draft->getLabel(),
+                'firm'  => $draft->getRequestedFirm() ? ['id' => $draft->getRequestedFirm()->getId(), 'name' => $draft->getRequestedFirm()->getName()] : null,
+            ] : null),
             'createdAt'     => $r->getCreatedAt()?->format(\DateTimeInterface::ATOM),
             'mission'       => $mission ? [
                 'id'   => $mission->getId(),
                 'site' => $mission->getSite()?->getName(),
+                'status' => $mission->getStatus()->value,
+                // D-146 bis — la résolution est refusée sur une mission verrouillée ; le
+                // manager le voit avant d'essayer (jamais une réouverture automatique).
+                'locked' => $this->resolutionGuard->isLocked($mission),
+                'reopenAvailable' => $this->resolutionGuard->isLocked($mission) && $this->resolutionGuard->reopenAvailable($mission),
             ] : null,
             'requestedBy'   => $by ? [
                 'id'          => $by->getId(),

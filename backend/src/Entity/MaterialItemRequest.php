@@ -65,6 +65,34 @@ class MaterialItemRequest
     #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
     private ?string $comment = null;
 
+    /**
+     * D-146 bis — firme fabricante choisie par l'instrumentiste parmi les firmes
+     * existantes. Exclusive de $proposedFirmName (l'une OU l'autre, exigée à la création
+     * depuis D-146 bis). NULL sur les demandes antérieures : information jamais recueillie.
+     * Simple proposition : la firme définitive est celle validée par le manager.
+     */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'proposed_firm_id', nullable: true, onDelete: 'SET NULL')]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
+    private ?Firm $proposedFirm = null;
+
+    /**
+     * D-146 bis — « Ma firme n'est pas dans la liste » : nom libre saisi par
+     * l'instrumentiste. Jamais une firme créée automatiquement — le manager la crée (ou
+     * en choisit une existante) explicitement lors de la résolution.
+     */
+    #[ORM\Column(length: 150, nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
+    private ?string $proposedFirmName = null;
+
+    /**
+     * D-146 bis — quantité utilisée déclarée par l'instrumentiste (strictement positive,
+     * exigée depuis D-146 bis). NULL sur les demandes antérieures — jamais « 1 » inventé.
+     */
+    #[ORM\Column(type: 'decimal', precision: 10, scale: 2, nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'material_request:read'])]
+    private ?string $quantity = null;
+
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false)]
     #[Groups(['mission:read_manager', 'material_request:read'])]
@@ -170,6 +198,39 @@ class MaterialItemRequest
     public function setComment(?string $comment): static
     {
         $this->comment = $comment;
+        return $this;
+    }
+
+    public function getProposedFirm(): ?Firm
+    {
+        return $this->proposedFirm;
+    }
+
+    public function setProposedFirm(?Firm $proposedFirm): static
+    {
+        $this->proposedFirm = $proposedFirm;
+        return $this;
+    }
+
+    public function getProposedFirmName(): ?string
+    {
+        return $this->proposedFirmName;
+    }
+
+    public function setProposedFirmName(?string $proposedFirmName): static
+    {
+        $this->proposedFirmName = $proposedFirmName;
+        return $this;
+    }
+
+    public function getQuantity(): ?string
+    {
+        return $this->quantity;
+    }
+
+    public function setQuantity(?string $quantity): static
+    {
+        $this->quantity = $quantity;
         return $this;
     }
 

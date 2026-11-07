@@ -1,0 +1,33 @@
+{# D-151 — désaffectation d'une instrumentiste (refus du chirurgien, libération ou réaffectation
+   par le manager), formulation NEUTRE imposée : jamais l'auteur ni le motif, jamais « mission
+   annulée ». Variables : greeting, dateLabel, timeLabel, siteName, notificationPreferencesUrl. #}
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+    .container { max-width: 600px; margin: 0 auto; padding: 24px; }
+    .footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <p>{{ greeting }},</p>
+
+  <p>Nous vous informons qu'une modification a été apportée à l'organisation de la mission du <strong>{{ dateLabel }}{% if timeLabel %} à {{ timeLabel }}{% endif %}</strong>{% if siteName %}, prévue à <strong>{{ siteName }}</strong>{% endif %}.</p>
+
+  <p>Votre affectation à cette mission n'a malheureusement pas pu être maintenue.</p>
+
+  <p>Aucune action n'est nécessaire de votre part. Vous pouvez continuer à consulter et à accepter les autres missions disponibles sur SurgicalHub.</p>
+
+  <p>Nous vous remercions pour votre disponibilité et votre compréhension.</p>
+
+  <p>L'équipe SurgicalHub</p>
+
+  {% include 'emails/_notification_preferences_cta.html.twig' %}
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

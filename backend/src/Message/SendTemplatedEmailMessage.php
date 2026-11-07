@@ -28,7 +28,9 @@ final class SendTemplatedEmailMessage
          * dispatch, pour que le handler/listener de cette même livraison passent réellement
          * à SENT/FAILED — jamais un statut posé de manière optimiste au moment du dispatch,
          * qui ne prouve rien côté SMTP. Indépendant de $outboundNotificationId (deux
-         * journaux distincts, jamais les deux à la fois sur un même message).
+         * journaux distincts). H5b (D-132) : une livraison D-114 porte désormais LES DEUX
+         * identifiants — son journal spécialisé et sa ligne outbound_notification (couche
+         * basse commune) —, mis à jour ensemble par le handler et le listener d'échec.
          */
         public readonly ?int $absenceCommunicationDeliveryId = null,
         /**
@@ -48,6 +50,25 @@ final class SendTemplatedEmailMessage
          * message avant ce lot.
          */
         public readonly ?string $replyTo = null,
+        /**
+         * H3 (D-129) — inline base64 PDF attachments. Superseded by $documents (H5a):
+         * kept only so messages already queued before the H5a deployment are still sent.
+         *
+         * @var list<array{base64: string, filename: string}>
+         */
+        public readonly array $attachments = [],
+        /**
+         * H5a (§16) — attachments by reference (DocumentReference::toArray()): the handler
+         * loads the stored GeneratedDocument and verifies its sha256. Never bytes here.
+         *
+         * @var list<array{documentId: int, documentType: string, filename: string, sha256: string, byteSize: int}>
+         */
+        public readonly array $documents = [],
+        /**
+         * H5a — false for an email carrying a secret (invitation token): the rendered body is
+         * then never copied into the outbound_notification row.
+         */
+        public readonly bool $storeRenderedBody = true,
     ) {
     }
 }

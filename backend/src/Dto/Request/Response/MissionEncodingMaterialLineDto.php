@@ -12,5 +12,7 @@ final class MissionEncodingMaterialLineDto
         public readonly ?string $comment,
         /** EPIC Revue instrumentiste, Lot 3, commit 4. */
         public readonly ?int $interventionDraftId = null,
+        /** D-154 — version optimiste, renvoyée en If-Match à la modification / suppression. */
+        public readonly ?int $version = null,
     ) {}
 }

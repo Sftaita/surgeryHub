@@ -48,7 +48,7 @@ final class MissionExecutionControllerTest extends WebTestCase
 
             foreach ($this->createdMissionIds as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
 
@@ -248,7 +248,12 @@ final class MissionExecutionControllerTest extends WebTestCase
         self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
     }
 
-    public function test_single_actual_time_without_the_other_returns_422(): void
+    /**
+     * D-143 — encodage progressif (scénarios 1-2) : le début seul est enregistré en
+     * brouillon le matin, la fin plus tard ; tout est relu tel quel depuis le
+     * serveur (rien ne vit seulement dans le navigateur).
+     */
+    public function test_instrumentist_saves_start_alone_then_completes_hours_progressively(): void
     {
         $client  = $this->boot();
         $manager = $this->createUser('ROLE_MANAGER');
@@ -256,13 +261,84 @@ final class MissionExecutionControllerTest extends WebTestCase
         $instr   = $this->createUser('ROLE_INSTRUMENTIST');
         $site    = $this->makeSite();
         $mission = $this->makeMission($site, $surgeon, $manager, $instr);
-        $token   = $this->login($client, $manager);
+        $token   = $this->login($client, $instr);
+
+        $first = $this->patchJson($client, $token, "/api/missions/{$mission->getId()}/execution", [
+            'actualStartAt' => '2026-09-01T07:45:00+02:00',
+            'hoursSource' => 'INSTRUMENTIST',
+        ]);
+        self::assertSame(Response::HTTP_OK, $first->getStatusCode(), (string) $first->getContent());
+        $draft = json_decode((string) $first->getContent(), true);
+        self::assertSame('2026-09-01T07:45:00+02:00', $draft['actualStartAt']);
+        self::assertNull($draft['actualEndAt']);
+        self::assertNull($draft['actualDurationMinutes'], 'un horaire seul ne décrit aucune durée');
+
+        $second = $this->patchJson($client, $token, "/api/missions/{$mission->getId()}/execution", [
+            'actualEndAt' => '2026-09-01T16:15:00+02:00',
+            'hoursSource' => 'INSTRUMENTIST',
+        ]);
+        self::assertSame(Response::HTTP_OK, $second->getStatusCode(), (string) $second->getContent());
+
+        // « Fermer et rouvrir l'application » : relecture serveur.
+        $reread = json_decode((string) $this->getJson($client, $token, "/api/missions/{$mission->getId()}/execution")->getContent(), true);
+        self::assertSame('2026-09-01T07:45:00+02:00', $reread['actualStartAt']);
+        self::assertSame('2026-09-01T16:15:00+02:00', $reread['actualEndAt']);
+        self::assertArrayNotHasKey('breakMinutes', $reread, 'D-146 bis — aucune pause exposée');
+        self::assertSame(510, $reread['actualDurationMinutes'], 'heures prestées = fin − début (8h30)');
+        self::assertSame(510, $reread['effectiveDurationMinutes']);
+        self::assertSame('ACTUAL_TIMES', $reread['effectiveDurationSource']);
+    }
+
+    /** D-146 bis — 08h00 → 11h30 = 3h30 ; une pause envoyée par un ancien client est ignorée. */
+    public function test_duration_is_end_minus_start_and_a_legacy_break_is_ignored(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, $instr);
+        $token   = $this->login($client, $instr);
 
         $response = $this->patchJson($client, $token, "/api/missions/{$mission->getId()}/execution", [
             'actualStartAt' => '2026-09-01T08:00:00+02:00',
+            'actualEndAt' => '2026-09-01T11:30:00+02:00',
+            'breakMinutes' => 60,
         ]);
 
-        self::assertSame(Response::HTTP_UNPROCESSABLE_ENTITY, $response->getStatusCode());
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+        $data = json_decode((string) $response->getContent(), true);
+        self::assertSame(210, $data['actualDurationMinutes']);
+        self::assertSame(210, $data['effectiveDurationMinutes']);
+        self::assertArrayNotHasKey('breakMinutes', $data);
+        $this->em->clear();
+        self::assertNull($this->em->find(\App\Entity\Mission::class, $mission->getId())->getExecution()->getBreakMinutes(), 'jamais enregistrée');
+    }
+
+    /** D-143 — après soumission, l'instrumentiste ne réécrit plus ses heures (le manager peut, avant validation). */
+    public function test_instrumentist_cannot_change_hours_once_submitted(): void
+    {
+        $client  = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instr   = $this->createUser('ROLE_INSTRUMENTIST');
+        $site    = $this->makeSite();
+        $mission = $this->makeMission($site, $surgeon, $manager, $instr);
+        $mission->setStatus(MissionStatus::SUBMITTED);
+        $this->em->flush();
+
+        $instrResponse = $this->patchJson($client, $this->login($client, $instr), "/api/missions/{$mission->getId()}/execution", [
+            'actualStartAt' => '2026-09-01T08:00:00+02:00',
+            'actualEndAt' => '2026-09-01T09:00:00+02:00',
+        ]);
+        self::assertSame(Response::HTTP_FORBIDDEN, $instrResponse->getStatusCode());
+
+        $managerResponse = $this->patchJson($client, $this->login($client, $manager), "/api/missions/{$mission->getId()}/execution", [
+            'actualStartAt' => '2026-09-01T08:00:00+02:00',
+            'actualEndAt' => '2026-09-01T09:00:00+02:00',
+            'hoursSource' => 'MANAGER',
+        ]);
+        self::assertSame(Response::HTTP_OK, $managerResponse->getStatusCode());
     }
 
     public function test_surgeon_cannot_update_execution(): void

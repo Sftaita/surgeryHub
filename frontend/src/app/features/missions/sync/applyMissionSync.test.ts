@@ -121,4 +121,25 @@ describe("applyMissionSyncToCache", () => {
     // Sans "claim" dans allowedActions, ce n'est pas une "nouvelle offre"
     expect(result.newOpenOffers).toEqual([]);
   });
+
+  // D-156 lot 1 — a mission newly assigned to me must reach Planning / Aujourd'hui too.
+  it("fait relire le planning personnel quand une mission nouvellement assignée y manque", async () => {
+    const planningKey = ["missions", "planning", { view: "week", date: "2026-06-12" }];
+    queryClient.setQueryData(planningKey, paginated([mission({ id: 1, status: "ASSIGNED", instrumentist: { id: 7 } as any })]));
+    const assigned = mission({ id: 99, status: "ASSIGNED", instrumentist: { id: 7 } as any });
+
+    applyMissionSyncToCache(queryClient, syncResponse({ missions: [assigned] }), 7);
+
+    expect(queryClient.getQueryState(planningKey)?.isInvalidated).toBe(true);
+  });
+
+  it("ne relit pas le planning quand la mission y est déjà", () => {
+    const planningKey = ["missions", "planning", { view: "week", date: "2026-06-12" }];
+    const assigned = mission({ id: 99, status: "ASSIGNED", instrumentist: { id: 7 } as any });
+    queryClient.setQueryData(planningKey, paginated([assigned]));
+
+    applyMissionSyncToCache(queryClient, syncResponse({ missions: [assigned] }), 7);
+
+    expect(queryClient.getQueryState(planningKey)?.isInvalidated).toBe(false);
+  });
 });

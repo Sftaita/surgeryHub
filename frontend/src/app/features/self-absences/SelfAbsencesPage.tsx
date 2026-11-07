@@ -12,6 +12,7 @@ import type { SelfAbsence } from "./api/selfAbsences.types";
 import { AbsenceFormSheet, type AbsenceFormSubmitBody } from "./components/AbsenceFormSheet";
 import { AbsenceListItem } from "./components/AbsenceListItem";
 import { useToast } from "../../ui/toast/useToast";
+import { invalidateAfterAbsenceChange } from "../missions/dispatch/missionDispatch.api";
 
 dayjs.locale("fr");
 
@@ -172,7 +173,8 @@ export default function SelfAbsencesPage() {
   // qu'il ait à rafraîchir manuellement).
   function invalidateAfterMutation() {
     qc.invalidateQueries({ queryKey: ["self-absences"] });
-    qc.invalidateQueries({ queryKey: ["missions"] });
+    // D-158 — missions, planning views, released rooms and alerts (prefix ["missions"] included).
+    void invalidateAfterAbsenceChange(qc);
   }
 
   const createMutation = useMutation({

@@ -2,7 +2,11 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\PrestationGrouping;
+
 use App\Dto\EligibilityResult;
+use App\Dto\ProposedSlot;
+use App\Dto\ScheduleConflictDetail;
 use App\Entity\Absence;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -10,8 +14,13 @@ use App\Entity\User;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\EligibilityReason;
 use App\Enum\EmploymentType;
+use App\Enum\MissionAssignmentEndReason;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
+use Doctrine\DBAL\ArrayParameterType;
+use Doctrine\DBAL\ParameterType;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 
 /**
  * Single source of truth for mission eligibility decisions (ADR D-057).
@@ -19,8 +28,17 @@ use Doctrine\ORM\EntityManagerInterface;
  * All eligibility checks MUST go through this service — never duplicate
  * rules in controllers, voters, notification handlers, or anywhere else.
  *
- * Performance contract (D-036): ≤ 3 DB queries for the batch methods
- * (findEligible, evaluateAllCandidates), regardless of candidate or mission count.
+ * Performance contract (D-036): a constant number of DB queries for the batch methods
+ * (findEligibleByMission, evaluateAllCandidates), regardless of candidate or mission count —
+ * 3 DQL queries plus, since D-151/D-152, one DBAL UNION query for the surgeon's exclusions;
+ * never one per candidate or per mission.
+ *
+ * D-151 / D-152 — three more reasons: REFUSED_FOR_MISSION (the mission's surgeon refused this
+ * person's affectation to THIS mission — MissionAssignment.endReason) and
+ * SURGEON_INCOMPATIBILITY (an active incompatibility with the mission's surgeon), both on every
+ * path (claim, offer, assignment, pool solicitation, manager pickers, planning roster) and
+ * blocking under every policy; MISSION_ALREADY_STARTED (claim and pool solicitation only: a
+ * started mission is never taken from the pool, while a manager can still assign or correct it).
  */
 class MissionEligibilityService
 {
@@ -48,6 +66,9 @@ class MissionEligibilityService
         if ($mission->getInstrumentist() !== null) {
             $reasons[] = EligibilityReason::ALREADY_ASSIGNED;
         }
+        if (self::hasStarted($mission, Clock::get()->now())) {
+            $reasons[] = EligibilityReason::MISSION_ALREADY_STARTED;
+        }
 
         $site    = $mission->getSite();
         $startAt = $mission->getStartAt();
@@ -62,9 +83,12 @@ class MissionEligibilityService
         }
 
         if ($startAt !== null && $endAt !== null
-            && $this->hasScheduleConflict($candidate, $startAt, $endAt, $mission->getId() ?? 0)) {
+            && $this->hasScheduleConflict($candidate, $startAt, $endAt, $mission->getId() ?? 0, $mission)) {
             $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
         }
+
+        // D-151 / D-152 — refused on this very mission, or incompatible with its surgeon.
+        array_push($reasons, ...$this->exclusionReasons($mission, $candidate));
 
         return new EligibilityResult($candidate, $reasons);
     }
@@ -82,7 +106,7 @@ class MissionEligibilityService
      * the mission already has someone, or isn't OPEN).
      *
      * NO_SITE_MEMBERSHIP is intentionally scoped to evaluate() (claim() self-service) and
-     * to the candidate-listing methods (evaluateAllCandidates()/findEligible()) only — a
+     * to the candidate-listing methods (evaluateAllCandidates()/findEligibleByMission()) only — a
      * manager reassigning a mission has always been able to target any instrumentist
      * regardless of formal site affiliation (confirmed: no existing manager-facing
      * assign/reassign functional test ever set up a SiteMembership row), and this lot's
@@ -115,10 +139,13 @@ class MissionEligibilityService
 
         if ($startAt !== null && $endAt !== null) {
             $excludeId = $excludeMissionId ?? ($mission->getId() ?? 0);
-            if ($this->hasScheduleConflict($candidate, $startAt, $endAt, $excludeId)) {
+            if ($this->hasScheduleConflict($candidate, $startAt, $endAt, $excludeId, $mission)) {
                 $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
             }
         }
+
+        // D-151 / D-152 — never bypassed by a manager assignment, a reassignment or an offer.
+        array_push($reasons, ...$this->exclusionReasons($mission, $candidate));
 
         return new EligibilityResult($candidate, $reasons);
     }
@@ -143,6 +170,157 @@ class MissionEligibilityService
         }
 
         return new EligibilityResult($candidate, $reasons);
+    }
+
+    /**
+     * D-151 / D-152 — why this candidate is excluded from this very mission by its surgeon:
+     * REFUSED_FOR_MISSION (her affectation to it was refused) and/or SURGEON_INCOMPATIBILITY
+     * (an active incompatibility with its surgeon). One query. The incompatibility is read by
+     * surgeon, so it applies to a mission not persisted yet too (new planning line, post-deploy
+     * addition); a refusal only exists on a persisted mission (D-150).
+     *
+     * @return EligibilityReason[]
+     */
+    public function exclusionReasons(Mission $mission, User $candidate): array
+    {
+        $surgeonId = $mission->getSurgeon()?->getId();
+        if ($candidate->getId() === null || ($mission->getId() === null && $surgeonId === null)) {
+            return [];
+        }
+
+        $reasons = $this->em->getConnection()->fetchFirstColumn(
+            "SELECT 'REFUSED_FOR_MISSION' FROM mission_assignment
+              WHERE mission_id = ? AND instrumentist_id = ? AND end_reason = ?
+             UNION ALL
+             SELECT 'SURGEON_INCOMPATIBILITY' FROM surgeon_instrumentist_incompatibility
+              WHERE surgeon_id = ? AND instrumentist_id = ? AND lifted_at IS NULL",
+            [$mission->getId() ?? 0, $candidate->getId(), MissionAssignmentEndReason::REFUSED_BY_SURGEON->value, $surgeonId ?? 0, $candidate->getId()],
+            [ParameterType::INTEGER, ParameterType::INTEGER, ParameterType::STRING, ParameterType::INTEGER, ParameterType::INTEGER],
+        );
+
+        return array_values(array_unique(array_map(static fn ($r) => EligibilityReason::from((string) $r), $reasons), SORT_REGULAR));
+    }
+
+    /** D-152 — an active incompatibility between this surgeon and this instrumentist. */
+    public function isIncompatible(User $surgeon, User $instrumentist): bool
+    {
+        if ($surgeon->getId() === null || $instrumentist->getId() === null) {
+            return false;
+        }
+
+        return (bool) $this->em->getConnection()->fetchOne(
+            'SELECT 1 FROM surgeon_instrumentist_incompatibility WHERE surgeon_id = ? AND instrumentist_id = ? AND lifted_at IS NULL',
+            [$surgeon->getId(), $instrumentist->getId()],
+            [ParameterType::INTEGER, ParameterType::INTEGER],
+        );
+    }
+
+    /**
+     * D-152 — every active incompatible pair of these surgeons, in one query, as
+     * "surgeonId-instrumentistId" keys (the table's active_pair_key). For bulk readers that
+     * must not query per line (planning V2 preview, recurring posts list).
+     *
+     * @param int[] $surgeonIds
+     * @return array<string, true>
+     */
+    public function activeIncompatiblePairs(array $surgeonIds): array
+    {
+        $surgeonIds = array_values(array_unique(array_map('intval', array_filter($surgeonIds))));
+        if ($surgeonIds === []) {
+            return [];
+        }
+
+        $keys = $this->em->getConnection()->fetchFirstColumn(
+            'SELECT CONCAT(surgeon_id, \'-\', instrumentist_id) FROM surgeon_instrumentist_incompatibility
+              WHERE lifted_at IS NULL AND surgeon_id IN (?)',
+            [$surgeonIds],
+            [ArrayParameterType::INTEGER],
+        );
+
+        return array_fill_keys(array_map('strval', $keys), true);
+    }
+
+    /**
+     * D-152 — same question as isIncompatible(), as a LOCKING read (FOR SHARE) on the
+     * (surgeon, instrumentist) index range, for callers inside a transaction that are about to
+     * affect this instrumentist (claim, assignments). A concurrent creation of the
+     * incompatibility either commits first (seen here → refused) or waits for this transaction
+     * (and then finds the new affectation as a conflict to raise): never a silent overlap.
+     */
+    public function isIncompatibleLocked(User $surgeon, User $instrumentist): bool
+    {
+        if ($surgeon->getId() === null || $instrumentist->getId() === null) {
+            return false;
+        }
+
+        return (bool) $this->em->getConnection()->fetchOne(
+            'SELECT 1 FROM surgeon_instrumentist_incompatibility WHERE surgeon_id = ? AND instrumentist_id = ? AND lifted_at IS NULL FOR SHARE',
+            [$surgeon->getId(), $instrumentist->getId()],
+            [ParameterType::INTEGER, ParameterType::INTEGER],
+        );
+    }
+
+    /**
+     * D-151 / D-152 — one query for any number of persisted missions:
+     * missionId → userId → EligibilityReason[] (refused on that mission, incompatible with its surgeon).
+     *
+     * @param Mission[] $missions
+     * @return array<int, array<int, EligibilityReason[]>>
+     */
+    private function exclusionsByMission(array $missions): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map(static fn (Mission $m) => $m->getId(), $missions))));
+        if ($ids === []) {
+            return [];
+        }
+
+        $rows = $this->em->getConnection()->fetchAllAssociative(
+            "SELECT a.mission_id AS mission_id, a.instrumentist_id AS user_id, 'REFUSED_FOR_MISSION' AS reason
+               FROM mission_assignment a
+              WHERE a.mission_id IN (?) AND a.end_reason = ?
+             UNION ALL
+             SELECT m.id, i.instrumentist_id, 'SURGEON_INCOMPATIBILITY'
+               FROM surgeon_instrumentist_incompatibility i
+               JOIN mission m ON m.surgeon_id = i.surgeon_id
+              WHERE m.id IN (?) AND i.lifted_at IS NULL",
+            [$ids, MissionAssignmentEndReason::REFUSED_BY_SURGEON->value, $ids],
+            [ArrayParameterType::INTEGER, ParameterType::STRING, ArrayParameterType::INTEGER],
+        );
+
+        $exclusions = [];
+        foreach ($rows as $row) {
+            $exclusions[(int) $row['mission_id']][(int) $row['user_id']][] = EligibilityReason::from((string) $row['reason']);
+        }
+
+        return $exclusions;
+    }
+
+    /**
+     * D-152 — instrumentists actively incompatible with $surgeon: userId → true. One query.
+     *
+     * @return array<int, true>
+     */
+    private function incompatibleInstrumentistsOf(User $surgeon): array
+    {
+        if ($surgeon->getId() === null) {
+            return [];
+        }
+
+        $ids = $this->em->getConnection()->fetchFirstColumn(
+            'SELECT instrumentist_id FROM surgeon_instrumentist_incompatibility WHERE surgeon_id = ? AND lifted_at IS NULL',
+            [$surgeon->getId()],
+            [ParameterType::INTEGER],
+        );
+
+        return array_fill_keys(array_map('intval', $ids), true);
+    }
+
+    /** D-151 — a mission whose start time has passed can no longer be claimed from the pool. */
+    public static function hasStarted(Mission $mission, \DateTimeImmutable $now): bool
+    {
+        $startAt = $mission->getStartAt();
+
+        return $startAt !== null && $startAt <= $now;
     }
 
     /** Q1 — site membership. FREELANCER bypasses this requirement (D-057). */
@@ -207,11 +385,17 @@ class MissionEligibilityService
      * Q3 — overlapping active mission (cross-site, cross-PlanningVersion by construction —
      * scoped by person only, matches PlanningConflictDetectionService::findConflict()'s
      * same end-exclusive overlap rule: A.startAt < B.endAt AND A.endAt > B.startAt).
+     *
+     * D-156 — a legitimate multi-room overlap (BLOC, same surgeon, same site, same local
+     * date as $target — PrestationGrouping::isMultiRoomSlot()) is never a conflict: the
+     * instrumentist works one combined shift across both rooms. Every other overlap
+     * (other surgeon, other site, consultation…) stays a conflict.
      */
-    private function hasScheduleConflict(User $candidate, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt, int $excludeMissionId): bool
+    private function hasScheduleConflict(User $candidate, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt, int $excludeMissionId, ?Mission $target = null): bool
     {
-        $count = (int) $this->em->createQuery(
-            'SELECT COUNT(m.id) FROM App\Entity\Mission m
+        /** @var Mission[] $overlapping */
+        $overlapping = $this->em->createQuery(
+            'SELECT m FROM App\Entity\Mission m
              WHERE m.instrumentist = :user
                AND m.id <> :missionId
                AND m.startAt < :endAt AND m.endAt > :startAt
@@ -222,22 +406,58 @@ class MissionEligibilityService
             ->setParameter('startAt', $startAt)
             ->setParameter('endAt', $endAt)
             ->setParameter('excluded', [MissionStatus::CANCELLED, MissionStatus::REJECTED])
-            ->getSingleScalarResult();
+            ->getResult();
 
-        return $count > 0;
+        foreach ($overlapping ?? [] as $existing) {
+            if (!self::isLegitimateMultiRoom($existing, $candidate, $target, $startAt, $endAt)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** D-156 — see hasScheduleConflict(). */
+    private static function isLegitimateMultiRoom(Mission $existing, User $candidate, ?Mission $target, \DateTimeImmutable $startAt, \DateTimeImmutable $endAt): bool
+    {
+        return $target !== null && PrestationGrouping::isMultiRoomSlot(
+            $existing, $candidate, $target->getSurgeon(), $target->getSite(), $target->getType(), $startAt, $endAt,
+        );
     }
 
     /**
-     * Returns eligible candidates per site for pool notifications.
-     * Uses exactly 3 DB queries for any number of open missions (D-036).
+     * H3 (D-129) — eligible candidates PER MISSION for pool solicitation: exactly the people
+     * who could take THAT mission (missionId → User[]), never a per-site union. This is the
+     * only candidate list OpenMissionPoolNotifier may use — the former per-site findEligible()
+     * (which let a person receive missions she was in conflict with) is gone.
      *
-     * @param  Mission[] $openMissions
-     * @return array<int, User[]>  siteId → eligible User[]
+     * Same rules as evaluate() / claim()'s pre-lock gate (D-057): active ROLE_INSTRUMENTIST,
+     * site membership or FREELANCER, not absent that day, no overlapping non-cancelled
+     * mission. A mission that is not OPEN, or already has an instrumentist, has no candidates
+     * (mission-level ALREADY_ASSIGNED / INCOMPATIBLE_STATUS — never solicit for it).
+     *
+     * Exactly 3 DB queries whatever the number of missions and candidates (D-036): no N+1.
+     *
+     * @param  Mission[] $missions
+     * @return array<int, User[]>  missionId → eligible User[] (every input mission id is a key)
      */
-    public function findEligible(array $openMissions): array
+    public function findEligibleByMission(array $missions): array
     {
+        $now    = Clock::get()->now();
+        $result = [];
+        $openMissions = [];
+        foreach ($missions as $m) {
+            if ($m->getId() === null) {
+                continue;
+            }
+            $result[$m->getId()] = [];
+            // D-151 — a started mission is never offered to the pool any more.
+            if ($m->getStatus() === MissionStatus::OPEN && $m->getInstrumentist() === null && !self::hasStarted($m, $now)) {
+                $openMissions[] = $m;
+            }
+        }
         if (empty($openMissions)) {
-            return [];
+            return $result;
         }
 
         // Collect unique sites from the open missions
@@ -249,7 +469,7 @@ class MissionEligibilityService
             }
         }
         if (empty($siteById)) {
-            return [];
+            return $result;
         }
 
         // Q1 — every active ROLE_INSTRUMENTIST who is either a FREELANCER (eligible at any
@@ -275,7 +495,7 @@ class MissionEligibilityService
             ->getResult();
 
         if (empty($rows)) {
-            return [];
+            return $result;
         }
 
         $candidateById = []; // userId → User
@@ -372,32 +592,27 @@ class MissionEligibilityService
             }
         }
 
-        // Group open missions by site for per-site PHP evaluation
-        $missionsBySiteId = [];
-        foreach ($openMissions as $m) {
-            $siteId = $m->getSite()?->getId();
-            if ($siteId !== null) {
-                $missionsBySiteId[$siteId][] = $m;
+        // Q4 (D-151 / D-152) — people refused on each mission, or incompatible with its surgeon.
+        $exclusions = $this->exclusionsByMission($openMissions);
+
+        // Per-mission PHP evaluation over the preloaded data — no further query.
+        foreach ($openMissions as $mission) {
+            $siteId = $mission->getSite()?->getId();
+            if ($siteId === null) {
+                continue;
             }
-        }
-
-        // For each site, collect candidates eligible for at least one mission there
-        $eligibleBySiteId = [];
-        foreach ($siteById as $siteId => $_) {
             foreach (array_keys($usersBySiteId[$siteId] ?? []) as $userId) {
-                $candidate    = $candidateById[$userId];
-                $siteMissions = $missionsBySiteId[$siteId] ?? [];
-
-                foreach ($siteMissions as $mission) {
-                    if ($this->isEligibleForMission($candidate, $mission, $absencesByUser, $conflictsByUser)) {
-                        $eligibleBySiteId[$siteId][] = $candidate;
-                        break;
-                    }
+                if (isset($exclusions[(int) $mission->getId()][$userId])) {
+                    continue;
+                }
+                $candidate = $candidateById[$userId];
+                if ($this->isEligibleForMission($candidate, $mission, $absencesByUser, $conflictsByUser)) {
+                    $result[$mission->getId()][] = $candidate;
                 }
             }
         }
 
-        return $eligibleBySiteId;
+        return $result;
     }
 
     /**
@@ -494,6 +709,12 @@ class MissionEligibilityService
             ? new \DateTimeImmutable($startAt->format('Y-m-d'))
             : null;
 
+        // Q4 (D-151 / D-152) — people refused on this mission, or incompatible with its surgeon.
+        $exclusions = $mission->getId() !== null
+            ? ($this->exclusionsByMission([$mission])[(int) $mission->getId()] ?? [])
+            : array_map(static fn () => [EligibilityReason::SURGEON_INCOMPATIBILITY],
+                $mission->getSurgeon() !== null ? $this->incompatibleInstrumentistsOf($mission->getSurgeon()) : []);
+
         $results = [];
         foreach ($candidates as $candidate) {
             $uid     = $candidate->getId();
@@ -504,6 +725,7 @@ class MissionEligibilityService
             if (!$candidate->isActive()) {
                 $reasons[] = EligibilityReason::INACTIVE;
             }
+            array_push($reasons, ...($exclusions[$uid] ?? []));
 
             if ($missionDay !== null) {
                 foreach ($absencesByUser[$uid] ?? [] as $absence) {
@@ -517,7 +739,8 @@ class MissionEligibilityService
 
             if ($startAt !== null && $endAt !== null) {
                 foreach ($conflictsByUser[$uid] ?? [] as $conflict) {
-                    if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt) {
+                    if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt
+                        && !self::isLegitimateMultiRoom($conflict, $candidate, $mission, $startAt, $endAt)) {
                         $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
                         $matchedConflict = $conflict;
                         break;
@@ -540,13 +763,22 @@ class MissionEligibilityService
      * already active-only, so structurally never fires — kept for interface symmetry
      * with evaluateAllCandidates()/EligibilityReason completeness), NO_SITE_MEMBERSHIP,
      * ABSENT, SCHEDULE_CONFLICT. 4 DB queries (roster, membership, absence, conflict) —
-     * the same batch-query discipline as findEligible()/evaluateAllCandidates() (D-036),
+     * the same batch-query discipline as findEligibleByMission()/evaluateAllCandidates() (D-036),
      * one more query than those because this method is not pre-scoped to a single site
      * by its JOIN the way evaluateAllCandidates() is.
      *
      * $excludeMissionId — the mission being edited, if any (so it never conflicts
      * against its own current slot). Null for a genuinely new line/mission.
      *
+     * D-165 — $proposals: the editor's other unsaved lines of that day. An edited existing
+     * mission is evaluated at its PROPOSED slot/instrumentist (its persisted row no longer
+     * counts; a cancelled one no longer counts at all), and a new line with an instrumentist
+     * counts like a mission. Same half-open overlap rule [start, end) as everywhere
+     * (A.start < B.end AND B.start < A.end): 07:45–14:00 and 14:00–18:00 never conflict. A
+     * conflict with a persisted mission is reported first (it is real); otherwise the
+     * proposed line is reported with source PROPOSED. At most 3 more queries (names, statuses).
+     *
+     * @param ProposedSlot[] $proposals
      * @return EligibilityResult[]
      */
     public function evaluateRoster(
@@ -554,7 +786,20 @@ class MissionEligibilityService
         \DateTimeImmutable $startAt,
         \DateTimeImmutable $endAt,
         ?int $excludeMissionId = null,
+        // D-152 — the slot's surgeon, when known: his incompatible instrumentists are reported
+        // (SURGEON_INCOMPATIBILITY, blocking) — one more query.
+        ?User $surgeon = null,
+        array $proposals = [],
+        ?MissionType $slotType = null,
     ): array {
+        // D-156 — the mission being edited (if any) gives the slot its surgeon, site and type,
+        // otherwise the request does (a line not saved yet), so a legitimate multi-room overlap
+        // — saved or only proposed by the editor — is not reported as a conflict for that slot.
+        $context = $excludeMissionId !== null ? $this->em->find(Mission::class, $excludeMissionId) : null;
+        $slotSurgeon = $context?->getSurgeon() ?? $surgeon;
+        $slotSite = $context?->getSite() ?? $site;
+        $slotType = $context?->getType() ?? $slotType;
+
         // Q1 — full active ROLE_INSTRUMENTIST roster (matches GET /api/instrumentists?active=true).
         /** @var User[] $candidates */
         $candidates = $this->em->createQuery(
@@ -608,7 +853,11 @@ class MissionEligibilityService
             }
         }
 
-        // Q4 — overlapping active missions
+        // Q4 — overlapping active missions (D-165: minus those the editor is re-proposing)
+        $overriddenIds = array_values(array_unique(array_filter(
+            array_map(static fn (ProposedSlot $p) => $p->missionId, $proposals),
+            static fn (?int $id) => $id !== null,
+        )));
         /** @var Mission[] $conflicts */
         $conflicts = $this->em->createQuery(
             'SELECT m FROM App\Entity\Mission m
@@ -616,13 +865,17 @@ class MissionEligibilityService
                AND m.id <> :missionId
                AND m.startAt < :endAt AND m.endAt > :startAt
                AND m.status NOT IN (:excluded)'
+            . ($overriddenIds !== [] ? ' AND m.id NOT IN (:overridden)' : '')
         )
             ->setParameter('users', $candidates)
             ->setParameter('missionId', $excludeMissionId ?? 0)
             ->setParameter('startAt', $startAt)
             ->setParameter('endAt', $endAt)
-            ->setParameter('excluded', [MissionStatus::CANCELLED, MissionStatus::REJECTED])
-            ->getResult();
+            ->setParameter('excluded', [MissionStatus::CANCELLED, MissionStatus::REJECTED]);
+        if ($overriddenIds !== []) {
+            $conflicts->setParameter('overridden', $overriddenIds);
+        }
+        $conflicts = $conflicts->getResult();
         $conflictsByUser = [];
         foreach ($conflicts as $conflict) {
             $uid = $conflict->getInstrumentist()?->getId();
@@ -630,6 +883,10 @@ class MissionEligibilityService
                 $conflictsByUser[$uid][] = $conflict;
             }
         }
+
+        $proposedConflictsByUser = $this->proposedConflicts($proposals, $startAt, $endAt, $excludeMissionId, $slotSurgeon, $slotSite, $slotType);
+
+        $incompatible = $surgeon !== null ? $this->incompatibleInstrumentistsOf($surgeon) : [];
 
         $results = [];
         foreach ($candidates as $candidate) {
@@ -645,6 +902,10 @@ class MissionEligibilityService
                 $reasons[] = EligibilityReason::NO_SITE_MEMBERSHIP;
             }
 
+            if (isset($incompatible[$uid])) {
+                $reasons[] = EligibilityReason::SURGEON_INCOMPATIBILITY;
+            }
+
             foreach ($absencesByUser[$uid] ?? [] as $absence) {
                 if ($absence->getDateStart() <= $day && $absence->getDateEnd() >= $day) {
                     $reasons[] = EligibilityReason::ABSENT;
@@ -654,17 +915,96 @@ class MissionEligibilityService
             }
 
             foreach ($conflictsByUser[$uid] ?? [] as $conflict) {
-                if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt) {
+                if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt
+                    && !PrestationGrouping::isMultiRoomSlot($conflict, $candidate, $slotSurgeon, $slotSite, $slotType, $startAt, $endAt)) {
                     $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
                     $matchedConflict = $conflict;
                     break;
                 }
             }
 
-            $results[] = new EligibilityResult($candidate, $reasons, $matchedAbsence, $matchedConflict);
+            $proposedConflict = null;
+            if ($matchedConflict === null && isset($proposedConflictsByUser[$uid])) {
+                $reasons[] = EligibilityReason::SCHEDULE_CONFLICT;
+                $proposedConflict = $proposedConflictsByUser[$uid];
+            }
+
+            $results[] = new EligibilityResult($candidate, $reasons, $matchedAbsence, $matchedConflict, $proposedConflict);
         }
 
         return $results;
+    }
+
+    /**
+     * D-165 — the first proposed line overlapping [$startAt, $endAt) per instrumentist,
+     * resolved to a displayable detail (surgeon/site names: one query each, only if needed).
+     *
+     * @param ProposedSlot[] $proposals
+     * @return array<int, ScheduleConflictDetail>
+     */
+    private function proposedConflicts(
+        array $proposals,
+        \DateTimeImmutable $startAt,
+        \DateTimeImmutable $endAt,
+        ?int $excludeMissionId,
+        ?User $slotSurgeon = null,
+        ?Hospital $slotSite = null,
+        ?MissionType $slotType = null,
+    ): array {
+        /** @var array<int, ProposedSlot> $byUser */
+        $byUser = [];
+        foreach ($proposals as $p) {
+            if ($p->cancelled || $p->instrumentistId === null || isset($byUser[$p->instrumentistId])
+                || ($p->missionId !== null && $p->missionId === $excludeMissionId)) {
+                continue;
+            }
+            // D-156 — a simultaneous BLOC room of the same surgeon on the same site (same day:
+            // the proposals are the editor's lines of the slot's day) is one multi-room
+            // prestation, never a conflict — same rule as PrestationGrouping::isMultiRoomSlot().
+            if ($slotType === MissionType::BLOCK && $p->missionType === MissionType::BLOCK
+                && $slotSurgeon !== null && $p->surgeonId === $slotSurgeon->getId()
+                && $slotSite !== null && $p->siteId === $slotSite->getId()) {
+                continue;
+            }
+            if ($p->startAt < $endAt && $startAt < $p->endAt) {
+                $byUser[$p->instrumentistId] = $p;
+            }
+        }
+        if ($byUser === []) {
+            return [];
+        }
+
+        $names = function (string $sql, array $ids): array {
+            $ids = array_values(array_unique(array_filter($ids)));
+            if ($ids === []) {
+                return [];
+            }
+            $rows = $this->em->getConnection()->fetchAllKeyValue($sql, [$ids], [ArrayParameterType::INTEGER]);
+
+            return array_map(static fn ($n) => trim((string) $n), $rows);
+        };
+        $surgeons = $names("SELECT id, CONCAT(COALESCE(firstname, ''), ' ', COALESCE(lastname, '')) FROM user WHERE id IN (?)",
+            array_map(static fn (ProposedSlot $p) => $p->surgeonId, $byUser));
+        $sites = $names('SELECT id, name FROM hospital WHERE id IN (?)',
+            array_map(static fn (ProposedSlot $p) => $p->siteId, $byUser));
+
+        $missionStatuses = [];
+        $missionIds = array_values(array_filter(array_map(static fn (ProposedSlot $p) => $p->missionId, $byUser)));
+        if ($missionIds !== []) {
+            $missionStatuses = $this->em->getConnection()->fetchAllKeyValue(
+                'SELECT id, status FROM mission WHERE id IN (?)', [$missionIds], [ArrayParameterType::INTEGER],
+            );
+        }
+
+        return array_map(static fn (ProposedSlot $p) => new ScheduleConflictDetail(
+            $p->missionId,
+            $p->missionId !== null ? ($missionStatuses[$p->missionId] ?? null) : null,
+            $p->siteId !== null ? (($sites[$p->siteId] ?? '') ?: null) : null,
+            $p->surgeonId !== null ? (($surgeons[$p->surgeonId] ?? '') ?: null) : null,
+            $p->startAt,
+            $p->endAt,
+            ScheduleConflictDetail::SOURCE_PROPOSED,
+        ), $byUser);
     }
 
     /**
@@ -692,15 +1032,12 @@ class MissionEligibilityService
             ];
         }
 
-        $conflict = null;
-        if ($result->conflictingMission !== null) {
-            $conflict = [
-                'missionId' => $result->conflictingMission->getId(),
-                'siteName'  => $result->conflictingMission->getSite()?->getName(),
-                'startAt'   => $result->conflictingMission->getStartAt()?->format(\DateTimeInterface::ATOM),
-                'endAt'     => $result->conflictingMission->getEndAt()?->format(\DateTimeInterface::ATOM),
-            ];
-        }
+        // D-165 — who the conflict is with (surgeon, times, status) and whether it is a saved
+        // mission or a line still being proposed in the editor; missionId/siteName/startAt/
+        // endAt keep their former meaning.
+        $conflict = ($result->conflictDetail
+            ?? ($result->conflictingMission !== null ? ScheduleConflictDetail::fromMission($result->conflictingMission) : null)
+        )?->toArray();
 
         return [
             'id'             => $candidate->getId(),
@@ -737,7 +1074,8 @@ class MissionEligibilityService
         }
 
         foreach ($conflictsByUser[$userId] ?? [] as $conflict) {
-            if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt) {
+            if ($conflict->getStartAt() < $endAt && $conflict->getEndAt() > $startAt
+                && !self::isLegitimateMultiRoom($conflict, $candidate, $mission, $startAt, $endAt)) {
                 return false;
             }
         }

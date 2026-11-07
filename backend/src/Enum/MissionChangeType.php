@@ -34,6 +34,7 @@ enum MissionChangeType: string
     case ENCODING_COMPLETED = 'ENCODING_COMPLETED';  // ... → SUBMITTED
     case ENCODING_VALIDATED = 'ENCODING_VALIDATED';  // SUBMITTED → VALIDATED
     case ENCODING_REJECTED  = 'ENCODING_REJECTED';   // SUBMITTED → ENCODING_IN_PROGRESS (comment required)
+    case ENCODING_TAKEN_OVER = 'ENCODING_TAKEN_OVER'; // D-171 — reprise manager, avant complete + validate
     case ENCODING_REOPENED  = 'ENCODING_REOPENED';   // VALIDATED → ENCODING_IN_PROGRESS (comment optional)
 
     // D-125 — manager dispatch of a Mission (MissionDispatchService). POOL publication keeps
@@ -42,4 +43,13 @@ enum MissionChangeType: string
     case OFFERED            = 'OFFERED';             // DRAFT|OPEN → OPEN + TARGETED request to one instrumentist
     case ASSIGNED_DIRECTLY  = 'ASSIGNED_DIRECTLY';   // DRAFT|OPEN → ASSIGNED, no acceptance required
     case OFFER_DECLINED     = 'OFFER_DECLINED';      // TARGETED request refused, stays OPEN
+
+    // D-151 — the mission's surgeon asks the managers to intervene on the current affectation
+    // (refusal window over, mission imminent, or affectation not refusable). No state change.
+    case ASSIGNMENT_REVIEW_REQUESTED = 'ASSIGNMENT_REVIEW_REQUESTED';
+
+    // D-177 — the exclusive priority of a room take-over ended (declined, expired, recipient
+    // absent, lifted by a manager): the SAME mission is now open to the eligible pool. Handled:
+    // pool solicitation (OpenMissionPoolNotifier), the decliner excluded.
+    case PRIORITY_ENDED = 'PRIORITY_ENDED';
 }

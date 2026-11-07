@@ -105,7 +105,7 @@ class EncodingAnomalyReportService
         ]);
         $this->em->flush();
 
-        $managers = $this->userRepository->findManagersAndAdmins(true);
+        $managers = $this->userRepository->findOperationalManagers();
         if (!empty($managers)) {
             $this->bus->dispatch(new EncodingAnomalyReportCreatedMessage(
                 reportId: $report->getId(),

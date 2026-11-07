@@ -12,6 +12,7 @@ use App\Enum\DisputeReasonCode;
 use App\Enum\DisputeStatus;
 use App\Enum\EffectiveDurationSource;
 use App\Enum\HoursSource;
+use App\Exception\PrestationConflictException;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Tools\Pagination\Paginator;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
@@ -34,6 +35,8 @@ final class MissionExecutionService
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly AuditService $audit,
+        // D-171 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionEncodingLock $encodingLock = null,
     ) {}
 
     /**
@@ -56,11 +59,25 @@ final class MissionExecutionService
     {
         $execution = $mission->getExecution();
 
+        // D-156 — mission liée à une présence partagée (prestation multi-salles) : sa durée
+        // effective est SA PART IMPUTÉE de la présence (écrite par WorkedPresenceService),
+        // jamais la présence entière — la somme des parts du groupe = la présence réelle.
+        // Présence encore incomplète : aucune part, repli planifié explicitement étiqueté
+        // (que la valorisation refuse — MISSING_ACTUAL_HOURS, D-144).
+        if ($execution !== null && $execution->getPresence() !== null) {
+            if ($execution->getActualDurationMinutes() !== null) {
+                return new EffectiveDuration($execution->getActualDurationMinutes(), EffectiveDurationSource::PRESENCE_SHARE);
+            }
+            $execution = null;
+        }
+
         if ($execution !== null) {
             $start = $execution->getActualStartAt();
             $end   = $execution->getActualEndAt();
 
             if ($start !== null && $end !== null) {
+                // D-146 bis — heures prestées = fin − début, aucune pause déduite
+                // (mission_execution.break_minutes n'a plus d'effet, voir docs/decisions.md).
                 $minutes = (int) round(($end->getTimestamp() - $start->getTimestamp()) / 60);
                 return new EffectiveDuration(max(0, $minutes), EffectiveDurationSource::ACTUAL_TIMES);
             }
@@ -111,13 +128,17 @@ final class MissionExecutionService
     }
 
     /**
-     * §3.2 — règle de cohérence unique : si actualStartAt ET actualEndAt sont fournis
+     * §3.2 — règle de cohérence unique : si actualStartAt ET actualEndAt sont connus
      * (dans l'état résultant, pas seulement dans cette requête), la durée est TOUJOURS
-     * dérivée des deux horaires — jamais deux sources de vérité. Une durée explicite
-     * fournie dans la même requête qui contredirait cette dérivation est un 422, jamais
-     * une acceptation silencieuse (§3.2 : "ne pas accepter silencieusement des valeurs
-     * contradictoires"). Fournir un seul des deux horaires (sans l'autre, existant ou
-     * nouveau) est également un 422 — un horaire seul ne décrit aucune durée.
+     * dérivée des deux horaires (fin − début, aucune pause déduite — D-146 bis) — jamais deux sources de
+     * vérité. Une durée explicite fournie dans la même requête qui contredirait cette
+     * dérivation est un 422, jamais une acceptation silencieuse (§3.2 : "ne pas accepter
+     * silencieusement des valeurs contradictoires").
+     *
+     * D-143 — encodage progressif : un horaire seul (typiquement le début, saisi le matin
+     * au bloc) est désormais accepté comme BROUILLON. Il ne décrit aucune durée (la durée
+     * enregistrée n'est pas touchée) et ne suffit jamais à soumettre l'encodage
+     * (EncodingCompletenessService). Les horaires planifiés ne sont jamais copiés ici.
      *
      * Idempotent : appeler deux fois avec les mêmes valeurs ne produit qu'un seul
      * AuditEvent (aucun changement détecté au deuxième appel → aucun événement).
@@ -130,20 +151,55 @@ final class MissionExecutionService
         ?int $actualDurationMinutes,
         ?HoursSource $hoursSource,
     ): MissionExecution {
+        // D-156 — une mission liée à une présence partagée n'a jamais ses propres heures :
+        // elles se corrigent sur la prestation (WorkedPresenceService), une seule fois.
+        if ($mission->getExecution()?->getPresence() !== null) {
+            throw new PrestationConflictException(
+                PrestationConflictException::PRESTATION_REQUIRES_COMMON_HOURS,
+                'Les heures de cette mission sont les heures communes de sa prestation multi-salles : corrigez-les sur la prestation.',
+                ['missionId' => $mission->getId(), 'presenceId' => $mission->getExecution()->getPresence()->getId()],
+            );
+        }
+
+        $write = fn (): MissionExecution => $this->writeActuals($mission, $actor, $actualStartAt, $actualEndAt, $actualDurationMinutes, $hoursSource);
+        if ($this->encodingLock === null) {
+            return $write();
+        }
+
+        // D-171 — sous le verrou de la mission (jamais d'heures écrites sur un encodage validé
+        // entre-temps) ; heures déclarées après une validation sans heures : elles doivent
+        // encore manquer en base (jamais deux déclarations concurrentes).
+        $verify = MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission)
+            ? fn () => $this->encodingLock->assertHoursStillMissing($mission)
+            : null;
+
+        return $this->encodingLock->run($mission, $write, $verify);
+    }
+
+    private function writeActuals(
+        Mission $mission,
+        User $actor,
+        ?\DateTimeImmutable $actualStartAt,
+        ?\DateTimeImmutable $actualEndAt,
+        ?int $actualDurationMinutes,
+        ?HoursSource $hoursSource,
+    ): MissionExecution {
         $execution = $this->findOrCreateExecution($mission, $actor);
+
+        // D-153 — the values before this call, for the before/after of the audit trail.
+        $previousStart    = $execution->getActualStartAt();
+        $previousEnd      = $execution->getActualEndAt();
+        $previousDuration = $execution->getActualDurationMinutes();
+        $previousSource   = $execution->getHoursSource();
 
         $resultStart = $actualStartAt ?? $execution->getActualStartAt();
         $resultEnd   = $actualEndAt ?? $execution->getActualEndAt();
         $explicitDurationThisCall = $actualDurationMinutes !== null;
         $resultDuration = $actualDurationMinutes ?? $execution->getActualDurationMinutes();
 
-        if (($resultStart !== null) !== ($resultEnd !== null)) {
-            throw new UnprocessableEntityHttpException('actualStartAt et actualEndAt doivent être fournis ensemble, jamais un seul des deux.');
-        }
-
         if ($resultStart !== null && $resultEnd !== null) {
             if ($resultEnd <= $resultStart) {
-                throw new UnprocessableEntityHttpException('actualEndAt doit être postérieur à actualStartAt.');
+                throw new UnprocessableEntityHttpException("L'heure de fin doit être postérieure à l'heure de début.");
             }
 
             $derivedMinutes = (int) round(($resultEnd->getTimestamp() - $resultStart->getTimestamp()) / 60);
@@ -173,17 +229,29 @@ final class MissionExecutionService
         }
 
         if ($anythingChanged) {
+            // D-153 — before/after of every hours field, whoever corrects them (instrumentist,
+            // manager): the correction history reads it as is, never recomputed.
+            $beforeAfter = [
+                'previousActualStartAt'         => $previousStart?->format(\DateTimeInterface::ATOM),
+                'actualStartAt'                 => $resultStart?->format(\DateTimeInterface::ATOM),
+                'previousActualEndAt'           => $previousEnd?->format(\DateTimeInterface::ATOM),
+                'actualEndAt'                   => $resultEnd?->format(\DateTimeInterface::ATOM),
+                'previousActualDurationMinutes' => $previousDuration,
+                'previousHoursSource'           => $previousSource?->value,
+            ];
             if ($durationChanged) {
                 $this->audit->record($mission, $actor, AuditEventType::MISSION_EXECUTION_DURATION_CHANGED, [
                     'actualDurationMinutes' => $resultDuration,
                     'effectiveDurationSource' => ($resultStart !== null && $resultEnd !== null)
                         ? EffectiveDurationSource::ACTUAL_TIMES->value
                         : EffectiveDurationSource::ACTUAL_EXPLICIT->value,
-                ]);
+                    'hoursSource' => $execution->getHoursSource()?->value,
+                ] + $beforeAfter);
             } else {
                 $this->audit->record($mission, $actor, AuditEventType::MISSION_EXECUTION_UPDATED, [
                     'hoursSource' => $hoursSource?->value,
-                ]);
+                    'actualDurationMinutes' => $resultDuration,
+                ] + $beforeAfter);
             }
             $this->em->flush();
         }

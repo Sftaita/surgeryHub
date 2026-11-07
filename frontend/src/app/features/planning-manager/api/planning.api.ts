@@ -139,7 +139,12 @@ export interface EncodedAbsencesPreview {
 /** Both actions send one individual email per selected person — never a single fixed recipient. See D-051. */
 export interface AbsenceReminderSendResult {
   sent: boolean;
+  /** H5a — emails really handed to the queue (one individual email per person). */
   count: number;
+  /** H5a — the reminder batch: a retried request with the same id never emails anyone twice. */
+  batchId?: string;
+  /** H5a — people whose email could not be queued (e.g. NO_EMAIL_ADDRESS). */
+  notSent?: { id: number | null; name: string; reason: string }[];
 }
 
 export async function getMissingAbsencesPreview(): Promise<MissingAbsencesPreview> {
@@ -153,19 +158,21 @@ export async function getEncodedAbsencesPreview(): Promise<EncodedAbsencesPrevie
 }
 
 /** Sends one individual email per selected person, to their own address — see D-051. */
-export async function requestMissingAbsences(message: string | undefined, userIds: number[]): Promise<AbsenceReminderSendResult> {
+export async function requestMissingAbsences(message: string | undefined, userIds: number[], batchId?: string): Promise<AbsenceReminderSendResult> {
   const res = await apiClient.post("/api/planning/absences/request-missing", {
     ...(message ? { message } : {}),
     userIds,
+    ...(batchId ? { batchId } : {}),
   });
   return res.data;
 }
 
 /** Sends one individual email per selected person, to their own address — see D-051. */
-export async function confirmEncodedAbsences(message: string | undefined, userIds: number[]): Promise<AbsenceReminderSendResult> {
+export async function confirmEncodedAbsences(message: string | undefined, userIds: number[], batchId?: string): Promise<AbsenceReminderSendResult> {
   const res = await apiClient.post("/api/planning/absences/confirm-encoded", {
     ...(message ? { message } : {}),
     userIds,
+    ...(batchId ? { batchId } : {}),
   });
   return res.data;
 }

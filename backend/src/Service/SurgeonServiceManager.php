@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use App\Dto\Request\AddInstrumentistSiteMembershipRequest;
 use App\Dto\Request\CreateSurgeonRequest;
 use App\Entity\Hospital;
@@ -23,6 +24,8 @@ class SurgeonServiceManager
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly UserRepository $users,
+        private readonly ?UserAuditService $userAudit = null,
+        private readonly ?\Symfony\Bundle\SecurityBundle\Security $security = null,
     ) {}
 
     public function createSurgeon(CreateSurgeonRequest $dto): User
@@ -76,6 +79,7 @@ class SurgeonServiceManager
         }
 
         $this->em->persist($user);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userCreated($actor, $user));
         $this->em->flush();
 
         return $user;
@@ -91,8 +95,9 @@ class SurgeonServiceManager
             ->andWhere('m.startAt < :to')
             ->andWhere('m.endAt > :from')
             ->setParameter('surgeon', $surgeon)
-            ->setParameter('from', $from)
-            ->setParameter('to', $to)
+            // D-156 lot 1 — Brussels wall-clock comparison (D-066), see MissionService::list().
+            ->setParameter('from', $from, BusinessDateTimeImmutableType::NAME)
+            ->setParameter('to', $to, BusinessDateTimeImmutableType::NAME)
             ->orderBy('m.startAt', 'ASC')
             ->getQuery()
             ->getResult();
@@ -106,6 +111,9 @@ class SurgeonServiceManager
                 'start' => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
                 'end' => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
                 'allDay' => false,
+                // D-158 — a CANCELLED mission (e.g. surgeon absence) must not read as an
+                // occupied slot in the manager's calendar; the client renders the status as is.
+                'status' => $mission->getStatus()->value,
                 'instrumentist' => [
                     'id' => $mission->getInstrumentist()?->getId(),
                     'firstname' => $mission->getInstrumentist()?->getFirstname(),
@@ -143,6 +151,7 @@ class SurgeonServiceManager
 
         $surgeon->addSiteMembership($membership);
         $this->em->persist($membership);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userSiteAdded($actor, $surgeon, (string) $membership->getSite()?->getName()));
         $this->em->flush();
 
         return $membership;
@@ -165,6 +174,7 @@ class SurgeonServiceManager
         }
 
         $surgeon->removeSiteMembership($membership);
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userSiteRemoved($actor, $surgeon, (string) $membership->getSite()?->getName()));
         $this->em->remove($membership);
         $this->em->flush();
     }
@@ -196,5 +206,28 @@ class SurgeonServiceManager
         }
         $normalized = trim($value);
         return $normalized === '' ? null : $normalized;
+    }
+
+    /** H5b (D-132) — the invitation was queued (H5a: traced delivery): its business audit, like the admin screen. */
+    public function invitationSent(User $user): void
+    {
+        $this->audit(static fn (UserAuditService $a, User $actor) => $a->userInvitationSent($actor, $user));
+        $this->em->flush();
+    }
+
+    /**
+     * H5b (D-132) — these screens (instrumentist / surgeon management) wrote no UserAuditEvent,
+     * unlike the admin screen (UserAdministrationService): creation, suspension, reactivation
+     * and site affiliations happened silently. Same UserAuditEvent as the admin screen, mirrored
+     * into activity_event by H1. Optional dependencies for the hand-built unit-test instances.
+     *
+     * @param callable(UserAuditService, User): void $write
+     */
+    private function audit(callable $write): void
+    {
+        $actor = $this->security?->getUser();
+        if ($this->userAudit !== null && $actor instanceof User) {
+            $write($this->userAudit, $actor);
+        }
     }
 }

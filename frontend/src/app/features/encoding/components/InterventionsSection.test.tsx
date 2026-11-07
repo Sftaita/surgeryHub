@@ -245,7 +245,8 @@ function installFakeServer(initial: MissionEncodingEntry[], extras: Record<numbe
         ...e,
         materialLines: e.materialLines.map((l) => {
           if (l.id !== id) return l;
-          updated = { ...l, quantity: body.quantity ?? l.quantity, comment: body.comment ?? l.comment };
+          // D-154 — comme le backend : chaque modification incrémente la version.
+          updated = { ...l, quantity: body.quantity ?? l.quantity, comment: body.comment ?? l.comment, version: l.version != null ? l.version + 1 : l.version };
           return updated;
         }),
       }));
@@ -255,7 +256,7 @@ function installFakeServer(initial: MissionEncodingEntry[], extras: Record<numbe
   });
 }
 
-function Harness({ canEdit }: { canEdit: boolean }) {
+function Harness({ canEdit, allowAdd, addNotice }: { canEdit: boolean; allowAdd?: boolean; addNotice?: string | null }) {
   const { data } = useQuery({
     queryKey: ["missionEncoding", MISSION_ID],
     queryFn: async () => {
@@ -275,16 +276,23 @@ function Harness({ canEdit }: { canEdit: boolean }) {
       canSubmit={false}
       onValidate={() => {}}
       progress={data.progress}
+      allowAdd={allowAdd}
+      addNotice={addNotice}
     />
   );
 }
 
-function renderSection(entries: MissionEncodingEntry[], canEdit = true, extras: Record<number, Partial<EncodingIntervention>> = {}) {
+function renderSection(
+  entries: MissionEncodingEntry[],
+  canEdit = true,
+  extras: Record<number, Partial<EncodingIntervention>> = {},
+  options: { allowAdd?: boolean; addNotice?: string | null } = {},
+) {
   installFakeServer(entries, extras);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <Harness canEdit={canEdit} />
+      <Harness canEdit={canEdit} allowAdd={options.allowAdd} addNotice={options.addNotice} />
     </QueryClientProvider>,
   );
 }
@@ -295,6 +303,26 @@ beforeEach(() => {
   apiPatchMock.mockReset();
   apiDeleteMock.mockReset();
   toastErrorMock.mockReset();
+});
+
+describe("InterventionsSection — ajout réservé à la mission de référence (complément D-156)", () => {
+  it("sans ajout possible : ni nouvelle intervention ni matériel à ajouter, l'existant reste modifiable et l'écran explique pourquoi", async () => {
+    renderSection([makeDraftEntry()], true, {}, { allowAdd: false, addNotice: "Les ajouts se font sur la mission de référence n° 41." });
+    await screen.findByText("Reconstruction LCL");
+
+    expect(screen.queryByRole("button", { name: /nouvelle intervention/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ajouter du matériel" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("encoding-add-notice")).toHaveTextContent("mission de référence n° 41");
+  });
+
+  it("par défaut (mission seule ou mission de référence), l'ajout reste proposé", async () => {
+    renderSection([makeDraftEntry()]);
+    await screen.findByText("Reconstruction LCL");
+
+    expect(screen.getAllByRole("button", { name: /nouvelle intervention/i })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Ajouter du matériel" })).toBeInTheDocument();
+    expect(screen.queryByTestId("encoding-add-notice")).not.toBeInTheDocument();
+  });
 });
 
 describe("InterventionsSection — état vide", () => {
@@ -364,6 +392,18 @@ describe("InterventionsSection — rendu d'une intervention réelle", () => {
     expect(screen.getByText("Modifier l'intervention")).toBeInTheDocument();
     // Nouveau design (option 2b) : corbeille icône seule, plus de lien texte "Supprimer".
     expect(screen.getByRole("button", { name: "Supprimer l'intervention" })).toBeInTheDocument();
+  });
+});
+
+describe("InterventionsSection — demandes de matériel", () => {
+  it("affiche le commentaire saisi avec la demande, retours à la ligne conservés", async () => {
+    renderSection([makeInterventionEntry({
+      materialItemRequests: [{ id: 31, label: "Vis 4.5 mm", referenceCode: "VX-45", comment: "Boîte bleue\ntaille M" }],
+    })]);
+
+    expect(await screen.findByText("Vis 4.5 mm")).toBeInTheDocument();
+    expect(screen.getByText("Réf : VX-45")).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.textContent === "Boîte bleue\ntaille M" && el.children.length === 0)).toBeInTheDocument();
   });
 });
 
@@ -562,8 +602,8 @@ describe("InterventionsSection — lignes de matériel", () => {
 describe("InterventionsSection — création optimiste d'une intervention réelle", () => {
   async function openAddInterventionAndPickCatalogType(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("button", { name: /nouvelle intervention/i }));
-    await screen.findByText("Étape 1/2 – Choisir une firme");
-    await user.click(screen.getByRole("button", { name: "— Aucune firme (voir tout le catalogue)" }));
+    await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("GEN01 — Réparation coiffe des rotateurs"));
@@ -625,8 +665,8 @@ describe("InterventionsSection — création optimiste d'une intervention réell
 describe("InterventionsSection — création optimiste d'un draft (intervention absente du catalogue)", () => {
   async function openAddInterventionAndRequestDraft(user: ReturnType<typeof userEvent.setup>, label: string) {
     await user.click(screen.getByRole("button", { name: /nouvelle intervention/i }));
-    await screen.findByText("Étape 1/2 – Choisir une firme");
-    await user.click(screen.getByRole("button", { name: "Arthrex" }));
+    await screen.findByText("Étape 1/2 – Avec quelle firme cette intervention a-t-elle été réalisée ?");
+    await user.click(screen.getByRole("option", { name: "Arthrex" }));
     await screen.findByText("Étape 2/2 – Choisir le type d'intervention");
     await user.click(screen.getByLabelText(/type d'intervention/i));
     await user.click(await screen.findByText("Intervention absente du catalogue"));
@@ -815,7 +855,8 @@ describe("InterventionsSection — demande de matériel hors catalogue sur une i
     await waitFor(() => {
       expect(apiPostMock).toHaveBeenCalledWith(
         `/api/missions/${MISSION_ID}/material-item-requests`,
-        expect.objectContaining({ missionInterventionId: 1, interventionDraftId: undefined }),
+        // D-146 bis — la firme choisie à l'étape « Marque » est reprise, quantité par défaut 1.
+        expect.objectContaining({ missionInterventionId: 1, interventionDraftId: undefined, firmId: 10, quantity: "1" }),
       );
     });
   });
@@ -834,5 +875,64 @@ describe("InterventionsSection — demande de matériel hors catalogue sur une i
     await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
     expect(screen.queryByText("Ancre titane 4.5mm")).not.toBeInTheDocument();
     expect(screen.getByText("Aucun matériel encodé")).toBeInTheDocument();
+  });
+});
+
+describe("InterventionsSection — écrasements concurrents (D-154)", () => {
+  const versioned = () =>
+    makeInterventionEntry({
+      version: 4,
+      materialLines: [
+        {
+          id: 501,
+          missionInterventionId: 1,
+          interventionDraftId: null,
+          item: { id: 100, label: "FiberWire n°2", referenceCode: "FW-2", unit: "unité", isImplant: false, firm: { id: 10, name: "Arthrex" } },
+          quantity: "2.00",
+          comment: "",
+          version: 7,
+        },
+      ],
+    });
+
+  it("renvoie la version lue en If-Match, et la version servie par la réponse au ±1 suivant", async () => {
+    const user = userEvent.setup();
+    renderSection([versioned()]);
+
+    await screen.findByText("x2");
+    await user.click(screen.getByLabelText(/augmenter la quantité de fiberwire/i));
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByLabelText(/augmenter la quantité de fiberwire/i));
+    await waitFor(() => expect(apiPatchMock).toHaveBeenCalledTimes(2));
+
+    expect(apiPatchMock.mock.calls[0][2]).toEqual({ headers: { "If-Match": '"7"' } });
+    expect(apiPatchMock.mock.calls[1][2]).toEqual({ headers: { "If-Match": '"8"' } });
+  });
+
+  it("conflit de version : message du backend, encodage relu, aucune donnée écrasée", async () => {
+    const user = userEvent.setup();
+    renderSection([versioned()]);
+    apiPatchMock.mockRejectedValue({
+      response: { status: 409, data: { error: { code: "ENCODING_CONCURRENT_MODIFICATION", message: "Cette ligne de matériel a été modifiée entre-temps par Diane Instrumentiste." } } },
+    });
+
+    await screen.findByText("x2");
+    const getsBefore = apiGetMock.mock.calls.length;
+    await user.click(screen.getByLabelText(/augmenter la quantité de fiberwire/i));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("Cette ligne de matériel a été modifiée entre-temps par Diane Instrumentiste."));
+    await waitFor(() => expect(apiGetMock.mock.calls.length).toBeGreaterThan(getsBefore));
+    expect(await screen.findByText("x2")).toBeInTheDocument();
+  });
+
+  it("la suppression d'une intervention porte sa version", async () => {
+    const user = userEvent.setup();
+    renderSection([versioned()]);
+
+    await user.click(await screen.findByRole("button", { name: /supprimer l'intervention/i }));
+    const confirm = (await screen.findByText(/Supprimer l'intervention/i, { selector: "h2, h2 *" })).closest('[role="dialog"]') as HTMLElement;
+    await user.click(within(confirm).getByRole("button", { name: "Supprimer" }));
+
+    await waitFor(() => expect(apiDeleteMock).toHaveBeenCalledWith(`/api/missions/${MISSION_ID}/interventions/1`, { headers: { "If-Match": '"4"' } }));
   });
 });

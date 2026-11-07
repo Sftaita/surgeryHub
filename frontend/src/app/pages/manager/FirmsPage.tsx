@@ -127,7 +127,7 @@ export default function FirmsPage() {
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   return (
-    <Box sx={{ p: 3, maxWidth: 960 }}>
+    <Box sx={{ p: { xs: 0, md: 3 }, maxWidth: 960 }}>
 
       {/* Header */}
       <PageHeader

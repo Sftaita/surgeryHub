@@ -4,6 +4,7 @@ namespace App\Command;
 
 use App\Entity\Absence;
 use App\Service\ReleasedOperatingRoomSlotService;
+use App\Service\ReleasedRoomCapacityMatcher;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -34,6 +35,15 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  *
  * Idempotent par la même contrainte unique que le service temps réel — peut être rejoué sans
  * effet si déjà exécuté.
+ *
+ * D-160 — liste autorisée : `--absence=<id>` (répétable, ou séparé par des virgules) limite la
+ * lecture ET l'écriture aux absences sélectionnées, avec la même sélection en dry-run et en
+ * exécution réelle. Toute la sélection est validée avant le moindre traitement (identifiant
+ * malformé, en double, inconnu, absence terminée, absence qui ne concerne pas un chirurgien ou
+ * dont le chirurgien est introuvable) : une seule erreur refuse toute l'exécution, rien n'est
+ * écrit. L'exécution réelle exige une sélection explicite — seul `--dry-run` peut encore
+ * parcourir toutes les absences (cas prod 2026-10-20 : rattraper Willemart, De Muylder et Ftaita
+ * sans toucher aux absences de Dr Deltour, dont les postes attendent une validation métier).
  */
 #[AsCommand(
     name: 'app:available-rooms:backfill',
@@ -51,6 +61,7 @@ class AvailableRoomsBackfillCommand extends Command
     protected function configure(): void
     {
         $this->addOption('dry-run', null, InputOption::VALUE_NONE, 'N\'écrit rien en base ; affiche uniquement ce qui serait créé.');
+        $this->addOption('absence', null, InputOption::VALUE_REQUIRED | InputOption::VALUE_IS_ARRAY, 'Liste autorisée : identifiant(s) d\'absence à traiter (répétable ou séparé par des virgules). Obligatoire hors --dry-run.');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -58,6 +69,25 @@ class AvailableRoomsBackfillCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $dryRun = (bool) $input->getOption('dry-run');
         $today = new \DateTimeImmutable('today');
+        $rawSelection = $input->getOption('absence');
+
+        if ($rawSelection === [] && !$dryRun) {
+            $io->error('Exécution réelle refusée : sélectionnez explicitement les absences à traiter avec --absence=<id> (répétable). Seul --dry-run peut parcourir toutes les absences.');
+
+            return Command::INVALID;
+        }
+
+        if ($rawSelection !== []) {
+            ['absences' => $absences, 'errors' => $selectionErrors] = $this->selectAbsences($rawSelection, $today);
+            if ($selectionErrors !== []) {
+                $io->error('Sélection refusée, aucune absence traitée :');
+                $io->listing($selectionErrors);
+
+                return Command::INVALID;
+            }
+
+            return $this->process($io, $absences, $dryRun, sprintf('Sélection : %s', implode(', ', array_map(static fn (Absence $a) => '#' . $a->getId(), $absences))));
+        }
 
         // « Absences encore pertinentes » : resolveFutureOccurrences() ne peut jamais
         // retourner d'occurrence >= aujourd'hui pour une fenêtre entièrement passée — filtrer
@@ -69,10 +99,18 @@ class AvailableRoomsBackfillCommand extends Command
             ->setParameter('today', $today, Types::DATE_IMMUTABLE)
             ->getResult();
 
+        return $this->process($io, $absences, $dryRun, 'Toutes les absences en cours ou à venir');
+    }
+
+    /** @param list<Absence> $absences */
+    private function process(SymfonyStyle $io, array $absences, bool $dryRun, string $scope): int
+    {
         $analyzed = count($absences);
         $futureOccurrences = 0;
         $alreadyExisting = 0;
         $rows = [];
+        $replaced = [];
+        $review = [];
         $errors = [];
 
         foreach ($absences as $absence) {
@@ -91,13 +129,28 @@ class AvailableRoomsBackfillCommand extends Command
                         continue;
                     }
 
-                    $rows[] = [
+                    $line = [
                         $occurrence['surgeon']->getDrName(),
                         $occurrence['site']->getName(),
                         $occurrence['date']->format('Y-m-d'),
                         $occurrence['period']->value,
                         $occurrence['post']->getId(),
                     ];
+                    $capacity = $occurrence['capacity'];
+
+                    // D-159 — poste remplacé : la capacité existe déjà (jamais une seconde salle) ;
+                    // cas ambigu : jamais créé, signalé pour validation métier.
+                    if ($capacity['decision'] === ReleasedRoomCapacityMatcher::REPLACED) {
+                        $slot = $capacity['slot'];
+                        $replaced[] = [...$line, sprintf('#%d (poste #%d, %s)', $slot->getId(), $slot->getPostId(), $slot->getStatus()->value)];
+                        continue;
+                    }
+                    if ($capacity['decision'] === ReleasedRoomCapacityMatcher::REVIEW) {
+                        $review[] = [...$line, $capacity['reason']];
+                        continue;
+                    }
+
+                    $rows[] = $line;
                 }
 
                 // Jamais de confiance aveugle dans la lecture ci-dessus (même principe que le
@@ -114,6 +167,7 @@ class AvailableRoomsBackfillCommand extends Command
         $wouldCreate = count($rows);
 
         $io->section($dryRun ? 'Dry-run — aucune écriture en base' : 'Backfill — exécution réelle');
+        $io->text($scope);
         $io->table(
             ['Absences analysées', 'Occurrences BLOCK futures', 'Déjà existants', $dryRun ? 'Seraient créés' : 'Créés'],
             [[$analyzed, $futureOccurrences, $alreadyExisting, $wouldCreate]],
@@ -123,22 +177,91 @@ class AvailableRoomsBackfillCommand extends Command
             $io->table(['Chirurgien', 'Site', 'Date', 'Période', 'postId'], $rows);
         }
 
+        if (!empty($replaced)) {
+            $io->text(sprintf('%d occurrence(s) déjà couverte(s) par le créneau d\'un poste remplacé (aucune création) :', count($replaced)));
+            $io->table(['Chirurgien', 'Site', 'Date', 'Période', 'postId', 'Créneau existant'], $replaced);
+        }
+
+        if (!empty($review)) {
+            $io->warning(sprintf('%d occurrence(s) à valider par le métier (jamais créées automatiquement) :', count($review)));
+            $io->table(['Chirurgien', 'Site', 'Date', 'Période', 'postId', 'Motif'], $review);
+        }
+
         if (!empty($errors)) {
             $io->warning(sprintf('%d absence(s) ignorée(s) suite à une erreur (données incohérentes, jamais bloquant pour le reste du rattrapage) :', count($errors)));
             $io->listing($errors);
         }
 
         $io->success(sprintf(
-            '%s : %d absences analysées, %d occurrences BLOCK futures, %d déjà existants, %d %s%s.',
+            '%s : %d absences analysées, %d occurrences BLOCK futures, %d déjà existants, %d %s, %d poste(s) remplacé(s), %d à valider%s.',
             $dryRun ? 'Dry-run' : 'Backfill',
             $analyzed,
             $futureOccurrences,
             $alreadyExisting,
             $wouldCreate,
             $dryRun ? 'seraient créés' : 'créés',
+            count($replaced),
+            count($review),
             empty($errors) ? '' : sprintf(', %d ignorée(s) suite à une erreur', count($errors)),
         ));
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Valide toute la sélection avant le moindre traitement : aucune absence n'est traitée si
+     * un seul identifiant est malformé, en double, inconnu ou non admissible.
+     *
+     * @param list<string> $raw
+     *
+     * @return array{absences: list<Absence>, errors: list<string>}
+     */
+    private function selectAbsences(array $raw, \DateTimeImmutable $today): array
+    {
+        $ids = [];
+        $errors = [];
+
+        foreach ($raw as $value) {
+            foreach (explode(',', (string) $value) as $token) {
+                $token = trim($token);
+                if (preg_match('/^[1-9][0-9]{0,9}$/', $token) !== 1) {
+                    $errors[] = sprintf('« %s » : identifiant d\'absence invalide (entier positif attendu).', $token);
+                    continue;
+                }
+                if (in_array((int) $token, $ids, true)) {
+                    $errors[] = sprintf('#%s : sélectionnée plusieurs fois.', $token);
+                    continue;
+                }
+                $ids[] = (int) $token;
+            }
+        }
+
+        $absences = [];
+        foreach ($ids as $id) {
+            $absence = $this->em->find(Absence::class, $id);
+            if ($absence === null) {
+                $errors[] = sprintf('#%d : absence inconnue.', $id);
+                continue;
+            }
+            if ($absence->getDateEnd() < $today) {
+                $errors[] = sprintf('#%d : absence terminée le %s, aucune occurrence future.', $id, $absence->getDateEnd()->format('Y-m-d'));
+                continue;
+            }
+            try {
+                $isSurgeon = in_array('ROLE_SURGEON', $absence->getUser()?->getRoles() ?? [], true);
+            } catch (\Throwable) {
+                $errors[] = sprintf('#%d : chirurgien introuvable (données incohérentes).', $id);
+                continue;
+            }
+            if (!$isSurgeon) {
+                $errors[] = sprintf('#%d : ne concerne pas un chirurgien, aucune salle à libérer.', $id);
+                continue;
+            }
+            $absences[] = $absence;
+        }
+
+        usort($absences, static fn (Absence $a, Absence $b) => $a->getId() <=> $b->getId());
+
+        return ['absences' => $absences, 'errors' => $errors];
     }
 }

@@ -43,9 +43,12 @@ SurgicalHub est une plateforme de gestion des missions chirurgicales. Elle conne
 
 ```
 Api/
-├── AuthGoogleController                 — login Google OAuth (+ rememberMe)
-│   (login email/password géré par le firewall `login`, refresh par `refresh_jwt`,
-│    logout par `logout` — voir D-047 « Remember me » dans decisions.md)
+├── AuthGoogleController                 — login Google (+ rememberMe) ; désactivé sans
+│    GOOGLE_OAUTH_CLIENT_ID, comptes existants seulement (D-157, Security/Google/GoogleIdTokenVerifier)
+│   (login email/password géré par le firewall `login` — voir D-047 et D-157)
+├── AuthSessionController                — refresh / logout des sessions d'appareil (D-157,
+│    firewall `auth_session` sans JWT ; logique dans Security/Session/DeviceSessionService ;
+│    SessionAccessTokenListener refuse un JWT dont la session `sid` a été révoquée)
 ├── MissionController                    — CRUD missions + transitions de statut
 ├── InstrumentistController              — gestion manager des instrumentistes
 ├── SurgeonController                    — CRUD /api/surgeons + planning + site-memberships
@@ -204,7 +207,8 @@ même à un compte suspendu — leur objet est la sécurité du compte, jamais g
 l'utilisateur à chaque requête via le claim `username` du JWT (figé à l'ancienne adresse
 au moment de l'émission) — après un changement d'email, la session en cours et son
 refresh token (`RefreshToken.username`, même provider) cessent de fonctionner au prochain
-appel, forçant une reconnexion. Conséquence structurelle du provider (même mécanisme que
+appel, forçant une reconnexion (D-157 : les sessions de l'ancienne adresse sont en outre
+supprimées explicitement, `DeviceSessionService::revokeAllForIdentifier()`). Conséquence structurelle du provider (même mécanisme que
 la suspension via `UserChecker`), jamais une invalidation codée en dur — volontairement
 non contournée. **Risque Google OAuth documenté (non corrigé)** :
 `AuthGoogleController` retrouve l'utilisateur par email Google réel ; `User::$googleId`
@@ -674,6 +678,8 @@ MissionIntervention
 ├── representativePresent: bool|null (D-092 — donnée FACTUELLE encodée par
 │   l'instrumentiste, "un délégué de la firme principale était-il présent ?" ; null =
 │   jamais répondu ; jamais une donnée financière, jamais sur Mission globale)
+├── createdBy → User (nullable — D-178 : auteur de l'encodage, sert uniquement aux
+│   raccourcis « firmes récemment utilisées » ; null avant D-178)
 ├── MaterialLine[]
 └── MaterialItemRequest[]
 
@@ -1301,6 +1307,10 @@ d'appel direct au service bas niveau.
 une intervention d'une firme peut contenir du matériel d'autres firmes, chaque ligne se
 résout indépendamment. `PricingRuleResolver`/`InstrumentistRateResolver` restent
 inchangés dans leur signature (déjà conformes : date explicite, jamais `now()`).
+D-172 : la date de prise d'effet d'un `InstrumentistRate` se déplace (rétroactivement aussi)
+par `InstrumentistRateService::changeEffectiveDate()` ; `InstrumentistRateStalenessService`
+rejoue le résolveur à la date de chaque ligne pour signaler un calcul non verrouillé devenu
+obsolète (ni approuvable ni verrouillable avant recalcul manuel).
 
 **Concurrence** : verrouillage pessimiste déterministe réutilisé tel quel
 (`PricingRuleWriteService`, prouvé par `PricingRuleConcurrencyTest` — inchangé) ;
@@ -1813,6 +1823,44 @@ EntityManager::flush()            — chaque effet de bord isolé dans try/catch
 
 **Traçabilité** : chaque action post-deploy crée un `AuditEvent` (acteur, type, payload snapshot) et déclenche les `NotificationEvent` appropriés via `NotificationPreferenceResolver`. Les noms des personnes sont snapshotés dans le payload pour préserver la lisibilité à long terme.
 
+**Changement d'instrumentiste par un manager (D-181)** :
+
+```
+/reassign · /reassignments · alerte /reassign
+        │  (MissionVoter::REASSIGN par mission)
+        ▼
+MissionReassignmentService        — une opération : chaque mission contrôlée et validée seule,
+        │                           résultat mission par mission (DONE / FAILED + code)
+        ▼
+MissionPostDeployService::reassign()  (DIRECT)  ou  ::relay()  (RELAY : mission de relais liée)
+        │  verrou mission, MissionReassignmentPolicy, expectedInstrumentistId, éligibilité, audit
+        ▼
+MissionReassignmentNotificationMessage (async, un par opération, changements réels seulement)
+        ▼
+MissionReassignmentNotificationMessageHandler → NotificationDispatcher::dispatchBatch
+        MISSION_REASSIGNMENT_NOTICE : un e-mail par destinataire et par opération
+        (ancienne / nouvelle instrumentiste, chirurgien), statut lu par
+        GET /api/missions/reassignment-operations/{operationId}
+```
+
+**Annulation par un manager (D-182)** — une mission annulée est une mission non réalisée :
+
+```
+/cancel (programme annulé)                 /cancel-as-replaced (doublon d'une mission existante)
+        │  MissionVoter::CANCEL                    │  MissionVoter::CANCEL (+ APPROVE_DECLARED)
+        │                                          ▼
+        │                          MissionReplacementService — une transaction, deux verrous :
+        │                            compatibilité, validation éventuelle de la déclaration,
+        │                            MISSION_KEPT_AS_REPLACEMENT
+        ▼                                          ▼
+MissionPostDeployService::cancelByManager()  — MissionCancellationPolicy, encodage archivé,
+        │                                      calculs ouverts annulés, audit
+        ▼                                          ▼
+MissionLifecycleChangedMessage(CANCELLED)  MissionReassignmentNotificationMessage (mode REPLACED)
+  → PLANNING_MISSION_CANCELLED               → MISSION_REASSIGNMENT_NOTICE (changement
+    (instrumentiste, chirurgien)               d'instrumentiste, mission confirmée)
+```
+
 ### Vérification manuelle des conflits — filet de sécurité (Lot 6, D-106)
 
 Trois niveaux de sécurité coexistent sur Planning V2 : **prévention** (D-101, revalidation
@@ -1836,8 +1884,11 @@ PlanningVersionAuditService::verify()   — orchestrateur pur, aucune règle mé
         │       → restauration oubliée, jamais si une absence/décision manager la justifie encore
         ├── PlanningConflictDetectionService::syncAlertsForMission()
         │       → SCHEDULE_CONFLICT (D-091, inchangé) — jamais une mutation, toujours une PlanningAlert
-        └── PlanningAlertService::createIfNotDuplicate()/resolve()
-                → INSTRUMENTIST_INACTIVE (D-106) — alerte uniquement, décision utilisateur explicite
+        ├── PlanningAlertService::createIfNotDuplicate()/resolve()
+        │       → INSTRUMENTIST_INACTIVE (D-106) — alerte uniquement, décision utilisateur explicite
+        └── PlanningConflictDetectionService::reconcileConflictAlertsInvolving()  (D-167)
+                → toutes les alertes de conflit actives du périmètre opérationnel, tout statut de
+                  mission, des deux côtés de la paire : RESOLVED si le conflit a disparu
 ```
 
 Chaque primitive réutilisée est déjà individuellement idempotente (garde de statut,
@@ -1846,7 +1897,42 @@ Chaque primitive réutilisée est déjà individuellement idempotente (garde de 
 transactionnelle ; une anomalie isolée est journalisée et n'interrompt jamais le reste du
 scan. Voir docs/decisions.md D-106 pour le détail des catégories et des choix de conception.
 
-### Communication des absences chirurgiens — Lot A « Libération de salle » (D-114)
+### Salles opératoires disponibles — annonce aux chirurgiens (D-161)
+
+Remplace l'e-mail automatique « Libération de salle » (Lot A ci-dessous, retiré) : la création
+technique d'un créneau et son annonce sont deux opérations distinctes.
+
+```
+AbsenceImpactCoordinator (création / modification d'absence)
+        │
+        ├── ReleasedOperatingRoomSlotService::onAbsenceCreated()/onAbsenceUpdated()
+        │       → renvoie les ids des créneaux RÉELLEMENT créés par cet appel
+        │         (déjà existant, poste remplacé, à valider, collision : jamais renvoyés)
+        └── ReleasedRoomSlotsCreatedMessage (async, seulement si ≥ 1 créneau créé)
+                ▼
+        ReleasedRoomAvailabilityNotifier::announce()
+                ├── relit les créneaux : encore AVAILABLE et pas passés
+                ├── AbsenceCommunicationSiteConfig::notifyColleaguesEnabled (site)
+                ├── UserRepository::findSurgeonsAffiliatedToSite() — actifs, jamais l'absent
+                └── NotificationDispatcher::dispatchBatch() — ROOM_SLOT_AVAILABLE
+                        in-app par salle, 1 push + 1 e-mail max par destinataire et opération,
+                        canaux décidés par NotificationPreferenceResolver
+                        (défaut : in-app + push, e-mail désactivé), clé `room_slot:{id}`
+
+AvailableRoomsBackfillCommand → ReleasedOperatingRoomSlotService (création seule, jamais d'annonce)
+```
+
+Le push et l'élément in-app ouvrent `/app/s/planning/salles-disponibles?slot={id}`. La page
+relit le créneau (`GET /api/me/available-rooms/{id}`, mêmes règles de visibilité que la liste),
+et la reprise reste revérifiée sous verrou (D-124). Les préférences du chirurgien sont dans
+`RoomAvailabilityNotificationsCard` (profil) : push et e-mail sont deux interrupteurs
+indépendants, l'état réel du push sur l'appareil est affiché à part, et l'e-mail n'est jamais
+activé automatiquement.
+
+### Communication des absences chirurgiens — Lot A « Libération de salle » (D-114) — retiré par D-161
+
+> D-161 : `RoomReleaseCommunicationService` est supprimé, plus aucune communication
+> `ROOM_RELEASE` n'est écrite. La description ci-dessous reste pour lire l'historique.
 
 Nouvelle couche, indépendante des réactions D-062/D-103/D-104/D-105/D-107/D-112 ci-dessus
 (aucune Mission/PlanningAlert/PlanningOccurrenceException mutée) : quand un chirurgien
@@ -1861,7 +1947,8 @@ RoomReleaseCommunicationService::onAbsenceCreated()/onAbsenceUpdated()
         │
         ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow()
         │       → réutilise PlanningGeneratorServiceV2::theoreticalOccurrenceDates()
-        │       → filtre type=BLOCK, exclut les occurrences déjà exceptées, groupe par site
+        │       → filtre type=BLOCK, exclut les occurrences déjà exceptées (sauf la
+        │         neutralisation posée par CETTE absence, D-158), groupe par site
         ├── AbsenceCommunicationSiteConfig (site) — notifyColleaguesEnabled ?
         ├── filtre "occurrences encore futures" + (sur update) delta vs déjà annoncé
         ├── UserRepository::findSurgeonsAffiliatedToSite() — collègues actifs, exclut l'absent
@@ -2107,15 +2194,31 @@ AbsenceController::create()/update() / SelfAbsenceController équivalents
 ReleasedOperatingRoomSlotService::onAbsenceCreated()/onAbsenceUpdated()
         │
         ├── SurgeonAbsenceBlockOccurrenceResolver::resolveForWindow() (même resolver que
-        │       Lots A/B/C — aucun second moteur de récurrence)
+        │       Lots A/B/C — aucun second moteur de récurrence ; D-158 : la neutralisation
+        │       posée par l'absence elle-même ne masque pas l'occurrence, mois non généré inclus)
+        ├── D-158 : occurrence ignorée si une Mission non CANCELLED/DRAFT du chirurgien
+        │       absent l'occupe encore (mission commencée / encodée, jamais annulée)
         ├── existsFor(site, postId, date) — idempotence applicative avant la contrainte
         │       unique DB (site_id, post_id, occurrence_date), dernier garde-fou
+        ├── D-159 : ReleasedRoomCapacityMatcher::classify() — un créneau du même chirurgien,
+        │       même site, même date, dont le poste ne porte plus l'occurrence (poste remplacé)
+        │       couvre déjà la capacité : NEW (créé) / REPLACED (rien) / REVIEW (rien, signalé)
         ├── ShiftPeriodConfig (site, période, actif) → startTime/endTime snapshotés,
         │       sinon restent NULL (jamais d'horaire inventé)
-        └── persist + flush par slot (jamais un flush groupé — une collision unique sur UNE
+        └── INSERT DBAL par slot (D-159 ; jamais un flush groupé — une collision unique sur UNE
               occurrence ne doit jamais faire échouer les autres occurrences de la même
-              réaction)
+              réaction, ni fermer l'EntityManager)
 ```
+
+**Remplacement de poste (D-159)** : le modèle ne connaît aucune salle physique. Deux postes
+qui produisent l'occurrence le même jour sont deux salles (D-035), jamais rapprochés ; un
+créneau dont le poste ne produit plus l'occurrence (terminé, désactivé, période ou récurrence
+modifiée) est « orphelin » et couvre l'unique poste courant qui le remplace. Le même
+rapprochement sert la reprise (instrumentiste et type du poste qui porte aujourd'hui la
+capacité) et la garde D-104 (`isOccurrenceTakenOver()` : une reprise faite sur l'ancien poste
+empêche de restaurer l'occurrence du nouveau). Tout cas ambigu (période différente qui
+chevauche, plusieurs candidats) n'est jamais créé ni supprimé : il est listé « à valider » par
+le backfill et journalisé en temps réel.
 
 **Non-rétractation structurelle** : aucune méthode `onAbsenceDeleted()`/de suppression
 n'existe sur ce service — un raccourcissement ou une suppression d'absence ne retire jamais
@@ -2135,7 +2238,11 @@ supprimée le 2026-09-07 après un audit prod ayant révélé un angle mort stru
 absence sans communication `ROOM_RELEASE`, ex. site avec `notifyColleaguesEnabled=false`,
 restait invisible). Répond à « quelles salles ont réellement été libérées et ont encore une
 occurrence future ? », jamais à « quels emails ont déjà été envoyés ? » — voir
-`docs/decisions.md`, correction du 2026-09-07.
+`docs/decisions.md`, correction du 2026-09-07. D-160 : `--absence=<id>` (répétable ou séparé
+par des virgules) est une liste autorisée — même sélection lue en dry-run et écrite en réel,
+validée en entier avant tout traitement (malformé, doublon, inconnue, terminée, non-chirurgien
+→ refus complet, code `INVALID`) ; l'exécution réelle exige une sélection, seul `--dry-run`
+parcourt encore toutes les absences.
 
 Endpoints : `GET /api/planning/available-rooms` (manager, `PlanningVoter::PLANNING_MANAGE`)
 et `GET /api/me/available-rooms` (chirurgien, scopé `SiteMembership`) — voir `docs/api.md`
@@ -2169,7 +2276,8 @@ ReleasedRoomSlotTakeoverService::takeOver()  ── une transaction ────
 MissionLifecycleChangedMessage(ROOM_TAKEN_OVER) → MissionLifecycleChangedMessageHandler (async)
   ├── instrumentiste initialement prévue : MissionEligibilityService::evaluate()
   │     éligible → ROOM_TAKEOVER_MISSION_OFFER · sinon rien
-  └── pool : findEligible() moins elle → OPEN_MISSION_AVAILABLE
+  └── pool : OpenMissionPoolNotifier (H3, D-129) — éligibles à CETTE mission, elle exclue
+        si l'offre contextuelle lui a été envoyée (PERSONAL_OFFER_SENT) → OPEN_MISSION_AVAILABLE
         ▼
 POST /api/missions/{id}/claim (inchangé)  → OPEN → ASSIGNED, SURGEON_POST_COVERED au repreneur
 ```
@@ -2192,6 +2300,43 @@ Mission, puis `ReleasedOperatingRoomSlotService` (appelé après) rouvre le cré
 Invariants respectés : `SurgeonSchedulePost` et Mission d'origine jamais modifiés ; aucune
 mutation de Mission hors `MissionPostDeployService` ; notifications uniquement via le pipeline
 `MissionLifecycleChangedMessage` + `NotificationPreferenceResolver`.
+
+
+### Priorité de reprise et demande = reprise (D-177)
+
+Révise le flux ci-dessus (D-124) : la mission de reprise est **publiée dans la transaction de
+reprise**, et l'instrumentiste habituelle a une **priorité exclusive de 48 h**.
+
+```
+takeOverInTransaction(slot, surgeon, actor, ?request)   ← take-over (chirurgien) OU acceptation
+  … gardes D-124 …                                        d'une demande (manager : demande puis
+  createPostDeploy(OPEN) · slot CLAIMED · ROOM_SLOT_TAKEN_OVER   salle verrouillées)
+  RoomTakeoverPriorityService::publishTakeoverMission()
+    habituelle éligible (evaluateForOffer) → TARGETED + expires_at (+48 h) · PRIORITY_OFFERED
+    sinon → POOL · PRIORITY_BYPASSED (absente / inéligible / introuvable) · PUBLISHED_TO_POOL
+  commit ─────────────────────────────────────────────────────────────
+afterTakeOver() : RoomTakeoverPriorityExpiryMessage (DelayStamp = échéance) + ROOM_TAKEN_OVER
+  handler : priorité en attente → ROOM_TAKEOVER_MISSION_OFFER (échéance) à elle seule
+            sinon → OpenMissionPoolNotifier
+
+Fin de priorité (une seule gagne : verrou mission + relecture) :
+  claim() par elle ……………………… ACCEPTED (closeActiveRequests) — pas de pool
+  decline-offer ……………………………… DECLINED → POOL même transaction → PRIORITY_ENDED (elle exclue)
+  échéance (message / cron) ………… EXPIRED → POOL → PRIORITY_ENDED
+  absence confirmée (coordinator / cron) RECIPIENT_UNAVAILABLE → POOL → PRIORITY_ENDED
+  lift-priority (manager) ………… LIFTED_BY_MANAGER → POOL → PRIORITY_ENDED
+  assign / assignDirectly ………… SUPERSEDED (ou ACCEPTED) — pas de pool
+  cancel / release salle ………… MISSION_CLOSED — pas de pool
+  retour à OPEN (release, refus chirurgien, restauration, alerte) → reopenToPool() : POOL
+  (missions de reprise uniquement ; une demande D-125 ordinaire n'est jamais close ni rouverte)
+```
+
+Exclusivité : `MissionVoter` / `MissionActionsService` (priorité en attente → sa seule
+destinataire), listes `eligibleToMe` et synchronisation (`closedAt IS NULL`), `claim()` relit en
+base les priorités actives sous le verrou. Correspondance demande ↔ salle :
+`ReleasedRoomRequestMatcher` (NONE / CERTAIN / AMBIGUOUS / ALREADY_TAKEN_OVER), lu à la création
+de la demande, dans les listes et à l'acceptation. Historique : `ReleasedRoomSlotHistoryService`
+(lecture seule : absence, `ROOM_SLOT_*`, audit des missions rattachées, demande, livraisons).
 
 ### Éditeur unifié Génération / Modification (Batch 15K)
 
@@ -2296,11 +2441,13 @@ ligne sur les `Mission` réelles de ce même brouillon, jamais un nouveau ②) e
 **Alertes (Batch 3–5)** : `PlanningAlert` détecte l'impact d'une absence sur des
 missions déjà générées/publiées (`AbsenceImpactService`), jamais avant. Types
 implémentés : `SURGEON_ABSENCE`, `INSTRUMENTIST_ABSENCE`, `REASSIGNMENT_REQUIRED`,
-`OCCURRENCE_CANCELLED`. `SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT` sont définis mais
-pas encore déclenchés — le détecteur de conflit actuel (preview, en mémoire) est scopé
-au site/groupe d'un seul appel de génération ; un instrumentiste multi-site doublement
-réservé via deux générations séparées sur des sites différents n'est jamais détecté
-aujourd'hui (gap documenté dans le freeze §G, pas corrigé).
+`OCCURRENCE_CANCELLED`. `SURGEON_CONFLICT`/`INSTRUMENTIST_CONFLICT` sont déclenchés
+depuis D-091 par `PlanningConflictDetectionService` (inter-sites, inter-versions). D-167 : une
+alerte par paire en conflit (ancrée sur la mission d'id inférieur, paire lue dans
+`snapshotJson`), réévaluée sur l'état persisté des deux missions à chaque synchronisation de
+l'une d'elles (`reconcileConflictAlertsInvolving()`, indépendant de l'ordre des identifiants) et
+par « Vérifier les conflits » ; résolue (jamais supprimée) quand le conflit disparaît. Le
+service flushe lui-même ses changements d'alertes.
 
 **Réaction automatique aux absences (D-062)** : `AbsenceImpactService` conserve
 intégralement son contrat "jamais de mutation" — `AbsenceController` appelle en plus,
@@ -2373,7 +2520,9 @@ sélectives complètes, rappel de 19 h et mises à jour applicatives restent hor
   `POST .../subscribe` (idempotent, upsert), `DELETE .../unsubscribe` (idempotent, scopé
   au propriétaire). Voir `docs/api.md` §40 pour le contrat complet.
 - `App\Service\WebPushService` (implémente `WebPushServiceInterface`) —
-  `sendToUser()`/`sendToUsers()`/`sendToSiteInstrumentists()`. Seul point d'envoi HTTP
+  `sendToUser()` / `sendToUserWithAttempts()` (un destinataire à la fois ; les envois groupés
+  `sendToUsers()` / `sendToSiteInstrumentists()`, qui ignoraient les préférences, ont été
+  supprimés en H3, D-129). Seul point d'envoi HTTP
   réel (`minishlink/web-push`) ; tout appelant métier passe par l'interface, jamais par
   un appel HTTP direct.
 - Canal Monolog `push` (`config/packages/monolog.yaml`) + handler `sentry` (type
@@ -2469,7 +2618,11 @@ côté backend (§9.4) — aucune complexité multi-compte par appareil n'a ét�
 
 ### 9.5 Dette technique connue
 
-`MissionController::publish()` appelle `WebPushService::sendToSiteInstrumentists()` de
+> **Résolu (point 8 audit UX, puis H3/D-129)** : la publication passe par
+> `MissionPublishedMessage` (async) et le pool par `OpenMissionPoolNotifier` (éligibles
+> seulement, préférences respectées). Paragraphe conservé pour l'historique.
+
+`MissionController::publish()` appelait `WebPushService::sendToSiteInstrumentists()` de
 façon synchrone dans la requête HTTP, contrairement au reste des envois push
 post-déploiement (tous async via `MissionLifecycleChangedMessage`, D-043/D-056).
 `publish()` agit en pré-déploiement (`DRAFT`), hors du domaine couvert par
@@ -2539,40 +2692,66 @@ les critères d'installabilité Chrome, `sw.js` est déjà enregistré globaleme
 `PwaInstallProvider` n'importe rien de `features/push/` ; aucune demande de permission
 de notification depuis la bannière ou le guide d'installation. `PushProvider` inchangé.
 
-## 11. Rappel d'encodage D+1 (D-083)
+## 11. Relance progressive d'encodage J+1 / J+2 / J+4 (D-143, remplace D-083)
 
-Remplace le rappel 19 h jamais implémenté (D-081) — un seul rappel, le lendemain matin,
-jamais de relance quotidienne.
+Remplace le rappel unique D+1 08 h (D-083, jamais planifié en production) et le rappel
+19 h (jamais implémenté). Les règles complètes sont dans D-143.
+
+| Échéance (09 h Europe/Brussels) | Instrumentiste | Managers |
+|---|---|---|
+| J+1 | push si livré, sinon e-mail | — |
+| J+2 | push si livré, sinon e-mail | — |
+| J+4 | push si livré + e-mail systématique | centre de notifications + e-mail |
+
+J+N = N-ième jour civil suivant la date LOCALE de fin de mission. Chaque relance figure
+aussi dans le centre de notifications de l'instrumentiste.
 
 ### 11.1 Composants
 
 - `SendEncodingRemindersCommand` (`app:notifications:send-encoding-reminders`) — commande
-  planifiée, orchestration uniquement (garde 08 h Europe/Brussels, boucle isolée par
-  mission, résumé). Pas de logique métier.
-- `EncodingReminderService` — décide (éligibilité) et envoie (Push prioritaire, repli
-  email). `findEligibleMissions()` : requête DQL réelle (statuts soumissibles, `endAt`
-  dans le jour civil précédent en Europe/Brussels, non verrouillée, jamais déjà
-  rappelée). `processMission()` : réservation atomique puis envoi.
-- `Mission.encodingReminderSentAt` — champ nullable, marque le rappel envoyé ; garantit
-  l'idempotence stricte (au plus un rappel par mission) par construction, indépendamment
-  des logs ou d'un verrou applicatif.
-- `WebPushService::sendToUserAndReportSuccess()` — nouvelle méthode (pas dans
-  `WebPushServiceInterface`, même précédent que `sendToSiteInstrumentists()`) qui
-  rapporte si le Push a réellement été livré, condition du repli email.
-- `NotificationService::missionEncodingReminderNotifyInstrumentist()` +
-  `templates/emails/mission_encoding_reminder.html.twig` — repli email, même mécanisme
-  asynchrone Messenger que le reste du projet.
+  planifiée (cron), orchestration uniquement : garde 09 h Europe/Brussels, boucle isolée par
+  mission, résumé `due/sent/skipped/failed`.
+- `EncodingReminderService` — calendrier (`dueAt()`, `dueStage()` : fenêtre de 24 h par
+  échéance, jamais avant, jamais de rafale de relances anciennes), sélection
+  (`findDueReminders()`), envoi (`processReminder()` : relecture de la mission juste avant
+  l'envoi, réservation, canaux, alerte managers), relance manuelle (D-120, anti-répétition
+  10 min), lecture pour le cockpit (`reminderHistory()`, `nextAutomaticReminderAt()`).
+- `EncodingCompletenessService` — définition unique de « ce qui manque » : heures réelles
+  début + fin (soumission), heures déclarées (validation), situation
+  `NOT_STARTED|HOURS_MISSING|NOT_SUBMITTED` pour qualifier une relance sans jamais affirmer
+  qu'il manque du matériel ou une intervention.
+- `MissionEncodingReminder` (table `mission_encoding_reminder`) — une ligne par (mission,
+  échéance), contrainte UNIQUE = idempotence ; canaux réellement utilisés, raison de
+  l'e-mail, nombre de managers alertés, échec technique éventuel.
+- Modèles e-mail `encoding_reminder_d1/d2/d4.html.twig`, `encoding_escalation_manager.html.twig`.
+- `Mission.encodingReminderSentAt` (D-083) — conservé en lecture seule (repli d'affichage),
+  plus jamais écrit.
 
-### 11.2 Canal
+### 11.2 Canaux et traçabilité
 
-Push tenté en premier ; email seulement si Push n'est pas livrable (aucune subscription,
-toutes expirées, tous les envois échouent). Jamais les deux à la fois.
+Depuis D-144, chaque relance est une `NotificationIntent` remise au `NotificationDispatcher`
+(§26) : épisode `encoding_reminder:{D1|D2|D4}:{missionId}` (managers :
+`encoding_escalation:{missionId}`), politique e-mail `FALLBACK_WHEN_PUSH_NOT_SENT` à J+1/J+2,
+`MANDATORY` à J+4 et pour la relance manuelle. Push réellement tenté vers les abonnements de
+l'appareil : compté comme livré seulement si le transport l'a accepté ; abonnements expirés
+(404/410) supprimés par `WebPushService`. Chaque canal (in-app, push, e-mail) est tracé dans
+`OutboundNotification` + `notification_dispatch` + `activity_event` ; l'envoi est aussi
+journalisé dans `AuditEvent` (`MISSION_ENCODING_AUTO_REMINDER_SENT`, acteur système).
 
 ### 11.3 Planification
 
-Cron serveur (pas de Symfony Scheduler dans ce projet), garde horaire interne dans la
-commande elle-même — absorbe tout décalage été/hiver même si le cron serveur est
-planifié en UTC fixe. Voir docs/production.md pour le déploiement.
+Cron serveur toutes les 15 minutes (pas de Symfony Scheduler dans ce projet), garde
+horaire interne dans la commande : aucune dérive été/hiver même si le cron est en UTC.
+Une exécution répétée, un worker redémarré ou un redéploiement n'envoient jamais deux fois
+la même échéance (contrainte UNIQUE). Voir docs/production.md.
+
+### 11.4 Retour chirurgien et signalement
+
+Soumission → `ENCODING_SUBMITTED` au chirurgien (`payload.resubmitted` pour une correction) ;
+synthèse lecture seule `/app/s/missions/{id}/encoding` (horaires planifiés/réels, pause,
+durée, écart ; interventions et matériel groupés) avec bandeau d'état (provisoire, soumis,
+en correction, validé). Signalement (D-100, `EncodingAnomalyReport`, inchangé) → managers
+et désormais l'instrumentiste (`ENCODING_ANOMALY_INSTRUMENTIST`, sans le commentaire).
 
 ## 12. Historique des notifications sortantes (D-084)
 
@@ -3160,7 +3339,9 @@ table d'affiliation.
 
 ### 18.2 Notifications & audit — même famille que D-093
 
-`SURGEON_MISSION_REQUEST_CREATED` (→ managers/admins, in-app + push, jamais email) ;
+`SURGEON_MISSION_REQUEST_CREATED` (→ managers/admins, in-app + push ; email opt-in —
+défaut désactivé, envoyé seulement si le manager coche « E-mail » dans ses préférences,
+amendement 2026-10-06 de D-099) ;
 `SURGEON_MISSION_REQUEST_ACCEPTED`/`REJECTED` (→ chirurgien, push puis repli email).
 `NotificationTargetResolver` gagne deux routes de deep-link dédiées (demande créée →
 `/app/m/missions/requests` pour un manager ; demande refusée → `/app/s/requests`,
@@ -3284,7 +3465,7 @@ features/encoding-anomaly-reports/      — partagé chirurgien (création) + ma
     │                                       <select>), commentaire toujours requis
     ├── AnomalyReportSection.tsx         — bandeau statut + CTA "Signaler un problème"
     │                                       (masqué si un signalement OPEN existe déjà)
-    └── AnomalyReportsManagerPanel.tsx   — intégré à manager/MissionDetailPage.tsx,
+    └── AnomalyReportsManagerPanel.tsx   — intégré au tiroir mission manager (D-168),
                                             jamais rendu si aucun signalement n'existe
 ```
 
@@ -3296,8 +3477,8 @@ temps que le CTA instrumentiste "Encoder la mission").
 
 ### 19.4 Frontend manager — intégré au détail Mission existant
 
-`AnomalyReportsManagerPanel` monté directement dans `manager/MissionDetailPage.tsx`,
-juste après `EncodingStatusPanel` — jamais une nouvelle route de listing top-level
+`AnomalyReportsManagerPanel` monté dans le tiroir mission manager
+(`features/missions/drawer/ManagerMissionDrawer.tsx`, D-168), sous l'historique — jamais une nouvelle route de listing top-level
 (fondé sur l'UX actuelle : les signalements sont rares et intrinsèquement liés à une
 Mission). N'affiche rien tant qu'aucun signalement n'existe pour la mission (cas
 largement majoritaire).
@@ -3467,18 +3648,20 @@ consomme seulement la ventilation du suivi pour expliquer ses zéros.
 
 | Composant | Rôle |
 |---|---|
-| `Enum\EncodingState` | 7 états dérivés + libellés FR + prédicats d'action |
+| `Enum\EncodingState` | 8 états dérivés (dont `NOT_DECLARED`, D-172) + libellés FR + prédicats d'action |
 | `Dto\EncodingStateFacts` | faits bruts nécessaires à la dérivation |
 | `Service\EncodingStateResolver` | **définition canonique unique** de `EncodingState` |
 | `Enum\EncodingFinancialState` | statut financier synthétique (sans montant) |
 | `Dto\MissionFinancialFacts` | faits financiers bruts |
 | `Service\EncodingFinancialStateResolver` | dérivation du statut financier |
+| `Service\FinancialCalculationAnomalyExplainer` | traduction des anomalies du dernier calcul échoué — partagée avec la worklist « Facturation firmes » (D-138) |
 | `Dto\EncodingTrackingSummary` | ventilation partagée par les deux écrans |
 | `Dto\EncodingTrackingItem` | une ligne de suivi |
 | `Repository\EncodingTrackingRepository` | agrégats SQL + hydratation bornée |
 | `Service\EncodingTrackingService` | orchestration (n'décide rien) |
 | `Service\EncodingTrackingRequestParser` | params propres au module |
 | `Controller\Api\EncodingTrackingController` | 2 routes, `BillingVoter::MANAGE` |
+| `Service\MissionEncodingOverviewService` | D-172 — bloc `encoding` des missions (liste et détail manager) : état via `EncodingStateResolver`, auteurs (audit), verrous réels par niveau ; lecture seule, requêtes fixes par page |
 | `Service\MissionPopulationClauseBuilder` | filtres partagés avec D-077 |
 
 Aucune entité, aucune migration : tous les états sont dérivés de données existantes.
@@ -3508,7 +3691,10 @@ le tableau.
 Constant, indépendant du nombre de missions :
 
 - **résumé** : 1 requête de faits (période entière) + 1 requête d'anomalies ;
-- **liste** : 1 comptage + 1 requête d'ids + 1 hydratation + 1 faits + 1 financier.
+- **liste** : 1 comptage + 1 requête d'ids + 1 hydratation + 1 faits + 1 financier
+  + 1 derniers échecs de calcul, seulement si la page contient une anomalie (D-138) ;
+- **détail FINANCE d'une mission** (tiroir, D-138) : mêmes faits que la liste pour UNE
+  mission + le dernier échec, expliqué par `FinancialCalculationAnomalyExplainer`.
 
 Les compteurs d'interventions et de lignes de matériel viennent de sous-requêtes corrélées
 appuyées sur `idx_intervention_mission` et `idx_material_line_mission` — jamais d'un
@@ -3588,3 +3774,761 @@ qui garde `MissionPublishedMessage`.
   `dispatch-candidates`, `mission/{id}`).
 - `fetchAllMissions()` : pagination complète (l'API plafonne à 100 par page ; un seul appel
   `limit: 500` tronquait silencieusement les premières missions d'un mois chargé).
+
+## 24. Intégration MedVue — liaison des comptes et API machine de lecture des congés (D-140)
+
+
+
+```
+
+MedVue (code d'association) ──► utilisateur ──► SurgicalHub, Profil / fiche admin
+
+SurgicalHub ──POST …/link-codes/redeem (secret SH→MV)──► api.medvue.be   (code + id SH)
+
+MedVue ──GET …/links/{linkId}/absences (secret MV→SH)──► api.surgicalhub.be (congés)
+
+MedVue ──DELETE …/links/{linkId} (secret MV→SH)──► api.surgicalhub.be (dissociation)
+
+```
+
+
+
+Composants SurgicalHub :
+
+
+
+| Composant | Rôle |
+
+|---|---|
+
+| `MedVueAccountLink` / `medvue_account_link` | liaison compte SH ↔ `linkId` MedVue, historique des révocations, au plus une active par compte et par `linkId` |
+
+| `MedVueIntegrationVoter` | `MANAGE_LINK` (soi-même : 4 rôles métier ; autrui : ADMIN) et `MACHINE_READ` (client machine seul) |
+
+| `MedVueIntegrationAuthenticator` + `MedVueIntegrationClient` | firewall `medvue_integration` (`^/api/integrations/medvue/`), secret Bearer comparé à son empreinte SHA-256 |
+
+| `MedVueAccountLinkService` | liaison (limites, normalisation, appel MedVue, audit) et révocations SH / MedVue |
+
+| `MedVueLinkCodeRedeemer` | unique appel sortant vers MedVue (`redeem`), réponses hors contrat = échec technique |
+
+| `MedVueAbsenceExportService` | instantané complet et minimal (`id`, dates) des absences d'une fenêtre |
+
+| `MedVueAccountLinkController` | `GET/POST/DELETE /api/medvue-integration/users/{userId}/link` (JWT) |
+
+| `MedVueIntegrationApiController` | `GET …/absences`, `DELETE …/links/{linkId}` (machine) |
+
+| `SentryIntegrationSecretScrubber` | retire code et secret des rapports Sentry |
+
+
+
+Flux de données : seules des données SurgicalHub sortent (identifiant et nom du compte, nom de
+
+l'acteur, dates d'absence). Rien de MedVue n'est stocké hormis le `linkId` opaque. Aucune
+
+écriture sur `Absence` n'est possible par l'intégration. Contrat : `docs/api.md`
+
+« Intégration MedVue » ; décisions : `docs/decisions.md` D-140.
+
+
+## 25. Journal d'activité transversal et corrélation (H1, D-126)
+
+
+
+### 25.1 Rôle de chaque stockage — à ne jamais confondre
+
+
+
+| Stockage | Rôle | Source de vérité ? |
+
+|---|---|---|
+
+| `Mission` (et autres entités métier) | état courant | **oui** |
+
+| `AuditEvent` | preuve métier spécialisée (mission, financier, salles…) | oui, pour ce qu'il prouve |
+
+| `UserAuditEvent` | audit administration / utilisateurs | oui, pour ce qu'il prouve |
+
+| `NotificationEvent` | flux in-app de l'utilisateur | oui, pour le « vu / non vu » |
+
+| `OutboundNotification` (+ attempts) | livraison push / email | oui, pour la livraison |
+
+| **`activity_event`** | **chronologie et corrélation transversales** | **jamais** — projection de traçabilité, aucune décision métier ne la lit |
+
+
+
+### 25.2 Écriture
+
+
+
+```text
+
+HTTP request / console command ──► CorrelationContextListener ──► CorrelationContext (correlationId UUID v7)
+
+                                                                        │
+
+ business service ──► flush ──► postPersist(AuditEvent | UserAuditEvent) ──► AuditEventMirrorListener ─┐
+
+                         │  └─► postPersist/postUpdate/postRemove(Absence) ──► AbsenceActivityListener ─┤
+
+                         └─ planning services (generate / deploy / draft delete / modification) ────────┤
+
+                                                                                                        ▼
+
+                                                     ActivityJournal::record()  (DBAL INSERT, même transaction)
+
+                                                                        │
+
+ bus->dispatch() ──► CorrelationMiddleware ajoute CorrelationStamp ──► transport Doctrine ──► worker
+
+                          worker: CorrelationMiddleware restaure l'opération, handler, puis restaure l'état précédent (finally)
+
+```
+
+
+
+- `ActivityJournal` est la **seule** API d'écriture ; il refuse d'écrire hors transaction (sauf
+
+  `recordStandalone()`), valide le type (registre fermé), filtre le payload
+
+  (`ActivityPayloadPolicy`), snapshotte l'acteur (nom, rôle principal, `USER`/`SYSTEM`/
+
+  `WORKER`/`SCHEDULED_TASK` — jamais d'email), applique l'`idempotencyKey`, et résout la
+
+  causalité **uniquement** depuis un id explicite ou une ancre (`absence:{id}`,
+
+  `planning_version:{id}`).
+
+- Les recorders de domaine (`AbsenceActivityListener`, `PlanningActivityRecorder`,
+
+  `AuditEventActivityMapper`) construisent le résumé lisible (texte, sans HTML) et le payload ;
+
+  ils décrivent une décision déjà prise, ils n'en prennent aucune.
+
+- Append-only : `AppendOnlyDriverMiddleware` (SQL) + `ActivityEventOrmGuard` (ORM). Pas de
+
+  trigger (privilèges prod, cf. D-126).
+
+
+
+### 25.3 Lecture (préparée pour H6)
+
+
+
+Index : `(occurred_at, id)`, `correlation_id`, `(mission_id, occurred_at)`,
+
+`(user_id, occurred_at)`, `(absence_id, occurred_at)`, `(planning_version_id, occurred_at)`,
+
+`(domain, occurred_at)`, `(subject_type, subject_id)`, `(actor_user_id, occurred_at)`,
+
+`UNIQUE(idempotency_key)`. Pagination prévue par curseur `(occurred_at, id)`. Le journal complet
+
+sera réservé Manager/Admin ; les historiques contextuels passeront par les voters métier et
+
+filtreront les domaines financiers (`ActivityDomain::isFinancial()`).
+
+
+
+## 26. Distribution et traçabilité des notifications (H2, D-128)
+
+
+
+### 26.1 Les trois niveaux
+
+
+
+| Niveau | Stockage | Question à laquelle il répond |
+
+|---|---|---|
+
+| Décision | `notification_dispatch` | qui devait être prévenu, de quoi, dans quelle opération, avec quels canaux accordés (préférence ou défaut) ? |
+
+| Livraison | `outbound_notification` (+ `outbound_notification_attempt`) | pour chaque canal : créé / en file / accepté par le fournisseur / échec / non envoyé (et pourquoi) ? |
+
+| Flux in-app | `notification_event` | l'utilisateur l'a-t-il vu ? |
+
+
+
+`notification_dispatch_delivery` relie les deux premiers (N:N : un email groupé d'une opération par
+
+lot sert plusieurs dispatchs).
+
+
+
+### 26.2 Chemin d'une notification
+
+
+
+```text
+
+handler métier (ex. MissionLifecycleChangedMessageHandler)
+
+   └─ MissionLifecycleNotificationFactory → NotificationIntent (destinataire, type, payload in-app, contenus email/push, épisode)
+
+        └─ NotificationDispatcher::dispatch() | dispatchBatch()
+
+              1. NotificationPreferenceResolver::resolve()        (seule autorité sur les canaux)
+
+              2. NotificationDispatch (idempotent : type|destinataire|sujet|épisode)
+
+              3. IN_APP → NotificationEvent + livraison SENT, ou SKIPPED(DISABLED_BY_PREFERENCE)
+
+                 PUSH   → OutboundNotificationService::recordPushSend() (SENT/FAILED/SKIPPED + raison)
+
+                 EMAIL  → livraison QUEUED + SendTemplatedEmailMessage + NOTIFICATION_CHANNEL_QUEUED (même transaction)
+
+                          ou SKIPPED(DISABLED_BY_PREFERENCE | NO_EMAIL_ADDRESS | COVERED_BY_PUSH | NOT_APPLICABLE)
+
+              4. NOTIFICATION_DISPATCHED (activity_event) — décision + issue de chaque canal
+
+worker : SendTemplatedEmailMessageHandler → recordEmailAttempt(SENT) → NOTIFICATION_CHANNEL_SENT
+
+         OutboundNotificationEmailFailureListener → FAILED (retries épuisés) → NOTIFICATION_CHANNEL_FAILED
+
+```
+
+
+
+Chaque canal est isolé (un échec n'empêche jamais les autres) ; un retry du même épisode ne crée
+
+rien de nouveau. `SENT` = accepté par le relais SMTP ou le service push, jamais « reçu » ni « lu ».
+
+
+
+### 26.3 Lire la trace
+
+
+
+- Écran admin « Historique des notifications » (`/api/admin/outbound-notifications`) : une ligne par
+
+  canal, y compris `IN_APP` et les `SKIPPED` avec leur raison, plus la `correlationId`.
+
+- `activity_event` : `NOTIFICATION_DISPATCHED`, `NOTIFICATION_CHANNEL_QUEUED/SENT/FAILED`, reliés à
+
+  l'événement de mission qui les a causés (même `correlationId`, causalité explicite).
+
+
+
+## 27. Sollicitation du pool pour une mission OPEN (H3, D-129)
+
+
+
+### 27.1 Une seule porte d'entrée
+
+
+
+Toute mission réelle qui devient (ou est déclarée) disponible passe par
+
+`App\Notification\OpenMissionPoolNotifier` — aucun handler ne possède plus sa propre diffusion
+
+pool (garde-fou : `tests/Architecture/OpenMissionPoolSingleEntryTest`).
+
+
+
+| Chemin métier | Déclencheur | Cause (`OpenEpisodeCause`) | Mode |
+
+|---|---|---|---|
+
+| Libération d'une instrumentiste (`POST /release`, action d'alerte sur mission ASSIGNED) | `MissionLifecycleChangedMessage(RELEASED)` | `RELEASED` (exclusion `REMOVED_BY_MANAGER` si un manager l'a retirée) | isolé |
+
+| Absence de l'instrumentiste (D-062) | idem, `causedByAbsenceId` | `INSTRUMENTIST_ABSENCE` (l'absente est écartée par l'éligibilité, pas par exclusion) | isolé |
+
+| Déploiement (missions cochées `openUncoveredIds`) | `PlanningDeployPdfsMessageHandler` | `DEPLOYED`, clé `deployment:{id}` | lot |
+
+| Publication POOL (D-125) | `MissionPublishedMessage` | `PUBLISHED_TO_POOL` | isolé |
+
+| Reprise de salle sans priorité (D-124, D-177) | `MissionLifecycleChangedMessage(ROOM_TAKEN_OVER)` | `ROOM_TAKEN_OVER` | isolé |
+| Fin d'une priorité de reprise sans acceptation (D-177) | `MissionLifecycleChangedMessage(PRIORITY_ENDED)` | `ROOM_TAKEOVER_PRIORITY_ENDED` (exclusion `PRIORITY_DECLINED` de celle qui a refusé) | isolé |
+
+| Lot du mode Modification | `PlanningModificationAppliedMessage` (après commit) | `PLANNING_MODIFICATION`, clé = `correlationId` du lot | lot |
+
+| Restauration en OPEN après suppression d'absence (D-104) | `OpenMissionPoolMessage` | `RESTORED_AFTER_ABSENCE` | isolé |
+
+| « Ouvrir au pool » sur une alerte, mission déjà OPEN | `OpenMissionPoolMessage` | `OPENED_FROM_ALERT` | isolé |
+
+
+
+### 27.2 Pipeline
+
+
+
+```text
+
+OpenEpisode(missionId, episodeRef, cause, exclusions contextuelles, acteur)
+
+  └─ OpenMissionPoolNotifier::notify() | notifyBatch()
+
+       1. recharge les missions (une mission plus OPEN / déjà prise → personne n'est sollicité)
+
+       2. MissionEligibilityService::findEligibleByMission()   missionId → éligibles (3 requêtes, D-036)
+
+       3. retire les exclusions de l'épisode (jamais une règle d'éligibilité ; tracées)
+
+       4. OPEN_POOL_EVALUATED (activity_event) : éligibles / exclues / sollicitées / aucun candidat
+
+       5. NotificationIntent(OPEN_MISSION_AVAILABLE, épisode) par (personne, mission)
+
+          → NotificationDispatcher : isolé = un email par personne ;
+
+            lot = in-app par mission, UN email + UN push par personne listant SES missions
+
+```
+
+
+
+- **Épisode** : `open:{missionId}:{cause}:{instant de la transition}` (ou `:{clé de lot}`). Un retry
+
+  Messenger rejoue le même épisode → rien de nouveau (idempotence du dispatcher et de la trace).
+
+  Une nouvelle ouverture (OPEN → ASSIGNED → OPEN) est un nouvel épisode : les exclusions du
+
+  précédent ne s'appliquent plus.
+
+- **Canaux** : uniquement `NotificationPreferenceResolver` ; défauts `OPEN_MISSION_AVAILABLE`
+
+  in-app, email et push activés.
+
+- **Contenu** : date, horaires, période, site, chirurgien, type, lien vers les offres — jamais de
+
+  patient ni de donnée financière. Template `emails/open_missions_available.html.twig`.
+
+
+
+### 27.3 Mode Modification : atomique, notifications après commit
+
+
+
+`PlanningModificationService::apply()` exécute tout le lot dans **une** transaction (mutations,
+
+alertes de conflit, diff, trace `PLANNING_MODIFICATION_APPLIED`). Échec → rollback complet, trace
+
+`FAILED` (`rolledBack`), EntityManager vidé, aucune notification. Succès → un
+
+`PlanningModificationAppliedMessage` : récapitulatifs `PLANNING_CHANGE_SUMMARY` par personne
+
+concernée (dispatcher), puis pool en lot pour les missions ouvertes par le lot.
+
+Les messages émis par des services imbriqués pendant le lot partent dans le transport Doctrine
+
+(même connexion) : ils sont annulés avec le lot.
+
+
+
+### 27.4 Lire ce qui s'est passé
+
+
+
+`OPEN_POOL_EVALUATED` (domaine MISSIONS, ancre `mission:{id}`) donne au manager, par mission et par
+
+épisode : `eligibleCount`, `excludedCount` (+ qui et pourquoi, `wasEligible`), `notifiedCount`,
+
+`noEligibleCandidates`, `mode`, `cause`. Les dispatchs qui suivent pointent vers cette évaluation ;
+
+le détail par canal reste dans `notification_dispatch` / `outbound_notification` (§25).
+
+
+
+## 28. Impact d'une absence : résolution unique N1 / N2 / N3 (H4, D-130)
+
+
+
+### 28.1 Les trois niveaux
+
+
+
+| Niveau | Source | Personne informée | Conséquence (appliquée par) |
+
+|---|---|---|---|
+
+| N1 — organisation habituelle | `SurgeonSchedulePost` (+ exceptions), aucune Mission sur le créneau | chirurgien absent → instrumentiste habituelle ; instrumentiste absente → chirurgien | occurrence neutralisée (`SurgeonAbsenceOccurrenceImpactService`) / à couvrir (`InstrumentistAbsenceOccurrenceImpactService`, audit seul) |
+
+| N2 — prévu, non publié | Mission `DRAFT` | la personne de la Mission (jamais celle du template) | alerte cockpit (`AbsenceImpactService`) ; neutralisation / blocage au déploiement (D-090) |
+
+| N3 — publié / opérationnel | Mission ≠ DRAFT | la personne de la Mission | annulation / libération (`AbsenceMissionReactionService`), pool via H3 ; SUBMITTED/VALIDATED/IN_PROGRESS : décision manager |
+
+
+
+Pour une occurrence : **N3 > N2 > N1**.
+
+
+
+### 28.2 Séquence
+
+
+
+```text
+
+AbsenceController / SelfAbsenceController
+
+  └─ AbsenceImpactCoordinator::afterCreated | afterUpdated | delete
+
+       1. AbsenceImpactResolver::resolve()  → list<AbsenceImpact>   (avant toute mutation)
+
+          (+ resolveRange(ancienne plage) pour une modification : nouveaux / plus impactés)
+
+       2. appliquer : AbsenceMissionReactionService (N3) → AbsenceImpactService (alertes)
+
+                      → SurgeonAbsenceOccurrenceImpactService::neutralize (N1)
+
+                      → InstrumentistAbsenceOccurrenceImpactService::record (N1)
+
+                      → AbsenceImpactReconciliationService (modification : D-104)
+
+       3. AbsenceImpactActivityRecorder : ABSENCE_IMPACT_EVALUATED + USER_PLANNING_IMPACTED
+
+       4. AbsenceImpactNotificationMessage (N1/N2) → AbsenceImpactNotifier → NotificationDispatcher (BATCH)
+
+          AbsenceMissionsReactedMessage (N3, émis par la réaction) → handler → NotificationDispatcher (BATCH)
+
+          MissionLifecycleChangedMessage(RELEASED, causedByAbsenceId) → OpenMissionPoolNotifier (H3)
+
+       5. AbsenceImpactSummaryService → ABSENCE_IMPACT_SUMMARY (managers, dispatcher)
+
+          + communications D-114 (salle libérée, gestion du bloc, salles disponibles)
+
+```
+
+
+
+### 28.3 `mission_communication`
+
+
+
+```text
+
+NotificationIntent(communicates: MissionCommunicationSpec{source, role, missionIds})
+
+  └─ NotificationDispatcher : notification_dispatch.communicates
+
+       ├─ IN_APP SENT ou PUSH SENT  → MissionCommunicationService::activateFromDispatch()
+
+       └─ EMAIL QUEUED → worker → OutboundNotificationService::recordEmailAttempt(success)
+
+                                  → activateForDelivery() (tous les dispatchs servis par l'email)
+
+MissionPostDeployService::claim()                 → activate(CLAIM)        (preuve = l'action elle-même)
+
+MissionPostDeployService::release/cancel/assign/reassign → withdraw(RELEASED | CANCELLED | REASSIGNED)
+
+```
+
+
+
+Une activation n'a lieu que si la personne détient encore la mission ; une ligne active par
+
+(mission, personne, rôle) ; rien n'est jamais supprimé.
+
+
+
+## 29. Notifications métier utilisateur de classe A par le dispatcher (H5a, D-131)
+
+
+
+Règle : toute notification métier utilisateur de classe A est un `NotificationIntent` remis à
+
+`NotificationDispatcher` (les documents de facturation B et les communications D-114 restent
+
+spécialisés ; les emails d'identité y passent en `MANDATORY` confidentiel).
+
+Les services métier ne fabriquent que le contenu (`NotificationService::*Email()` →
+
+`EmailContent`) ; le dispatcher décide des canaux, enregistre la décision et chaque livraison
+
+avec un statut honnête.
+
+
+
+```
+
+Handler / service ──► NotificationIntent ──► NotificationDispatcher
+
+   (qui, quoi, épisode,      │  emailPolicy: WHEN_ENABLED | FALLBACK_WHEN_PUSH_NOT_SENT | MANDATORY
+
+    politique, contenu)      │  inApp (bool), emailAddress (adresse explicite), confidential
+
+                             ▼
+
+             NotificationPreferenceResolver (sauf email MANDATORY)
+
+                             ▼
+
+     notification_dispatch ─► outbound_notification (IN_APP / PUSH / EMAIL, recipient_address)
+
+                             ▼                 └─ payload.attachments = DocumentReference[]
+
+                SendTemplatedEmailMessage (documents par référence, storeRenderedBody)
+
+                             ▼
+
+     SendTemplatedEmailMessageHandler ─► DocumentStore::load() (sha256 vérifié) ─► Mailer
+
+                             ▼
+
+     recordEmailAttempt() : SENT (accepté par le relais) / FAILED après retries + activity_event
+
+```
+
+
+
+- **`MANDATORY`** : identité (invitation, changement d'email) et actions explicites d'un
+
+  manager vers une personne (renvoi du planning, rappels d'absence) ; ces types sont exclus des
+
+  préférences (`NotificationType::isConfigurable()`).
+
+- **`confidential`** : corps rendu jamais recopié, lien jamais enregistré (jeton d'invitation).
+
+- **`GeneratedDocument`** : PDF rendu une fois, stocké une fois, référencé partout ailleurs.
+
+- Exceptions, et elles seules (test `EmailThroughDispatcherTest`) : documents financiers
+
+  (facture firme, décompte — `SendBillingEmailMessage`) et communications D-114 (journal
+
+  propre, adresses externes de gestion du bloc).
+
+
+
+## 30. Couverture de l'historique global (H5b, D-132)
+
+
+
+`activity_event` raconte ; il ne décide jamais. Trois mécanismes, et chaque entité Doctrine
+
+relève d'exactement un d'entre eux (`tests/Architecture/ActivityCoverageTest.php`) :
+
+
+
+```
+
+1. Audit spécialisé existant ──► AuditEvent / UserAuditEvent ──► AuditEventMirrorListener ──► activity_event
+
+   (missions, encodage, finance, tarifs, comptes)                  (sujet = mission / document / personne)
+
+
+
+2. Entité gouvernée (aucun audit) ──► flush Doctrine
+
+      onFlush : diff des champs suivis (avant → après), suppression décrite tant que chargeable
+
+      postPersist / postUpdate / postRemove : GovernedEntityDescriber::describe()
+
+         ──► ActivityJournal::record(record, connexion du flush)   (même transaction)
+
+
+
+3. Écriture directe ──► ActivityJournal (absences, planning, dispatch H2, envois de documents)
+
+```
+
+
+
+- **Describers** (`src/Activity/Governed/Describer`) : un par entité, `trackedFields()` (libellés
+
+  FR), champs rédigés (texte libre → « modifié »), phrase lisible, contexte whitelisté, sujet =
+
+  objet métier recherché (offre, mission, personne), ancres de causalité.
+
+- **Livraisons non-utilisateur** : `TransactionalEmailSender` — `OutboundNotification` (destinataire
+
+  nullable + libellé), `SendTemplatedEmailMessage`, `NOTIFICATION_CHANNEL_*` causés par l'acte
+
+  métier ; utilisé par `BillingDocumentMailer` et `AbsenceCommunicationDeliverySender`. Jamais de
+
+  préférences, jamais d'in-app.
+
+
+
+```
+
+Facture : FIRM_INVOICE_CREATED_FROM_CALCULATION → FIRM_INVOICE_ISSUED → FIRM_INVOICE_SENT
+
+            → NOTIFICATION_CHANNEL_QUEUED (← SENT) → NOTIFICATION_CHANNEL_SENT (← QUEUED)
+
+            → FIRM_INVOICE_RESENT (même GeneratedDocument, même sha256) → QUEUED → SENT
+
+D-114   : ABSENCE_CREATED → SURGEON_ABSENCE_COMMUNICATION_RECORDED (← absence)
+
+            → NOTIFICATION_CHANNEL_QUEUED (← communication) → SENT ;
+
+          surgeon_absence_communication_delivery.outbound_notification_id → outbound_notification
+
+```
+
+
+
+- **Documents figés** : `GeneratedDocument.retentionClass` (`IMMUTABLE_EVIDENCE` /
+
+  `REGENERABLE`), `sourceKey` + `inputFingerprint` ; `DocumentStore::storeOnce()` réutilise le
+
+  document de même identité ; `PlanningDocumentIdentity` pour les plannings. Aucune purge
+
+  automatique.
+
+- **Garde-fous** : `ActivityCoverageTest`, `NotificationChannelsThroughDispatcherTest`,
+
+  `EmailThroughDispatcherTest`, `ActivityJournalIntegrationTest` (append-only).
+
+## 31. Affectations d'instrumentistes (D-150)
+
+`mission_assignment` enregistre chaque affectation d'un instrumentiste à une mission
+**publiée** : source métier, `assignedAt` propre à l'affectation, puis fin (`endedAt`,
+`endReason`, `endedBy`). Une mission DRAFT n'en a jamais : l'affectation commence à la
+publication.
+
+- **Seul écrivain** : `App\Service\MissionAssignmentService` (`assign`, `unassign`,
+  `findCurrent`, `inLockedChange`, `openForDeployedVersion`), appelé explicitement par
+  `MissionPostDeployService`, `MissionService::declareMission()`, `PlanningAlertActionService`
+  et `PlanningDeploymentService`. Statuts, AuditEvents et messages restent chez ces appelants.
+- **Unicité** : colonne générée `active_mission_key` + index UNIQUE → au plus une affectation
+  ouverte par mission, garanti par MySQL.
+- **Concurrence** : `inLockedChange()` = transaction + `SELECT … FOR UPDATE` comparant le
+  statut et l'instrumentiste validés à l'état chargé ; écart → 409.
+- **Garde-fou** : `tests/Architecture/MissionInstrumentistWriteArchitectureTest` (liste
+  nominative des écritures directes autorisées : DRAFT ou autres entités).
+- **Affectation courante** : `MissionAssignmentService::findCurrent($mission)`.
+- **Invariant** (D-150 Décision 4) : affectation ouverte seulement pour DECLARED … VALIDATED,
+  et pour `mission.instrumentist` ; un statut définitif ferme l'affectation
+  (`endOnFinalStatus()`, refus d'une déclaration) sans retirer l'instrumentiste.
+
+### 31.1 Refus d'affectation par le chirurgien (D-151)
+
+- **Règle unique** : `App\Service\MissionAssignmentRefusalPolicy` (acceptation volontaire,
+  `min(assignedAt + 24 h, début)`, jamais à moins de 12 h du début ni avec des données
+  d'encodage / financières). Lue par `MissionPostDeployService::refuseAssignment()` sous verrou,
+  `MissionActionsService` (`refuse_assignment` / `request_assignment_review`) et `MissionMapper`
+  (`currentAssignment`).
+- **Effet durable sur la mission** : `MissionAssignment.endReason = REFUSED_BY_SURGEON` →
+  `EligibilityReason::REFUSED_FOR_MISSION` sur toutes les voies de `MissionEligibilityService`
+  et dans `MissionService::list(eligibleToMe)`.
+- **Notifications** : `RELEASED` + `origin = SURGEON_REFUSAL` ; formulation neutre côté
+  instrumentiste (`MissionLifecycleNotificationFactory::isNeutralRemoval()`), origine réelle
+  côté managers.
+
+### 31.2 Incompatibilités chirurgien–instrumentiste (D-152)
+
+- **Écrivain unique** : `App\Service\SurgeonInstrumentistIncompatibilityService` (création,
+  levée, conflits, périmètre « bloquable »). Unicité de l'incompatibilité active garantie par
+  MySQL (`active_pair_key`).
+- **Application** : `MissionEligibilityService::exclusionReasons()` / `exclusionsByMission()`
+  (une requête UNION avec le refus D-151) sur toutes les voies ; `isIncompatibleLocked()`
+  (lecture `FOR SHARE`) dans les transactions d'affectation pour la sérialisation.
+- **Conflits** : `PlanningAlert` `SURGEON_INCOMPATIBILITY` (non ignorable), fermée par
+  `MissionAssignmentService::close()` ou par la levée.
+- **Droits** : `SurgeonInstrumentistIncompatibilityVoter` ; l'instrumentiste n'a aucun accès.
+
+### 31.3 Correction de l'encodage par le manager (D-153)
+
+- **Politique unique** : `MissionEncodingCorrectionPolicy::managerCanEditEncoding()` /
+  `managerCanEditHours()`, lues par `MissionVoter::EDIT_ENCODING`,
+  `MissionExecutionVoter::UPDATE` et `MissionActionsService` (`edit_encoding`, `edit_hours`).
+- **Écritures** : endpoints et services d'encodage existants, aucun nouveau chemin.
+- **Historique** : `MissionEncodingHistoryService` lit `activity_event` (listener gouverné
+  pour interventions / matériel, miroir d'audit pour les heures avec valeurs avant / après) ;
+  `GET /api/missions/{id}/encoding/history`, `MissionVoter::VIEW_ENCODING_HISTORY`.
+- **Finances** : `financialImpactNotice()` annonce un calcul actif à relancer ; aucun recalcul
+  automatique, calcul `LOCKED` bloquant. La réouverture marque le calcul actif obsolète
+  (`FinancialCalculation.encodingReopenedAt`) : refusé par `approve()` / `lock()`, exclu des
+  lignes éligibles et des documents (`FirmInvoiceService`, `InstrumentistStatementService`),
+  motif `CALCULATION_OBSOLETE` dans la worklist, jusqu'au recalcul explicite.
+
+### 31.4 Encodage par le chirurgien (D-154)
+
+- **Politique unique** : `SurgeonEncodingPolicy::canEditEncoding()`, lue par
+  `MissionVoter::EDIT_ENCODING` et `MissionActionsService` (`edit_encoding`) ; heures et
+  transitions inchangées (instrumentiste / manager).
+- **Écran** : `SurgeonEncodingPage` réutilise `InterventionsSection` quand `edit_encoding`
+  est servi ; lecture seule sinon.
+- **Concurrence** : `MissionIntervention.version` / `MaterialLine.version` (`#[ORM\Version]`),
+  `If-Match` contrôlé par `EncodingVersionGuard`, `EncodingConcurrencyException` (409 / 428),
+  `OptimisticLockException` → 409 dans `ApiExceptionSubscriber`.
+- **L6** : seule `hasEncodableActivity()` est à étendre (missions sans instrumentiste).
+
+### 31.5 Activité réalisée sans instrumentiste (D-155)
+
+- **Fait, pas statut** : `Mission.executedWithoutInstrumentistAt/By`, `hasEncodableActivity()`.
+- **Règle unique** : `ExecutedWithoutInstrumentistPolicy` (déclarer, annuler, soumission par le
+  chirurgien), lue par `MissionVoter`, `MissionActionsService` et, sous verrou,
+  `MissionPostDeployService::declareExecutedWithoutInstrumentist()` /
+  `cancelExecutedWithoutInstrumentistDeclaration()`.
+- **Verrous levés dans ce mode seulement** : heures (`EncodingCompletenessService`), calcul
+  (`assertEligible`), recalcul groupé, action « Calculer » du suivi.
+- **Notifications** : renvoi / réouverture → chirurgien ; jamais d'auto-notification de soumission.
+
+### 31.6 Encodage indépendant de la présence d'une instrumentiste (D-171)
+
+- **Trois auteurs possibles d'un encodage** : l'instrumentiste affectée (parcours classique),
+  le manager (D-153, toujours), le chirurgien de **sa** mission (D-154 avec instrumentiste,
+  D-155 après déclaration de l'activité sans instrumentiste). Le chirurgien ne valide jamais,
+  ne voit aucune donnée financière et n'a aucun droit général d'édition des missions.
+- **Terminer et valider (manager)** : `MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason()`
+  lue par `MissionVoter::ENCODING_COMPLETE_AND_VALIDATE`, `MissionActionsService`
+  (`complete_and_validate`) et `MissionEncodingWorkflowService::completeAndValidate()`
+  (`complete()` puis `validate()`, contrôles faits avant toute écriture).
+- **Explication d'un blocage** : `validationBlockedReason()` → `encodingValidationBlockedReason`
+  (détail de mission, managers) ; le suivi affiche l'auteur de la soumission (`submittedBy`).
+- **Instrumentiste affectée après coup** : une activité déclarée n'est plus OPEN, donc ni claim
+  ni affectation ; le manager annule d'abord la déclaration (motif, contenu conservé), puis
+  affecte. Le contenu est repris tel quel par l'instrumentiste ; le chirurgien garde la
+  correction D-154 (version optimiste), jamais les heures ni la soumission.
+- **Reprise manager** (instrumentiste affectée, encodage non soumis) :
+  `MissionEncodingCorrectionPolicy::isTakeover()` ; confirmation explicite (`takeoverConfirmed`),
+  empreinte `EncodingTakeoverService::revision()` comparée sous le verrou de la mission
+  (`MissionAssignmentService::inLockedChange()`, 409 si l'encodage a changé), audit
+  `MISSION_ENCODING_TAKEN_OVER`, notification `ENCODING_TAKEN_OVER` par
+  `MissionLifecycleChangedMessageHandler` après la validation.
+- **Heures indépendantes de la validation** : la validation manager (avec ou sans reprise) n'exige
+  jamais les heures et n'en crée aucune. Le fait `Mission.encodingValidatedWithoutHoursAt` +
+  `hoursPendingAfterValidation()` laissent les seules heures déclarables tant qu'elles manquent
+  (`MissionExecutionVoter::UPDATE`, `edit_hours`, `remind_hours`, une seule règle) ; jamais de
+  prestation horaire valorisée sans heures réelles.
+- **Facturation firme indépendante des heures** : `FinancialCalculationService::evaluate()` ne
+  bloque plus sur des heures absentes (`instrumentistHoursPending`) ; la prestation horaire arrive
+  par recalcul, ou par un calcul complémentaire (`supplementOf`) quand une facture firme a verrouillé
+  le calcul principal. `findActiveCalculation()` et les sélections « calcul actif » excluent les
+  compléments ; relevés et statistiques lisent les lignes.
+- **Sérialisation** : `MissionEncodingLock::run()` (verrou `FOR UPDATE` sur `mission` + relecture
+  de l'état validé) entoure toutes les écritures d'encodage (contrôleurs interventions, matériel,
+  demandes de catalogue ; `MissionExecutionService::updateActuals()`) et toutes les transitions de
+  `MissionEncodingWorkflowService`.
+
+
+## 32. Planning opérationnel unique et prestations regroupées multi-salles (D-156)
+
+**Trois responsabilités, jamais fusionnées.** `Mission` = planning opérationnel (source de
+vérité de tous les écrans : Missions, Planning V2, plannings personnels, fiches, tableaux
+de bord) ; `SurgeonSchedulePost` = postes récurrents et génération ; `PlanningVersion` =
+génération, publication, historique. Toute mutation de mission passe par le service
+applicatif (D-056) et invalide côté client l'ensemble des vues opérationnelles
+(`invalidateOperationalPlanning`, `frontend/src/app/features/missions/dispatch`). Les vues
+manager se rafraîchissent au retour du focus et toutes les 60 s quand l'onglet est visible
+(`liveQueryOptions.ts`) : pas de push temps réel.
+
+**Prestation regroupée = regroupement dérivé, présence persistée.**
+
+```
+Mission A (07:45–13:00) ─┐                       ┌─ MissionExecution A  (presence_id → P, part 5h15)
+Mission B (07:45–18:00) ─┴─ PrestationGrouping ──┤
+     (dérivé, jamais persisté)                   └─ MissionExecution B  (presence_id → P, part 5h00)
+                                                          │
+                                                   WorkedPresence P (07:45–18:00, révision n)
+```
+
+- `backend/src/Service/Prestation/` :
+  - `PrestationGrouping` : la règle, en fonctions pures (BLOC, instrumentiste, chirurgien,
+    site, date locale, chevauchement strict, composantes connexes) ;
+  - `PrestationGroupResolver` : groupes depuis la base, par lot ;
+  - `PresenceAllocator` : ventilation EARLIEST_END_FIRST et répartition au centime ;
+  - `WorkedPresenceService` : seul écrivain des présences et des parts imputées
+    (transactions, verrous, audit) ;
+  - `PrestationEncodingService` : vue, empreinte, soumission commune ;
+  - `MissionEncodingDataGuard` : aucune mutation implicite d'une mission encodée ;
+  - `MissionListAnnotator` : prestation et vrais conflits pour une page de missions.
+- Durées : `MissionExecutionService::resolveDuration()` reste le point d'entrée unique
+  (`PRESENCE_SHARE` pour une mission liée). La valorisation (`FinancialCalculationService`)
+  valorise la présence une fois et la répartit ; la facturation firmes ne change pas.
+- Conflits : la même règle (`PrestationGrouping::isMultiRoomSlot()` / `isMultiRoomPair()`)
+  est appliquée dans l'éligibilité, le moteur central de conflits, l'aperçu Planning V2,
+  la revalidation au déploiement et les alertes — jamais réécrite ailleurs, jamais côté client.
+- Frontend : `frontend/src/app/features/prestations/` (panneau de prestation, saisie unique
+  des heures, soumission commune, confirmation des réaffectations, carte manager) ; le
+  planning instrumentiste réunit une prestation en une ligne à partir de la clé fournie par
+  le serveur.

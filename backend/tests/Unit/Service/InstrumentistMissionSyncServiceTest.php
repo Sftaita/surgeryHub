@@ -25,6 +25,7 @@ use Doctrine\ORM\Query\Expr;
 use Doctrine\ORM\QueryBuilder;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 /**
  * Tests InstrumentistMissionSyncService::sync() — V1 "polling intelligent".
@@ -38,11 +39,16 @@ use PHPUnit\Framework\TestCase;
  */
 class InstrumentistMissionSyncServiceTest extends TestCase
 {
+    // D-151 — "now" is frozen just before the fixture dates: a started mission is no
+    // longer claimable (MISSION_ALREADY_STARTED), so the fixtures must stay in the future.
+    use ClockSensitiveTrait;
+
     private EntityManagerInterface&MockObject $em;
     private MissionMapper $mapper;
 
     protected function setUp(): void
     {
+        self::mockTime('2026-06-01 00:00:00');
         $this->em = $this->createMock(EntityManagerInterface::class);
         // PlanningCoverageService::isCovered() ne touche jamais à $em (pure fonction de
         // Mission::getStatus()) — réutilise le même mock plutôt que d'en créer un second.

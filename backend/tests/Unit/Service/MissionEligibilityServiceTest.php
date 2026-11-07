@@ -14,9 +14,14 @@ use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 final class MissionEligibilityServiceTest extends TestCase
 {
+    // D-151 — "now" is frozen just before the fixture dates: a started mission is no
+    // longer claimable (MISSION_ALREADY_STARTED), so the fixtures must stay in the future.
+    use ClockSensitiveTrait;
+
     private EntityManagerInterface&MockObject $em;
     private MissionEligibilityService $service;
 
@@ -24,6 +29,7 @@ final class MissionEligibilityServiceTest extends TestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-06-01 00:00:00');
         $this->em      = $this->createMock(EntityManagerInterface::class);
         $this->service = new MissionEligibilityService($this->em);
     }
@@ -92,6 +98,16 @@ final class MissionEligibilityServiceTest extends TestCase
         return $m;
     }
 
+    /** @return list<Mission> $count overlapping missions of an unrelated context (a real conflict). */
+    private function conflictRows(int $count): array
+    {
+        $rows = [];
+        for ($i = 0; $i < $count; $i++) {
+            $rows[] = $this->makeConflictMission($this->makeUser());
+        }
+        return $rows;
+    }
+
     /**
      * Set up em->createQuery for evaluate() calls.
      * Q1 = membership count, Q2 = absence count, Q3 = conflict count.
@@ -107,11 +123,28 @@ final class MissionEligibilityServiceTest extends TestCase
                 $q->method('getSingleScalarResult')->willReturn(match ($call) {
                     1 => $memberCount,
                     2 => $absenceCount,
-                    3 => $conflictCount,
                     default => 0,
                 });
+                // D-156 — the conflict query returns the overlapping missions themselves
+                // (the multi-room exception is applied on them), not a count.
+                $q->method('getResult')->willReturn($call === 3 ? $this->conflictRows($conflictCount) : []);
                 return $q;
             });
+    }
+
+    // ── D-151 — a started mission can no longer be claimed (controlled clock) ──
+
+    public function test_evaluate_refuses_a_mission_once_its_start_has_passed_by_the_clock(): void
+    {
+        $mission   = $this->makeMission(); // starts 2026-07-15 08:00
+        $candidate = $this->makeUser();
+        $this->setupEvaluateQueries(memberCount: 1, absenceCount: 0, conflictCount: 0);
+
+        self::mockTime('2026-07-15 07:59:00');
+        self::assertNotContains(EligibilityReason::MISSION_ALREADY_STARTED, $this->service->evaluate($mission, $candidate)->reasons);
+
+        self::mockTime('2026-07-15 08:00:00');
+        self::assertContains(EligibilityReason::MISSION_ALREADY_STARTED, $this->service->evaluate($mission, $candidate)->reasons);
     }
 
     // ── evaluate() — single candidate ─────────────────────────────────────────
@@ -168,7 +201,7 @@ final class MissionEligibilityServiceTest extends TestCase
         $candidate = $this->makeUser();
         $candidate->setEmploymentType(\App\Enum\EmploymentType::FREELANCER);
 
-        // Only 2 queries expected (absence, conflict) — the membership query (Q1) is skipped.
+        // Only 2 DQL queries expected (absence, conflict) — the membership query (Q1) is skipped.
         $call = 0;
         $this->em->method('createQuery')
             ->willReturnCallback(function () use (&$call): Query {
@@ -267,6 +300,7 @@ final class MissionEligibilityServiceTest extends TestCase
         $this->assertContains(EligibilityReason::SCHEDULE_CONFLICT, $result->reasons);
     }
 
+    /** 3 queries (DQL; the D-151/D-152 exclusions — refusal on the mission, incompatibility with its surgeon — are one more DBAL UNION query). */
     public function test_evaluate_uses_exactly_3_db_queries(): void
     {
         $mission   = $this->makeMission();
@@ -284,7 +318,7 @@ final class MissionEligibilityServiceTest extends TestCase
 
         $this->service->evaluate($mission, $candidate);
 
-        $this->assertSame(3, $queryCount, 'evaluate() must run exactly 3 DB queries.');
+        $this->assertSame(3, $queryCount, 'evaluate() must run exactly 3 DQL queries.');
     }
 
     // ── evaluateAllCandidates() ────────────────────────────────────────────────
@@ -431,6 +465,7 @@ final class MissionEligibilityServiceTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    /** 3 queries (DQL; the D-151/D-152 exclusions — refusal on the mission, incompatibility with its surgeon — are one more DBAL UNION query). */
     public function test_evaluate_all_candidates_uses_exactly_3_db_queries(): void
     {
         $site      = $this->makeSite();
@@ -450,12 +485,12 @@ final class MissionEligibilityServiceTest extends TestCase
 
         $this->service->evaluateAllCandidates($mission);
 
-        $this->assertSame(3, $queryCount, 'evaluateAllCandidates() must run exactly 3 DB queries.');
+        $this->assertSame(3, $queryCount, 'evaluateAllCandidates() must run exactly 3 DQL queries.');
     }
 
-    // ── findEligible() ────────────────────────────────────────────────────────
+    // ── findEligibleByMission() — H3 (D-129): per-mission candidates, same 3 queries ──
 
-    public function test_find_eligible_returns_eligible_users_by_site(): void
+    public function test_find_eligible_by_mission_returns_eligible_users_keyed_by_mission(): void
     {
         $site      = $this->makeSite();
         $mission   = $this->makeMission(site: $site);
@@ -476,14 +511,13 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $result = $this->service->findEligible([$mission]);
+        $result = $this->service->findEligibleByMission([$mission]);
 
-        $siteId = $site->getId();
-        $this->assertArrayHasKey($siteId, $result);
-        $this->assertContains($candidate, $result[$siteId]);
+        $this->assertSame([$mission->getId()], array_keys($result));
+        $this->assertContains($candidate, $result[$mission->getId()]);
     }
 
-    public function test_find_eligible_excludes_absent_candidate(): void
+    public function test_find_eligible_by_mission_excludes_absent_candidate(): void
     {
         $site      = $this->makeSite();
         $mission   = $this->makeMission(site: $site);
@@ -505,12 +539,13 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $result = $this->service->findEligible([$mission]);
+        $result = $this->service->findEligibleByMission([$mission]);
 
-        $this->assertEmpty($result[$site->getId()] ?? []);
+        $this->assertArrayHasKey($mission->getId(), $result, 'every input mission is a key');
+        $this->assertSame([], $result[$mission->getId()]);
     }
 
-    public function test_find_eligible_excludes_candidate_with_schedule_conflict(): void
+    public function test_find_eligible_by_mission_excludes_candidate_with_schedule_conflict(): void
     {
         $site      = $this->makeSite();
         $mission   = $this->makeMission(site: $site);
@@ -532,21 +567,23 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $result = $this->service->findEligible([$mission]);
+        $result = $this->service->findEligibleByMission([$mission]);
 
-        $this->assertEmpty($result[$site->getId()] ?? []);
+        $this->assertArrayHasKey($mission->getId(), $result, 'every input mission is a key');
+        $this->assertSame([], $result[$mission->getId()]);
     }
 
-    public function test_find_eligible_returns_empty_for_empty_input(): void
+    public function test_find_eligible_by_mission_returns_empty_for_empty_input(): void
     {
         $this->em->expects($this->never())->method('createQuery');
 
-        $result = $this->service->findEligible([]);
+        $result = $this->service->findEligibleByMission([]);
 
         $this->assertEmpty($result);
     }
 
-    public function test_find_eligible_uses_exactly_3_db_queries_for_multiple_missions(): void
+    /** 3 queries (DQL; the D-151/D-152 exclusions — refusal on the mission, incompatibility with its surgeon — are one more DBAL UNION query), whatever the number of missions. */
+    public function test_find_eligible_by_mission_uses_exactly_3_db_queries_for_multiple_missions(): void
     {
         $site      = $this->makeSite();
         $candidate = $this->makeUser();
@@ -567,14 +604,14 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $this->service->findEligible([$m1, $m2, $m3]);
+        $this->service->findEligibleByMission([$m1, $m2, $m3]);
 
         $this->assertSame(3, $queryCount,
-            'findEligible() must run exactly 3 DB queries regardless of mission count (D-036).'
+            'findEligibleByMission() must run exactly 3 DQL queries regardless of mission count (D-036, no N+1).'
         );
     }
 
-    public function test_find_eligible_freelancer_without_membership_is_included(): void
+    public function test_find_eligible_by_mission_freelancer_without_membership_is_included(): void
     {
         $site       = $this->makeSite();
         $mission    = $this->makeMission(site: $site);
@@ -597,9 +634,52 @@ final class MissionEligibilityServiceTest extends TestCase
                 return $q;
             });
 
-        $result = $this->service->findEligible([$mission]);
+        $result = $this->service->findEligibleByMission([$mission]);
 
-        $this->assertContains($freelancer, $result[$site->getId()] ?? []);
+        $this->assertContains($freelancer, $result[$mission->getId()]);
+    }
+
+    public function test_find_eligible_by_mission_isolates_candidates_per_mission(): void
+    {
+        // Same site, two missions: the candidate has a conflict only with m2's slot.
+        $site      = $this->makeSite();
+        $candidate = $this->makeUser();
+        $m1        = $this->makeMission(site: $site);
+        $m2        = $this->makeMission(site: $site);
+        $m2->setStartAt(new \DateTimeImmutable('2026-07-16 08:00:00'));
+        $m2->setEndAt(new \DateTimeImmutable('2026-07-16 13:00:00'));
+        $conflict = $this->makeConflictMission($candidate);
+        $conflict->setStartAt(new \DateTimeImmutable('2026-07-16 09:00:00'));
+        $conflict->setEndAt(new \DateTimeImmutable('2026-07-16 12:00:00'));
+
+        $callCount = 0;
+        $this->em->method('createQuery')
+            ->willReturnCallback(function () use (&$callCount, $candidate, $site, $conflict): Query {
+                $callCount++;
+                $q = $this->createMock(Query::class);
+                $q->method('setParameter')->willReturnSelf();
+                $q->method('getResult')->willReturn(match ($callCount) {
+                    1 => [['user' => $candidate, 'siteId' => $site->getId()]],
+                    3 => [$conflict],
+                    default => [],
+                });
+                return $q;
+            });
+
+        $result = $this->service->findEligibleByMission([$m1, $m2]);
+
+        $this->assertContains($candidate, $result[$m1->getId()], 'eligible for the mission she is free for');
+        $this->assertSame([], $result[$m2->getId()], 'not offered the mission she has a conflict with');
+    }
+
+    public function test_find_eligible_by_mission_returns_an_empty_list_for_a_mission_that_is_no_longer_open(): void
+    {
+        $assigned = $this->makeMission(status: MissionStatus::ASSIGNED, instrumentist: $this->makeUser());
+        $this->em->expects($this->never())->method('createQuery');
+
+        $result = $this->service->findEligibleByMission([$assigned]);
+
+        $this->assertSame([$assigned->getId() => []], $result);
     }
 
     // ── evaluateForReassignment() — D-101, single canonical source of truth ────
@@ -620,9 +700,9 @@ final class MissionEligibilityServiceTest extends TestCase
                 $q->method('setParameter')->willReturnSelf();
                 $q->method('getSingleScalarResult')->willReturn(match ($call) {
                     1 => $absenceCount,
-                    2 => $conflictCount,
                     default => 0,
                 });
+                $q->method('getResult')->willReturn($call === 2 ? $this->conflictRows($conflictCount) : []);
                 return $q;
             });
     }
@@ -700,7 +780,7 @@ final class MissionEligibilityServiceTest extends TestCase
         // No SiteMembership query configured at all — if evaluateForReassignment() ever
         // queried it, the unconfigured mock would return null, and (int) null === 0 would
         // silently look like "eligible" here too, defeating the point of this test. Assert
-        // directly on the query count instead: exactly 2 (absence, conflict), never 3.
+        // directly on the query count instead: exactly 2 DQL (absence, conflict), never 3.
         $queryCount = 0;
         $this->em->method('createQuery')
             ->willReturnCallback(function (string $dql) use (&$queryCount): Query {
@@ -715,7 +795,7 @@ final class MissionEligibilityServiceTest extends TestCase
         $result = $this->service->evaluateForReassignment($mission, $candidate);
 
         $this->assertTrue($result->eligible);
-        $this->assertSame(2, $queryCount, 'evaluateForReassignment() must run exactly 2 queries (absence, conflict) — never a site-membership check');
+        $this->assertSame(2, $queryCount, 'evaluateForReassignment() must run exactly 2 DQL queries (absence, conflict) — never a site-membership check');
     }
 
     public function test_evaluate_for_reassignment_inactive_candidate_returns_inactive_reason(): void

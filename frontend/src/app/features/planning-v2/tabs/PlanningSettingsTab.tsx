@@ -47,8 +47,8 @@ export function PlanningSettingsTab() {
         Configurez les périodes, les groupes de sites et les notifications.
       </Typography>
 
-      <Stack direction="row" spacing={3.5} alignItems="flex-start">
-        <Stack sx={{ width: 200, flex: "none", position: "sticky", top: 0 }} spacing={0.25}>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={3.5} alignItems={{ xs: "stretch", md: "flex-start" }}>
+        <Stack sx={{ width: { xs: "auto", md: 200 }, flex: "none", position: { xs: "static", md: "sticky" }, top: 0 }} spacing={0.25}>
           {NAV.map((n) => {
             const active = section === n.key;
             return (

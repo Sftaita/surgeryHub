@@ -27,11 +27,44 @@ final class MissionListDto
         /**
          * D-125 — nominative request state, computed server-side (MissionDispatchService::
          * pendingOffer()/lastDeclinedOffer()), never re-derived client-side:
-         * {status: 'PENDING'|'DECLINED', instrumentist: {id, name}, offeredAt, declinedAt}.
+         * {status: 'PENDING'|'DECLINED', instrumentist: {id, name}, offeredAt, declinedAt,
+         * priority, expiresAt, startsBeforeExpiry} (D-177: room take-over priority and its deadline).
          * PENDING = OPEN, not covered, awaiting that instrumentist's answer. Null otherwise.
          *
          * @var array<string,mixed>|null
          */
         public readonly ?array $targetedOffer = null,
+        /**
+         * D-172 — managers only (null otherwise): encoding state, who finalized / validated it,
+         * and its real locks by level (MissionEncodingOverviewService). Never a MissionStatus.
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $encoding = null,
+        /** D-156 — libellé de salle facultatif (manager). */
+        public readonly ?string $roomLabel = null,
+        /**
+         * D-156 — prestation regroupée multi-salles de la mission (null si elle est seule) :
+         * {key, size, missionIds, plannedStartAt, plannedEndAt, plannedUnionMinutes}.
+         * Calculée côté serveur (PrestationGrouping), jamais recalculée par le client.
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $prestation = null,
+        /**
+         * D-156 — vrais conflits d'horaire de l'instrumentiste (chevauchement qui n'est pas une
+         * double salle légitime), calculés côté serveur.
+         *
+         * @var list<int>
+         */
+        public readonly array $scheduleConflictMissionIds = [],
+        /**
+         * D-182 — managers only (null otherwise): {blockedReason: {code, message}|null,
+         * correction: {action: REJECT|REOPEN, message}|null} (MissionCancellationPolicy) — why
+         * 'cancel' is missing from allowedActions, shown on the disabled action.
+         *
+         * @var array<string,mixed>|null
+         */
+        public readonly ?array $cancellation = null,
     ) {}
 }

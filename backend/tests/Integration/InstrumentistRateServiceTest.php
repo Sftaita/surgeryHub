@@ -151,7 +151,8 @@ final class InstrumentistRateServiceTest extends KernelTestCase
         self::assertTrue($new->coversDate($effectiveFrom));
     }
 
-    public function test_replace_rejects_effective_date_in_the_past(): void
+    /** D-172 — une date d'effet passée est permise (aucun calcul verrouillé) ; jamais avant le début du tarif actuel. */
+    public function test_replace_accepts_a_past_effective_date_but_never_before_the_current_start(): void
     {
         $instrumentist = $this->makeInstrumentist();
         $actor = $this->makeActor();
@@ -159,8 +160,13 @@ final class InstrumentistRateServiceTest extends KernelTestCase
         $current = $this->service->createInitialRate($instrumentist, InstrumentistRateType::HOURLY_RATE, '45.00', 'EUR', new \DateTimeImmutable('2025-01-01'), null, $actor);
         $this->createdRateIds[] = $current->getId();
 
+        $new = $this->service->replaceCurrentRateFrom($current, '50.00', 'EUR', new \DateTimeImmutable('2025-06-01'), $actor);
+        $this->createdRateIds[] = $new->getId();
+        self::assertSame('2025-06-01', $current->getValidTo()->format('Y-m-d'));
+        self::assertSame('2025-06-01', $new->getValidFrom()->format('Y-m-d'));
+
         $this->expectException(InstrumentistRateImmutableException::class);
-        $this->service->replaceCurrentRateFrom($current, '50.00', 'EUR', new \DateTimeImmutable('2025-06-01'), $actor);
+        $this->service->replaceCurrentRateFrom($new, '55.00', 'EUR', new \DateTimeImmutable('2025-06-01'), $actor);
     }
 
     // ── updateFutureRate() / cancelFutureRate() ──────────────────────────────

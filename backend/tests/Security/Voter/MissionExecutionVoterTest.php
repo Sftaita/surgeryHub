@@ -6,6 +6,7 @@ use App\Entity\Mission;
 use App\Entity\MissionExecution;
 use App\Entity\MissionExecutionDispute;
 use App\Entity\User;
+use App\Enum\MissionStatus;
 use App\Security\Voter\MissionExecutionVoter;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
@@ -19,7 +20,7 @@ final class MissionExecutionVoterTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->voter = new MissionExecutionVoter();
+        $this->voter = new MissionExecutionVoter(new \App\Service\MissionEncodingGuard());
     }
 
     private function setId(object $entity, int $id): void
@@ -43,9 +44,11 @@ final class MissionExecutionVoterTest extends TestCase
         return new UsernamePasswordToken($user, 'main', $user->getRoles());
     }
 
-    private function makeMission(?User $instrumentist = null, ?User $surgeon = null): Mission
+    private function makeMission(?User $instrumentist = null, ?User $surgeon = null, MissionStatus $status = MissionStatus::ENCODING_IN_PROGRESS): Mission
     {
         $m = new Mission();
+        $m->setStatus($status);
+        $m->setStartAt(new \DateTimeImmutable('-2 hours'));
         if ($instrumentist !== null) {
             $m->setInstrumentist($instrumentist);
         }
@@ -94,9 +97,18 @@ final class MissionExecutionVoterTest extends TestCase
 
     public function test_manager_can_update(): void
     {
-        $mission = $this->makeMission();
+        $mission = $this->makeMission(instrumentist: $this->makeUser(['ROLE_INSTRUMENTIST'], 60));
         $result = $this->voter->vote($this->tokenFor($this->makeUser(['ROLE_MANAGER'], 6)), $mission, [MissionExecutionVoter::UPDATE]);
         self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    /** D-153 — les heures sont celles d'une instrumentiste ; une mission validée se rouvre d'abord. */
+    public function test_manager_cannot_update_without_instrumentist_or_on_validated_mission(): void
+    {
+        $manager = $this->tokenFor($this->makeUser(['ROLE_MANAGER'], 61));
+        self::assertSame(VoterInterface::ACCESS_DENIED, $this->voter->vote($manager, $this->makeMission(), [MissionExecutionVoter::UPDATE]));
+        $validated = $this->makeMission(instrumentist: $this->makeUser(['ROLE_INSTRUMENTIST'], 62), status: MissionStatus::VALIDATED);
+        self::assertSame(VoterInterface::ACCESS_DENIED, $this->voter->vote($manager, $validated, [MissionExecutionVoter::UPDATE]));
     }
 
     public function test_assigned_instrumentist_can_update(): void
@@ -105,6 +117,37 @@ final class MissionExecutionVoterTest extends TestCase
         $mission = $this->makeMission(instrumentist: $instrumentist);
         $result = $this->voter->vote($this->tokenFor($instrumentist), $mission, [MissionExecutionVoter::UPDATE]);
         self::assertSame(VoterInterface::ACCESS_GRANTED, $result);
+    }
+
+    /** D-143 — une fois soumise, l'instrumentiste ne réécrit plus ses heures en silence. */
+    public function test_assigned_instrumentist_cannot_update_once_submitted_or_validated(): void
+    {
+        $instrumentist = $this->makeUser(['ROLE_INSTRUMENTIST'], 21);
+        foreach ([MissionStatus::SUBMITTED, MissionStatus::VALIDATED, MissionStatus::CLOSED, MissionStatus::REJECTED] as $status) {
+            $mission = $this->makeMission(instrumentist: $instrumentist, status: $status);
+            $result = $this->voter->vote($this->tokenFor($instrumentist), $mission, [MissionExecutionVoter::UPDATE]);
+            self::assertSame(VoterInterface::ACCESS_DENIED, $result, $status->value);
+        }
+    }
+
+    /** D-143 — même règle que l'encodage : pas avant le début de la mission. */
+    public function test_assigned_instrumentist_cannot_update_before_mission_start(): void
+    {
+        $instrumentist = $this->makeUser(['ROLE_INSTRUMENTIST'], 22);
+        $mission = $this->makeMission(instrumentist: $instrumentist, status: MissionStatus::ASSIGNED);
+        $mission->setStartAt(new \DateTimeImmutable('+3 hours'));
+        $result = $this->voter->vote($this->tokenFor($instrumentist), $mission, [MissionExecutionVoter::UPDATE]);
+        self::assertSame(VoterInterface::ACCESS_DENIED, $result);
+    }
+
+    /** D-143 — un encodage verrouillé (validé) ou facturé n'est plus modifiable, manager compris. */
+    public function test_nobody_updates_hours_of_a_locked_encoding(): void
+    {
+        $instrumentist = $this->makeUser(['ROLE_INSTRUMENTIST'], 23);
+        $mission = $this->makeMission(instrumentist: $instrumentist, status: MissionStatus::VALIDATED);
+        $mission->setEncodingLockedAt(new \DateTimeImmutable());
+        self::assertSame(VoterInterface::ACCESS_DENIED, $this->voter->vote($this->tokenFor($this->makeUser(['ROLE_MANAGER'], 24)), $mission, [MissionExecutionVoter::UPDATE]));
+        self::assertSame(VoterInterface::ACCESS_DENIED, $this->voter->vote($this->tokenFor($instrumentist), $mission, [MissionExecutionVoter::UPDATE]));
     }
 
     public function test_surgeon_cannot_update(): void

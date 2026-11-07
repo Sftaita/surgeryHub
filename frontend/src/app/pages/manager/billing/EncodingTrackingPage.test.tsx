@@ -51,6 +51,7 @@ vi.mock("../../../features/encoding/api/encoding.api", () => ({
   fetchMissionEncoding: (...args: unknown[]) => fetchMissionEncodingMock(...args),
   validateMissionEncoding: (...args: unknown[]) => validateMissionEncodingMock(...args),
   remindMissionEncoding: (...args: unknown[]) => remindMissionEncodingMock(...args),
+  newActionBatchId: () => "batch-test-0001",
 }));
 
 const fetchMissionAuditMock = vi.fn();
@@ -82,7 +83,7 @@ function makeItem(overrides: Partial<EncodingTrackingItem> = {}): EncodingTracki
     site: { id: 2, name: "Delta" },
     hours: { plannedMinutes: 240, effectiveMinutes: 312, effectiveSource: "ACTUAL_TIMES", hasRealHours: true, comparison: "OVER_PLAN" },
     encoding: { interventionCount: 2, encodedInterventionCount: 1, materialLineCount: 6, submittedWithoutMaterial: false, hasNoMaterialJustification: false, isStale: false },
-    financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false },
+    financial: { state: "NOT_CALCULABLE", label: "Pas encore calculable", isBlocking: false, anomalyCount: 0, anomalyReasons: [] },
     ...overrides,
   };
 }
@@ -205,7 +206,7 @@ describe("EncodingTrackingPage — empty states distincts", () => {
 describe("EncodingTrackingPage — états d'encodage & finance", () => {
   it("affiche le libellé d'état d'encodage et l'état financier synthétique tels que fournis par le backend", async () => {
     const summary = emptySummary({ totalMissions: 1, encodingExpected: 1, submitted: 1 });
-    const item = makeItem({ encodingState: "SUBMITTED", encodingStateLabel: "Soumis", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true } });
+    const item = makeItem({ encodingState: "SUBMITTED", encodingStateLabel: "Soumis", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true, anomalyCount: 1, anomalyReasons: [{ code: "MISSING_FIRM_MATERIAL_RATE", label: "Tarif matériel manquant", count: 1 }] } });
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([item], summary));
 
@@ -213,6 +214,8 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     await waitFor(() => expect(screen.getByText("Soumis")).toBeInTheDocument());
     expect(screen.getByText("Anomalie")).toBeInTheDocument();
+    // D-138 — la cause, fournie par le backend, accompagne toujours « Anomalie ».
+    expect(screen.getByText("Tarif matériel manquant")).toBeInTheDocument();
   });
 
   it("affiche planifié + effectif + source quand des heures réelles existent", async () => {
@@ -225,7 +228,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     await waitFor(() => expect(screen.getByText("5 h 12")).toBeInTheDocument());
     expect(screen.getByText("/ 5 h")).toBeInTheDocument();
-    expect(screen.getByText("Heures réelles")).toBeInTheDocument();
+    expect(screen.getByText("Début et fin déclarés")).toBeInTheDocument();
   });
 
   it("n'affiche jamais d'heures « effectives » quand la source est PLANNED (pas de champ encodedMinutes fantôme)", async () => {
@@ -238,7 +241,7 @@ describe("EncodingTrackingPage — états d'encodage & finance", () => {
 
     await waitFor(() => expect(screen.getByText(/3 h planifiées/)).toBeInTheDocument());
     expect(screen.queryByText(/effectives/)).toBeNull();
-    expect(screen.getByText("Heures réelles non renseignées")).toBeInTheDocument();
+    expect(screen.getByText("Heures prestées non renseignées")).toBeInTheDocument();
   });
 
   it("ne masque jamais une heure réelle au motif que la mission n'est pas SUBMITTED", async () => {
@@ -389,7 +392,7 @@ describe("EncodingTrackingPage — vue « À traiter »", () => {
     const toEncode = makeItem({ missionId: 1, encodingState: "TO_ENCODE" });
     const stale = makeItem({ missionId: 2, encodingState: "IN_PROGRESS", encoding: { ...makeItem().encoding, isStale: true } });
     const toValidate = makeItem({ missionId: 3, encodingState: "SUBMITTED" });
-    const anomaly = makeItem({ missionId: 4, encodingState: "VALIDATED", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true } });
+    const anomaly = makeItem({ missionId: 4, encodingState: "VALIDATED", financial: { state: "ANOMALY", label: "Anomalie", isBlocking: true, anomalyCount: 1, anomalyReasons: [{ code: "MISSING_FIRM_MATERIAL_RATE", label: "Tarif matériel manquant", count: 1 }] } });
 
     getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
     getEncodingTrackingMock.mockResolvedValue(makeResponse([toEncode, stale, toValidate, anomaly], summary));
@@ -460,5 +463,30 @@ describe("EncodingTrackingPage — filtres", () => {
     await waitFor(() => expect(getEncodingTrackingSummaryMock).toHaveBeenCalledTimes(2));
     const lastCallFilter = getEncodingTrackingSummaryMock.mock.calls[1][0];
     expect(lastCallFilter.instrumentistId).toBe(9);
+  });
+});
+
+describe("EncodingTrackingPage — missions annulées (D-184)", () => {
+  it("exclut les annulées par défaut et les affiche sur demande, avec un badge « Annulée »", async () => {
+    const user = userEvent.setup();
+    const summary = emptySummary({ totalMissions: 2, encodingExpected: 2, validated: 2 });
+    const validated = [1, 2].map((id) => makeItem({ missionId: id, encodingState: "VALIDATED", encodingStateLabel: "Validé" }));
+    const cancelled = makeItem({ missionId: 3, encodingState: "CANCELLED", encodingStateLabel: "Annulée" });
+    getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
+    getEncodingTrackingMock.mockImplementation(async (filter: { includeCancelled?: boolean }) => (filter.includeCancelled
+      ? { ...makeResponse([...validated, cancelled], summary), total: 3, cancelledCount: 1, includeCancelled: true }
+      : { ...makeResponse(validated, summary), total: 2, cancelledCount: 1, includeCancelled: false }));
+
+    renderPage();
+
+    expect(await screen.findByTestId("cancelled-count")).toHaveTextContent("Annulées exclues (1 masquée)");
+    expect(screen.queryByText("Annulée")).toBeNull();
+    expect(getEncodingTrackingMock).toHaveBeenLastCalledWith(expect.objectContaining({ includeCancelled: false }), expect.anything());
+
+    await user.click(within(screen.getByTestId("show-cancelled-toggle")).getByRole("switch"));
+    expect(await screen.findByText("Annulée")).toBeInTheDocument();
+    expect(screen.queryByText("Sans objet")).toBeNull();
+    expect(getEncodingTrackingMock).toHaveBeenLastCalledWith(expect.objectContaining({ includeCancelled: true }), expect.anything());
+    expect(screen.getByTestId("cancelled-count")).toHaveTextContent("jamais comptées dans les indicateurs");
   });
 });

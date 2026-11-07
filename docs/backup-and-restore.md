@@ -5,6 +5,172 @@ _Mis en place le : 2026-06-16_
 
 ---
 
+## D-164 — Nouvelle chaîne de sauvegarde (versionnée, PAS ENCORE INSTALLÉE)
+
+> État au 2026-10-23 : les scripts sont dans le dépôt (`deploy/server/backup/`) et testés, mais
+> **la production utilise toujours les anciens scripts** décrits plus bas (`/home/deploy/scripts`).
+> L'installation se fait en trois étapes, chacune après accord explicite.
+
+### État réel du serveur (audit en lecture seule du 2026-10-24)
+
+Depuis la rédaction de D-164, le 2026-10-23 au soir, l'ancien système a changé, hors de ce dépôt :
+
+- `rotate_backups.sh` a été corrigé (parenthèses de `find`, original conservé en
+  `rotate_backups.sh.orig-20261023`). Il supprime désormais réellement les `*.sql.gz` / `*.tar.gz`
+  de plus de 30 jours. 150 dumps ont été supprimés le 2026-10-23 à 19:13, puis retirés du miroir
+  `…/mysql` du Drive par `sync_gdrive.sh` le 2026-10-24 à 03:30. **Avant la correction**, ces 150
+  dumps et toutes les sauvegardes manuelles avaient été copiés dans `…/archive-mysql-20261023/`
+  (184 fichiers, `SHA256SUMS`, `INDEX.tsv`, `README.txt`). Le 2026-10-24, chacun des 150 noms
+  supprimés y était présent.
+- `archive_mysql_weekly.sh` (dimanche 02:30 UTC, documenté dans `medvue/docs/backup.md`) copie
+  chaque semaine vers `…/archive-mysql/`, par `copy --immutable`, les dumps manuels et le premier
+  dump du cron de chaque mois, sans jamais rien supprimer.
+- Il reste donc, en local et dans le miroir : 30 jours de dumps (64 fichiers, le plus ancien du
+  2026-09-23), et en archive : un dump par mois plus toutes les sauvegardes manuelles.
+- Rien de D-164 n'est installé : pas de `~/.surgicalhub-backup-passphrase`, pas de
+  `/home/deploy/scripts/surgicalhub-backup/`, pas de dossier `…/surgicalhub-chiffre/` sur le Drive.
+
+Conséquences pour l'installation :
+
+1. `archive_mysql_weekly.sh` considère comme « manuel » tout fichier qui n'est pas un
+   `all_*_0300xx.sql.gz`. Dès les premiers `*.sql.gz.gpg` et `*.sha256` (étape 3), il les copierait
+   **tous**, chaque semaine, dans `…/archive-mysql/`, sans jamais les supprimer. Il faut décider,
+   avant l'étape 3, de l'adapter (motif `.sql.gz.gpg`, `.sha256` exclus) ou de l'arrêter à
+   l'étape 4. C'est un script d'un autre chantier : rien n'est modifié sans accord.
+2. Jusqu'à l'étape 4, `sync_gdrive.sh` (`rclone sync`) copie aussi les `*.gpg` dans les anciens
+   dossiers `…/mysql` et `…/uploads`. Ces fichiers restent chiffrés, mais ils sont en double.
+3. `deploy/remote.sh` (D-163) appelle toujours l'**ancien** `backup_mysql.sh` avant chaque
+   activation. Les dumps de déploiement restent donc en clair `all_*.sql.gz`, et seule la copie
+   locale existe, jusqu'à une décision séparée (`BACKUP_MYSQL=…/surgicalhub-backup/backup_mysql.sh`).
+4. Le `.env` de l'application (`JWT_PASSPHRASE`, `APP_SECRET`, accès) n'est jamais copié hors du
+   serveur. Sans lui, l'archive `surgicalhub_var` restaure des clés JWT dont la passphrase est
+   perdue. Il doit être conservé dans le gestionnaire de secrets, comme la passphrase D-164.
+
+### Ce qui change
+
+| Sujet | Avant (scripts manuels) | D-164 |
+|---|---|---|
+| Dumps MySQL | `all_*.sql.gz` en clair | `all_*.sql.gz.gpg` chiffré AES-256 (+ `.sha256`), contrôlé après écriture |
+| Volume `surgicalhub_var` (clés JWT, registre D-162) | jamais sauvegardé | archive chiffrée quotidienne, sans `cache/` ni `log/` |
+| Uploads | `*.tar.gz` en clair | `*.tar.gz.gpg` chiffré |
+| Hors serveur | `rclone sync` : chaque suppression locale efface le Drive | `rclone copy` des seuls fichiers chiffrés vers `…/surgicalhub-chiffre/`, vérifié, avec une rétention distante **indépendante** |
+| Rotation | `find` mal parenthésé : les dumps n'étaient jamais supprimés | dry-run par défaut ; `--apply` refusé sans test de restauration réussi depuis moins de 35 jours |
+| Code, `.env`, images, cache de build | jamais tournés | règles ci-dessous |
+
+### Rétention locale (validée le 2026-10-23)
+
+| Série | Règle |
+|---|---|
+| Dumps quotidiens `all_*` | Tous pendant 14 jours, puis le plus récent de chacune des 8 dernières semaines, puis le plus récent de chacun des 12 derniers mois |
+| Dumps d'avant déploiement `surgicalhub_pre_deploy_*` | Les 10 derniers |
+| Uploads, volume var | 30 jours, jamais moins des 3 plus récentes par volume |
+| Archives de code `src_pre_deploy_*`, `pre_*` | Les 10 dernières |
+| Copies de `.env` (`backups/code`) | Les 10 dernières, toujours en 600 |
+| `deploy-backups/<horodatage>/` (D-163) | Les 10 derniers, plus celui nécessaire à `rollback legacy` tant que les images `rollback-legacy` existent |
+| Images de release (`:<sha>`, `:rollback-*`) | Les 5 plus récentes ; toujours la release active, la précédente, `rollback-legacy`, `:local` et toute image utilisée par un conteneur |
+| Cache de build | Élagué (entrées de plus de 7 jours) seulement au-delà de 8 Go, jamais pendant un build |
+
+La plus récente sauvegarde de chaque série est toujours conservée. Seuls les fichiers au format
+exact d'une série sont concernés : tout autre fichier est signalé « non géré » et conservé.
+
+### Rétention hors serveur (validée le 2026-10-23, indépendante de la rétention locale)
+
+Dumps quotidiens : 30 jours, 12 semaines, 24 mois. Uploads et var : 90 jours. Les anciens
+dossiers en clair du Drive (`…/mysql`, `…/uploads`) ne sont pas touchés : leur sort est une
+décision séparée.
+
+### Scripts (`deploy/server/backup/`)
+
+```bash
+backup_mysql.sh                   # dump chiffré de toutes les bases ; --pre-deploy <étiquette>
+backup_volumes.sh                 # uploads + surgicalhub_var, chiffrés
+backup_offsite.sh                 # copie vérifiée vers le Drive ; rotation distante en dry-run
+backup_offsite.sh --apply-remote-rotation
+rotate_backups.sh                 # DRY-RUN : ce qui serait supprimé et l'espace récupéré
+rotate_backups.sh --list          # … avec la liste détaillée
+rotate_backups.sh --apply         # réel ; exige un test de restauration réussi récent
+restore_test.sh                   # restauration RÉELLE dans un MySQL jetable + JWT + registre + uploads
+restore_test.sh --from-remote     # idem, à partir des copies TÉLÉCHARGÉES depuis le Drive
+install.sh [--apply-scripts|--apply-crontab]   # depuis le poste : diff, puis installation
+```
+
+Prérequis : `~/.surgicalhub-backup-passphrase` (600), conservée **aussi hors du serveur**. Sans
+elle, aucune sauvegarde chiffrée n'est restaurable.
+
+### Restaurer une sauvegarde chiffrée
+
+```bash
+P=~/.surgicalhub-backup-passphrase
+sha256sum -c all_<horodatage>.sql.gz.gpg.sha256
+gpg --batch --pinentry-mode loopback --passphrase-file $P -d all_<horodatage>.sql.gz.gpg > dump.sql.gz
+# puis la procédure « Restaurer la base MySQL » ci-dessous (Cas 0, puis Cas 1)
+
+gpg --batch --pinentry-mode loopback --passphrase-file $P -d surgicalhub_var_<horodatage>.tar.gz.gpg \
+  | docker run --rm -i --network none --entrypoint tar -v surgicalhub_var:/d alpine:latest xzf - -C /d
+```
+
+### Mise en service (chaque étape après accord explicite)
+
+L'ancien système (`/home/deploy/scripts/*.sh`, crontab actuelle) **reste actif** jusqu'à l'étape 4,
+et ses scripts ne sont jamais supprimés : retour arrière = restaurer la crontab sauvegardée.
+
+**Étape 1 — Passphrase (par l'utilisateur, jamais par l'agent).** Dans **son propre terminal** :
+pas avec le préfixe `!` de Claude Code, dont la sortie arrive dans la conversation.
+
+```bash
+ssh surgicalhub-prod
+umask 077
+openssl rand -base64 48 > ~/.surgicalhub-backup-passphrase   # rien n'est affiché
+chmod 600 ~/.surgicalhub-backup-passphrase
+less ~/.surgicalhub-backup-passphrase                         # copier dans le gestionnaire de secrets, puis q
+sha256sum ~/.surgicalhub-backup-passphrase | cut -c1-16       # empreinte courte, à noter avec le secret
+```
+
+Le secret est rangé dans le gestionnaire de mots de passe (entrée « SurgicalHub — passphrase des
+sauvegardes D-164 », avec l'empreinte courte). Il n'apparaît jamais dans Git, dans un journal, dans
+l'historique du shell ni dans une conversation. L'agent vérifie seulement la présence, les droits
+600 et la taille du fichier. Sans cette passphrase, aucune sauvegarde chiffrée n'est restaurable :
+la copie hors serveur est obligatoire avant l'étape 3.
+
+**Étape 2 — Scripts.** `deploy/server/backup/install.sh` (différences, rien n'est écrit), puis
+`install.sh --apply-scripts` → `/home/deploy/scripts/surgicalhub-backup/` (700). La crontab est
+inchangée et l'ancien système continue.
+
+**Étape 3 — Premier cycle chiffré, manuel, à côté de l'ancien.**
+1. `backup_mysql.sh`, puis `backup_volumes.sh` : premiers `*.gpg`, et `backups/surgicalhub-var/` créé.
+2. `restore_test.sh` : restauration réelle locale, marqueur `.restore-test-ok`.
+3. `backup_offsite.sh` : copie vérifiée vers `…/surgicalhub-chiffre/` ; la rotation distante est
+   en dry-run. Ensuite, contrôle des permissions du nouveau dossier (propriétaire seul).
+4. `restore_test.sh --from-remote` : les dernières sauvegardes sont **téléchargées depuis le Drive**,
+   puis restaurées dans un MySQL jetable sans réseau. Contrôles : lignes, clés JWT appariées,
+   registre, uploads. Marqueur `.restore-test-remote-ok`.
+
+**Étape 4 — Crontab.** `install.sh --apply-crontab` : la crontab est sauvegardée dans
+`backups/cron/crontab_before_d164_*.txt`, puis les 4 anciennes lignes sont remplacées par
+`crontab.proposed`. Le test de restauration devient hebdomadaire, et la rotation reste en dry-run.
+`sync_gdrive.sh` n'est plus lancé : les anciens dossiers en clair du Drive sont **figés**, plus
+rien ne les modifie. Contrôle après une nuit : journal, nouveaux fichiers, copie distante.
+
+**Étape 5 — Rotation réelle.** Nouveau dry-run présenté, puis `--apply` en local, puis
+`--apply-remote-rotation`. Ensuite seulement, la liste des anciens dossiers en clair du Drive
+pouvant être supprimés est présentée, pour décision.
+
+### Tests
+
+- `deploy/server/backup/tests/run-in-docker.sh`, sous Linux :
+  - `rotation.sh` (31 contrôles) : grand-père/père/fils, séries, liens symboliques, fichiers non
+    gérés, images protégées, cache de build, refus sans test de restauration, passphrase ;
+  - `offsite.sh` (20 contrôles, faux rclone) : seuls les `*.gpg` sortent (jamais un fichier en
+    clair ni un `.env`), suppressions locales jamais répercutées, aucune rotation si la copie n'est
+    pas vérifiée, rétention distante 30 j / 12 sem. / 24 mois et 90 j. La dernière archive de
+    **chaque** volume d'uploads est vérifiée à distance, et le minimum de 3 archives s'applique par
+    volume (avant le 2026-10-24, seul le volume au nom le plus grand était vérifié).
+- `deploy/server/backup/tests/e2e-docker.sh` (21 contrôles, vrai Docker, tout jetable) : dumps et
+  volumes chiffrés, restauration réelle locale **puis depuis la copie hors serveur sans aucune
+  sauvegarde locale**, refus d'une archive altérée (locale ou distante) et d'une mauvaise passphrase.
+
+---
+
 ## Architecture des sauvegardes
 
 ```
@@ -144,20 +310,96 @@ rclone lsf "gdrive:INFORMATIQUE/Base de donnée/"
 
 ### Restaurer la base MySQL
 
-**Cas 1 — Restauration d'urgence (écraser la base existante)**
+> **Règle : une restauration SurgicalHub ne touche que la base `surgicalhub`.**
+> Le dump nocturne `all_*.sql.gz` est un `mysqldump --all-databases` : il contient, dans
+> l'ordre, la base système `mysql` (comptes, mots de passe, droits), `medatwork`, `medclick`
+> et `surgicalhub`. **Ne jamais le rejouer en entier** (`zcat all_*.sql.gz | docker exec -i
+> mysql mysql …`) : `medatwork` et `medclick` reviendraient à l'état de la nuit (tout ce qui a
+> été écrit depuis serait perdu) et les comptes et droits MySQL seraient réécrits (un compte
+> créé depuis le dump serait supprimé) — constaté sur conteneurs de test le 2026-10-17. Le
+> rejeu complet est réservé à la reconstruction d'un serveur vide, sur décision explicite.
+
+Choisir d'abord l'opération (détail : [`production.md`](production.md) §Rollback) :
+
+| Situation | Opération | Base touchée |
+|---|---|---|
+| Le code déployé pose problème, le schéma est sain | A. retour du code seul | aucune |
+| Une migration pose problème | B. `down()` des migrations du déploiement | schéma de `surgicalhub` |
+| Les données de `surgicalhub` sont corrompues | C. Cas 1 ci-dessous | `surgicalhub` seule |
+
+**Cas 0 — Instantané de sécurité de `surgicalhub` (avant tout Cas 1 ou tout `down()`)**
 
 ```bash
-ssh deploy@187.124.55.15
+ROOTPW=$(grep '^MYSQL_ROOT_PASSWORD=' /opt/stack/mysql/.env | cut -d= -f2-)
+STAMP=$(date +%Y%m%d_%H%M%S)
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysqldump -uroot --single-transaction --routines --triggers \
+  --databases surgicalhub | gzip > /home/deploy/backups/mysql/surgicalhub_pre_restore_${STAMP}.sql.gz
+gzip -t /home/deploy/backups/mysql/surgicalhub_pre_restore_${STAMP}.sql.gz && echo OK
+```
 
-# Identifier le dump à restaurer
-ls -lt /home/deploy/backups/mysql/
+`--databases surgicalhub` limite le dump à cette base ; le mot de passe passe par
+`MYSQL_PWD`, jamais par la ligne de commande. L'instantané conserve tout ce qui a été écrit
+depuis le dump nocturne (missions, encodages, calculs, factures, relevés, absences, comptes).
+Après une restauration, il se relit dans une base séparée (extraction du Cas 1 avec une
+autre cible) pour décider, **au cas par cas**, de ce qui doit être repris. Rien n'est
+réinjecté automatiquement : les identifiants entrent en collision et les notifications déjà
+envoyées ne se rejouent pas.
 
-# Exemple : restaurer le dernier dump
+**Cas 1 — Restaurer la seule base `surgicalhub` depuis un dump `--all-databases`**
+
+Fenêtre de maintenance : `php` et `worker` arrêtés (`cd /opt/stack/apps/surgicalhub &&
+docker compose stop php worker`), aucune tâche planifiée SurgicalHub pendant l'opération
+(voir les sections « Tâche planifiée » de [`production.md`](production.md)).
+
+```bash
 ROOTPW=$(grep '^MYSQL_ROOT_PASSWORD=' /opt/stack/mysql/.env | cut -d= -f2-)
 DUMP=/home/deploy/backups/mysql/all_YYYYMMDD_HHMMSS.sql.gz
+WORK=$(mktemp -d)
+# dumps disponibles : ls -lt /home/deploy/backups/mysql/ | head
 
-zcat "$DUMP" | docker exec -i mysql mysql -uroot -p"$ROOTPW"
+# 0. Instantané de sécurité de l'état courant (Cas 0)
+
+# 1. Le dump doit être complet
+gzip -dc "$DUMP" | tail -n 1 | grep -q '^-- Dump completed' && echo "dump complet" || echo "DUMP INCOMPLET : arrêter"
+
+# 2. Extraire l'en-tête, la seule section `surgicalhub` et le pied ; la base visée devient __CIBLE__
+gzip -dc "$DUMP" | awk '
+  BEGIN { s = "header" }
+  /^-- Current Database: `/ { n = $0; sub(/^-- Current Database: `/, "", n); sub(/`.*$/, "", n)
+                              s = (n == "surgicalhub") ? "keep" : "skip"; next }
+  /^\/\*!40103 SET TIME_ZONE=@OLD_TIME_ZONE \*\/;/ { s = "footer" }
+  s == "skip" { next }
+  s == "keep" && /^CREATE DATABASE / { next }
+  s == "keep" && /^USE `/ { print "USE `__CIBLE__`;"; next }
+  { print }' > "$WORK/extrait.sql"
+
+# 3. Garde-fous : une seule instruction USE, aucune instruction visant une autre base
+grep -cE '^(USE|CREATE DATABASE|DROP DATABASE) ' "$WORK/extrait.sql"              # attendu : 1
+grep -cE '^(INSERT INTO|CREATE TABLE|DROP TABLE IF EXISTS|LOCK TABLES) `[^`]+`\.`' "$WORK/extrait.sql"  # attendu : 0
+
+# 4. Vérifier dans une base temporaire
+sed 's/^USE `__CIBLE__`;$/USE `surgicalhub_restore_check`;/' "$WORK/extrait.sql" > "$WORK/check.sql"
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot \
+  -e 'CREATE DATABASE surgicalhub_restore_check CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+docker exec -i -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot < "$WORK/check.sql"
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot surgicalhub_restore_check \
+  -e 'SELECT COUNT(*) FROM doctrine_migration_versions; SELECT COUNT(*) FROM mission; SELECT COUNT(*) FROM user;'
+
+# 5. Remplacer `surgicalhub`, et elle seule
+sed 's/^USE `__CIBLE__`;$/USE `surgicalhub`;/' "$WORK/extrait.sql" > "$WORK/surgicalhub.sql"
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot \
+  -e 'DROP DATABASE surgicalhub; CREATE DATABASE surgicalhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
+docker exec -i -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot < "$WORK/surgicalhub.sql"
+
+# 6. Nettoyage
+docker exec -e MYSQL_PWD="$ROOTPW" mysql mysql -uroot -e 'DROP DATABASE surgicalhub_restore_check'
+rm -rf "$WORK"
 ```
+
+Les comptes et droits MySQL sont stockés dans la base système `mysql`, qui n'est pas touchée :
+le `DROP` / `CREATE` de `surgicalhub` ne modifie aucun compte ni aucun droit. Remettre ensuite
+le code qui correspond au nombre de migrations restaurées (`production.md` §Rollback A),
+redémarrer `php` et `worker`, **puis `nginx`**, et faire les contrôles de santé.
 
 **Cas 2 — Restauration dans une base temporaire (vérification avant écrasement)**
 
@@ -195,7 +437,7 @@ rclone lsf "gdrive:INFORMATIQUE/Base de donnée/mysql/"
 # Télécharger un dump spécifique
 rclone copy "gdrive:INFORMATIQUE/Base de donnée/mysql/all_YYYYMMDD_HHMMSS.sql.gz" /tmp/
 
-# Puis restaurer comme Cas 1 ou 2
+# Puis restaurer la seule base surgicalhub (Cas 0 puis Cas 1) ; jamais de rejeu complet
 ```
 
 ---

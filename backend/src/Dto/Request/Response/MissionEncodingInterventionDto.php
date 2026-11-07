@@ -38,5 +38,7 @@ final class MissionEncodingInterventionDto
          */
         public readonly ?int $selectedChoiceOptionId = null,
         public readonly ?string $selectedChoiceOptionLabel = null,
+        /** D-178 — « Aucune firme » enregistré (légitimement sans firme). */
+        public readonly bool $withoutFirm = false,
     ) {}
 }

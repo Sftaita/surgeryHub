@@ -1,6 +1,6 @@
 import * as React from "react";
 import {
-  Alert, Box, CircularProgress, MenuItem, Select, Stack, Table, TableBody,
+  Alert, Box, Button, CircularProgress, MenuItem, Select, Stack, Table, TableBody,
   TableCell, TableHead, TableRow, TablePagination, Typography,
 } from "@mui/material";
 
@@ -9,6 +9,8 @@ import { getSurgeons } from "../../manager-surgeons/api/surgeons.api";
 import type { SurgeonListItemDTO } from "../../manager-surgeons/api/surgeons.types";
 import { useQuery } from "@tanstack/react-query";
 import { planningV2Colors } from "../theme/tokens";
+import { LiftPriorityDialog, ReleasedRoomHistoryDrawer, RoomOperationalStatus } from "../../room-takeover/RoomTakeoverComponents";
+import type { ReleasedRoomSlotV2 } from "../api/planningV2.types";
 
 const PERIOD_LABELS: Record<string, string> = { MATIN: "Matin", APRES_MIDI: "Après-midi", JOURNEE: "Journée" };
 
@@ -17,12 +19,18 @@ const PERIOD_LABELS: Record<string, string> = { MATIN: "Matin", APRES_MIDI: "Apr
  * site n'existe pour ce rôle dans ce projet, même règle que partout ailleurs). Indépendante
  * des emails Room Release et du toggle `notifyColleaguesEnabled` : un créneau BLOCK réellement
  * libéré est listé ici même si les emails collègues sont désactivés pour le site concerné.
+ *
+ * D-177 — chaque salle reprise affiche son état opérationnel (proposition prioritaire avec
+ * destinataire et échéance, pool ouvert, instrumentiste confirmé), l'alerte « intervention
+ * avant l'échéance », la levée manager de la priorité et l'historique complet du créneau.
  */
 export function AvailableRoomsTab() {
   const [siteId, setSiteId] = React.useState<number | "">("");
   const [surgeonId, setSurgeonId] = React.useState<number | "">("");
   const [page, setPage] = React.useState(0);
   const [limit, setLimit] = React.useState(25);
+  const [historySlotId, setHistorySlotId] = React.useState<number | null>(null);
+  const [liftTarget, setLiftTarget] = React.useState<ReleasedRoomSlotV2 | null>(null);
 
   React.useEffect(() => { setPage(0); }, [siteId, surgeonId]);
 
@@ -52,7 +60,7 @@ export function AvailableRoomsTab() {
     <Box>
       <Typography sx={{ fontSize: 14, color: planningV2Colors.textMuted, maxWidth: 560, mb: 2 }}>
         Créneaux opératoires BLOCK réellement libérés par les chirurgiens — visibles ici
-        indépendamment des emails « Libération de salle » (envoyés ou non).
+        indépendamment de leur annonce aux chirurgiens (notifications « Salle opératoire disponible »).
       </Typography>
 
       <Stack direction="row" spacing={1.25} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
@@ -86,43 +94,52 @@ export function AvailableRoomsTab() {
         <Alert severity="info">Aucune salle disponible ne correspond à ces filtres.</Alert>
       ) : (
         <>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Date</TableCell>
-                <TableCell>Établissement</TableCell>
-                <TableCell>Période / horaires</TableCell>
-                <TableCell>Libérée par</TableCell>
-                <TableCell>Statut</TableCell>
-                <TableCell>Publiée le</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {items.map((slot) => (
-                <TableRow key={slot.id} hover>
-                  <TableCell>{new Date(`${slot.occurrenceDate}T00:00:00`).toLocaleDateString("fr-BE")}</TableCell>
-                  <TableCell>{slot.site?.name ?? "—"}</TableCell>
-                  <TableCell>
-                    {slot.startTime && slot.endTime ? `${slot.startTime}–${slot.endTime}` : (PERIOD_LABELS[slot.period] ?? slot.period)}
-                  </TableCell>
-                  <TableCell>{slot.surgeon?.name ?? "—"}</TableCell>
-                  <TableCell>
-                    {slot.status === "CLAIMED" ? (
-                      <>
-                        Reprise par {slot.claimedBy?.name ?? "—"}
-                        {slot.takeoverMission && (
-                          <Typography component="span" sx={{ display: "block", fontSize: 12, color: planningV2Colors.textMuted }}>
-                            Instrumentiste : {slot.takeoverMission.instrumentist?.name ?? "à pourvoir"}
-                          </Typography>
-                        )}
-                      </>
-                    ) : "Disponible"}
-                  </TableCell>
-                  <TableCell>{new Date(slot.createdAt).toLocaleString("fr-BE")}</TableCell>
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Établissement</TableCell>
+                  <TableCell>Période / horaires</TableCell>
+                  <TableCell>Libérée par</TableCell>
+                  <TableCell>Statut</TableCell>
+                  <TableCell>Publiée le</TableCell>
+                  <TableCell />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHead>
+              <TableBody>
+                {items.map((slot) => (
+                  <TableRow key={slot.id} hover>
+                    <TableCell>{new Date(`${slot.occurrenceDate}T00:00:00`).toLocaleDateString("fr-BE")}</TableCell>
+                    <TableCell>{slot.site?.name ?? "—"}</TableCell>
+                    <TableCell>
+                      {slot.startTime && slot.endTime ? `${slot.startTime}–${slot.endTime}` : (PERIOD_LABELS[slot.period] ?? slot.period)}
+                    </TableCell>
+                    <TableCell>{slot.surgeon?.name ?? "—"}</TableCell>
+                    <TableCell>
+                      {slot.status === "CLAIMED" ? (
+                        <>
+                          Reprise par {slot.claimedBy?.name ?? "—"}
+                          {slot.operational && (
+                            <RoomOperationalStatus operational={slot.operational} instrumentistName={slot.takeoverMission?.instrumentist?.name} />
+                          )}
+                        </>
+                      ) : "Disponible"}
+                    </TableCell>
+                    <TableCell>{new Date(slot.createdAt).toLocaleString("fr-BE")}</TableCell>
+                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                      {slot.operational?.state === "PRIORITY_PENDING" && slot.takeoverMission && (
+                        <Button size="small" color="warning" onClick={() => setLiftTarget(slot)} data-testid={`lift-priority-${slot.id}`}>
+                          Lever la priorité
+                        </Button>
+                      )}
+                      <Button size="small" onClick={() => setHistorySlotId(slot.id)} data-testid={`room-history-${slot.id}`}>Historique</Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
           <TablePagination
             component="div"
             count={query.data?.total ?? 0}
@@ -134,6 +151,14 @@ export function AvailableRoomsTab() {
           />
         </>
       )}
+
+      <ReleasedRoomHistoryDrawer slotId={historySlotId} onClose={() => setHistorySlotId(null)} />
+      <LiftPriorityDialog
+        open={liftTarget !== null}
+        missionId={liftTarget?.takeoverMission?.id ?? null}
+        recipientName={liftTarget?.operational?.priority?.instrumentist?.name}
+        onClose={() => setLiftTarget(null)}
+      />
     </Box>
   );
 }

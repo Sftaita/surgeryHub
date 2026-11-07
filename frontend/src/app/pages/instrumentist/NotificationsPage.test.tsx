@@ -142,7 +142,7 @@ describe("NotificationsPage (instrumentiste) — source de vérité serveur", ()
     const user = userEvent.setup();
     renderPage();
 
-    const card = await screen.findByText("Nouvelle offre disponible");
+    const card = await screen.findByText("Nouvelle mission disponible");
     await user.click(card);
 
     await waitFor(() => expect(markNotificationSeenMock).toHaveBeenCalledWith(3));

@@ -90,10 +90,38 @@ class FinancialCalculation
     #[ORM\Column(name: 'superseded_at', type: 'datetime_immutable', nullable: true)]
     private ?\DateTimeImmutable $supersededAt = null;
 
+    /**
+     * D-153 — encodage de la mission rouvert alors que ce calcul était actif (CALCULATED ou
+     * APPROVED) : ses montants reflètent un encodage qui a pu être corrigé depuis. Il n'est
+     * plus jamais approuvé, verrouillé ni repris dans une facture firme ou un relevé ; seul
+     * recalculate() en produit une version à jour. Statut et montants restent inchangés.
+     */
+    #[ORM\Column(name: 'encoding_reopened_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $encodingReopenedAt = null;
+
     /** Le NOUVEAU calcul qui a remplacé celui-ci — renseigné uniquement sur l'ancien (SUPERSEDED). */
     #[ORM\ManyToOne(targetEntity: self::class)]
     #[ORM\JoinColumn(name: 'superseded_by_calculation_id', nullable: true)]
     private ?self $supersededByCalculation = null;
+
+    /**
+     * D-171 — l'instrumentiste affectée n'avait déclaré aucune heure réelle au moment du calcul :
+     * sa prestation horaire n'est PAS valorisée (jamais sur le planifié), les lignes firme le
+     * sont. Une fois les heures déclarées : recalcul tant que ce calcul n'est pas verrouillé,
+     * sinon un calcul complémentaire (`supplementOf`) porte la seule prestation instrumentiste.
+     */
+    #[ORM\Column(name: 'instrumentist_hours_pending', type: 'boolean', options: ['default' => false])]
+    private bool $instrumentistHoursPending = false;
+
+    /**
+     * D-171 — calcul complémentaire : uniquement la prestation instrumentiste d'une mission dont le
+     * calcul principal (celui-ci) a été verrouillé par une facture firme avant la déclaration des
+     * heures. Jamais le « calcul actif » de la mission (findActiveCalculation() l'exclut) ; son
+     * propre cycle approuver / verrouiller (relevé instrumentiste).
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'supplement_of_id', nullable: true)]
+    private ?self $supplementOf = null;
 
     /** @var Collection<int, FinancialCalculationLine> */
     #[ORM\OneToMany(mappedBy: 'financialCalculation', targetEntity: FinancialCalculationLine::class, cascade: ['persist'], orphanRemoval: false)]
@@ -109,6 +137,13 @@ class FinancialCalculation
 
     public function getMission(): ?Mission { return $this->mission; }
     public function setMission(Mission $mission): static { $this->mission = $mission; return $this; }
+
+    public function isInstrumentistHoursPending(): bool { return $this->instrumentistHoursPending; }
+    public function setInstrumentistHoursPending(bool $pending): static { $this->instrumentistHoursPending = $pending; return $this; }
+
+    public function getSupplementOf(): ?self { return $this->supplementOf; }
+    public function setSupplementOf(?self $main): static { $this->supplementOf = $main; return $this; }
+    public function isSupplement(): bool { return $this->supplementOf !== null; }
 
     public function getVersion(): int { return $this->version; }
     public function setVersion(int $version): static { $this->version = $version; return $this; }
@@ -145,6 +180,12 @@ class FinancialCalculation
 
     public function getSupersededAt(): ?\DateTimeImmutable { return $this->supersededAt; }
     public function setSupersededAt(?\DateTimeImmutable $supersededAt): static { $this->supersededAt = $supersededAt; return $this; }
+
+    public function getEncodingReopenedAt(): ?\DateTimeImmutable { return $this->encodingReopenedAt; }
+    public function setEncodingReopenedAt(?\DateTimeImmutable $at): static { $this->encodingReopenedAt = $at; return $this; }
+
+    /** D-153 — calculé sur un encodage rouvert depuis : jamais une source de facturation. */
+    public function isObsolete(): bool { return $this->encodingReopenedAt !== null; }
 
     public function getSupersededByCalculation(): ?self { return $this->supersededByCalculation; }
     public function setSupersededByCalculation(?self $calculation): static { $this->supersededByCalculation = $calculation; return $this; }

@@ -8,20 +8,26 @@ use App\Entity\InterventionTypeRequest;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\CatalogueRequestKind;
+use App\Exception\CatalogueRequestException;
 use App\Message\CatalogueRequestCreatedMessage;
+use App\Service\CatalogueFactory;
 use App\Security\Voter\MissionVoter;
 use App\Service\ActiveFirmResolver;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingLock;
 use App\Service\MissionInterventionDraftService;
+use App\Service\Prestation\PrestationContentGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Serializer\SerializerInterface;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 /**
  * Lot 5 (D-068) — "demande de nouveau type", miroir de MaterialItemRequestController.
@@ -46,6 +52,10 @@ class InterventionTypeRequestController extends AbstractController
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
         private readonly MessageBusInterface $bus,
+        private readonly ValidatorInterface $validator,
+        // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
+        private readonly MissionEncodingLock $encodingLock,
+        private readonly PrestationContentGuard $prestationContent,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -58,6 +68,8 @@ class InterventionTypeRequestController extends AbstractController
 
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
+        // Complément D-156 — nouveau contenu d'une prestation multi-salles : mission de référence uniquement.
+        $this->prestationContent->assertAcceptsNewContent($mission);
 
         /** @var InterventionTypeRequestCreateRequest $dto */
         $dto = $this->serializer->deserialize(
@@ -65,6 +77,31 @@ class InterventionTypeRequestController extends AbstractController
             InterventionTypeRequestCreateRequest::class,
             'json'
         );
+
+        // D-146 bis — contraintes du DTO réellement appliquées (jusqu'ici jamais validé :
+        // un libellé vide était accepté par l'API).
+        $errors = $this->validator->validate($dto);
+        if (count($errors) > 0) {
+            throw new UnprocessableEntityHttpException((string) $errors);
+        }
+
+        if (CatalogueFactory::normalizeName($dto->label) === '') {
+            throw new CatalogueRequestException(422, CatalogueRequestException::LABEL_REQUIRED, "Le nom de l'intervention est obligatoire.");
+        }
+
+        // D-146 bis — « Avec quelle firme cette intervention a-t-elle été réalisée ? » :
+        // obligatoire, exactement une firme existante OU un nom libre proposé.
+        $proposedFirmName = CatalogueFactory::normalizeName($dto->proposedFirmName);
+        if ($dto->requestedFirmId !== null && $proposedFirmName !== '') {
+            throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Choisissez une firme existante OU proposez une nouvelle firme, pas les deux.');
+        }
+        // D-178 — « Aucune firme » : exclusif d'une firme existante ou proposée.
+        if ($dto->withoutFirm && ($dto->requestedFirmId !== null || $proposedFirmName !== '')) {
+            throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_AMBIGUOUS, 'Choisissez une firme OU « Aucune firme », pas les deux.');
+        }
+        if (!$dto->withoutFirm && $dto->requestedFirmId === null && $proposedFirmName === '') {
+            throw new CatalogueRequestException(422, CatalogueRequestException::FIRM_REQUIRED, 'Avec quelle firme cette intervention a-t-elle été réalisée ? Choisissez une firme ou indiquez « Ma firme n\'est pas dans la liste ».');
+        }
 
         // Résolue AVANT la transaction de MissionInterventionDraftService::createForRequest() :
         // simple lecture, rien n'est encore persisté si la firme est invalide.
@@ -75,12 +112,12 @@ class InterventionTypeRequestController extends AbstractController
         $req = new InterventionTypeRequest();
         $req
             ->setMission($mission)
-            ->setLabel($dto->label)
-            ->setSuggestedCode($dto->suggestedCode)
+            ->setLabel(CatalogueFactory::normalizeName($dto->label))
+            ->setSuggestedCode(CatalogueFactory::normalizeName($dto->suggestedCode) ?: null)
             ->setComment($dto->comment)
             ->setCreatedBy($user);
 
-        $draft = $this->draftService->createForRequest($req, $requestedFirm, $user);
+        $draft = $this->encodingLock->run($mission, fn () => $this->draftService->createForRequest($req, $requestedFirm, $user, $requestedFirm === null ? $proposedFirmName : null, $dto->withoutFirm));
 
         // Follow-up D-093 — prévient les managers/admins (jamais bloquant, voir handler
         // async). Toujours après le flush transactionnel ci-dessus : la demande doit
@@ -109,6 +146,8 @@ class InterventionTypeRequestController extends AbstractController
                 id: (int) $requestedFirm->getId(),
                 name: (string) $requestedFirm->getName(),
             ) : null,
+            'proposedFirmName' => $draft->getProposedFirmName(),
+            'withoutFirm' => $draft->isWithoutFirm(),
         ], Response::HTTP_CREATED);
     }
 }

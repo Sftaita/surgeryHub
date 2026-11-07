@@ -2,7 +2,16 @@
 
 namespace App\Controller\Api;
 
+use App\Activity\CorrelationContext;
+use App\Entity\NotificationDispatch;
 use App\Entity\User;
+use App\Enum\NotificationEmailPolicy;
+use App\Enum\NotificationType;
+use App\Enum\OutboundNotificationChannel;
+use App\Enum\OutboundNotificationStatus;
+use App\Notification\EmailContent;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
 use App\Security\Voter\PlanningVoter;
 use App\Service\AbsenceReminderService;
 use App\Service\NotificationService;
@@ -27,6 +36,13 @@ use Symfony\Component\Security\Http\Attribute\CurrentUser;
  *   today → +3 months.
  * - `confirm-encoded`: selection = active instrumentists/surgeons with at least one Absence
  *   where dateEnd >= today (ALL future absences are included in the email, no 3-month cap).
+ *
+ * H5a — every email goes through NotificationDispatcher (ABSENCE_REQUEST_MISSING /
+ * ABSENCE_ENCODED_RECAP): MANDATORY email (an explicit manager request, never filtered by the
+ * person's preferences), no in-app, no push, one NotificationDispatch + OutboundNotification
+ * per person with an honest status. Idempotent per reminder batch: the episode is
+ * `absence_reminder:{kind}:{batchId}` — the client may send a `batchId` (a retried request
+ * then never emails anyone twice); otherwise the request's correlation id is the batch.
  */
 #[Route('/api/planning/absences')]
 class AbsenceReminderController extends AbstractController
@@ -59,6 +75,8 @@ class AbsenceReminderController extends AbstractController
         private readonly NotificationService $notificationService,
         private readonly UserAuditService $userAuditService,
         private readonly EntityManagerInterface $em,
+        private readonly NotificationDispatcher $dispatcher,
+        private readonly CorrelationContext $correlation,
     ) {}
 
     #[Route('/missing-preview', name: 'api_absences_missing_preview', methods: ['GET'])]
@@ -112,18 +130,15 @@ class AbsenceReminderController extends AbstractController
             $people = array_values(array_filter($people, static fn (User $u) => in_array($u->getId(), $userIds, true)));
         }
 
-        $sentCount = 0;
-        foreach ($people as $person) {
-            $this->notificationService->sendAbsenceRequestMissingEmailToUser($person, $message);
-            $sentCount++;
-        }
-        $this->userAuditService->absencesRequestSent($actor, $sentCount);
+        $batchId = $this->batchId($data);
+        $result  = $this->send(NotificationType::ABSENCE_REQUEST_MISSING, $batchId, array_map(
+            fn (User $person) => [$person, $this->notificationService->absenceRequestMissingEmail($person, $message)],
+            $people,
+        ));
+        $this->userAuditService->absencesRequestSent($actor, $result['count']);
         $this->em->flush();
 
-        return $this->json([
-            'sent'  => true,
-            'count' => $sentCount,
-        ]);
+        return $this->json(['sent' => true, 'batchId' => $batchId] + $result);
     }
 
     /**
@@ -148,18 +163,80 @@ class AbsenceReminderController extends AbstractController
             $groups = array_values(array_filter($groups, static fn (array $g) => in_array($g['user']->getId(), $userIds, true)));
         }
 
-        $sentCount = 0;
-        foreach ($groups as $group) {
-            $this->notificationService->sendAbsenceConfirmEncodedEmailToUser($group['user'], $group['absences'], $message);
-            $sentCount++;
-        }
-        $this->userAuditService->absencesConfirmationSent($actor, $sentCount);
+        $batchId = $this->batchId($data);
+        $result  = $this->send(NotificationType::ABSENCE_ENCODED_RECAP, $batchId, array_map(
+            fn (array $group) => [$group['user'], $this->notificationService->absenceEncodedRecapEmail($group['user'], $group['absences'], $message)],
+            $groups,
+        ));
+        $this->userAuditService->absencesConfirmationSent($actor, $result['count']);
         $this->em->flush();
 
-        return $this->json([
-            'sent'  => true,
-            'count' => $sentCount,
-        ]);
+        return $this->json(['sent' => true, 'batchId' => $batchId] + $result);
+    }
+
+    /**
+     * One dispatch per person (never a grouped or collective email). `count` = emails really
+     * handed to the queue; `notSent` = people whose email could not be (no address, failure).
+     *
+     * @param list<array{0: User, 1: EmailContent}> $emails
+     * @return array{count: int, notSent: list<array{id: ?int, name: string, reason: string}>}
+     */
+    private function send(NotificationType $type, string $batchId, array $emails): array
+    {
+        $count = 0;
+        $notSent = [];
+        foreach ($emails as [$person, $email]) {
+            $status = null;
+            try {
+                $status = self::emailOutcome($this->dispatcher->dispatch(new NotificationIntent(
+                    recipient: $person,
+                    type: $type,
+                    inAppPayload: [],
+                    email: $email,
+                    episodeRef: sprintf('absence_reminder:%s:%s', $type->value, $batchId),
+                    subjectType: 'User',
+                    subjectId: $person->getId(),
+                    emailPolicy: NotificationEmailPolicy::MANDATORY,
+                    inApp: false,
+                )));
+            } catch (\Throwable) {
+                $status = 'FAILED';
+            }
+
+            if (in_array($status, [OutboundNotificationStatus::QUEUED->value, OutboundNotificationStatus::SENT->value], true)) {
+                $count++;
+            } else {
+                $name = trim(($person->getFirstname() ?? '') . ' ' . ($person->getLastname() ?? ''));
+                $notSent[] = ['id' => $person->getId(), 'name' => $name ?: (string) $person->getEmail(), 'reason' => $status ?? 'FAILED'];
+            }
+        }
+
+        return ['count' => $count, 'notSent' => $notSent];
+    }
+
+    /** "QUEUED"/"SENT"/"FAILED", or the skip reason ("NO_EMAIL_ADDRESS") of the email delivery. */
+    private static function emailOutcome(NotificationDispatch $dispatch): ?string
+    {
+        foreach ($dispatch->getDeliveries() as $delivery) {
+            if ($delivery->getChannel() === OutboundNotificationChannel::EMAIL) {
+                return $delivery->getStatus() === OutboundNotificationStatus::SKIPPED
+                    ? ($delivery->getSkipReason()?->value ?? 'SKIPPED')
+                    : $delivery->getStatus()->value;
+            }
+        }
+
+        return null;
+    }
+
+    /** Client-provided batch id (retry-safe), or this request's correlation id. */
+    private function batchId(array $data): string
+    {
+        $candidate = $data['batchId'] ?? null;
+        if (is_string($candidate) && preg_match('/^[A-Za-z0-9-]{8,64}$/', $candidate) === 1) {
+            return $candidate;
+        }
+
+        return $this->correlation->correlationId();
     }
 
     /**

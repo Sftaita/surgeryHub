@@ -1,6 +1,8 @@
 import * as React from "react";
-import { Box, Stack, Tab, Tabs, Typography } from "@mui/material";
+import { Box, FormControlLabel, Stack, Switch, Tab, Tabs, Typography } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import dayjs from "dayjs";
 import TrackChangesOutlinedIcon from "@mui/icons-material/TrackChangesOutlined";
 import { PageHeader } from "../../../ui/PageHeader";
 import { PeriodNav } from "../../../features/encoding-tracking/components/PeriodNav";
@@ -15,6 +17,7 @@ import { ToTreatPanel } from "../../../features/encoding-tracking/components/ToT
 import { ByInstrumentistView } from "../../../features/encoding-tracking/components/ByInstrumentistView";
 import { MissionTrackingDrawer } from "../../../features/encoding-tracking/components/MissionTrackingDrawer";
 import { periodForShortcut, type Period } from "../../../features/encoding-tracking/period";
+import { fetchMissionById } from "../../../features/missions/api/missions.api";
 import {
   getEncodingTracking,
   getEncodingTrackingSummary,
@@ -73,12 +76,34 @@ export default function EncodingTrackingPage() {
   const [page, setPage] = React.useState(1);
   const [tab, setTab] = React.useState<TabKey>("table");
   const [selectedMissionId, setSelectedMissionId] = React.useState<number | null>(null);
+  // D-184 — annulées exclues par défaut du suivi ; consultation explicite, liste seulement.
+  const [showCancelled, setShowCancelled] = React.useState(false);
 
   const baseFilter = React.useMemo(() => toApiFilter(period, filter), [period, filter]);
 
+  // D-143 — lien de l'alerte J+4 (?missionId=) : se place sur le jour de la mission et
+  // ouvre son tiroir, une seule fois (la navigation reprend ensuite la main).
+  const [searchParams] = useSearchParams();
+  const deepLinkId = Number(searchParams.get("missionId"));
+  const deepLinkHandled = React.useRef(false);
+  const deepLinkQuery = useQuery({
+    queryKey: ["mission", deepLinkId],
+    queryFn: () => fetchMissionById(deepLinkId),
+    enabled: Number.isFinite(deepLinkId) && deepLinkId > 0,
+  });
+  React.useEffect(() => {
+    const startAt = deepLinkQuery.data?.startAt;
+    if (deepLinkHandled.current || !startAt) return;
+    deepLinkHandled.current = true;
+    const day = dayjs(startAt);
+    setPeriod({ from: day.format("YYYY-MM-DD"), to: day.add(1, "day").format("YYYY-MM-DD") });
+    setTab("table");
+    setSelectedMissionId(deepLinkId);
+  }, [deepLinkQuery.data, deepLinkId]);
+
   // Réinitialise la page quand la population change — sinon "page 3" peut pointer sur
   // une page qui n'existe plus après un changement de filtre/période.
-  React.useEffect(() => setPage(1), [baseFilter, tableEncodingStates]);
+  React.useEffect(() => setPage(1), [baseFilter, tableEncodingStates, showCancelled]);
 
   const summaryQuery = useQuery({
     queryKey: ["encoding-tracking", "summary", baseFilter],
@@ -87,8 +112,8 @@ export default function EncodingTrackingPage() {
   });
 
   const tableQuery = useQuery({
-    queryKey: ["encoding-tracking", "list", baseFilter, tableEncodingStates, page],
-    queryFn: () => getEncodingTracking({ ...baseFilter, encodingState: tableEncodingStates }, { page, limit: TABLE_LIMIT }),
+    queryKey: ["encoding-tracking", "list", baseFilter, tableEncodingStates, page, showCancelled],
+    queryFn: () => getEncodingTracking({ ...baseFilter, encodingState: tableEncodingStates, includeCancelled: showCancelled }, { page, limit: TABLE_LIMIT }),
     enabled: tab === "table",
     ...LIVE_QUERY_OPTIONS,
   });
@@ -154,6 +179,20 @@ export default function EncodingTrackingPage() {
 
           {tab === "table" && (
             <Stack spacing={1}>
+              <Stack direction="row" alignItems="center" spacing={1.5} flexWrap="wrap" useFlexGap>
+                <FormControlLabel
+                  control={<Switch size="small" checked={showCancelled} onChange={(e) => setShowCancelled(e.target.checked)} />}
+                  label={<Typography variant="body2">Afficher les missions annulées</Typography>}
+                  data-testid="show-cancelled-toggle"
+                />
+                {tableQuery.data?.cancelledCount !== undefined && (
+                  <Typography variant="caption" color="text.secondary" data-testid="cancelled-count">
+                    {showCancelled
+                      ? `${tableQuery.data.cancelledCount} annulée(s) affichée(s) — jamais comptées dans les indicateurs`
+                      : `Annulées exclues (${tableQuery.data.cancelledCount} masquée${tableQuery.data.cancelledCount > 1 ? "s" : ""})`}
+                  </Typography>
+                )}
+              </Stack>
               {tableEncodingStates.length > 0 && (
                 <Typography variant="caption" color="text.secondary">
                   Filtré sur : {tableEncodingStates.join(", ")} —{" "}

@@ -38,6 +38,7 @@ use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistStatementService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Exécution & Valorisation, Lot 6 (D-076) — §32 du lot : avant émission,
@@ -46,6 +47,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FinancialCorrectionServiceTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private FinancialCalculationService $calcService;
     private FirmInvoiceService $invoiceService;
@@ -193,6 +196,7 @@ final class FinancialCorrectionServiceTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -263,6 +267,7 @@ final class FinancialCorrectionServiceTest extends KernelTestCase
         $mission->setEndAt($today->modify('+1 hour'));
         $mission->setStatus(MissionStatus::VALIDATED);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $invoice = new FirmInvoice();
@@ -325,6 +330,7 @@ final class FinancialCorrectionServiceTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $calc = $this->calcService->calculate($mission, $actor);

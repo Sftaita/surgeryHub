@@ -1,0 +1,22 @@
+name: SurgicalHub backups D-164
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/server/backup/**'
+      - '.github/workflows/backup-d164.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rotation and offsite tests (isolated Docker)
+        run: bash deploy/server/backup/tests/run-in-docker.sh
+      - name: Encrypted backup and restore e2e (disposable Docker)
+        run: bash deploy/server/backup/tests/e2e-docker.sh

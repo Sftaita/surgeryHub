@@ -28,6 +28,8 @@ use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
  */
 final class CheckUncoveredEscalationsCommandIntegrationTest extends KernelTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private const TZ = 'Europe/Brussels';
 
     private EntityManagerInterface $em;
@@ -43,6 +45,11 @@ final class CheckUncoveredEscalationsCommandIntegrationTest extends KernelTestCa
 
     protected function tearDown(): void
     {
+        if (isset($this->em) && $this->em->isOpen()) {
+            // H5a — dispatcher traces (outbound rows reference the feed items and users).
+            $this->em->clear();
+            $this->purgeNotificationTraces($this->em, $this->createdIds['users']);
+        }
         foreach ($this->createdIds['missions'] as $id) {
             $mission = $this->em->find(Mission::class, $id);
             if ($mission !== null) {
@@ -59,7 +66,7 @@ final class CheckUncoveredEscalationsCommandIntegrationTest extends KernelTestCa
         $this->em->flush();
         foreach ($this->createdIds['missions'] as $id) {
             $e = $this->em->find(Mission::class, $id);
-            if ($e !== null) { $this->em->remove($e); }
+            if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
         }
         $this->em->flush();
         foreach ($this->createdIds['users'] as $id) {

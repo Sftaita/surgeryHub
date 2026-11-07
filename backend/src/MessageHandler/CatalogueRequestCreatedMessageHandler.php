@@ -2,44 +2,37 @@
 
 namespace App\MessageHandler;
 
+use App\Entity\InterventionTypeRequest;
+use App\Entity\MaterialItemRequest;
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\CatalogueRequestKind;
 use App\Enum\NotificationType;
-use App\Enum\PublicationChannel;
 use App\Message\CatalogueRequestCreatedMessage;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\PushContent;
 use App\Repository\UserRepository;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
 use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
-use App\Service\OutboundNotificationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 /**
- * Follow-up to D-093 — prévient les managers/admins actifs qu'un instrumentiste vient de
- * proposer une intervention ou un matériel absent du catalogue (InterventionTypeRequest
- * ou MaterialItemRequest), pendant son encodage.
+ * Follow-up to D-093 — prévient les managers/admins actifs qu'une intervention ou un
+ * matériel absent du catalogue vient d'être proposé (InterventionTypeRequest ou
+ * MaterialItemRequest) pendant un encodage. D-154 — l'auteur annoncé est l'auteur réel de
+ * la demande (instrumentiste, chirurgien de la mission ou manager), jamais supposé.
  *
- * Destinataires : tous les managers/admins actifs (UserRepository::findManagersAndAdmins(
- * true)) — même ciblage que PlanningAlertRaisedMessageHandler/AbsenceImpactService (Batch
- * 7), pas de scoping par site : une proposition catalogue impacte le référentiel global,
- * pas seulement le site de la mission.
+ * Destinataires : les managers/admins opérationnels (UserRepository::findOperationalManagers(),
+ * D-149) — une proposition catalogue impacte le référentiel global, pas seulement le site.
  *
- * D-113 (amende D-094) — in-app + push + **email désormais**, les trois gouvernés
- * indépendamment par NotificationPreferenceResolver (CATALOGUE_REQUEST_CREATED ajouté à
- * EMAIL_ON_BY_DEFAULT). D-094 excluait volontairement l'email ("bruit pur") ; le besoin
- * produit a changé — une proposition catalogue ne doit plus pouvoir rester sans
- * traitement faute d'avoir été vue dans l'app. L'email n'est PAS un repli du push
- * (contrairement à CatalogueRequestProcessedMessageHandler) : c'est un canal indépendant,
- * désactivable individuellement dans les préférences.
+ * D-113 (amende D-094) — in-app + push + email, chacun gouverné indépendamment par les
+ * préférences (l'email n'est PAS un repli du push : politique WHEN_ENABLED).
  *
- * Failure isolation par destinataire (comme MissionPublishedMessageHandler::
- * notifySiteInstrumentists) — l'échec d'un manager (ou d'un seul canal) ne doit jamais
- * empêcher les autres destinataires/canaux d'être notifiés.
+ * H5a — via NotificationDispatcher (chaque canal tracé, idempotent par demande et manager).
+ * Failure isolation par destinataire : l'échec d'un manager n'empêche jamais les autres.
  */
 #[AsMessageHandler]
 final class CatalogueRequestCreatedMessageHandler
@@ -47,8 +40,7 @@ final class CatalogueRequestCreatedMessageHandler
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly UserRepository $userRepository,
-        private readonly OutboundNotificationService $outboundNotificationService,
-        private readonly NotificationPreferenceResolver $preferenceResolver,
+        private readonly NotificationDispatcher $dispatcher,
         private readonly NotificationTargetResolver $targetResolver,
         private readonly NotificationService $notificationService,
         private readonly LoggerInterface $logger,
@@ -65,86 +57,53 @@ final class CatalogueRequestCreatedMessageHandler
         }
 
         $kindLabel = $message->kind === CatalogueRequestKind::INTERVENTION_TYPE ? 'intervention' : 'matériel';
+        $request = $this->em->find(
+            $message->kind === CatalogueRequestKind::INTERVENTION_TYPE ? InterventionTypeRequest::class : MaterialItemRequest::class,
+            $message->requestId,
+        );
+        $requester = $request?->getCreatedBy();
 
-        foreach ($this->userRepository->findManagersAndAdmins(true) as $manager) {
-            $this->notifyManager($manager, $mission, $message, $kindLabel);
+        foreach ($this->userRepository->findOperationalManagers() as $manager) {
+            $this->notifyManager($manager, $mission, $message, $kindLabel, $requester);
         }
     }
 
-    private function notifyManager(User $manager, Mission $mission, CatalogueRequestCreatedMessage $message, string $kindLabel): void
+    private function notifyManager(User $manager, Mission $mission, CatalogueRequestCreatedMessage $message, string $kindLabel, ?User $requester): void
     {
+        $role = NotificationService::catalogueRequesterRole($requester, $mission);
+        $body = $role !== null
+            ? sprintf('%s a proposé un(e) %s qui n\'existe pas encore dans le catalogue : « %s ».', $role, $kindLabel, $message->label)
+            : sprintf('Un(e) %s qui n\'existe pas encore dans le catalogue a été proposé(e) : « %s ».', $kindLabel, $message->label);
+
         try {
-            $channels = $this->resolveChannelsSafely($manager, NotificationType::CATALOGUE_REQUEST_CREATED);
-
-            if ($channels->inApp) {
-                $evt = (new NotificationEvent())
-                    ->setUser($manager)
-                    ->setMission($mission)
-                    ->setEventType(NotificationType::CATALOGUE_REQUEST_CREATED->value)
-                    ->setChannel(PublicationChannel::IN_APP)
-                    ->setSentAt(new \DateTimeImmutable())
-                    ->setPayload([
-                        'missionId' => $mission->getId(),
-                        'requestId' => $message->requestId,
-                        'label'     => $message->label,
-                        'kind'      => $message->kind->value,
-                    ]);
-                $this->em->persist($evt);
-                $this->em->flush();
-            }
-
-            if ($channels->push) {
-                $title = $message->kind === CatalogueRequestKind::INTERVENTION_TYPE
-                    ? 'Nouvelle proposition d\'intervention'
-                    : 'Nouvelle proposition de matériel';
-                $body = sprintf('Un instrumentiste a proposé un(e) %s qui n\'existe pas encore dans le catalogue : « %s ».', $kindLabel, $message->label);
-                $data = [
+            $type = NotificationType::CATALOGUE_REQUEST_CREATED;
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $manager,
+                type: $type,
+                inAppPayload: [
                     'missionId' => $mission->getId(),
-                    'url' => $this->targetResolver->resolve(
-                        NotificationType::CATALOGUE_REQUEST_CREATED,
-                        $mission,
-                        $manager,
-                        $message->requestId,
-                        $message->kind,
-                    ),
-                ];
-
-                $this->outboundNotificationService->recordPushSend(
-                    $manager,
-                    NotificationType::CATALOGUE_REQUEST_CREATED->value,
-                    $title,
+                    'requestId' => $message->requestId,
+                    'label'     => $message->label,
+                    'kind'      => $message->kind->value,
+                ],
+                mission: $mission,
+                email: $this->notificationService->catalogueRequestCreatedEmail($mission, $manager, $message->requestId, $message->label, $kindLabel, $message->kind, $requester),
+                push: new PushContent(
+                    $message->kind === CatalogueRequestKind::INTERVENTION_TYPE ? 'Nouvelle proposition d\'intervention' : 'Nouvelle proposition de matériel',
                     $body,
-                    $data,
-                    $mission,
-                );
-            }
-
-            // D-113 (amende D-094) — canal indépendant du push, jamais un repli.
-            if ($channels->email) {
-                $this->notificationService->catalogueRequestCreatedNotifyManager(
-                    $mission,
-                    $manager,
-                    $message->requestId,
-                    $message->label,
-                    $kindLabel,
-                    $message->kind,
-                );
-            }
+                    [
+                        'missionId' => $mission->getId(),
+                        'url' => $this->targetResolver->resolve($type, $mission, $manager, $message->requestId, $message->kind),
+                    ],
+                ),
+                episodeRef: sprintf('catalogue_request_created:%s:%d', $message->kind->value, $message->requestId),
+            ));
         } catch (\Throwable $e) {
             $this->logger->error('CatalogueRequestCreated: manager notification failed', [
                 'requestId' => $message->requestId,
                 'managerId' => $manager->getId(),
                 'error' => $e->getMessage(),
             ]);
-        }
-    }
-
-    private function resolveChannelsSafely(User $user, NotificationType $type): NotificationChannels
-    {
-        try {
-            return $this->preferenceResolver->resolve($user, $type);
-        } catch (\Throwable) {
-            return new NotificationChannels(inApp: true, email: false, push: false);
         }
     }
 }

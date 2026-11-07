@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Service\BillingDocumentMailer;
 use App\Dto\CorrectionLineInput;
 use App\Entity\InstrumentistStatement;
 use App\Entity\Payment;
@@ -14,7 +15,6 @@ use App\Security\Voter\BillingVoter;
 use App\Service\DocumentPaymentService;
 use App\Service\FinancialCorrectionService;
 use App\Service\InstrumentistStatementService;
-use App\Service\NotificationService;
 use App\Service\PdfService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -28,12 +28,12 @@ use Symfony\Component\Security\Http\Attribute\CurrentUser;
 class InstrumentistStatementController extends AbstractController
 {
     public function __construct(
+        private readonly BillingDocumentMailer $billingMailer,
         private readonly InstrumentistStatementService $statementService,
         private readonly DocumentPaymentService $paymentService,
         private readonly FinancialCorrectionService $correctionService,
         private readonly PdfService $pdfService,
         private readonly EntityManagerInterface $em,
-        private readonly NotificationService $notificationService,
     ) {}
 
     #[Route('', name: 'api_statements_list', methods: ['GET'])]
@@ -192,9 +192,33 @@ class InstrumentistStatementController extends AbstractController
             return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => $e->getMessage()]], 409);
         }
 
-        $pdf = $this->pdfService->generateFromTemplate('pdf/instrumentist_statement.html.twig', ['statement' => $statement]);
+        // H5b (D-132) — frozen PDF + INSTRUMENTIST_STATEMENT_SENT + traced delivery (BillingDocumentMailer).
+        $this->billingMailer->sendStatementEmail($statement, $emailTo, $actor);
 
-        $this->notificationService->sendStatementEmail($statement, $emailTo, $pdf);
+        return $this->json($this->serializeStatementDetail($statement));
+    }
+
+    /** H5b (D-132) — send an issued statement again: same frozen PDF, INSTRUMENTIST_STATEMENT_RESENT, new traced delivery. */
+    #[Route('/{id}/resend', name: 'api_statements_resend', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function resend(int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $statement = $this->em->find(InstrumentistStatement::class, $id);
+        if (!$statement) {
+            return $this->json(['error' => ['status' => 404, 'code' => 'NOT_FOUND', 'message' => 'Décompte introuvable.']], 404);
+        }
+        if (!in_array($statement->getStatus(), [\App\Enum\InvoiceStatus::SENT, \App\Enum\InvoiceStatus::PAID], true)) {
+            return $this->json(['error' => ['status' => 409, 'code' => 'CONFLICT', 'message' => 'Seul un décompte déjà envoyé peut être renvoyé.']], 409);
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $emailTo = $data['emailTo'] ?? $statement->getInstrumentistEmailSnapshot();
+        if (!$emailTo) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'emailTo requis.']], 422);
+        }
+
+        $this->billingMailer->sendStatementEmail($statement, $emailTo, $actor, resend: true);
 
         return $this->json($this->serializeStatementDetail($statement));
     }

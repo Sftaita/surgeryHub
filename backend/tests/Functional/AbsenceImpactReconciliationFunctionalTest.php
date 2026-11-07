@@ -26,6 +26,7 @@ use App\MessageHandler\PlanningRestoredAfterAbsenceMessageHandler;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
@@ -37,6 +38,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
 {
+    // D-158 — "now" frozen before the fixture dates: a surgeon absence only cancels a
+    // mission still to come (AbsenceMissionProtectionPolicy).
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'Lot4ReconcileTest123!';
 
     private EntityManagerInterface $em;
@@ -44,6 +49,7 @@ final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-01-15 00:00:00');
         parent::setUp();
         self::ensureKernelShutdown();
     }
@@ -64,6 +70,24 @@ final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
             }
             $this->em->flush();
 
+            // H4 (D-130) — restoration notices now go through the dispatcher, which attaches the
+            // feed item and the delivery rows to the mission: removed before the missions.
+            if ($this->createdIds['missions'] !== []) {
+                $ids = implode(',', array_map('intval', $this->createdIds['missions']));
+                $conn = $this->em->getConnection();
+                $conn->executeStatement("DELETE FROM mission_communication WHERE mission_id_snapshot IN ($ids)");
+                $conn->executeStatement("DELETE FROM notification_event WHERE mission_id IN ($ids)");
+                $this->em->clear();
+            }
+            if ($this->createdIds['users'] !== []) {
+                $users = implode(',', array_map('intval', $this->createdIds['users']));
+                $conn = $this->em->getConnection();
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($users)");
+                $this->em->clear();
+            }
+
             foreach ($this->createdIds['missions'] as $id) {
                 $mission = $this->em->find(Mission::class, $id);
                 if ($mission === null) { continue; }
@@ -72,6 +96,9 @@ final class AbsenceImpactReconciliationFunctionalTest extends WebTestCase
                 }
                 foreach ($this->em->createQueryBuilder()->select('e')->from(AuditEvent::class, 'e')->where('e.mission = :m')->setParameter('m', $mission)->getQuery()->getResult() as $event) {
                     $this->em->remove($event);
+                }
+                foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $mission]) as $assignment) {
+                    $this->em->remove($assignment); // D-150 — affectation history (FK without ON DELETE)
                 }
                 $this->em->remove($mission);
             }

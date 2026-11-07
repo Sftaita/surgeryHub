@@ -10,15 +10,19 @@ use App\Message\CatalogueRequestCreatedMessage;
 use App\Security\Voter\MissionVoter;
 use App\Service\MaterialItemRequestService;
 use App\Service\MissionEncodingGuard;
+use App\Service\MissionEncodingLock;
+use App\Service\Prestation\PrestationContentGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\CurrentUser;
 use Symfony\Component\Serializer\SerializerInterface;
+use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 #[Route('/api/missions/{missionId}/material-item-requests')]
 class MaterialItemRequestController extends AbstractController
@@ -29,6 +33,10 @@ class MaterialItemRequestController extends AbstractController
         private readonly MissionEncodingGuard $encodingGuard,
         private readonly SerializerInterface $serializer,
         private readonly MessageBusInterface $bus,
+        private readonly ValidatorInterface $validator,
+        // D-171 — every encoding write runs under the mission lock (MissionEncodingLock).
+        private readonly MissionEncodingLock $encodingLock,
+        private readonly PrestationContentGuard $prestationContent,
     ) {}
 
     #[Route('', methods: ['POST'])]
@@ -41,7 +49,6 @@ class MaterialItemRequestController extends AbstractController
 
         $this->denyAccessUnlessGranted(MissionVoter::EDIT_ENCODING, $mission);
         $this->encodingGuard->assertEncodingAllowed($mission, $user);
-
         /** @var MaterialItemRequestCreateRequest $dto */
         $dto = $this->serializer->deserialize(
             $request->getContent(),
@@ -49,7 +56,19 @@ class MaterialItemRequestController extends AbstractController
             'json'
         );
 
-        $req = $this->service->create($mission, $dto, $user);
+        // D-146 bis — les contraintes du DTO (nom, quantité, longueurs) sont désormais
+        // réellement appliquées côté serveur : jusqu'ici le DTO était désérialisé sans
+        // jamais être validé (un nom vide était accepté par l'API).
+        $errors = $this->validator->validate($dto);
+        if (count($errors) > 0) {
+            throw new UnprocessableEntityHttpException((string) $errors);
+        }
+
+        // Complément D-156 — prestation multi-salles : mission de référence, ou matériel d'une
+        // intervention historique existante de CETTE mission (il reste sur sa mission d'origine).
+        $this->prestationContent->assertAcceptsNewContent($mission, $dto->missionInterventionId, $dto->interventionDraftId);
+
+        $req = $this->encodingLock->run($mission, fn () => $this->service->create($mission, $dto, $user));
 
         // Follow-up D-093 — prévient les managers/admins (jamais bloquant, voir handler
         // async). Toujours après le flush transactionnel ci-dessus.

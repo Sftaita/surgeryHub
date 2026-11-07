@@ -11,6 +11,7 @@ const GRAY_700 = "#3A4754";
 const GRAY_950 = "#0B1320";
 const GRAY_50 = "#F5F7FA";
 const SHADOW_XS = "0 1px 2px rgba(22,32,43,.05)";
+const AMBER_700 = "#9A5B00";
 
 function ClockIcon() {
   return (
@@ -30,23 +31,38 @@ function ChevronRightIcon() {
 /** "4h00" — le pendant tabulaire de fmtDuration() (EditServiceHoursDialog.tsx), pour le
  *  bloc TOTAL NET. Local à ce composant : formatExecutionHours() (missions.format.ts)
  *  reste le format "X h" partagé par SubmitDialog/instrumentist MissionDetailPage. */
-function formatHm(minutes: number): string {
+export function formatHm(minutes: number): string {
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
 }
 
 /**
- * Détail sous le libellé. Le backend ne stocke qu'une durée décimale pour une saisie
- * instrumentiste (EditServiceHoursDialog n'envoie jamais actualStartAt/actualEndAt) —
- * on ne peut donc pas reconstruire "10h45 → 18h15 · pause 45 min" (DOCUMENTATION §2)
- * pour le cas réel. Si un horaire réel existe malgré tout (autre source), on l'affiche ;
- * sinon on reste honnête plutôt que d'inventer une plage.
+ * Détail sous le libellé (ex. "10h45 → 18h15" ; D-146 bis : aucune pause). D-143 :
+ * début et fin réels sont enregistrés (plus une durée seule) ; un début seul est un
+ * brouillon de la journée en cours ; une durée seule (saisie antérieure) reste affichée
+ * mais signalée à compléter — début et fin sont nécessaires pour terminer l'encodage.
  */
 function detailLabel(execution: MissionExecutionInfo | null | undefined): string {
   if (!execution?.hasExecutionRecord) return "Non renseignées — appuyez pour saisir";
-  if (execution.actualStartAt && execution.actualEndAt) {
-    return `${dayjs(execution.actualStartAt).format("HH[h]mm")} → ${dayjs(execution.actualEndAt).format("HH[h]mm")}`;
+  // D-156 — heures communes d'une prestation multi-salles (présence réelle partagée).
+  const presence = execution.presence;
+  if (presence?.actualStartAt) {
+    const end = presence.actualEndAt ? dayjs(presence.actualEndAt).format("HH[h]mm") : "…";
+    return `Présence commune ${dayjs(presence.actualStartAt).format("HH[h]mm")} → ${end}`;
   }
-  return "Saisies manuellement";
+  if (execution.actualStartAt && execution.actualEndAt) {
+    const range = `${dayjs(execution.actualStartAt).format("HH[h]mm")} → ${dayjs(execution.actualEndAt).format("HH[h]mm")}`;
+    return range;
+  }
+  if (execution.actualStartAt) {
+    return `Début ${dayjs(execution.actualStartAt).format("HH[h]mm")} — fin à compléter`;
+  }
+  return "Début et fin à préciser";
+}
+
+/** D-143 — vrai tant que début ET fin réels ne sont pas connus (condition de soumission). */
+export function hoursIncomplete(execution: MissionExecutionInfo | null | undefined): boolean {
+  if (execution?.presence) return !(execution.presence.actualStartAt && execution.presence.actualEndAt);
+  return !(execution?.actualStartAt && execution?.actualEndAt);
 }
 
 type Props = {
@@ -65,6 +81,7 @@ type Props = {
 export function WorkedHoursCard({ execution, canEdit, onOpen }: Props) {
   const filled = !!execution?.hasExecutionRecord;
   const total = filled && execution?.actualDurationMinutes != null ? formatHm(execution.actualDurationMinutes) : null;
+  const incomplete = filled && hoursIncomplete(execution);
 
   return (
     <Box
@@ -86,7 +103,7 @@ export function WorkedHoursCard({ execution, canEdit, onOpen }: Props) {
       </Box>
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Box sx={{ fontSize: 15, fontWeight: 700, color: GRAY_950 }}>Heures prestées</Box>
-        <Box sx={{ mt: "3px", fontSize: 12.5, fontWeight: 600, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
+        <Box data-testid="worked-hours-detail" sx={{ mt: "3px", fontSize: 12.5, fontWeight: 600, color: incomplete ? AMBER_700 : GRAY_500, fontVariantNumeric: "tabular-nums" }}>
           {detailLabel(execution)}
         </Box>
       </Box>

@@ -12,25 +12,27 @@ use App\Enum\EligibilityReason;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\NotificationType;
+use App\Enum\OpenEpisodeCause;
 use App\Enum\PlanningDeploymentStatus;
 use App\Enum\SchedulePrecision;
 use App\Enum\UncoveredReason;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
 use App\MessageHandler\PlanningDeployPdfsMessageHandler;
-use App\Service\MissionEligibilityService;
+use App\Notification\OpenEpisode;
+use App\Notification\OpenMissionPoolNotifier;
 use App\Service\NotificationChannels;
 use App\Service\NotificationPreferenceResolver;
 use App\Service\NotificationService;
 use App\Service\PdfService;
 use App\Service\UncoveredReasonResolver;
-use App\Service\WebPushServiceInterface;
 use Doctrine\ORM\AbstractQuery;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
 use Doctrine\ORM\QueryBuilder;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -44,17 +46,32 @@ use Symfony\Component\Messenger\MessageBusInterface;
  *   plus the pre-existing in-app notification.
  * - Change-summary emails (PlanningChangeSummaryService) are entirely decoupled from
  *   this handler now — see PlanningChangeSummaryServiceTest for that capability.
+ * - H3 (D-129): the OPEN missions selected for the pool are handed to
+ *   OpenMissionPoolNotifier in ONE batch (one email + one push per eligible person, only
+ *   her missions); the planning email no longer carries a "missions disponibles" section.
+ * - H4 (D-130): the instrumentist / surgeon planning notification goes through
+ *   NotificationDispatcher with a DEPLOY MissionCommunicationSpec. The fake dispatcher below
+ *   projects each intent exactly as the real one would under this test's preference resolver
+ *   (in-app item persisted, email emitted), so the per-recipient assertions stay meaningful;
+ *   real channel handling is covered by NotificationDispatcherIntegrationTest.
  */
 class PlanningDeployPdfsHandlerTest extends TestCase
 {
     private EntityManagerInterface&MockObject         $em;
     private PdfService&MockObject                    $pdf;
     private NotificationService&MockObject           $notif;
-    private WebPushServiceInterface&MockObject       $webPush;
+    private LoggerInterface&MockObject               $logger;
     private MessageBusInterface&MockObject           $bus;
     private NotificationPreferenceResolver&MockObject $preferenceResolver;
     private UncoveredReasonResolver&MockObject       $uncoveredReasonResolver;
-    private MissionEligibilityService&MockObject     $eligibilityService;
+    private OpenMissionPoolNotifier&MockObject       $poolNotifier;
+    private \App\Notification\NotificationDispatcher&MockObject $dispatcher;
+    /** @var list<\App\Notification\NotificationIntent> */
+    private array $intents = [];
+    /** @var array<int, string> H5a — stored documents (id => bytes) */
+    private array $documents = [];
+    /** @var list<list<OpenEpisode>> one entry per notifyBatch() call */
+    private array $poolBatches = [];
 
     private array $dispatched   = [];
     private array $pdfTemplates = [];
@@ -64,7 +81,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $this->em          = $this->createMock(EntityManagerInterface::class);
         $this->pdf         = $this->createMock(PdfService::class);
         $this->notif       = $this->createMock(NotificationService::class);
-        $this->webPush     = $this->createMock(WebPushServiceInterface::class);
+        $this->logger      = $this->createMock(LoggerInterface::class);
         $this->bus         = $this->createMock(MessageBusInterface::class);
 
         $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
@@ -75,16 +92,34 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         $this->uncoveredReasonResolver->method('resolveForMission')
             ->willReturn(UncoveredReason::MANUALLY_LEFT_OPEN);
 
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')->willReturn([]);
-        // Default: nobody is eligible for any OPEN mission via evaluate() either — keeps
-        // the "missions disponibles" section empty for every test that doesn't explicitly
-        // exercise it. Without this stub, PHPUnit's auto-generated mock would return null
-        // for the (non-nullable) EligibilityResult return type, which the handler's own
-        // try/catch would silently swallow — silently dropping every instrumentist email
-        // in every test in this file, not just the eligibility-specific ones.
-        $this->eligibilityService->method('evaluate')
-            ->willReturn(new EligibilityResult($this->makeUser('unused@test.com', ['ROLE_INSTRUMENTIST'], 0), [EligibilityReason::INCOMPATIBLE_STATUS]));
+        $this->poolBatches  = [];
+        $this->intents      = [];
+        $this->dispatcher   = $this->createMock(\App\Notification\NotificationDispatcher::class);
+        $this->dispatcher->method('dispatch')->willReturnCallback(function (\App\Notification\NotificationIntent $intent): \App\Entity\NotificationDispatch {
+            $this->intents[] = $intent;
+            $channels = $this->preferenceResolver->resolve($intent->recipient, $intent->type);
+            if ($channels->inApp) {
+                $this->em->persist((new NotificationEvent())->setUser($intent->recipient)->setEventType($intent->type->value)->setPayload($intent->inAppPayload));
+            }
+            if ($channels->email && $intent->recipient->getEmail() && $intent->email !== null) {
+                $this->dispatched[] = new SendBillingEmailMessage(
+                    to: $intent->recipient->getEmail(), cc: [], subject: $intent->email->subject,
+                    fromAddress: 'noreply@test.com', fromName: 'SurgicalHub', htmlTemplate: $intent->email->htmlTemplate,
+                    context: $intent->email->context,
+                    // H5a — attachments travel by reference: resolved here from the fake store.
+                    attachmentBase64: isset($intent->email->attachments[0]) ? base64_encode($this->documents[$intent->email->attachments[0]->documentId]) : null,
+                    attachmentFilename: $intent->email->attachments[0]->filename ?? null,
+                );
+            }
+
+            return new \App\Entity\NotificationDispatch();
+        });
+        $this->poolNotifier = $this->createMock(OpenMissionPoolNotifier::class);
+        $this->poolNotifier->method('notifyBatch')->willReturnCallback(function (array $episodes): array {
+            $this->poolBatches[] = $episodes;
+
+            return [];
+        });
 
         $this->dispatched   = [];
         $this->pdfTemplates = [];
@@ -141,15 +176,34 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             $this->em,
             $this->pdf,
             $this->notif,
-            $this->webPush,
-            $this->bus,
-            $this->preferenceResolver,
+            $this->logger,
             $this->uncoveredReasonResolver,
-            $this->eligibilityService,
-            'noreply@test.com',
-            'SurgicalHub',
+            $this->poolNotifier,
+            $this->dispatcher,
+            $this->documentStore(),
             'https://app.surgicalhub.test',
         );
+    }
+
+    private function documentStore(): \App\Notification\DocumentStore
+    {
+        $store = $this->createMock(\App\Notification\DocumentStore::class);
+        $store->method('store')->willReturnCallback(function (string $type, string $filename, string $content) {
+            $id = count($this->documents) + 1;
+            $this->documents[$id] = $content;
+
+            return new \App\Notification\DocumentReference($id, $type, $filename, hash('sha256', $content), strlen($content));
+        });
+        // H5b — planning PDFs are stored once per (sourceKey, fingerprint): render on demand.
+        $store->method('storeOnce')->willReturnCallback(function (string $type, string $key, string $fp, string $filename, callable $render) {
+            $content = $render();
+            $id = count($this->documents) + 1;
+            $this->documents[$id] = $content;
+
+            return new \App\Notification\DocumentReference($id, $type, $filename, hash('sha256', $content), strlen($content));
+        });
+
+        return $store;
     }
 
     private function makeMessage(
@@ -336,13 +390,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
         // Must not throw
         $threw = false;
         try {
-            (new PlanningDeployPdfsMessageHandler(
-                $this->em, $this->pdf, $this->notif, $this->webPush,
-                $this->bus,
-                $this->preferenceResolver, $this->uncoveredReasonResolver,
-                $this->eligibilityService,
-                'noreply@test.com', 'SurgicalHub', 'https://app.surgicalhub.test',
-            ))->__invoke($this->makeMessage());
+            $this->makeHandler()->__invoke($this->makeMessage());
         } catch (\Throwable) {
             $threw = true;
         }
@@ -480,24 +528,48 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             return $q;
         });
 
-        // Re-create the eligibility service mock to override setUp() default ([])
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')
-            ->willReturn([10 => [$poolInstr]]);
-
-        // Push must be called exactly once with "1 nouvelle" (only mission 101, not 102)
-        $this->webPush->expects($this->once())
-            ->method('sendToUsers')
-            ->with(
-                $this->anything(),
-                'Nouvelles missions disponibles',
-                $this->stringContains('1 nouvelle'),
-                $this->anything(),
-            );
-
         $this->makeHandler()->__invoke(
-            $this->makeMessage(openUncoveredIds: [101]) // 101 selected, 102 not
+            $this->makeMessage(openUncoveredIds: [101], deploymentId: null) // 101 selected, 102 not
         );
+
+        self::assertCount(1, $this->poolBatches, 'ONE batch for the whole deployment');
+        self::assertCount(1, $this->poolBatches[0]);
+        $episode = $this->poolBatches[0][0];
+        self::assertSame(101, $episode->missionId);
+        self::assertSame(OpenEpisodeCause::DEPLOYED, $episode->cause);
+        self::assertSame(99, $episode->actorId);
+        self::assertSame('open:101:DEPLOYED:deployment:legacy:2026-03-23:2026-03-27', $episode->episodeRef);
+    }
+
+    public function test_pool_batch_carries_the_deployment_key_so_a_retry_reuses_the_same_episodes(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $m1 = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+        (new \ReflectionProperty(Mission::class, 'id'))->setValue($m1, 201);
+        $m2 = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+        (new \ReflectionProperty(Mission::class, 'id'))->setValue($m2, 202);
+        $this->setupMissionsQuery([$m1, $m2]);
+
+        $this->makeHandler()->__invoke($this->makeMessage(openUncoveredIds: [201, 202, 201]));
+
+        self::assertCount(1, $this->poolBatches);
+        self::assertSame([201, 202], array_map(static fn (OpenEpisode $e) => $e->missionId, $this->poolBatches[0]), 'deduplicated, one episode per mission');
+    }
+
+    public function test_pool_failure_never_fails_the_deployment_notifications(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
+        $instr   = $this->makeUser('instr@test.com', ['ROLE_INSTRUMENTIST'], 2);
+        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $this->setupMissionsQuery([$assigned]);
+        $this->poolNotifier = $this->createMock(OpenMissionPoolNotifier::class);
+        $this->poolNotifier->method('notifyBatch')->willThrowException(new \RuntimeException('DB down'));
+        $this->logger->expects($this->atLeastOnce())->method('error');
+
+        $this->makeHandler()->__invoke($this->makeMessage(openUncoveredIds: [301]));
+
+        $instrEmails = array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com');
+        self::assertCount(1, $instrEmails, 'the planning email is still sent');
     }
 
     // ── Batch 11 Fix 3: outer catch marks deployment FAILED ─────────────────
@@ -859,149 +931,6 @@ class PlanningDeployPdfsHandlerTest extends TestCase
     }
 
     /**
-     * When findEligible returns a site instrumentist and inApp=true for OPEN_MISSION_AVAILABLE,
-     * the handler must persist a NotificationEvent for that instrumentist.
-     */
-    public function test_pool_notification_event_created_per_site_instrumentist(): void
-    {
-        $siteInstrumentist = $this->makeUser('pool-instr@test.com', ['ROLE_INSTRUMENTIST'], 5);
-
-        $persisted = [];
-        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
-            $persisted[] = $entity;
-        });
-
-        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $mgr     = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
-
-        $site = new Hospital();
-        $site->setName('Alpha');
-        (new \ReflectionProperty(Hospital::class, 'id'))->setValue($site, 10);
-
-        $mission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
-        $mission->setSite($site);
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($mission, 101);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === User::class && $id === 99 => $mgr,
-                $class === User::class && $id === 1  => $surgeon,
-                default => null,
-            });
-
-        $qb = $this->createMock(QueryBuilder::class);
-        $qb->method('select')->willReturnSelf();
-        $qb->method('from')->willReturnSelf();
-        $qb->method('where')->willReturnSelf();
-        $qb->method('andWhere')->willReturnSelf();
-        $qb->method('setParameter')->willReturnSelf();
-        $q = $this->createMock(Query::class);
-        $q->method('getResult')->willReturn([$mission]);
-        $qb->method('getQuery')->willReturn($q);
-        $this->em->method('createQueryBuilder')->willReturn($qb);
-
-        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getResult')->willReturn([]);
-            return $q;
-        });
-
-        // Re-create the eligibility service mock to override setUp() default ([])
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')
-            ->willReturn([10 => [$siteInstrumentist]]);
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage(openUncoveredIds: [101])
-        );
-
-        $poolEvents = array_values(array_filter(
-            $persisted,
-            fn ($e) => $e instanceof NotificationEvent
-                && $e->getEventType() === NotificationType::OPEN_MISSION_AVAILABLE->value,
-        ));
-        $this->assertCount(1, $poolEvents,
-            'Handler must persist one OPEN_MISSION_AVAILABLE event per eligible site instrumentist.'
-        );
-        $this->assertSame($siteInstrumentist, $poolEvents[0]->getUser());
-        $payload = $poolEvents[0]->getPayload();
-        $this->assertSame(1, $payload['missionCount']);
-    }
-
-    /**
-     * When resolver returns inApp=false for OPEN_MISSION_AVAILABLE, no NotificationEvent
-     * of that type must be created.
-     */
-    public function test_pool_notification_event_not_created_when_inapp_disabled(): void
-    {
-        $this->preferenceResolver = $this->createMock(NotificationPreferenceResolver::class);
-        $this->preferenceResolver->method('resolve')
-            ->willReturn(new NotificationChannels(inApp: false, email: false, push: false));
-
-        $siteInstrumentist = $this->makeUser('pool-instr@test.com', ['ROLE_INSTRUMENTIST'], 5);
-
-        $persisted = [];
-        $this->em->method('persist')->willReturnCallback(function ($entity) use (&$persisted): void {
-            $persisted[] = $entity;
-        });
-
-        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $mgr     = $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99);
-
-        $site = new Hospital();
-        $site->setName('Alpha');
-        (new \ReflectionProperty(Hospital::class, 'id'))->setValue($site, 10);
-
-        $mission = $this->makeMission($surgeon, null, MissionStatus::OPEN);
-        $mission->setSite($site);
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($mission, 101);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === User::class && $id === 99 => $mgr,
-                $class === User::class && $id === 1  => $surgeon,
-                default => null,
-            });
-
-        $qb = $this->createMock(QueryBuilder::class);
-        $qb->method('select')->willReturnSelf();
-        $qb->method('from')->willReturnSelf();
-        $qb->method('where')->willReturnSelf();
-        $qb->method('andWhere')->willReturnSelf();
-        $qb->method('setParameter')->willReturnSelf();
-        $q = $this->createMock(Query::class);
-        $q->method('getResult')->willReturn([$mission]);
-        $qb->method('getQuery')->willReturn($q);
-        $this->em->method('createQueryBuilder')->willReturn($qb);
-
-        $this->em->method('createQuery')->willReturnCallback(function (): AbstractQuery {
-            $q = $this->createMock(Query::class);
-            $q->method('setParameter')->willReturnSelf();
-            $q->method('getResult')->willReturn([]);
-            return $q;
-        });
-
-        // Re-create the eligibility service mock to override setUp() default ([])
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')
-            ->willReturn([10 => [$siteInstrumentist]]);
-
-        $this->makeHandler()->__invoke(
-            $this->makeMessage(openUncoveredIds: [101])
-        );
-
-        $poolEvents = array_filter(
-            $persisted,
-            fn ($e) => $e instanceof NotificationEvent
-                && $e->getEventType() === NotificationType::OPEN_MISSION_AVAILABLE->value,
-        );
-        $this->assertEmpty($poolEvents,
-            'No OPEN_MISSION_AVAILABLE event must be created when inApp=false.'
-        );
-    }
-
-    /**
      * On successful deploy, a PLANNING_DEPLOYED_MANAGER event must be persisted
      * for the deploying user, with missionCount, assignedCount, and openPoolCount.
      */
@@ -1124,7 +1053,7 @@ class PlanningDeployPdfsHandlerTest extends TestCase
     }
 
     /**
-     * If openUncoveredIds is empty, planningNewOpenMissionsNotifySite must never be called.
+     * If openUncoveredIds is empty, the pool is never solicited.
      */
     public function test_no_pool_notification_when_no_uncovered_ids_selected(): void
     {
@@ -1157,11 +1086,9 @@ class PlanningDeployPdfsHandlerTest extends TestCase
             return $q;
         });
 
-        $this->notif->expects($this->never())->method('planningNewOpenMissionsNotifySite');
-        $this->webPush->expects($this->never())->method('sendToUsers');
-
-        // No IDs selected → no pool notification (sendPoolNotifications exits early)
         $this->makeHandler()->__invoke($this->makeMessage(openUncoveredIds: []));
+
+        self::assertSame([], $this->poolBatches);
     }
 
     // ── Email policy redesign — regression guarantees ────────────────────────
@@ -1234,132 +1161,47 @@ class PlanningDeployPdfsHandlerTest extends TestCase
     // ── "Missions disponibles" section (initial-deploy visual redesign) ─────
 
     /**
-     * An OPEN mission in the deployed period that this instrumentist is eligible for
-     * (per MissionEligibilityService::evaluate() — the same check claim() uses) must
-     * appear in the instrumentist email's availableMissions context, formatted for
-     * display, with the CTA URL pointing at the offers page.
+     * H3 (D-129) — the "missions disponibles" section left the planning email: the OPEN
+     * missions are offered by the pool email (OpenMissionPoolNotifier, per-mission
+     * eligibility, preferences), never twice. This also removes the per-instrumentist ×
+     * per-mission evaluate() loop (N+1) the section needed.
      */
-    public function test_instrumentist_email_includes_eligible_open_mission_in_available_missions(): void
+    public function test_planning_email_no_longer_lists_available_missions(): void
     {
         $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
-        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $instr   = $this->makeUser('instr@test.com', ['ROLE_INSTRUMENTIST'], 2);
+        $own     = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $open    = $this->makeMission($surgeon, null, MissionStatus::OPEN);
+        (new \ReflectionProperty(Mission::class, 'id'))->setValue($open, 555);
+        $this->setupMissionsQuery([$own, $open]);
 
-        $openSurgeon = $this->makeUser('open-surgeon@test.com', ['ROLE_SURGEON'], 3);
-        $openMission = $this->makeMission($openSurgeon, null, MissionStatus::OPEN);
-        $openMission->setSite($assigned->getSite());
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($openMission, 555);
+        $this->makeHandler()->__invoke($this->makeMessage(openUncoveredIds: [555]));
 
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
-                $class === User::class && $id === 1  => $surgeon,
-                $class === User::class && $id === 2  => $instr,
-                $class === User::class && $id === 3  => $openSurgeon,
-                default => null,
-            });
-        $this->setupMissionsQuery([$assigned, $openMission]);
-
-        // Re-create the eligibility service mock to override setUp()'s default (always
-        // ineligible) — matches the established pattern elsewhere in this file (see
-        // test_pool_notification_only_for_open_uncovered_ids), since PHPUnit uses the
-        // FIRST configured `method()` stub, not the last, when there's no `with()`
-        // constraint to disambiguate multiple stubs on the same method.
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')->willReturn([]);
-        $this->eligibilityService->method('evaluate')
-            ->willReturnCallback(fn (Mission $m, User $u) => $m === $openMission && $u === $instr
-                ? new EligibilityResult($u, [])
-                : new EligibilityResult($u, [EligibilityReason::INCOMPATIBLE_STATUS]));
-
-        $this->makeHandler()->__invoke($this->makeMessage());
-
-        $instrEmails = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
-        ));
-        $this->assertCount(1, $instrEmails);
-
-        $context = $instrEmails[0]->context;
-        $this->assertArrayHasKey('availableMissions', $context);
-        $this->assertCount(1, $context['availableMissions']);
-        $this->assertSame(555, $context['availableMissions'][0]['missionId']);
-        $this->assertSame('Alpha', $context['availableMissions'][0]['siteName']);
-        $this->assertSame('Bloc', $context['availableMissions'][0]['typeLabel']);
-        $this->assertStringEndsWith('/app/i/offers', $context['availableMissionsUrl']);
+        $instrEmails = array_values(array_filter($this->dispatched, fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com'));
+        self::assertCount(1, $instrEmails);
+        self::assertSame([], $instrEmails[0]->context['availableMissions']);
+        self::assertSame(555, $this->poolBatches[0][0]->missionId, 'offered by the pool email instead');
     }
 
-    /**
-     * An OPEN mission this instrumentist is NOT eligible for (e.g. no site membership,
-     * absence, conflict — any reason evaluate() reports) must never appear in their
-     * availableMissions list, even though it is a real OPEN mission in the same deploy.
-     */
-    public function test_instrumentist_email_excludes_open_mission_they_are_not_eligible_for(): void
+    /** H4 (D-130) — the planning notification carries what it presents: each person's own missions. */
+    public function test_planning_notifications_declare_the_missions_they_communicate(): void
     {
         $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
-        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        $instr   = $this->makeUser('instr@test.com', ['ROLE_INSTRUMENTIST'], 2);
+        $mission = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
+        (new \ReflectionProperty(Mission::class, 'id'))->setValue($mission, 901);
+        $this->setupMissionsQuery([$mission]);
 
-        $openSurgeon = $this->makeUser('open-surgeon@test.com', ['ROLE_SURGEON'], 3);
-        $openMission = $this->makeMission($openSurgeon, null, MissionStatus::OPEN);
-        (new \ReflectionProperty(Mission::class, 'id'))->setValue($openMission, 556);
+        $this->makeHandler()->__invoke($this->makeMessage(deploymentId: null));
 
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
-                $class === User::class && $id === 1  => $surgeon,
-                $class === User::class && $id === 2  => $instr,
-                $class === User::class && $id === 3  => $openSurgeon,
-                default => null,
-            });
-        $this->setupMissionsQuery([$assigned, $openMission]);
-        // setUp()'s default stub already makes evaluate() report ineligible for everyone.
-
-        $this->makeHandler()->__invoke($this->makeMessage());
-
-        $instrEmails = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
-        ));
-        $this->assertCount(1, $instrEmails);
-        $this->assertSame([], $instrEmails[0]->context['availableMissions'],
-            'A mission the instrumentist is not eligible for must never appear in their available-missions list.'
-        );
-    }
-
-    /**
-     * REGRESSION guard for "no duplication with the PDF": the instrumentist's own
-     * (already-assigned) missions must never be considered as "available" — only
-     * genuinely OPEN, unassigned missions can appear in availableMissions.
-     */
-    public function test_instrumentist_own_assigned_missions_never_appear_in_available_missions(): void
-    {
-        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON'], 1);
-        $instr   = $this->makeUser('instr@test.com',   ['ROLE_INSTRUMENTIST'], 2);
-        $assigned = $this->makeMission($surgeon, $instr, MissionStatus::ASSIGNED);
-
-        $this->em->method('find')
-            ->willReturnCallback(fn ($class, $id) => match (true) {
-                $class === User::class && $id === 99 => $this->makeUser('mgr@test.com', ['ROLE_MANAGER'], 99),
-                $class === User::class && $id === 1  => $surgeon,
-                $class === User::class && $id === 2  => $instr,
-                default => null,
-            });
-        $this->setupMissionsQuery([$assigned]);
-
-        // Even if evaluate() were (incorrectly) called against the assigned mission and
-        // returned eligible, it must never reach availableMissions — it is not OPEN.
-        $this->eligibilityService = $this->createMock(MissionEligibilityService::class);
-        $this->eligibilityService->method('findEligible')->willReturn([]);
-        $this->eligibilityService->method('evaluate')->willReturn(new EligibilityResult($instr, []));
-
-        $this->makeHandler()->__invoke($this->makeMessage());
-
-        $instrEmails = array_values(array_filter(
-            $this->dispatched,
-            fn ($m) => $m instanceof SendBillingEmailMessage && $m->to === 'instr@test.com',
-        ));
-        $this->assertCount(1, $instrEmails);
-        $this->assertSame([], $instrEmails[0]->context['availableMissions']);
+        $byType = [];
+        foreach ($this->intents as $intent) {
+            $byType[$intent->type->value] = $intent;
+        }
+        self::assertSame(\App\Enum\MissionCommunicationSource::DEPLOY, $byType['PLANNING_DEPLOYED_INSTRUMENTIST']->communicates->source);
+        self::assertSame('INSTRUMENTIST', $byType['PLANNING_DEPLOYED_INSTRUMENTIST']->communicates->role);
+        self::assertSame([901], $byType['PLANNING_DEPLOYED_INSTRUMENTIST']->communicates->missionIds);
+        self::assertSame('SURGEON', $byType['PLANNING_DEPLOYED_SURGEON']->communicates->role);
+        self::assertSame('deployment:legacy:2026-03-23:2026-03-27', $byType['PLANNING_DEPLOYED_INSTRUMENTIST']->episodeRef);
     }
 }

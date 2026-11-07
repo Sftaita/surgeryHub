@@ -145,10 +145,17 @@ export default function SurgeonMissionRequestFormPage() {
         comment: comment.trim() || undefined,
       });
     },
-    onSuccess: () => {
+    onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ["surgeon-mission-requests"] });
+      // D-177 — a released room matches: say so at once (the card in « Mes demandes » offers
+      // the existing take-over path); the manager will accept it as a real take-over.
+      const match = created.releasedRoomMatch;
       closeAndNavigate("/app/s/requests", { replace: true }, () => {
-        toast.success("Demande envoyée. Le manager va l'examiner.");
+        if (match && (match.status === "CERTAIN" || match.status === "AMBIGUOUS")) {
+          toast.success("Demande envoyée. Une salle libérée correspond à ce créneau : vous pouvez la reprendre directement.");
+        } else {
+          toast.success("Demande envoyée. Le manager va l'examiner.");
+        }
       });
     },
     onError: (err: any) => {

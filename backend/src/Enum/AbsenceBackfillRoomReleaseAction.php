@@ -20,4 +20,8 @@ enum AbsenceBackfillRoomReleaseAction: string
     case NO_RECIPIENT = 'NO_RECIPIENT';
     case NO_FUTURE_BLOCK = 'NO_FUTURE_BLOCK';
     case DISABLED = 'DISABLED';
+    // D-161 — l'e-mail « Libération de salle » n'existe plus ; les salles sont annoncées à
+    // leur création réelle (ReleasedRoomAvailabilityNotifier), jamais par un rattrapage.
+    // Seule valeur produite désormais ; les autres restent pour la lisibilité de l'historique.
+    case RETIRED = 'RETIRED';
 }

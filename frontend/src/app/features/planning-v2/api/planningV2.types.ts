@@ -1,3 +1,4 @@
+import type { RoomOperationalState } from "../../room-takeover/roomTakeover.types";
 // Planning V2 — types frozen per docs/planning-v2-architecture-freeze.md §B.
 // Parallel to V1's planning.api.ts types — V1 is untouched, these are net-new.
 
@@ -12,7 +13,9 @@ export type PlanningAlertType =
   | "INSTRUMENTIST_CONFLICT"
   | "REASSIGNMENT_REQUIRED"
   | "OCCURRENCE_CANCELLED"
-  | "INSTRUMENTIST_INACTIVE";
+  | "INSTRUMENTIST_INACTIVE"
+  // D-152 — a future mission still affected to an instrumentist incompatible with its surgeon.
+  | "SURGEON_INCOMPATIBILITY";
 export type PlanningAlertStatus = "OPEN" | "ACKNOWLEDGED" | "RESOLVED" | "IGNORED";
 export type PreviewLineStatus = "SKIPPED" | "UNCOVERED" | "COVERED" | "MODIFIED" | "CONFLICT";
 export type MissionStatus =
@@ -82,6 +85,8 @@ export interface SurgeonSchedulePostV2 {
   type: MissionType;
   period: ShiftPeriod;
   instrumentist: UserRefV2 | null;
+  /** D-152 — the default instrumentist has since become incompatible with the surgeon: correct the post. */
+  instrumentistBlocked?: boolean;
   startDate: string;
   endDate: string | null;
   active: boolean;
@@ -165,7 +170,7 @@ export interface AbsenceCommunicationSiteSettingUpdateV2 {
 
 // ── Communication des absences chirurgiens — Lot C (D-114) : rattrapage ──────
 
-export type BackfillRoomReleaseStatus = "WILL_SEND" | "NO_NEW_OCCURRENCE" | "NO_RECIPIENT" | "NO_FUTURE_BLOCK" | "DISABLED";
+export type BackfillRoomReleaseStatus = "WILL_SEND" | "NO_NEW_OCCURRENCE" | "NO_RECIPIENT" | "NO_FUTURE_BLOCK" | "DISABLED" | "RETIRED";
 export type BackfillBlockManagementStatus = "WILL_SEND_NOW" | "WILL_SCHEDULE" | "ALREADY_PROCESSED" | "DISABLED" | "MISSING_CONFIG" | "ABSENCE_ALREADY_ENDED";
 
 export interface BackfillSiteActionV2 {
@@ -321,6 +326,10 @@ export interface PlanningAlertV2 {
   mission: PlanningAlertMissionV2;
   absence: { id: number; dateStart: string; dateEnd: string; reason: string | null } | null;
   conflict: PlanningAlertConflictV2 | null;
+  /** D-158 — absence alerts: why the mission was not cancelled / put back in the pool automatically. */
+  autoActionBlockedReason?: "MISSION_STARTED" | "ACTIVITY_ENCODED" | null;
+  /** D-158 — other absences covering the same problem (one alert, every reference kept). */
+  relatedAbsenceIds?: number[];
   actions: PlanningAlertActionsV2;
 }
 
@@ -365,9 +374,35 @@ export interface PreviewLineV2 {
    * preview). Anything but DRAFT is never modified by generate() — shown as reality, locked.
    */
   existingMissionStatus?: string | null;
+  /**
+   * D-165 — Modification: the mission's backend `allowedActions` — `reschedule` (times
+   * editable, also while IN_PROGRESS) and `cancel` (instrumentist and cancellation
+   * editable: OPEN/ASSIGNED only). Absent for a preview/new line (everything editable).
+   */
+  existingMissionActions?: string[] | null;
+  /**
+   * D-156 — informative only (backend preview): size of the multi-room prestation this line
+   * forms with simultaneous lines of the same instrumentist; null when alone.
+   */
+  multiRoomCount?: number | null;
+  /** D-156 — key of that group (composition + times), computed by the backend. */
+  multiRoomGroupKey?: string | null;
+  /** D-156 — "REQUIRED": proposed by the posts, to confirm before deploy; "CONFIRMED" in this draft. */
+  multiRoomConfirmation?: "REQUIRED" | "CONFIRMED" | null;
+  /** D-156 — sent back by the editor: the manager confirmed the group with this key. */
+  multiRoomConfirmedKey?: string | null;
+  /** D-156 — date of the post occurrence (original date of a MOVED one): with postId, its stable identity, sent back as-is. */
+  occurrenceDate?: string | null;
   /** D-125 — Modification: nominative request state of the mission (backend `targetedOffer`). */
   pendingOfferName?: string | null;
   offerDeclinedByName?: string | null;
+  /**
+   * D-152 — SURGEON_INCOMPATIBILITY: the line's instrumentist (the post's default) is
+   * incompatible with the surgeon. Status CONFLICT, shown « Bloqué — instrumentiste
+   * incompatible »; generate() never persists the pair. Cleared as soon as the manager
+   * picks someone else.
+   */
+  blockedReason?: "SURGEON_INCOMPATIBILITY" | null;
 }
 
 export interface PreviewSummaryV2 {
@@ -511,7 +546,11 @@ export type EligibilityReason =
   | "ABSENT"
   | "SCHEDULE_CONFLICT"
   | "ALREADY_ASSIGNED"
-  | "INCOMPATIBLE_STATUS";
+  | "INCOMPATIBLE_STATUS"
+  // D-151
+  | "REFUSED_FOR_MISSION"
+  | "MISSION_ALREADY_STARTED"
+  | "SURGEON_INCOMPATIBILITY";
 
 /** Mirrors backend App\Enum\EligibilityEnforcementPolicy (D-101) — never reimplemented client-side. */
 export type EligibilityEnforcementPolicy = "STRICT_ASSIGNMENT" | "PLANNING_MODIFICATION";
@@ -523,10 +562,16 @@ export interface UnavailabilityDetail {
 }
 
 export interface ConflictDetail {
-  missionId: number;
+  /** null when the conflict is a new line proposed in the editor (never saved). */
+  missionId: number | null;
   siteName: string | null;
   startAt: string | null;
   endAt: string | null;
+  /** D-165 — who/what the conflict is with, as decided by the backend. */
+  surgeonName?: string | null;
+  missionStatus?: string | null;
+  /** PERSISTED = a saved mission; PROPOSED = an unsaved line of the editor (POST roster). */
+  source?: "PERSISTED" | "PROPOSED";
 }
 
 /**
@@ -591,6 +636,8 @@ export interface ReleasedRoomSlotV2 {
   takeoverMission: ReleasedRoomTakeoverMission | null;
   /** D-124 — seule source des CTA : jamais déduit côté client. */
   allowedActions: { takeOver: boolean; release: boolean };
+  /** D-177 — état opérationnel décidé par le backend (vue manager). */
+  operational?: RoomOperationalState;
 }
 
 /** D-124 — AVAILABLE ⇄ CLAIMED (« Reprendre une salle libérée »). */

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><style>
+body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+.container { max-width: 600px; margin: 0 auto; padding: 24px; }
+.header { border-bottom: 2px solid #1B5FD0; padding-bottom: 12px; margin-bottom: 20px; }
+.title { color: #1B5FD0; font-size: 18px; font-weight: bold; }
+.cta { display: inline-block; background: #2C7D5F; color: #fff !important; text-decoration: none; padding: 10px 18px; border-radius: 8px; font-weight: bold; }
+.footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">Gardez votre journée en mémoire !</div>
+  </div>
+
+  <p>Bonjour {{ firstname }},</p>
+
+  <p>Les journées au bloc sont bien remplies ! Pensez à compléter l'encodage de votre mission{% if missionDate %} du {{ missionDate }}{% endif %} pendant que les détails sont encore frais dans votre mémoire.</p>
+
+  <p>Vous pouvez reprendre votre brouillon à tout moment : tout ce que vous avez déjà enregistré est conservé.</p>
+
+  <p><a class="cta" href="{{ missionUrl }}">Reprendre mon encodage</a></p>
+
+  <p>Merci et belle journée,<br>L'équipe SurgicalHub</p>
+
+  <div class="footer">Vous recevez cet e-mail car les notifications push ne sont pas disponibles sur vos appareils. Activez-les dans SurgicalHub pour recevoir vos rappels directement sur votre téléphone.</div>
+</div>
+</body>
+</html>

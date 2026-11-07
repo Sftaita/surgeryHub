@@ -1,6 +1,7 @@
 import { Alert, Box, CircularProgress, Divider, Stack, Typography } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  changeInstrumentistRateEffectiveDate,
   createInstrumentistRate,
   deleteInstrumentistRate,
   getInstrumentistRates,
@@ -57,7 +58,16 @@ export default function InstrumentistVersionedRates({ instrumentistId }: Props) 
   const replaceMutation = useMutation({
     mutationFn: ({ id, body }: { id: number; body: { amount: number; currency: string; effectiveFrom: string } }) =>
       replaceInstrumentistRate(instrumentistId, id, body),
-    onSuccess: () => { toast.success("Tarif remplacé à partir de la date choisie"); invalidate(); },
+    onSuccess: (rate) => {
+      const stale = rate.staleCalculations ?? [];
+      if (stale.length > 0) {
+        // D-172 — remplacement rétroactif : les calculs concernés ne sont jamais recalculés automatiquement.
+        toast.warning(`Tarif remplacé. ${stale.length} calcul(s) non verrouillé(s) à recalculer : ${stale.map((c) => `mission #${c.missionId}`).join(", ")}.`);
+      } else {
+        toast.success("Tarif remplacé à partir de la date choisie");
+      }
+      invalidate();
+    },
     onError: (e) => toast.error(extractError(e)),
   });
   const editMutation = useMutation({
@@ -71,6 +81,16 @@ export default function InstrumentistVersionedRates({ instrumentistId }: Props) 
     onSuccess: () => { toast.success("Tarif programmé annulé"); invalidate(); },
     onError: (e) => toast.error(extractError(e)),
   });
+
+  // D-172 — aperçu (dryRun) puis confirmation ; le panneau affiche lui-même l'impact et les erreurs.
+  const changeEffectiveDate = async (id: number, validFrom: string, dryRun: boolean) => {
+    const impact = await changeInstrumentistRateEffectiveDate(instrumentistId, id, { validFrom, dryRun });
+    if (!dryRun) {
+      toast.success("Date de prise d'effet modifiée");
+      invalidate();
+    }
+    return impact;
+  };
 
   const isSaving = createMutation.isPending || replaceMutation.isPending || editMutation.isPending || cancelMutation.isPending;
 
@@ -92,10 +112,9 @@ export default function InstrumentistVersionedRates({ instrumentistId }: Props) 
   return (
     <Stack spacing={2}>
       <Alert severity="info" variant="outlined">
-        Ces tarifs historisés alimentent le <strong>calcul financier</strong> des missions (EPIC Exécution &amp;
-        Valorisation, Lot 3) — indépendants des champs "Tarif bloc" / "Tarif consultation" ci-dessus, qui ne
-        servent qu'à l'ancien flux de génération de décompte. Sans tarif horaire actif ici, la valorisation
-        d'une mission de cet instrumentiste échouera.
+        Ces tarifs historisés alimentent le <strong>calcul financier</strong> et les décomptes : chaque mission est
+        valorisée avec le tarif applicable <strong>à sa date</strong>, jamais avec celui d'aujourd'hui. La date de prise
+        d'effet se modifie, y compris rétroactivement ; les calculs verrouillés ne sont jamais modifiés.
       </Alert>
 
       <Box>
@@ -112,6 +131,8 @@ export default function InstrumentistVersionedRates({ instrumentistId }: Props) 
           onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
           onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
           onCancelFuture={(id) => cancelMutation.mutate(id)}
+          onChangeEffectiveDate={changeEffectiveDate}
+          retroactive
           isSaving={isSaving}
         />
       </Box>
@@ -126,6 +147,8 @@ export default function InstrumentistVersionedRates({ instrumentistId }: Props) 
           onReplaceActive={(id, b) => replaceMutation.mutate({ id, body: b })}
           onEditFuture={(id, b) => editMutation.mutate({ id, body: b })}
           onCancelFuture={(id) => cancelMutation.mutate(id)}
+          onChangeEffectiveDate={changeEffectiveDate}
+          retroactive
           isSaving={isSaving}
         />
       </Box>

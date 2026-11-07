@@ -16,6 +16,8 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] `doctrine:migrations:status --env=prod` exécuté sur le serveur → noter `Current`/`Executed Unavailable`/`New`
 - [ ] Écart calculé (`git log --oneline <commit-serveur>..HEAD`) et rapport produit (gabarit §2.3 de `deployment-versioning.md`)
 - [ ] **Anomalie DB-vs-code vérifiée explicitement** (la base est-elle plus avancée que ce que laisse supposer le commit déployé ?)
+- [ ] **D-169 : `deploy/deploy.sh pending $SHA` produit et affiché** — correctifs P0/P1 absents de la release (chacun inclus, ou exclu avec sa raison écrite), travaux non suivis, PR et branches en attente, modifications locales, migrations et opérations serveur en attente, risques de conflit ; tout « Non vérifié » mentionné (y compris une vérification serveur « incomplète ») ; un `WORK_INVENTORY=off` éventuel consigné avec sa raison
+- [ ] Registre `docs/work-registry.json` mis à jour pour les chantiers de la release (statut, preuve de production après validation)
 
 ## 1. Règle anti-cherry-pick
 
@@ -39,16 +41,52 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] `doctrine:migrations:migrate --dry-run --env=prod` (après build, avant exécution réelle)
 - [ ] SQL de chaque migration relu — `DROP`/`DELETE`/`TRUNCATE` confirmés présents uniquement dans `down()`, jamais `up()` (sauf cas documenté explicitement)
 - [ ] Aucune migration exécutée sans avoir été relue
+- [ ] **BLOQUANT (H1–H5, 2026-10-05)** — avant tout déploiement, comparer
+  `doctrine_migration_versions`, les migrations du repository et le **schéma réel**. Écart connu
+  en local : la base de dev contient le schéma de `Version20260107053952` (table `export_log`)
+  sans que la version soit enregistrée. **Ne jamais lancer `doctrine:migrations:migrate` en
+  aveugle si une divergence est détectée** ; aucun déploiement tant que l'écart n'est pas compris.
+- [ ] **Diagnostic `Version20260107053952` / `export_log` (H5b, 2026-10-05 — lecture seule, rien
+  modifié)** :
+  - *La migration* : baseline complète (20 tables dont `export_log`, `user`, `mission`…), ajoutée
+    le 2026-01-11 (commit `278864f`) **en remplacement** des baselines `Version20251225075014`,
+    `Version20251230053638` / `060706` supprimées le même jour. Une base créée avant cette date
+    contenait déjà ces tables : migration *recréée* (historique, documenté aussi par `752b83e`
+    qui a neutralisé un doublon de cette baseline).
+  - *Prod* : cohérente — 2026-09-29, `migrations:status` 72/72 avant, 0 nouvelle, 0
+    indisponible, puis 2 migrations jouées (74). La baseline y est enregistrée.
+  - *Tests (`surgicalhub_test`) et repro (`surgicalhub_repro`)* : cohérents — 68 versions
+    enregistrées au même instant (2026-09-07 05:36:45, import / `version --add` en bloc), puis
+    les suivantes une à une ; schémas identiques au dépôt.
+  - *Dev (`surgicalhub`)* : **métadonnées perdues** — toutes les tables créées en une passe le
+    2026-09-09 16:34:57 (reconstruction hors migrations : `schema:create` ou import), et
+    `doctrine_migration_versions` ne contient que les versions jouées ensuite une par une
+    (6 aujourd'hui, 73 « nouvelles »). Le schéma dev est identique à repro (colonnes + index)
+    **sauf** `mission_publication.declined_at` : `Version20260926100000` n'a jamais été jouée en
+    dev. `migrate` y échoue sur la première version non enregistrée (`export_log` existe déjà).
+  - *Cause* : base locale reconstruite hors migrations (métadonnées perdues) — ni défaut de la
+    migration, ni divergence de la prod.
+  - *Procédure proposée (non exécutée, décision attendue)* — **prod**, avant le déploiement :
+    sauvegarde ; `migrations:status` doit montrer exactement 74 exécutées, 0 indisponible et les
+    5 nouvelles `Version20261003120000`, `Version20261004100000`, `Version20261005100000`,
+    `Version20261006100000`, `Version20261007100000` ; `migrate --dry-run` ne doit lister
+    qu'elles ; toute autre différence = arrêt. **Dev** : sauvegarde ;
+    `migrations:execute --up Version20260926100000` ; puis `migrations:version --add` pour
+    chacune des 73 autres versions, après vérification que son schéma est présent (comparaison
+    `information_schema` avec repro) ; `migrations:status` doit alors être à jour. Ne jamais
+    supprimer `export_log`, ni marquer une version exécutée sans cette comparaison.
 
-## 5. Déploiement
+## 5. Déploiement — `deploy/deploy.sh` (D-163)
 
-- [ ] Archive créée via `git archive --format=tar.gz HEAD -- backend frontend docker-compose.yml` (**jamais** `tar` sur le répertoire de travail)
-- [ ] Archive transférée (`scp`) et extraite dans `/opt/stack/apps/surgicalhub/src/`
-- [ ] Build Docker : `docker compose build --no-cache` → `BUILD_EXIT=0` confirmé
-- [ ] Restart : `docker compose up -d` → 3 containers recréés
-- [ ] Migrations exécutées : `doctrine:migrations:migrate --no-interaction --env=prod`
-- [ ] `cache:clear --env=prod` puis `docker restart surgicalhub-php`
-- [ ] `docker restart surgicalhub-worker` si des handlers Messenger ont changé
+- [ ] `SHA` = SHA **complet** du commit validé en §0 (jamais `HEAD`, jamais une branche)
+- [ ] `deploy/deploy.sh paths $SHA` relu : compose versionné, Dockerfiles, `.dockerignore`, sources COPY (`docker/` inclus)
+- [ ] `deploy/deploy.sh prepare $SHA` → REVISION = SHA, aucun fichier interdit, SHA-256 notée
+- [ ] `deploy/deploy.sh upload $SHA` → empreinte vérifiée sur le serveur (sinon : arrêt, rien n'est extrait)
+- [ ] `deploy/deploy.sh stage $SHA` → `releases/$SHA` créé ; fichiers retirés relus
+- [ ] `deploy/deploy.sh build $SHA` → images `:$SHA` vérifiées (en cas d'échec : arrêt, rien n'est activé)
+- [ ] `deploy/deploy.sh migrations $SHA` → dry-run relu (§4)
+- [ ] `deploy/deploy.sh activate $SHA` → sauvegardes notées (dump, `deploy-backups/<horodatage>`), php et worker = SHA
+- [ ] `deploy/deploy.sh migrate $SHA` seulement si des migrations sont en attente
 
 ## 6. Tests santé obligatoires
 
@@ -61,6 +99,7 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] `docker logs surgicalhub-php --tail 30` — pas d'erreur/exception/critique liée au déploiement
 - [ ] `docker logs surgicalhub-worker --tail 15` — worker actif, consumer démarré
 - [ ] `doctrine:migrations:status --env=prod` → « Already at latest version »
+- [ ] D-162 : `app:release:show` → commit exécuté = commit déployé, statut `PENDING_VALIDATION`
 
 ## 7. Test ciblé — si une fonctionnalité majeure a été modifiée
 
@@ -84,12 +123,17 @@ Procédure et règles complètes : [`docs/deployment-versioning.md`](deployment-
 - [ ] Commit déployé déjà présent sur `origin` (vérifié — sinon push `main`/branche d'abord)
 - [ ] `git tag -a vYYYY.MM.DD-prod -m "..."` créé
 - [ ] `git push origin vYYYY.MM.DD-prod`
+- [ ] D-162/D-163 : `deploy/deploy.sh mark $SHA vYYYY.MM.DD-prod` (tag vérifié sur origin, release active = SHA)
+- [ ] D-162 : cohérence vérifiée — commit du tag = commit exécuté (`app:release:show`, statut `OFFICIAL`) = version affichée en bas de « Mon profil » / `GET /api/version`
+- [ ] Après un rollback (`deploy/deploy.sh rollback <SHA>`) : `deploy/deploy.sh status` et `app:release:show` affichent la version restaurée
 - [ ] Table "Historique des versions déployées" de `docs/production.md` mise à jour (nouvelle ligne ajoutée, aucune ligne existante modifiée)
+- [ ] D-169 : registre mis à jour (`deploye` puis `valide-production` avec `prodEvidence`) ; toute installation ou modification serveur reportée dans `deploy/production/server-reference/`
 
 ## En cas de problème — rollback
 
-- [ ] Restaurer le dump SQL (voir [`docs/backup-and-restore.md`](backup-and-restore.md))
-- [ ] Remettre l'ancienne version du code depuis `src_pre_deploy_*.tar.gz`
-- [ ] Rebuild + restart : `docker compose build --no-cache && docker compose up -d`
+- [ ] Choisir l'opération ([`docs/production.md`](production.md) §Rollback) : A. retour du code (par défaut, base inchangée), B. `down()` des migrations, C. restauration de la **seule** base `surgicalhub`
+- [ ] Jamais de rejeu complet du dump `all_*.sql.gz` : MedAtWork, MedClick et les comptes MySQL ne sont jamais touchés (voir [`docs/backup-and-restore.md`](backup-and-restore.md))
+- [ ] B ou C : instantané de sécurité de `surgicalhub` d'abord (Cas 0)
+- [ ] Remettre les images `surgicalhub-{php,nginx}:rollback-<commit>` (sinon code depuis `src_pre_deploy_*.tar.gz` + rebuild), restart php et worker, **puis nginx**
 - [ ] Vérifier les logs après restart
 - [ ] Ne pas créer de tag `*-prod` pour l'état restauré — documenter l'incident

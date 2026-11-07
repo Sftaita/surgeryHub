@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Dto\Request\MissionEncodingCompleteAndValidateRequest;
 use App\Dto\Request\MissionEncodingCompleteRequest;
 use App\Dto\Request\MissionEncodingReopenRequest;
 use App\Dto\Request\MissionEncodingRejectRequest;
@@ -9,6 +10,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Security\Voter\MissionVoter;
 use App\Service\EncodingReminderService;
+use App\Service\MissionEncodingHistoryService;
 use App\Service\MissionEncodingWorkflowService;
 use App\Service\MissionMapper;
 use Doctrine\ORM\EntityManagerInterface;
@@ -16,6 +18,7 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 use Symfony\Component\Routing\Attribute\Route;
@@ -67,13 +70,40 @@ final class MissionEncodingWorkflowController extends AbstractController
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
     }
 
+    /**
+     * Corps optionnel (D-171) : `expectedRevision` — empreinte de l'encodage relu
+     * (`encodingRevision` du détail) ; différente de l'encodage actuel → 409, rien n'est validé.
+     */
     #[Route('/validate', name: 'api_missions_encoding_validate', methods: ['POST'])]
-    public function validate(int $missionId, #[CurrentUser] User $user): JsonResponse
+    public function validate(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->getMissionOr404($missionId);
         $this->denyAccessUnlessGranted(MissionVoter::ENCODING_VALIDATE, $mission);
 
-        $mission = $this->workflow->validate($mission, $user);
+        $body = json_decode($request->getContent() ?: '{}', true);
+        $expectedRevision = is_array($body) && is_string($body['expectedRevision'] ?? null) ? $body['expectedRevision'] : null;
+
+        $mission = $this->workflow->validate($mission, $user, $expectedRevision);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
+    }
+
+    /**
+     * D-171 — « Terminer et valider » : le manager clôt et valide en une fois un encodage
+     * encore ouvert (instrumentiste affectée ou activité déclarée sans instrumentiste).
+     * Corps : comment (justification BLOCK sans matériel), expectedRevision (obligatoire),
+     * takeoverConfirmed (reprise de l'encodage d'une instrumentiste affectée).
+     */
+    #[Route('/complete-and-validate', name: 'api_missions_encoding_complete_and_validate', methods: ['POST'])]
+    public function completeAndValidate(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->getMissionOr404($missionId);
+        $this->denyAccessUnlessGranted(MissionVoter::ENCODING_COMPLETE_AND_VALIDATE, $mission);
+
+        /** @var MissionEncodingCompleteAndValidateRequest $dto */
+        $dto = $this->deserializeAndValidate($request->getContent(), MissionEncodingCompleteAndValidateRequest::class);
+
+        $mission = $this->workflow->completeAndValidate($mission, $user, $dto->comment, $dto->expectedRevision, $dto->takeoverConfirmed);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
     }
@@ -111,14 +141,41 @@ final class MissionEncodingWorkflowController extends AbstractController
      * dispatché sur le bus mission-lifecycle : c'est une notification, pas une transition.
      */
     #[Route('/remind', name: 'api_missions_encoding_remind', methods: ['POST'])]
-    public function remind(int $missionId, #[CurrentUser] User $user): JsonResponse
+    public function remind(int $missionId, Request $request, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->getMissionOr404($missionId);
         $this->denyAccessUnlessGranted(MissionVoter::ENCODING_REMIND, $mission);
 
-        $this->reminders->sendManualReminder($mission, $user);
+        // D-143 — évite une relance répétée par accident (double clic, deux managers) :
+        // la même mission ne peut être relancée manuellement qu'une fois par fenêtre.
+        if ($this->reminders->isManualReminderOnCooldown($mission)) {
+            throw new ConflictHttpException(sprintf(
+                "Une relance vient déjà d'être envoyée pour cette mission. Réessayez dans %d minutes si nécessaire.",
+                EncodingReminderService::MANUAL_COOLDOWN_MINUTES,
+            ));
+        }
+
+        // H5a — optional batch id (one per manager action): a retried request never sends twice.
+        $body    = json_decode($request->getContent() ?: '{}', true);
+        $batchId = is_array($body) && is_string($body['batchId'] ?? null) && preg_match('/^[A-Za-z0-9-]{8,64}$/', $body['batchId']) === 1
+            ? $body['batchId'] : null;
+
+        $this->reminders->sendManualReminder($mission, $user, $batchId);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), Response::HTTP_OK);
+    }
+
+    /**
+     * D-153 — historique des corrections de l'encodage (heures, interventions, matériel,
+     * étapes du cycle) : lecture du journal d'activité existant, managers uniquement.
+     */
+    #[Route('/history', name: 'api_missions_encoding_history', methods: ['GET'])]
+    public function history(int $missionId, MissionEncodingHistoryService $history): JsonResponse
+    {
+        $mission = $this->getMissionOr404($missionId);
+        $this->denyAccessUnlessGranted(MissionVoter::VIEW_ENCODING_HISTORY, $mission);
+
+        return $this->json(['items' => $history->historyOf($mission)]);
     }
 
     private function getMissionOr404(int $id): Mission

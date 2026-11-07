@@ -74,7 +74,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             left: "50%",
             bottom: "98px",
             transform: "translateX(-50%)",
-            zIndex: 1000,
+            // D-166 — au-dessus des fenêtres modales (sheets et Dialogs MUI, zIndex.modal) :
+            // un message émis pendant qu'une fenêtre est ouverte doit rester lisible.
+            zIndex: (theme) => theme.zIndex.snackbar,
             maxWidth: "min(420px, calc(100vw - 40px))",
             background: "#16202B",
             color: "#fff",

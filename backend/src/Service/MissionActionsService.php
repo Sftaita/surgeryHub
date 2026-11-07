@@ -7,17 +7,39 @@ use App\Entity\User;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
+use Symfony\Component\Clock\Clock;
 
 final class MissionActionsService
 {
     public function __construct(
         private readonly MissionEncodingGuard $encodingGuard,
+        // D-151 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionAssignmentService $assignments = null,
+        private readonly ?MissionEligibilityService $eligibility = null,
     ) {}
 
     /**
+     * @param int $prestationSize D-182 — missions of its multi-room prestation (D-156), as
+     *        served with the mission (list annotation, detail): 'cancel' follows exactly
+     *        MissionCancellationPolicy::blockedReason() with it
      * @return string[]
      */
-    public function allowedActions(Mission $mission, User $viewer): array
+    public function allowedActions(Mission $mission, User $viewer, int $prestationSize = 1): array
+    {
+        $actions = $this->computeActions($mission, $viewer, $prestationSize);
+
+        // D-156 — the hours of a mission linked to the shared presence of a multi-room prestation
+        // are the prestation's (PUT /api/missions/{id}/prestation/presence): the per-mission hours
+        // dialog would rebuild them from the imputed share and be refused (PRESTATION_REQUIRES_COMMON_HOURS).
+        if ($mission->getExecution()?->getPresence() !== null) {
+            $actions = array_values(array_filter($actions, static fn (string $a) => $a !== 'edit_hours'));
+        }
+
+        return $actions;
+    }
+
+    /** @return string[] */
+    private function computeActions(Mission $mission, User $viewer, int $prestationSize): array
     {
         $roles = $viewer->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
@@ -34,10 +56,10 @@ final class MissionActionsService
 
         // Manager/Admin
         if ($isManager) {
-            // D-120 — mêmes statuts que MissionVoter::canEncodingRemind() /
-            // EncodingReminderService::SUBMITTABLE_STATUSES ; pas de relance sans
-            // instrumentiste assigné (rien ni personne à notifier).
-            $remind = $mission->getInstrumentist() !== null ? ['remind'] : [];
+            // D-120 / D-166 — même règle exactement que MissionVoter::ENCODING_REMIND
+            // (EncodingReminderPolicy) : jamais de relance sans instrumentiste affectée. Le
+            // filtrage par statut reste porté par le match ci-dessous (mêmes statuts).
+            $remind = EncodingReminderPolicy::canSendManualReminder($mission) ? ['remind'] : [];
 
             $actions = match ($mission->getStatus()) {
                 // 'cancel' couvre aussi DRAFT depuis D-090 (MissionPostDeployService::cancel()
@@ -51,19 +73,80 @@ final class MissionActionsService
                     ? ['view', 'view_publications', 'cancel', 'dispatch']
                     : ['view', 'view_publications', 'cancel'],
                 MissionStatus::ASSIGNED => [...['view', 'cancel', 'reassign', 'view_claim'], ...$remind],
-                MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [...['view'], ...$remind],
+                // D-181 — a started mission still changes hands (directly, or by a relay once
+                // encoding exists): same rule exactly as MissionReassignmentPolicy::modes().
+                // D-182 — and cancelled when it did not take place (filtered below).
+                MissionStatus::IN_PROGRESS, MissionStatus::ENCODING_IN_PROGRESS => [
+                    ...['view'],
+                    ...(MissionReassignmentPolicy::modes($mission, Clock::get()->now()) !== [] ? ['reassign'] : []),
+                    'cancel',
+                    ...$remind,
+                ],
                 // Lot 7 (D-070) : corrigé — 'reopen' n'est valide que depuis VALIDATED
                 // (une mission SUBMITTED n'a jamais été validée, donc rien à "rouvrir").
-                MissionStatus::SUBMITTED => ['view', 'validate', 'reject'],
-                MissionStatus::VALIDATED => ['view', 'reopen'],
+                // D-182 — 'cancel' : renvoyée en correction puis annulée dans la même opération.
+                MissionStatus::SUBMITTED => ['view', 'validate', 'reject', 'cancel'],
+                // D-148 — jamais proposé quand reopen() le refuserait (calcul LOCKED).
+                // D-182 — 'cancel' : rouverte puis annulée dans la même opération.
+                MissionStatus::VALIDATED => MissionEncodingCorrectionPolicy::reopenBlockedReason($mission) === null
+                    ? ['view', 'reopen', 'cancel']
+                    : ['view'],
                 MissionStatus::DECLARED => [...['view', 'approve', 'reject', 'edit'], ...$remind],
                 default => ['view'],
             };
+
+            // D-182 — 'cancel' : même règle exactement que MissionPostDeployService::cancelByManager()
+            // (MissionCancellationPolicy — ex. jamais une mission d'une présence commune).
+            if (MissionCancellationPolicy::blockedReason($mission, $prestationSize) !== null) {
+                $actions = array_values(array_diff($actions, ['cancel']));
+            }
+
+            // D-177 — lever la priorité d'une reprise de salle : même règle que MissionVoter::LIFT_PRIORITY.
+            if (RoomTakeoverPriorityService::pendingPriority($mission) !== null) {
+                $actions[] = 'lift_priority';
+            }
+
+            // D-165 — horaires prévus corrigeables depuis le planning (MissionPostDeployService::
+            // updateSchedule()) : OPEN/ASSIGNED, et IN_PROGRESS pour ses seules heures du jour.
+            if (in_array($mission->getStatus(), MissionPostDeployService::RESCHEDULABLE_STATUSES, true)) {
+                $actions[] = 'reschedule';
+            }
 
             // D-136 — rappel des heures réelles manquantes, transverse aux statuts ci-dessus :
             // même condition exactement que MissionVoter::HOURS_REMIND.
             if (MissionHoursReminderPolicy::isReminderRelevant($mission)) {
                 $actions[] = 'remind_hours';
+            }
+
+            // D-153 — corrections directes du manager : mêmes règles exactement que
+            // MissionVoter::EDIT_ENCODING et MissionExecutionVoter::UPDATE (une mission
+            // validée se rouvre d'abord, jamais une mission clôturée ou verrouillée).
+            if (MissionEncodingCorrectionPolicy::managerCanEditEncoding($mission)) {
+                $actions[] = 'edit_encoding';
+            }
+            // D-171 — or hours still missing after a takeover validated without them: only the
+            // hours stay declarable (same rule as MissionExecutionVoter::UPDATE).
+            if (MissionEncodingCorrectionPolicy::managerCanEditHours($mission)
+                || MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission)) {
+                $actions[] = 'edit_hours';
+            }
+
+            // D-155 — same rules exactly as MissionVoter::DECLARE_ / CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST.
+            if (ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $viewer, Clock::get()->now())) {
+                $actions[] = 'declare_executed_without_instrumentist';
+            }
+            if (ExecutedWithoutInstrumentistPolicy::canCancel($mission, $viewer)) {
+                $actions[] = 'cancel_executed_without_instrumentist';
+            }
+            // D-155 — the manager may submit a declared activity himself (MissionVoter::SUBMIT
+            // already grants it); offered only in this mode, where no instrumentist will.
+            if ($mission->isExecutedWithoutInstrumentist() && $mission->getStatus() === MissionStatus::ENCODING_IN_PROGRESS) {
+                $actions[] = 'submit';
+            }
+            // D-171 — finish and validate an open encoding himself: same rule exactly as
+            // MissionVoter::ENCODING_COMPLETE_AND_VALIDATE.
+            if (MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now()) === null) {
+                $actions[] = 'complete_and_validate';
             }
 
             return $actions;
@@ -118,6 +201,46 @@ final class MissionActionsService
             }
         }
 
+        // D-146 bis — instrumentiste assignée : consultation (lecture seule) de son encodage
+        // une fois la mission validée ou clôturée — même règle que MissionVoter::canViewEncoding().
+        if ($isInstr && $isAssignedInstr && in_array($mission->getStatus(), [MissionStatus::VALIDATED, MissionStatus::CLOSED], true)) {
+            $actions[] = 'view_encoding';
+        }
+
+        // D-171 — encodage validé par une reprise manager alors que ses heures manquaient : elle
+        // les déclare encore (seules les heures ; même règle que MissionExecutionVoter::UPDATE).
+        if ($isInstr && $isAssignedInstr && MissionEncodingCorrectionPolicy::hoursPendingAfterValidation($mission)) {
+            $actions[] = 'edit_hours';
+        }
+
+        // D-151 — the mission's surgeon: refuse the instrumentist who accepted it while the
+        // policy allows it, otherwise ask the managers to intervene (once per affectation).
+        if ($isSurgeon && in_array('ROLE_SURGEON', $roles, true)
+            && in_array($mission->getStatus(), [MissionStatus::ASSIGNED, MissionStatus::IN_PROGRESS], true)) {
+            $current = $this->assignments?->findCurrent($mission);
+            if ($current !== null) {
+                if (MissionAssignmentRefusalPolicy::blockedReason($mission, $current, Clock::get()->now()) === null) {
+                    $actions[] = 'refuse_assignment';
+                } elseif (!$current->isReviewRequested()) {
+                    $actions[] = 'request_assignment_review';
+                }
+            }
+        }
+
+        // D-154 — the mission's surgeon encodes interventions and material (never the hours,
+        // never start / submit): same rule exactly as MissionVoter::EDIT_ENCODING.
+        if (SurgeonEncodingPolicy::canEditEncoding($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'edit_encoding';
+        }
+        // D-155 — an activity he declared executed without instrumentist: he also submits it.
+        if (ExecutedWithoutInstrumentistPolicy::surgeonCanSubmit($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'submit';
+        }
+        // D-155 — declare his own started, uncovered OPEN mission executed without instrumentist.
+        if (ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $viewer, Clock::get()->now())) {
+            $actions[] = 'declare_executed_without_instrumentist';
+        }
+
         // Chirurgien : uniquement view sur DECLARED (contrat)
         if ($isSurgeon && $mission->getStatus() !== MissionStatus::DECLARED) {
             $actions[] = 'rate_instrumentist';
@@ -168,6 +291,15 @@ final class MissionActionsService
             return false;
         }
 
+        // D-151 / D-152 — same gate as claim(): never once started, never for someone its
+        // surgeon refused on it or is incompatible with.
+        if (MissionEligibilityService::hasStarted($mission, Clock::get()->now())) {
+            return false;
+        }
+        if ($this->eligibility !== null && $this->eligibility->exclusionReasons($mission, $instrumentist) !== []) {
+            return false;
+        }
+
         // Vérifie l'éligibilité via publications:
         // - TARGETED vers moi => OK
         // - POOL => FREELANCER OK partout, EMPLOYEE nécessite membership sur le site de la mission
@@ -184,6 +316,13 @@ final class MissionActionsService
                     }
                 }
             }
+        }
+
+        // D-177 — same rule as MissionVoter: an active room take-over priority reserves the
+        // mission for its recipient alone.
+        $priority = RoomTakeoverPriorityService::pendingPriority($mission);
+        if ($priority !== null) {
+            return $priority->getTargetInstrumentist()?->getId() === $instrumentist->getId();
         }
 
         foreach ($mission->getPublications() as $pub) {

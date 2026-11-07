@@ -16,6 +16,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class UserEmailControllerTest extends WebTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private const PASSWORD = 'EmailChangeTest123!';
 
     private EntityManagerInterface $em;
@@ -29,6 +31,11 @@ final class UserEmailControllerTest extends WebTestCase
 
     protected function tearDown(): void
     {
+        if (isset($this->em) && $this->em->isOpen()) {
+            // H5a — dispatcher traces (outbound rows reference the feed items and users).
+            $this->em->clear();
+            $this->purgeNotificationTraces($this->em, $this->createdUserIds);
+        }
         if (isset($this->em) && $this->em->isOpen()) {
             foreach ($this->createdUserIds as $id) {
                 $user = $this->em->find(User::class, $id);

@@ -36,7 +36,17 @@ vi.mock("../api/planningV2.api", () => ({
   getShiftPeriods: (siteId: number) => getShiftPeriodsMock(siteId),
 }));
 
-function renderDialog(onSubmit = vi.fn()) {
+// D-152 — Dr Martin (#1) has blocked Diane (#11); the block of Paul (#12) was lifted.
+const fetchIncompatibilitiesOfMock = vi.fn((_mode: string, _surgeonId: number) => Promise.resolve([
+  { id: 1, surgeon: { id: 1, name: "Dr Martin" }, instrumentist: { id: 11, name: "Diane Bloquée" }, origin: "SURGEON", active: true, createdAt: "2026-10-01", createdByName: null, liftedAt: null, liftedByName: null, canLift: true },
+  { id: 2, surgeon: { id: 1, name: "Dr Martin" }, instrumentist: { id: 12, name: "Paul Levé" }, origin: "MANAGER", active: false, createdAt: "2026-09-01", createdByName: null, liftedAt: "2026-09-15", liftedByName: null, canLift: true },
+]));
+
+vi.mock("../../incompatibilities/api/incompatibilities.api", () => ({
+  fetchIncompatibilitiesOf: (mode: string, surgeonId: number) => fetchIncompatibilitiesOfMock(mode, surgeonId),
+}));
+
+function renderDialog(onSubmit = vi.fn(), instrumentistOptions: SearchableOption[] = instrumentists) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -47,7 +57,7 @@ function renderDialog(onSubmit = vi.fn()) {
         submitting={false}
         sites={sites}
         surgeons={surgeons}
-        instrumentists={instrumentists}
+        instrumentists={instrumentistOptions}
       />
     </QueryClientProvider>
   );
@@ -146,6 +156,32 @@ describe("PostFormDialog — récurrence mensuelle (Batch 14C)", () => {
       anchorDate: payload.startDate,
     });
     expect(payload.recurrence).not.toHaveProperty("monthlyNthWeekday");
+  }, 15000);
+});
+
+describe("PostFormDialog — instrumentiste bloqué par le chirurgien (D-152)", () => {
+  it("affiche l'instrumentiste bloqué grisé « Bloqué par le chirurgien », non sélectionnable ; un blocage levé ne compte plus", async () => {
+    const user = userEvent.setup();
+    renderDialog(vi.fn(), [
+      { id: 11, label: "Diane Bloquée" },
+      { id: 12, label: "Paul Levé" },
+      { id: 13, label: "Iris Libre" },
+    ]);
+
+    await pickAutocomplete(user, "Chirurgien", "Dr Martin");
+    expect(fetchIncompatibilitiesOfMock).toHaveBeenCalledWith("surgeon", 1);
+
+    const input = within(screen.getByText("Instrumentiste").closest("div") as HTMLElement).getByRole("combobox");
+    await user.click(input);
+    const blocked = await screen.findByRole("option", { name: /Diane Bloquée/ });
+    expect(within(blocked).getByText("Bloqué par le chirurgien")).toBeInTheDocument();
+    expect(blocked).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("option", { name: /Paul Levé/ })).not.toHaveAttribute("aria-disabled", "true");
+
+    // Not clickable (MUI disabled option: pointer-events none).
+    await expect(user.click(blocked)).rejects.toThrow(/pointer-events: none/);
+    await user.click(screen.getByRole("option", { name: /Iris Libre/ }));
+    expect(input).toHaveValue("Iris Libre");
   }, 15000);
 });
 

@@ -26,6 +26,7 @@ use App\Service\FinancialCalculationService;
 use App\Service\PricingRuleWriteService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * Refonte Catalogue/Prestations (D-092) — moteur de neutralisation "présence d'un
@@ -34,6 +35,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class RepresentativePolicyFinancialCalculationTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private FinancialCalculationService $service;
     private PricingRuleWriteService $ruleWriter;
@@ -165,6 +168,7 @@ final class RepresentativePolicyFinancialCalculationTest extends KernelTestCase
             $m->setInstrumentist($instrumentist);
         }
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
         return $m;
     }

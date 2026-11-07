@@ -55,6 +55,7 @@ class PlanningVersionAuditService
         private readonly PlanningConflictDetectionService $conflictDetectionService,
         private readonly PlanningAlertService $alertService,
         private readonly LoggerInterface $logger,
+        private readonly PlanningVersionOperationalScope $operationalScope,
     ) {
     }
 
@@ -188,6 +189,21 @@ class PlanningVersionAuditService
             }
         }
 
+        // C bis (D-167) — real reconciliation, not only detection: every active conflict alert
+        // involving a mission of the version's operational scope (D-125), whatever its status
+        // (an IN_PROGRESS or CANCELLED mission is never in CHECKABLE_STATUSES above) and
+        // whichever side of the pair it is on, is re-evaluated against the persisted planning
+        // and resolved when the conflict is gone. Detection itself is unchanged.
+        try {
+            $missionIds = array_map(static fn (Mission $m) => (int) $m->getId(), $this->operationalScope->missions($version));
+            $alertsResolved += count($this->conflictDetectionService->reconcileConflictAlertsInvolving($missionIds));
+        } catch (\Throwable $e) {
+            $this->logger->error('PlanningVersionAuditService: conflict alert reconciliation failed', [
+                'versionId' => $version->getId(),
+                'error'     => $e->getMessage(),
+            ]);
+        }
+
         // D-106 bug fix (Lot 7 live campaign): PlanningConflictDetectionService::applySync()'s
         // "resolve stale alert" branch mutates the alert entity but never flushes itself —
         // safe in its pre-existing callers because THEY flush afterward for an unrelated
@@ -197,6 +213,8 @@ class PlanningVersionAuditService
         // scan had nothing left to flush it — silently lost even though $alertsResolved (and
         // the dialog) already reported it as done. One explicit flush here guarantees every
         // mutation performed during this scan is durable before the response is built.
+        // (D-167: PlanningConflictDetectionService now flushes its own alert changes — this
+        // flush stays as the scan-wide guarantee for every other path.)
         $this->em->flush();
 
         return [

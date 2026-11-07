@@ -45,6 +45,15 @@ export type MissionsFilters = {
   // FinancialCalculation (tuile dashboard "Missions validées sans calcul", même règle
   // que FinancialStatisticsQueryService::pipeline()). Backend = source de vérité.
   validatedWithoutCalculation?: boolean;
+
+  // D-147 — recherche libre (chirurgien, instrumentiste, site, #id) et ordre sur startAt.
+  q?: string;
+  order?: "asc" | "desc";
+
+  // D-172 — liste opérationnelle : annulées masquées (un filtre `status` explicite prime) ;
+  // missions sans instrumentiste affectée.
+  excludeCancelled?: boolean;
+  withoutInstrumentist?: boolean;
 };
 
 export async function fetchMissions(
@@ -275,6 +284,25 @@ export async function claimMission(id: number): Promise<Mission | null> {
   return (res.data as Mission) ?? null;
 }
 
+/**
+ * D-151 / D-152 — le chirurgien refuse l'affectation qu'il a vue (assignmentId) : pour cette
+ * mission (PUNCTUAL) ou en bloquant aussi ses futures missions (DURABLE).
+ */
+export async function refuseMissionAssignment(
+  missionId: number,
+  assignmentId: number,
+  scope: "PUNCTUAL" | "DURABLE" = "PUNCTUAL",
+): Promise<Mission> {
+  const res = await apiClient.post(`/api/missions/${missionId}/assignments/${assignmentId}/refuse`, { scope });
+  return res.data as Mission;
+}
+
+/** D-151 — le chirurgien demande l'intervention du manager sur l'affectation en cours. */
+export async function requestMissionAssignmentReview(missionId: number): Promise<Mission> {
+  const res = await apiClient.post(`/api/missions/${missionId}/assignment-review-request`);
+  return res.data as Mission;
+}
+
 export type SubmitMissionBody = {
   noMaterial: boolean;
   comment?: string;
@@ -355,15 +383,38 @@ export async function publishMission(
  * Point 5 (audit UX manager) — annulation post-déploiement, jamais une suppression
  * physique (D-055/D-056 : historique auditable). Couvre DRAFT (brouillon jamais
  * publié) / OPEN / ASSIGNED, toujours conditionné à allowedActions.includes("cancel").
+ * D-182 — aussi une mission commencée ou en cours d'encodage (programme annulé : aucune
+ * prestation) ; `internalComment` reste dans l'historique, jamais dans les e-mails.
  * POST /api/missions/{id}/cancel
  */
 export async function cancelMission(
   id: number,
   reason?: string,
+  internalComment?: string,
+  /** D-182 — confirme la correction de l'encodage soumis / validé faite avant l'annulation. */
+  correctionConfirmed?: boolean,
 ): Promise<Mission> {
   const { data } = await apiClient.post<Mission>(`/api/missions/${id}/cancel`, {
     reason: reason?.trim() || undefined,
+    internalComment: internalComment?.trim() || undefined,
+    correctionConfirmed: correctionConfirmed || undefined,
   });
+  return data;
+}
+
+/**
+ * D-155 — l'activité de cette mission OPEN commencée, jamais couverte, a réellement eu lieu
+ * sans instrumentiste : OPEN → ENCODING_IN_PROGRESS (chirurgien de la mission ou manager).
+ * POST /api/missions/{id}/declare-executed-without-instrumentist
+ */
+export async function declareExecutedWithoutInstrumentist(id: number): Promise<Mission> {
+  const { data } = await apiClient.post<Mission>(`/api/missions/${id}/declare-executed-without-instrumentist`, {});
+  return data;
+}
+
+/** D-155 — annulation d'une déclaration erronée (manager, motif obligatoire, avant soumission). */
+export async function cancelExecutedWithoutInstrumentist(id: number, reason: string): Promise<Mission> {
+  const { data } = await apiClient.post<Mission>(`/api/missions/${id}/cancel-executed-without-instrumentist`, { reason });
   return data;
 }
 
@@ -388,6 +439,20 @@ export interface MissionExecutionInfo {
   effectiveDurationMinutes: number;
   effectiveDurationSource: string;
   disputes: MissionExecutionDispute[];
+  /**
+   * D-156 — présence réelle commune (prestation multi-salles). actualDurationMinutes est
+   * alors la part imputée à cette mission ; les horaires réels sont ceux de la présence.
+   */
+  presence?: {
+    id: number;
+    revision: number;
+    actualStartAt: string | null;
+    actualEndAt: string | null;
+    totalMinutes: number | null;
+    missionIds: number[];
+  } | null;
+  /** D-156 — missions de la prestation dynamique ([missionId] si seule). */
+  prestationMissionIds?: number[];
 }
 
 export async function getMissionExecution(id: number): Promise<MissionExecutionInfo> {
@@ -417,6 +482,9 @@ export async function remindMissionHours(id: number): Promise<void> {
  * resynchroniser le cache ["mission-execution", missionId] sans deviner de champs.
  */
 export type MissionExecutionUpdateBody = {
+  /** D-143 — ISO 8601 avec décalage ; un début seul est un brouillon valide (jamais soumissible). */
+  actualStartAt?: string | null;
+  actualEndAt?: string | null;
   actualDurationMinutes?: number | null;
   hoursSource?: string | null;
 };

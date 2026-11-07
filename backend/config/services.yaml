@@ -14,10 +14,23 @@ parameters:
     app.vapid.public_key: "%env(VAPID_PUBLIC_KEY)%"
     app.vapid.private_key: "%env(VAPID_PRIVATE_KEY)%"
     app.vapid.subject: "%env(VAPID_SUBJECT)%"
+    # D-175 — fiabilisation Web Push : défauts sûrs (observation), activation par l'environnement.
+    env(PUSH_AUTO_RENEW_INVALIDATED): '0'
+    env(PUSH_AUTO_RENEW_SUSPECTED): '0'
+    env(PUSH_SUSPECT_MIN_UNACKNOWLEDGED): '3'
+    env(PUSH_SUSPECT_MIN_HOURS): '48'
+    env(PUSH_RENEWAL_COOLDOWN_HOURS): '24'
     # D-122 suite — la planification du rappel automatique J+1 (D-083) est activée par
     # environnement. Défaut OFF ici (jamais d'erreur si la variable manque sur un serveur) :
     # tant qu'elle vaut 0, aucune "prochaine relance automatique" n'est annoncée au manager.
     env(ENCODING_REMINDER_AUTO_ENABLED): "0"
+    # D-140 — intégration MedVue. Vides par défaut : toute lecture machine est refusée (401)
+    # et l'association est indisponible (« Intégration MedVue non configurée »), jamais d'erreur.
+    env(MEDVUE_INBOUND_TOKEN_SHA256): ""
+    env(MEDVUE_API_BASE_URL): ""
+    env(MEDVUE_REDEEM_TOKEN): ""
+    # D-157 — Google Sign-In. Vide par défaut : POST /api/auth/google répond 404 (désactivé).
+    env(GOOGLE_OAUTH_CLIENT_ID): ""
 
 services:
     # default configuration for services in *this* file

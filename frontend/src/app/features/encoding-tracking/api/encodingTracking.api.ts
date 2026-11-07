@@ -18,7 +18,11 @@ export type EncodingState =
   | "SUBMITTED"
   | "VALIDATED"
   | "LOCKED"
-  | "NOT_APPLICABLE";
+  | "NOT_APPLICABLE"
+  /** D-172 — passée, publiée sans instrumentiste, aucune activité déclarée : « Aucun encodage ». */
+  | "NOT_DECLARED"
+  /** D-184 — mission annulée : visible seulement sur demande (`includeCancelled`), jamais « Sans objet ». */
+  | "CANCELLED";
 
 export type EncodingFinancialState =
   | "NOT_CALCULABLE"
@@ -28,7 +32,7 @@ export type EncodingFinancialState =
   | "PAID"
   | "ANOMALY";
 
-export type EffectiveDurationSource = "PLANNED" | "ACTUAL_TIMES" | "ACTUAL_EXPLICIT";
+export type EffectiveDurationSource = "PLANNED" | "ACTUAL_TIMES" | "ACTUAL_EXPLICIT" | "PRESENCE_SHARE";
 
 /** D-136 — comparaison réel / planifié calculée par le backend (jamais recalculée ici). */
 export type HoursComparison = "NO_REAL_HOURS" | "WITHIN_PLAN" | "OVER_PLAN";
@@ -46,6 +50,8 @@ export interface EncodingTrackingFilter {
   missionType?: MissionType;
   /** Liste vide = tous les états — sérialisée en liste séparée par des virgules. */
   encodingState?: EncodingState[];
+  /** D-184 — « Afficher les missions annulées » (liste seulement ; les indicateurs les excluent toujours). */
+  includeCancelled?: boolean;
 }
 
 export interface EncodingTrackingSummary {
@@ -58,6 +64,8 @@ export interface EncodingTrackingSummary {
   validated: number;
   locked: number;
   notApplicable: number;
+  /** D-172 — missions passées publiées sans instrumentiste, aucune activité déclarée. */
+  notDeclared?: number;
   staleInProgress: number;
   financialAnomalies: number;
   encoded: number;
@@ -90,12 +98,25 @@ export interface EncodingTrackingEncoding {
   submittedWithoutMaterial: boolean;
   hasNoMaterialJustification: boolean;
   isStale: boolean;
+  /** D-143 — alerte managers J+4 envoyée, tant que l'encodage n'est pas soumis. */
+  escalatedAt?: string | null;
+}
+
+/** D-138 — un motif d'anomalie et son nombre d'occurrences (ventilation backend). */
+export interface FinancialAnomalyReason {
+  code: string;
+  label: string;
+  count: number;
 }
 
 export interface EncodingTrackingFinancial {
   state: EncodingFinancialState;
   label: string;
   isBlocking: boolean;
+  /** D-138 — 0 hors ANOMALY. */
+  anomalyCount: number;
+  /** D-138 — vide hors ANOMALY ; le plus fréquent d'abord. */
+  anomalyReasons: FinancialAnomalyReason[];
 }
 
 export interface EncodingTrackingItem {
@@ -107,11 +128,17 @@ export interface EncodingTrackingItem {
   encodingState: EncodingState;
   encodingStateLabel: string;
   instrumentist: EncodingTrackingPerson | null;
+  /** D-155 — « Sans instrumentiste — activité déclarée par … » (null pour une mission classique). */
+  executedWithoutInstrumentist?: { declaredByName: string | null } | null;
+  /** D-171 — auteur de la dernière soumission et son rôle sur la mission (null tant que rien n'est soumis). */
+  submittedBy?: { name: string; role: "INSTRUMENTIST" | "SURGEON" | "MANAGER" | null } | null;
   surgeon: EncodingTrackingPerson | null;
   site: EncodingTrackingPerson | null;
   hours: EncodingTrackingHours;
   encoding: EncodingTrackingEncoding;
   financial: EncodingTrackingFinancial;
+  /** D-156 — prestation regroupée multi-salles (serveur), null si la mission est seule. */
+  prestation?: { key: string; missionIds: number[]; plannedUnionMinutes: number } | null;
 }
 
 export interface EncodingTrackingPeriod {
@@ -126,6 +153,9 @@ export interface EncodingTrackingResponse {
   total: number;
   page: number;
   limit: number;
+  /** D-184 — missions annulées de la période, masquées par défaut (jamais comptées). */
+  cancelledCount?: number;
+  includeCancelled?: boolean;
 }
 
 export interface EncodingTrackingSummaryResponse {
@@ -144,6 +174,7 @@ function toParams(filter: EncodingTrackingFilter, extra?: Record<string, string 
     interventionTypeId: filter.interventionTypeId,
     missionType: filter.missionType,
     encodingState: filter.encodingState && filter.encodingState.length > 0 ? filter.encodingState.join(",") : undefined,
+    includeCancelled: filter.includeCancelled ? 1 : undefined,
     ...extra,
   };
 }
@@ -171,4 +202,115 @@ export async function getEncodingTrackingSummary(filter: EncodingTrackingFilter)
 export async function getPendingEncodingValidationCount(): Promise<number> {
   const res = await apiClient.get("/api/billing/encoding-tracking/pending-validation-count");
   return res.data.count;
+}
+
+/**
+ * D-138 — une anomalie du dernier calcul financier échoué, expliquée et localisée par le
+ * backend (FinancialCalculationAnomalyExplainer). Le frontend l'affiche telle quelle.
+ */
+export type FinancialAnomalyCategory = "CONFIGURATION" | "ENCODING" | "TECHNICAL";
+
+export type FinancialAnomalyActionCode =
+  | "CONFIGURE_INTERVENTION_RATE"
+  | "CONFIGURE_MATERIAL_RATE"
+  | "CONFIGURE_INSTRUMENTIST_RATE"
+  | "OPEN_MISSION";
+
+export interface FinancialAnomaly {
+  code: string;
+  category: FinancialAnomalyCategory;
+  severity: "BLOCKING";
+  title: string;
+  explanation: string;
+  firm: { id: number; name: string } | null;
+  element: { type: "INTERVENTION" | "MATERIAL" | "INSTRUMENTIST"; label: string | null; reference?: string | null } | null;
+  action: { code: FinancialAnomalyActionCode; label: string } | null;
+  /** La cause n'existe plus dans la configuration actuelle : un nouveau calcul peut aboutir. */
+  resolved: boolean;
+  /** D-141 — ce que le moteur, rejoué maintenant, donne pour l'élément concerné. */
+  currentResolution: FinancialCurrentResolution;
+  /** AAAA-MM-JJ — date de référence de la résolution tarifaire. */
+  referenceDate: string;
+  /** D-141 — tarifs existants de la cible, aucun ne couvrant la date (vide = jamais saisi). */
+  targetRules: FinancialTargetRule[];
+  /** D-141 — anomalie qu'un recalcul produirait, absente de l'échec audité. */
+  detectedAfterFailure?: boolean;
+  /** Intervention concernée — ou celle qui porte la ligne de matériel concernée. */
+  missionInterventionId: number | null;
+  materialLineId: number | null;
+  /** D-138 — règles actives contradictoires (vide hors CONFLICTING_*), telles qu'auditées. */
+  conflictingRules: FinancialConflictingRule[];
+}
+
+export interface FinancialCurrentResolution {
+  kind: "LINE" | "FEE_NOT_APPLICABLE" | "MATERIAL_NOT_BILLABLE" | "WITHOUT_FIRM" | "ANOMALY" | "ELEMENT_REMOVED" | "RESOLVED" | null;
+  /** Libellé français fourni par le backend. */
+  label: string | null;
+  rule: FinancialTargetRule | null;
+}
+
+export interface FinancialTargetRule extends FinancialConflictingRule {
+  active?: boolean;
+}
+
+export interface FinancialConflictingRule {
+  id: number | null;
+  unitPrice: string | null;
+  currency: string | null;
+  /** AAAA-MM-JJ, null = sans début. */
+  validFrom: string | null;
+  /** AAAA-MM-JJ EXCLUSIF (D-072), null = sans fin. */
+  validTo: string | null;
+}
+
+/** Relance proposée par le backend (null = aucune relance possible ici). */
+export type FinancialRetryAction =
+  | { kind: "CALCULATE"; calculationId: null }
+  | { kind: "RECALCULATE"; calculationId: number };
+
+export interface MissionFinancialAnomalies {
+  missionId: number;
+  state: EncodingFinancialState;
+  label: string;
+  isBlocking: boolean;
+  failedAt: string | null;
+  effectiveAt: string | null;
+  anomalies: FinancialAnomaly[];
+  /** D-141 — anomalies qu'un recalcul produirait et que l'échec audité ne contenait pas. */
+  newAnomalies: FinancialAnomaly[];
+  /** D-141 — pronostic du moteur sur un recalcul maintenant (null hors ANOMALY). */
+  recalculation: { wouldSucceed: boolean; remainingAnomalyCount: number; referenceDate: string } | null;
+  retry: FinancialRetryAction | null;
+}
+
+/** D-138 — détail FINANCE d'une mission pour le tiroir du suivi (même état que la liste). */
+export async function getMissionFinancialAnomalies(missionId: number): Promise<MissionFinancialAnomalies> {
+  const res = await apiClient.get(`/api/billing/encoding-tracking/missions/${missionId}/financial-anomalies`);
+  return res.data;
+}
+
+/** D-153 — une ligne de l'historique des corrections (lecture du journal d'activité). */
+export type EncodingHistoryCategory = "HOURS" | "INTERVENTION" | "MATERIAL" | "WORKFLOW";
+
+export interface EncodingHistoryChange {
+  field: string;
+  from: string | number | boolean | null;
+  to: string | number | boolean | null;
+  redacted: boolean;
+}
+
+export interface EncodingHistoryItem {
+  id: number;
+  occurredAt: string;
+  category: EncodingHistoryCategory;
+  eventType: string;
+  actorName: string | null;
+  summary: string;
+  changes: EncodingHistoryChange[];
+}
+
+/** D-153 — GET /api/missions/{id}/encoding/history (managers). */
+export async function getMissionEncodingHistory(missionId: number): Promise<EncodingHistoryItem[]> {
+  const res = await apiClient.get<{ items: EncodingHistoryItem[] }>(`/api/missions/${missionId}/encoding/history`);
+  return res.data.items;
 }

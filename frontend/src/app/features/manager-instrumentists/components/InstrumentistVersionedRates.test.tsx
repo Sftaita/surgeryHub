@@ -9,13 +9,16 @@ vi.mock("../api/instrumentistRate.api", async () => {
   const actual = await vi.importActual<typeof import("../api/instrumentistRate.api")>(
     "../api/instrumentistRate.api",
   );
-  return { ...actual, getInstrumentistRates: vi.fn() };
+  return { ...actual, getInstrumentistRates: vi.fn(), changeInstrumentistRateEffectiveDate: vi.fn() };
 });
 
-import { getInstrumentistRates } from "../api/instrumentistRate.api";
+import { changeInstrumentistRateEffectiveDate, getInstrumentistRates } from "../api/instrumentistRate.api";
+import userEvent from "@testing-library/user-event";
+import { fireEvent } from "@testing-library/react";
 
 beforeEach(() => {
   vi.mocked(getInstrumentistRates).mockReset();
+  vi.mocked(changeInstrumentistRateEffectiveDate).mockReset();
 });
 
 function rate(overrides: Partial<InstrumentistRate> = {}): InstrumentistRate {
@@ -96,5 +99,64 @@ describe("InstrumentistVersionedRates — diagnostic tarifs instrumentistes (202
 
     await waitFor(() => expect(screen.getByText(/Tarif horaire \(bloc\)/)).toBeInTheDocument());
     expect(screen.queryByText(NO_ACTIVE_RATE_TEXT, { exact: false })).not.toBeInTheDocument();
+  });
+});
+
+describe("InstrumentistVersionedRates — date de prise d'effet (D-172)", () => {
+  const salve = [
+    rate({ id: 12, amount: "65.00", validFrom: "2026-10-11", validTo: null }),
+    rate({ id: 8, amount: "0.00", validFrom: "2026-09-07", validTo: "2026-10-11" }),
+  ];
+  const impact = (overrides: Record<string, unknown> = {}) => ({
+    dryRun: true, rate: salve[0], previousRate: salve[1], oldValidFrom: "2026-10-11", newValidFrom: "2026-10-01",
+    period: { from: "2026-10-01", to: "2026-10-11" }, lockedCalculations: [],
+    staleCalculations: [{ calculationId: 27, missionId: 1039, missionDate: "2026-10-01", status: "CALCULATED" }],
+    ...overrides,
+  });
+
+  it("n'affiche plus aucune mention de l'ancien flux", async () => {
+    vi.mocked(getInstrumentistRates).mockResolvedValue(salve);
+    renderRates();
+    await screen.findAllByTestId("rate-effective-date-12");
+    expect(screen.queryByText(/Ancien flux|Tarif bloc/)).toBeNull();
+  });
+
+  it("aperçu de l'impact (dryRun) puis confirmation ; les calculs à recalculer restent listés", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getInstrumentistRates).mockResolvedValue(salve);
+    vi.mocked(changeInstrumentistRateEffectiveDate)
+      .mockResolvedValueOnce(impact() as any)
+      .mockResolvedValueOnce(impact({ dryRun: false }) as any);
+    renderRates();
+
+    await user.click((await screen.findAllByTestId("rate-effective-date-12"))[0]);
+    fireEvent.change(screen.getByTestId("rate-effective-date-input"), { target: { value: "2026-10-01" } });
+    await user.click(screen.getByTestId("rate-effective-date-check"));
+
+    expect(changeInstrumentistRateEffectiveDate).toHaveBeenNthCalledWith(1, 42, 12, { validFrom: "2026-10-01", dryRun: true });
+    const shown = await screen.findByTestId("rate-effective-date-impact");
+    expect(shown).toHaveTextContent("du 01/10/2026 au 10/10/2026 inclus");
+    expect(shown).toHaveTextContent("s'arrêtera le 30/09/2026");
+    expect(screen.getByTestId("rate-effective-date-stale")).toHaveTextContent("Mission #1039 du 01/10/2026");
+
+    await user.click(screen.getByTestId("rate-effective-date-confirm"));
+    expect(changeInstrumentistRateEffectiveDate).toHaveBeenNthCalledWith(2, 42, 12, { validFrom: "2026-10-01", dryRun: false });
+    expect(await screen.findByTestId("rate-effective-date-done")).toHaveTextContent("Mission #1039");
+  });
+
+  it("un calcul verrouillé dans la période empêche la confirmation", async () => {
+    const user = userEvent.setup();
+    vi.mocked(getInstrumentistRates).mockResolvedValue(salve);
+    vi.mocked(changeInstrumentistRateEffectiveDate).mockResolvedValueOnce(impact({
+      staleCalculations: [], lockedCalculations: [{ calculationId: 22, missionId: 1089, missionDate: "2026-10-05", status: "LOCKED" }],
+    }) as any);
+    renderRates();
+
+    await user.click((await screen.findAllByTestId("rate-effective-date-12"))[0]);
+    fireEvent.change(screen.getByTestId("rate-effective-date-input"), { target: { value: "2026-10-01" } });
+    await user.click(screen.getByTestId("rate-effective-date-check"));
+
+    expect(await screen.findByTestId("rate-effective-date-locked")).toHaveTextContent("Mission #1089 du 05/10/2026 — calcul verrouillé");
+    expect(screen.getByTestId("rate-effective-date-confirm")).toBeDisabled();
   });
 });

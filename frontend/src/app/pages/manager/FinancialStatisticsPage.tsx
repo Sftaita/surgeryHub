@@ -1,11 +1,13 @@
 import * as React from "react";
-import { Alert, Box, Chip, CircularProgress, MenuItem, Paper, Select, Stack, Tab, Tabs, Typography } from "@mui/material";
+import { Alert, Box, Chip, CircularProgress, MenuItem, Paper, Select, Stack, Tab, Table, TableBody, TableCell, TableFooter, TableHead, TableRow, Tabs, Typography } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import StatFilterBar, { defaultFilterState, toApiFilter, type FilterState } from "../../features/financial-statistics/components/StatFilterBar";
 import RankingTable, { type RankingColumn } from "../../features/financial-statistics/components/RankingTable";
 import DrilldownTable from "../../features/financial-statistics/components/DrilldownTable";
 import { ZeroFinancialDataExplanation } from "../../features/financial-statistics/components/ZeroFinancialDataExplanation";
+import { Amount, ExportPdfButton, FinancialSummary, type AmountKind, type SummaryCard } from "../../features/financial-statistics/components/FinancialAmount";
 import {
+  exportStatisticsPdf,
   getByFirm,
   getByInstrumentist,
   getBySurgeon,
@@ -21,8 +23,10 @@ import {
   type InstrumentistStatistic,
   type InterventionStatistic,
   type MaterialStatistic,
+  type Page,
   type StatisticsGranularity,
   type SurgeonStatistic,
+  type TimeSeriesCurrencyAmounts,
 } from "../../features/financial-statistics/api/financialStatistics.api";
 
 const TABS = [
@@ -45,11 +49,16 @@ const TAB_LABELS: Record<TabKey, string> = {
   documents: "Documents",
 };
 
+type ApiFilter = ReturnType<typeof toApiFilter>;
+
 /**
- * EPIC Pilotage financier, Lot 7 (D-077) — tableau de bord manager. Fonctionnel avant
- * le design : chaque endpoint backend est exposé, les informations sont toujours
- * disponibles (pas d'état masqué), aucune donnée n'est recalculée côté frontend — tout
- * vient tel quel de l'API.
+ * EPIC Pilotage financier, Lot 7 (D-077) — tableau de bord manager. Aucune donnée n'est
+ * recalculée côté frontend — tout vient tel quel de l'API.
+ *
+ * D-186 — convention commune à tous les onglets : recettes « + » en vert, dépenses « − »
+ * en rouge, solde net (calculé serveur) vert/rouge/neutre. Les trois couches Calculé,
+ * Facturé / Décompté et Encaissé / Décaissé gardent chacune leur propre solde. Totaux
+ * serveur sur tout l'ensemble filtré, export PDF serveur par onglet.
  */
 export default function FinancialStatisticsPage() {
   const [filter, setFilter] = React.useState<FilterState>(defaultFilterState());
@@ -61,11 +70,12 @@ export default function FinancialStatisticsPage() {
       <Typography variant="h6" fontWeight={700}>Statistiques financières</Typography>
 
       <Alert severity="info">
-        Ces chiffres distinguent trois couches, qui peuvent diverger : <strong>Calculé</strong> (valeur des calculs
-        financiers actifs — voir la fiche mission) ; <strong>Facturé / Décompté</strong> (montants réellement
-        inscrits sur une facture firme ou un décompte instrumentiste émis) ; <strong>Encaissé/Décaissé</strong>
-        (paiements et remboursements réellement enregistrés). Un écart entre "Calculé" et "Facturé / Décompté" signale une
-        valorisation pas encore facturée — voir l'onglet <strong>Pipeline</strong> pour l'identifier précisément.
+        Recettes en <Box component="strong" sx={{ color: "success.main" }}>vert (+)</Box>, dépenses en{" "}
+        <Box component="strong" sx={{ color: "error.main" }}>rouge (−)</Box>, solde net = recettes − dépenses.
+        Trois couches distinctes, jamais mélangées : <strong>Calculé</strong> (valorisation des missions) ;{" "}
+        <strong>Facturé / Décompté</strong> (factures firmes et décomptes instrumentistes émis) ;{" "}
+        <strong>Encaissé / Décaissé</strong> (paiements réellement enregistrés). Un écart entre "Calculé" et
+        "Facturé / Décompté" signale une valorisation pas encore facturée — voir l'onglet <strong>Pipeline</strong>.
       </Alert>
 
       <StatFilterBar value={filter} onChange={setFilter} />
@@ -91,7 +101,7 @@ export default function FinancialStatisticsPage() {
 
 // ── Overview ────────────────────────────────────────────────────────────
 
-function OverviewTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
+function OverviewTab({ filter }: { filter: ApiFilter }) {
   const query = useQuery({ queryKey: ["fin-stats", "overview", filter], queryFn: () => getOverview(filter) });
 
   if (query.isLoading) return <CircularProgress size={24} />;
@@ -100,6 +110,10 @@ function OverviewTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
 
   return (
     <Stack spacing={3}>
+      <Stack direction="row" justifyContent="flex-end">
+        <ExportPdfButton onExport={() => exportStatisticsPdf("overview", filter)} />
+      </Stack>
+
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
         <Typography variant="subtitle2" fontWeight={700} mb={1.5}>Activité (missions/exécutions — sans devise propre)</Typography>
         <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 2 }}>
@@ -115,45 +129,42 @@ function OverviewTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
       {currencies.map((c) => (
         <Paper key={c.currency} variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
           <Typography variant="subtitle2" fontWeight={700} mb={1.5}>Devise : {c.currency}</Typography>
-          <Stack spacing={2}>
-            <Box>
-              <Typography variant="caption" fontWeight={700} color="text.secondary">Valeur calculée</Typography>
-              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 2, mt: 0.5 }}>
-                <Metric label="CA firme calculé" value={c.generatedFirmRevenue} money />
-                <Metric label="Rémunération instrumentiste" value={c.generatedInstrumentistCompensation} money />
-                <Metric label="Valeur totale calculée" value={c.generatedTotalValue} money strong />
-                <Metric label="Contribution margin" value={c.generatedContributionMargin} money />
-                <Metric label="Valeur moyenne / mission" value={c.averageMissionValue} money />
+          <Stack spacing={2.5}>
+            <Layer title="Calculé — valorisation des missions" hint="Hors charges sociales, TVA et frais généraux.">
+              <FinancialSummary groups={[{ currency: c.currency, cards: [
+                { label: "Total recettes (CA firmes)", amount: c.generatedFirmRevenue, kind: "revenue" },
+                { label: "Total dépenses (rémunérations instrumentistes)", amount: c.generatedInstrumentistCompensation, kind: "expense" },
+                { label: "Solde net calculé", amount: c.generatedContributionMargin, kind: "net" },
+              ] }]} />
+            </Layer>
+            <Layer title="Facturé / Décompté — documents émis">
+              <FinancialSummary groups={[{ currency: c.currency, cards: [
+                { label: "Net facturé aux firmes", amount: c.invoicedNetAmount, kind: "revenue" },
+                { label: "Net décompté aux instrumentistes", amount: c.statementNetAmount, kind: "expense" },
+                { label: "Solde net documenté", amount: c.documentedNetBalance, kind: "net" },
+              ] }]} />
+              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 2, mt: 1.5 }}>
+                <MoneyMetric label="Brut facturé" amount={c.invoicedGrossAmount} kind="revenue" currency={c.currency} />
+                <MoneyMetric label="Notes de crédit (factures)" amount={c.invoiceCreditNotesAmount} kind="amount" currency={c.currency} />
+                <MoneyMetric label="Notes de débit (factures)" amount={c.invoiceDebitNotesAmount} kind="amount" currency={c.currency} />
+                <MoneyMetric label="Brut décompté" amount={c.statementGrossAmount} kind="expense" currency={c.currency} />
+                <MoneyMetric label="Notes de crédit (décomptes)" amount={c.statementCreditNotesAmount} kind="amount" currency={c.currency} />
+                <MoneyMetric label="Notes de débit (décomptes)" amount={c.statementDebitNotesAmount} kind="amount" currency={c.currency} />
               </Box>
-            </Box>
-            <Box>
-              <Typography variant="caption" fontWeight={700} color="text.secondary">Facturé — Factures firmes</Typography>
-              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 2, mt: 0.5 }}>
-                <Metric label="Brut facturé" value={c.invoicedGrossAmount} money />
-                <Metric label="Notes de crédit" value={c.invoiceCreditNotesAmount} money />
-                <Metric label="Notes de débit" value={c.invoiceDebitNotesAmount} money />
-                <Metric label="Net facturé" value={c.invoicedNetAmount} money strong />
-                <Metric label="Solde ouvert firmes" value={c.openFirmBalance} money color={Number(c.openFirmBalance) > 0 ? "warning.main" : undefined} />
+            </Layer>
+            <Layer title="Encaissé / Décaissé — paiements enregistrés">
+              <FinancialSummary groups={[{ currency: c.currency, cards: [
+                { label: "Encaissé", amount: c.paymentsIn, kind: "revenue" },
+                { label: "Décaissé", amount: c.paymentsOut, kind: "expense" },
+                { label: "Flux net", amount: c.netCashFlow, kind: "net" },
+              ] }]} />
+            </Layer>
+            <Layer title="Soldes ouverts sur documents émis">
+              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 2 }}>
+                <MoneyMetric label="Restant à recevoir des firmes" amount={c.openFirmBalance} kind="amount" currency={c.currency} warn={Number(c.openFirmBalance) > 0} />
+                <MoneyMetric label="Restant à payer aux instrumentistes" amount={c.openInstrumentistBalance} kind="amount" currency={c.currency} warn={Number(c.openInstrumentistBalance) > 0} />
               </Box>
-            </Box>
-            <Box>
-              <Typography variant="caption" fontWeight={700} color="text.secondary">Décompté — Décomptes instrumentistes</Typography>
-              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 2, mt: 0.5 }}>
-                <Metric label="Brut décompté" value={c.statementGrossAmount} money />
-                <Metric label="Notes de crédit" value={c.statementCreditNotesAmount} money />
-                <Metric label="Notes de débit" value={c.statementDebitNotesAmount} money />
-                <Metric label="Net décompté" value={c.statementNetAmount} money strong />
-                <Metric label="Solde ouvert instrumentistes" value={c.openInstrumentistBalance} money color={Number(c.openInstrumentistBalance) > 0 ? "warning.main" : undefined} />
-              </Box>
-            </Box>
-            <Box>
-              <Typography variant="caption" fontWeight={700} color="text.secondary">Flux de trésorerie réel</Typography>
-              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 2, mt: 0.5 }}>
-                <Metric label="Encaissé" value={c.paymentsIn} money color="success.main" />
-                <Metric label="Décaissé" value={c.paymentsOut} money color="error.main" />
-                <Metric label="Flux net" value={c.netCashFlow} money strong />
-              </Box>
-            </Box>
+            </Layer>
           </Stack>
         </Paper>
       ))}
@@ -161,12 +172,33 @@ function OverviewTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
   );
 }
 
-function Metric({ label, value, money, strong, color }: { label: string; value: number | string; money?: boolean; strong?: boolean; color?: string }) {
+function Layer({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <Box>
+      <Stack direction="row" spacing={1} alignItems="baseline" mb={0.75} flexWrap="wrap">
+        <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ textTransform: "uppercase", letterSpacing: 0.4 }}>{title}</Typography>
+        {hint && <Typography variant="caption" color="text.secondary">{hint}</Typography>}
+      </Stack>
+      {children}
+    </Box>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <Box>
       <Typography variant="caption" color="text.secondary">{label}</Typography>
-      <Typography variant={strong ? "h6" : "body1"} fontWeight={strong ? 700 : 500} color={color}>
-        {money ? Number(value).toFixed(2) : value}
+      <Typography variant="body1" fontWeight={500}>{value}</Typography>
+    </Box>
+  );
+}
+
+function MoneyMetric({ label, amount, kind, currency, warn }: { label: string; amount: string; kind: AmountKind; currency: string; warn?: boolean }) {
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary">{label}</Typography>
+      <Typography variant="body1" component="div" sx={warn ? { "& span": { color: "warning.main" } } : undefined}>
+        <Amount amount={amount} kind={kind} currency={currency} />
       </Typography>
     </Box>
   );
@@ -174,72 +206,96 @@ function Metric({ label, value, money, strong, color }: { label: string; value: 
 
 // ── Timeseries ──────────────────────────────────────────────────────────
 
-function TimeseriesTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
+const TIMESERIES_COLUMNS: { field: keyof TimeSeriesCurrencyAmounts; label: string; kind: AmountKind }[] = [
+  { field: "generatedFirmRevenue", label: "Recettes calculées", kind: "revenue" },
+  { field: "generatedInstrumentistCompensation", label: "Dépenses calculées", kind: "expense" },
+  { field: "generatedNetBalance", label: "Solde calculé", kind: "net" },
+  { field: "invoicedNetAmount", label: "Net facturé", kind: "revenue" },
+  { field: "statementNetAmount", label: "Net décompté", kind: "expense" },
+  { field: "paymentsIn", label: "Encaissé", kind: "revenue" },
+  { field: "paymentsOut", label: "Décaissé", kind: "expense" },
+  { field: "netCashFlow", label: "Flux net", kind: "net" },
+];
+
+function TimeseriesTab({ filter }: { filter: ApiFilter }) {
   const [granularity, setGranularity] = React.useState<StatisticsGranularity>("DAY");
   const query = useQuery({
     queryKey: ["fin-stats", "timeseries", filter, granularity],
     queryFn: () => getTimeseries(filter, granularity),
   });
+  const totals = query.data?.totals ?? [];
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" spacing={1} alignItems="center">
-        <Typography variant="body2" color="text.secondary">Granularité</Typography>
-        <Select size="small" value={granularity} onChange={(e) => setGranularity(e.target.value as StatisticsGranularity)} sx={{ width: 120 }}>
-          <MenuItem value="DAY">Jour</MenuItem>
-          <MenuItem value="WEEK">Semaine</MenuItem>
-          <MenuItem value="MONTH">Mois</MenuItem>
-        </Select>
+      <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography variant="body2" color="text.secondary">Granularité</Typography>
+          <Select size="small" value={granularity} onChange={(e) => setGranularity(e.target.value as StatisticsGranularity)} sx={{ width: 120 }}>
+            <MenuItem value="DAY">Jour</MenuItem>
+            <MenuItem value="WEEK">Semaine</MenuItem>
+            <MenuItem value="MONTH">Mois</MenuItem>
+          </Select>
+        </Stack>
+        <ExportPdfButton onExport={() => exportStatisticsPdf("timeseries", filter, { granularity })} />
       </Stack>
 
       {query.isLoading ? <CircularProgress size={24} /> : (
-        <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "auto" }}>
-          <Box sx={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: "#fafafa" }}>
-                  <th style={cellStyle}>Période</th>
-                  <th style={cellStyle}>Missions</th>
-                  <th style={cellStyle}>Devise</th>
-                  <th style={{ ...cellStyle, textAlign: "right" }}>CA firme</th>
-                  <th style={{ ...cellStyle, textAlign: "right" }}>Rémun. instr.</th>
-                  <th style={{ ...cellStyle, textAlign: "right" }}>Net facturé</th>
-                  <th style={{ ...cellStyle, textAlign: "right" }}>Net décompté</th>
-                  <th style={{ ...cellStyle, textAlign: "right" }}>Encaissé</th>
-                  <th style={{ ...cellStyle, textAlign: "right" }}>Décaissé</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(query.data?.points ?? []).map((p) => {
-                  const rows = p.currencies.length > 0 ? p.currencies : [null];
-                  return rows.map((c, i) => (
-                    <tr key={`${p.periodStart}-${i}`}>
-                      {i === 0 && <td style={cellStyle} rowSpan={rows.length}>{new Date(p.periodStart).toLocaleDateString("fr-BE")}</td>}
-                      {i === 0 && <td style={cellStyle} rowSpan={rows.length}>{p.missionCount}</td>}
-                      <td style={cellStyle}>{c?.currency ?? "—"}</td>
-                      <td style={{ ...cellStyle, textAlign: "right" }}>{c ? Number(c.generatedFirmRevenue).toFixed(2) : "—"}</td>
-                      <td style={{ ...cellStyle, textAlign: "right" }}>{c ? Number(c.generatedInstrumentistCompensation).toFixed(2) : "—"}</td>
-                      <td style={{ ...cellStyle, textAlign: "right" }}>{c ? Number(c.invoicedNetAmount).toFixed(2) : "—"}</td>
-                      <td style={{ ...cellStyle, textAlign: "right" }}>{c ? Number(c.statementNetAmount).toFixed(2) : "—"}</td>
-                      <td style={{ ...cellStyle, textAlign: "right" }}>{c ? Number(c.paymentsIn).toFixed(2) : "—"}</td>
-                      <td style={{ ...cellStyle, textAlign: "right" }}>{c ? Number(c.paymentsOut).toFixed(2) : "—"}</td>
-                    </tr>
-                  ));
-                })}
-              </tbody>
-            </table>
-          </Box>
-        </Paper>
+        <>
+          <FinancialSummary groups={totals.map((t) => ({ currency: t.currency, cards: [
+            { label: "Total recettes calculées", amount: t.generatedFirmRevenue, kind: "revenue" },
+            { label: "Total dépenses calculées", amount: t.generatedInstrumentistCompensation, kind: "expense" },
+            { label: "Solde net calculé", amount: t.generatedNetBalance, kind: "net" },
+          ] }))} />
+          <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
+            <Box sx={{ overflowX: "auto" }}>
+              <Table size="small" sx={{ "& td, & th": { px: 1.5, py: 0.9, whiteSpace: "nowrap" }, "& td": { fontVariantNumeric: "tabular-nums" } }}>
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 700 }}>Période</TableCell>
+                    <TableCell sx={{ fontWeight: 700 }} align="right">Missions</TableCell>
+                    {TIMESERIES_COLUMNS.map((col) => <TableCell key={col.field} sx={{ fontWeight: 700 }} align="right">{col.label}</TableCell>)}
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(query.data?.points ?? []).map((p) => {
+                    const rows = p.currencies.length > 0 ? p.currencies : [null];
+                    return rows.map((c, i) => (
+                      <TableRow key={`${p.periodStart}-${i}`} hover>
+                        {i === 0 && <TableCell rowSpan={rows.length}>{new Date(p.periodStart).toLocaleDateString("fr-BE")}</TableCell>}
+                        {i === 0 && <TableCell rowSpan={rows.length} align="right">{p.missionCount}</TableCell>}
+                        {TIMESERIES_COLUMNS.map((col) => (
+                          <TableCell key={col.field} align="right" sx={{ color: c ? undefined : "text.disabled" }}>
+                            {c ? <Amount amount={c[col.field]} kind={col.kind} currency={c.currency} /> : "—"}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ));
+                  })}
+                </TableBody>
+                {totals.length > 0 && (
+                  <TableFooter>
+                    {totals.map((t) => (
+                      <TableRow key={t.currency} sx={{ bgcolor: "grey.50", "& td": { fontWeight: 700, color: "text.primary", fontSize: "0.875rem" } }}>
+                        <TableCell colSpan={2}>TOTAL GÉNÉRAL{totals.length > 1 ? ` (${t.currency})` : ""}</TableCell>
+                        {TIMESERIES_COLUMNS.map((col) => (
+                          <TableCell key={col.field} align="right"><Amount amount={t[col.field]} kind={col.kind} currency={t.currency} strong /></TableCell>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableFooter>
+                )}
+              </Table>
+            </Box>
+          </Paper>
+        </>
       )}
     </Stack>
   );
 }
 
-const cellStyle: React.CSSProperties = { padding: "6px 10px", borderBottom: "1px solid #eee", textAlign: "left" };
-
 // ── Pipeline ────────────────────────────────────────────────────────────
 
-function PipelineTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
+function PipelineTab({ filter }: { filter: ApiFilter }) {
   const query = useQuery({ queryKey: ["fin-stats", "pipeline", filter], queryFn: () => getPipeline(filter) });
   if (query.isLoading) return <CircularProgress size={24} />;
   if (!query.data) return null;
@@ -281,6 +337,8 @@ function PipelineTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
 
 // ── Classements ─────────────────────────────────────────────────────────
 
+const PAGE_SIZE = 20;
+
 function usePaginationState(defaultSortBy: string) {
   const [page, setPage] = React.useState(1);
   const [sortBy, setSortBy] = React.useState(defaultSortBy);
@@ -288,184 +346,205 @@ function usePaginationState(defaultSortBy: string) {
   return { page, setPage, sortBy, setSortBy, sortDirection, setSortDirection };
 }
 
-function ByFirmTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
+type PaginationState = ReturnType<typeof usePaginationState>;
+type Totals = NonNullable<Page<unknown>["totals"]>;
+
+/** Colonne monétaire : cellule colorée/signée + cellule de la ligne TOTAL GÉNÉRAL (totaux serveur). */
+function moneyColumn<T extends { currency: string }>(key: string, label: string, field: keyof T & string, kind: AmountKind, sortKey?: string): RankingColumn<T> {
+  return {
+    key,
+    label,
+    align: "right",
+    sortKey,
+    render: (r) => <Amount amount={r[field] as unknown as string} kind={kind} currency={r.currency} />,
+    renderTotal: (t) => (t[field] !== undefined ? <Amount amount={t[field]} kind={kind} currency={t.currency} strong /> : null),
+  };
+}
+
+function summaryGroups(totals: Totals | undefined, cards: (t: Totals[number]) => SummaryCard[]) {
+  return (totals ?? []).map((t) => ({ currency: t.currency, cards: cards(t) }));
+}
+
+function RankingTab<T>({ query, columns, p, view, filter, maxWidth, caption, summary }: {
+  query: { data?: Page<T>; isLoading: boolean };
+  columns: RankingColumn<T>[];
+  p: PaginationState;
+  view: "by-firm" | "by-instrumentist" | "by-surgeon" | "by-intervention";
+  filter: ApiFilter;
+  maxWidth?: number;
+  caption?: React.ReactNode;
+  summary: (t: Totals[number]) => SummaryCard[];
+}) {
+  return (
+    <Stack spacing={2} sx={{ width: "100%", maxWidth, mx: "auto" }}>
+      {caption && <Typography variant="caption" color="text.secondary">{caption}</Typography>}
+      <FinancialSummary groups={summaryGroups(query.data?.totals, summary)} />
+      <RankingTable
+        columns={columns}
+        rows={query.data?.items ?? []}
+        total={query.data?.total ?? 0}
+        totals={query.data?.totals}
+        page={p.page}
+        limit={PAGE_SIZE}
+        isLoading={query.isLoading}
+        sortBy={p.sortBy}
+        sortDirection={p.sortDirection}
+        onPageChange={p.setPage}
+        onSortChange={(sb, sd) => { p.setSortBy(sb); p.setSortDirection(sd); p.setPage(1); }}
+        actions={<ExportPdfButton onExport={() => exportStatisticsPdf(view, filter, { sortBy: p.sortBy, sortDirection: p.sortDirection })} />}
+      />
+    </Stack>
+  );
+}
+
+function ByFirmTab({ filter }: { filter: ApiFilter }) {
   const p = usePaginationState("generatedRevenue");
   const query = useQuery({
     queryKey: ["fin-stats", "by-firm", filter, p.page, p.sortBy, p.sortDirection],
-    queryFn: () => getByFirm(filter, { page: p.page, limit: 20, sortBy: p.sortBy, sortDirection: p.sortDirection }),
+    queryFn: () => getByFirm(filter, { page: p.page, limit: PAGE_SIZE, sortBy: p.sortBy, sortDirection: p.sortDirection }),
   });
 
   const columns: RankingColumn<FirmStatistic>[] = [
-    { key: "firm", label: "Firme", render: (r) => r.firmNameSnapshot },
-    { key: "currency", label: "Devise", render: (r) => r.currency },
-    { key: "missions", label: "Missions", align: "right", render: (r) => r.missionCount },
-    { key: "intervention", label: "CA interventions", align: "right", render: (r) => Number(r.interventionRevenue).toFixed(2) },
-    { key: "material", label: "CA matériel", align: "right", render: (r) => Number(r.materialRevenue).toFixed(2) },
-    { key: "generated", label: "CA généré", align: "right", render: (r) => Number(r.generatedRevenue).toFixed(2) },
-    { key: "net", label: "Net facturé", align: "right", render: (r) => Number(r.invoicedNetAmount).toFixed(2) },
-    { key: "paid", label: "Payé", align: "right", render: (r) => Number(r.paidAmount).toFixed(2) },
-    { key: "remaining", label: "Restant dû", align: "right", render: (r) => Number(r.remainingAmount).toFixed(2) },
-    { key: "avg", label: "Moy./mission", align: "right", render: (r) => Number(r.averageRevenuePerMission).toFixed(2) },
+    { key: "firm", label: "Firme", sortKey: "firmNameSnapshot", render: (r) => r.firmNameSnapshot },
+    { key: "missions", label: "Missions", align: "right", sortKey: "missionCount", render: (r) => r.missionCount },
+    moneyColumn("intervention", "CA interventions", "interventionRevenue", "revenue", "interventionRevenue"),
+    moneyColumn("material", "CA matériel", "materialRevenue", "revenue", "materialRevenue"),
+    moneyColumn("generated", "Total recettes", "generatedRevenue", "revenue", "generatedRevenue"),
+    moneyColumn("net", "Net facturé", "invoicedNetAmount", "revenue", "invoicedNetAmount"),
+    moneyColumn("paid", "Encaissé", "paidAmount", "revenue", "paidAmount"),
+    moneyColumn("remaining", "Restant dû", "remainingAmount", "amount", "remainingAmount"),
+    { key: "avg", label: "CA moyen / mission", align: "right", render: (r) => <Amount amount={r.averageRevenuePerMission} kind="amount" currency={r.currency} /> },
   ];
 
   return (
-    <RankingTable
-      columns={columns}
-      rows={query.data?.items ?? []}
-      total={query.data?.total ?? 0}
-      page={p.page}
-      limit={20}
-      isLoading={query.isLoading}
-      sortBy={p.sortBy}
-      sortDirection={p.sortDirection}
-      sortOptions={[
-        { value: "generatedRevenue", label: "CA généré" },
-        { value: "invoicedNetAmount", label: "Net facturé" },
-        { value: "remainingAmount", label: "Restant dû" },
-        { value: "missionCount", label: "Missions" },
-        { value: "firmNameSnapshot", label: "Nom" },
+    <RankingTab
+      query={query} columns={columns} p={p} view="by-firm" filter={filter}
+      caption="Recettes réellement associées à chaque firme (calculées, facturées, encaissées). Aucune rémunération instrumentiste n'y est imputée : une mission peut concerner plusieurs firmes, aucun lien fiable n'existe."
+      summary={(t) => [
+        { label: "Total recettes calculées", amount: t.generatedRevenue, kind: "revenue" },
+        { label: "Net facturé", amount: t.invoicedNetAmount, kind: "revenue" },
+        { label: "Encaissé", amount: t.paidAmount, kind: "revenue" },
       ]}
-      onPageChange={p.setPage}
-      onSortChange={(sb, sd) => { p.setSortBy(sb); p.setSortDirection(sd); p.setPage(1); }}
     />
   );
 }
 
-function ByInstrumentistTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
+function ByInstrumentistTab({ filter }: { filter: ApiFilter }) {
   const p = usePaginationState("generatedCompensation");
   const query = useQuery({
     queryKey: ["fin-stats", "by-instrumentist", filter, p.page, p.sortBy, p.sortDirection],
-    queryFn: () => getByInstrumentist(filter, { page: p.page, limit: 20, sortBy: p.sortBy, sortDirection: p.sortDirection }),
+    queryFn: () => getByInstrumentist(filter, { page: p.page, limit: PAGE_SIZE, sortBy: p.sortBy, sortDirection: p.sortDirection }),
   });
 
   const columns: RankingColumn<InstrumentistStatistic>[] = [
-    { key: "name", label: "Instrumentiste", render: (r) => r.instrumentistNameSnapshot },
-    { key: "currency", label: "Devise", render: (r) => r.currency },
-    { key: "missions", label: "Missions", align: "right", render: (r) => r.missionCount },
-    { key: "minutes", label: "Minutes exécutées", align: "right", render: (r) => r.executedMinutes },
-    { key: "hourly", label: "Rémun. horaire", align: "right", render: (r) => Number(r.hourlyCompensation).toFixed(2) },
-    { key: "consult", label: "Consultations", align: "right", render: (r) => Number(r.consultationFees).toFixed(2) },
-    { key: "generated", label: "Rémun. générée", align: "right", render: (r) => Number(r.generatedCompensation).toFixed(2) },
-    { key: "net", label: "Net décompté", align: "right", render: (r) => Number(r.statementNetAmount).toFixed(2) },
-    { key: "paid", label: "Payé", align: "right", render: (r) => Number(r.paidAmount).toFixed(2) },
-    { key: "remaining", label: "Restant dû", align: "right", render: (r) => Number(r.remainingAmount).toFixed(2) },
-    { key: "avg", label: "Moy./mission", align: "right", render: (r) => Number(r.averageCompensationPerMission).toFixed(2) },
+    { key: "name", label: "Instrumentiste", sortKey: "instrumentistNameSnapshot", render: (r) => r.instrumentistNameSnapshot },
+    { key: "missions", label: "Missions", align: "right", sortKey: "missionCount", render: (r) => r.missionCount },
+    { key: "minutes", label: "Heures", align: "right", sortKey: "executedMinutes", render: (r) => `${Math.floor(r.executedMinutes / 60)} h ${String(r.executedMinutes % 60).padStart(2, "0")}` },
+    moneyColumn("hourly", "Rémun. horaire", "hourlyCompensation", "expense", "hourlyCompensation"),
+    moneyColumn("consult", "Consultations", "consultationFees", "expense", "consultationFees"),
+    moneyColumn("generated", "Total dépenses", "generatedCompensation", "expense", "generatedCompensation"),
+    moneyColumn("net", "Net décompté", "statementNetAmount", "expense", "statementNetAmount"),
+    moneyColumn("paid", "Décaissé", "paidAmount", "expense", "paidAmount"),
+    moneyColumn("remaining", "Restant à payer", "remainingAmount", "amount", "remainingAmount"),
+    { key: "avg", label: "Coût moyen / mission", align: "right", render: (r) => <Amount amount={r.averageCompensationPerMission} kind="amount" currency={r.currency} /> },
   ];
 
   return (
-    <RankingTable
-      columns={columns}
-      rows={query.data?.items ?? []}
-      total={query.data?.total ?? 0}
-      page={p.page}
-      limit={20}
-      isLoading={query.isLoading}
-      sortBy={p.sortBy}
-      sortDirection={p.sortDirection}
-      sortOptions={[
-        { value: "generatedCompensation", label: "Rémun. générée" },
-        { value: "statementNetAmount", label: "Net décompté" },
-        { value: "remainingAmount", label: "Restant dû" },
-        { value: "missionCount", label: "Missions" },
-        { value: "instrumentistNameSnapshot", label: "Nom" },
+    <RankingTab
+      query={query} columns={columns} p={p} view="by-instrumentist" filter={filter}
+      caption="Les rémunérations des instrumentistes sont des dépenses pour SurgicalHub."
+      summary={(t) => [
+        { label: "Total dépenses calculées", amount: t.generatedCompensation, kind: "expense" },
+        { label: "Net décompté", amount: t.statementNetAmount, kind: "expense" },
+        { label: "Décaissé", amount: t.paidAmount, kind: "expense" },
       ]}
-      onPageChange={p.setPage}
-      onSortChange={(sb, sd) => { p.setSortBy(sb); p.setSortDirection(sd); p.setPage(1); }}
     />
   );
 }
 
-function BySurgeonTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
+function BySurgeonTab({ filter }: { filter: ApiFilter }) {
   const p = usePaginationState("generatedFirmRevenue");
   const query = useQuery({
     queryKey: ["fin-stats", "by-surgeon", filter, p.page, p.sortBy, p.sortDirection],
-    queryFn: () => getBySurgeon(filter, { page: p.page, limit: 20, sortBy: p.sortBy, sortDirection: p.sortDirection }),
+    queryFn: () => getBySurgeon(filter, { page: p.page, limit: PAGE_SIZE, sortBy: p.sortBy, sortDirection: p.sortDirection }),
   });
 
   const columns: RankingColumn<SurgeonStatistic>[] = [
-    { key: "name", label: "Chirurgien", render: (r) => r.surgeonNameSnapshot },
-    { key: "currency", label: "Devise", render: (r) => r.currency },
-    { key: "missions", label: "Missions", align: "right", render: (r) => r.missionCount },
-    { key: "executed", label: "Missions exécutées", align: "right", render: (r) => r.executedMissionCount },
-    { key: "firm", label: "CA firme (analytique)", align: "right", render: (r) => Number(r.generatedFirmRevenue).toFixed(2) },
-    { key: "instr", label: "Rémun. instrumentiste", align: "right", render: (r) => Number(r.generatedInstrumentistCompensation).toFixed(2) },
-    { key: "avg", label: "Valeur moy./mission", align: "right", render: (r) => Number(r.averageMissionValue).toFixed(2) },
+    { key: "name", label: "Chirurgien", sortKey: "surgeonNameSnapshot", render: (r) => r.surgeonNameSnapshot },
+    { key: "missions", label: "Missions", align: "right", sortKey: "missionCount", render: (r) => r.missionCount },
+    { key: "executed", label: "Exécutées", align: "right", sortKey: "executedMissionCount", render: (r) => r.executedMissionCount },
+    moneyColumn("firm", "CA firme", "generatedFirmRevenue", "revenue", "generatedFirmRevenue"),
+    moneyColumn("instr", "Frais instrumentiste", "generatedInstrumentistCompensation", "expense", "generatedInstrumentistCompensation"),
+    moneyColumn("net", "Solde net", "netBalance", "net", "netBalance"),
   ];
 
   return (
-    <Stack spacing={1}>
-      <Typography variant="caption" color="text.secondary">
-        Le chirurgien est un axe analytique — il n'est jamais le bénéficiaire des paiements affichés ici.
-      </Typography>
-      <RankingTable
-        columns={columns}
-        rows={query.data?.items ?? []}
-        total={query.data?.total ?? 0}
-        page={p.page}
-        limit={20}
-        isLoading={query.isLoading}
-        sortBy={p.sortBy}
-        sortDirection={p.sortDirection}
-        sortOptions={[
-          { value: "generatedFirmRevenue", label: "CA firme" },
-          { value: "generatedInstrumentistCompensation", label: "Rémun. instrumentiste" },
-          { value: "missionCount", label: "Missions" },
-          { value: "surgeonNameSnapshot", label: "Nom" },
-        ]}
-        onPageChange={p.setPage}
-        onSortChange={(sb, sd) => { p.setSortBy(sb); p.setSortDirection(sd); p.setPage(1); }}
-      />
-    </Stack>
+    <RankingTab
+      query={query} columns={columns} p={p} view="by-surgeon" filter={filter} maxWidth={1000}
+      caption="Le chirurgien est un axe analytique : ces montants ne constituent pas une rémunération versée au chirurgien. Couche « Calculé » uniquement."
+      summary={(t) => [
+        { label: "Total recettes", amount: t.generatedFirmRevenue, kind: "revenue" },
+        { label: "Total dépenses", amount: t.generatedInstrumentistCompensation, kind: "expense" },
+        { label: "Solde net", amount: t.netBalance, kind: "net" },
+      ]}
+    />
   );
 }
 
-function ByInterventionTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
+function ByInterventionTab({ filter }: { filter: ApiFilter }) {
   const p = usePaginationState("interventionRevenue");
   const query = useQuery({
     queryKey: ["fin-stats", "by-intervention", filter, p.page, p.sortBy, p.sortDirection],
-    queryFn: () => getByIntervention(filter, { page: p.page, limit: 20, sortBy: p.sortBy, sortDirection: p.sortDirection }),
+    queryFn: () => getByIntervention(filter, { page: p.page, limit: PAGE_SIZE, sortBy: p.sortBy, sortDirection: p.sortDirection }),
   });
 
   const columns: RankingColumn<InterventionStatistic>[] = [
-    { key: "code", label: "Code", render: (r) => r.interventionCodeSnapshot },
-    { key: "label", label: "Libellé", render: (r) => r.interventionNameSnapshot },
-    { key: "currency", label: "Devise", render: (r) => r.currency },
-    { key: "missions", label: "Missions", align: "right", render: (r) => r.missionCount },
-    { key: "intervention", label: "CA interventions", align: "right", render: (r) => Number(r.interventionRevenue).toFixed(2) },
-    { key: "material", label: "CA matériel", align: "right", render: (r) => Number(r.materialRevenue).toFixed(2) },
-    { key: "instr", label: "Rémun. instrumentiste", align: "right", render: (r) => Number(r.instrumentistCompensation).toFixed(2) },
-    { key: "avg", label: "Valeur moy./mission", align: "right", render: (r) => Number(r.averageMissionValue).toFixed(2) },
-    { key: "duration", label: "Durée moy. (min)", align: "right", render: (r) => r.averageDurationMinutes },
+    {
+      key: "intervention", label: "Intervention", sortKey: "interventionCodeSnapshot",
+      render: (r) => (
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="body2" fontWeight={600}>{r.interventionCodeSnapshot}</Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>{r.interventionNameSnapshot}</Typography>
+        </Box>
+      ),
+    },
+    { key: "count", label: "Interventions", align: "right", sortKey: "interventionCount", render: (r) => r.interventionCount },
+    { key: "missions", label: "Missions", align: "right", sortKey: "missionCount", hideBelow: "xl", render: (r) => r.missionCount },
+    moneyColumn("intervention", "CA interventions", "interventionRevenue", "revenue", "interventionRevenue"),
+    moneyColumn("material", "CA matériel", "materialRevenue", "revenue", "materialRevenue"),
+    moneyColumn("total", "Total recettes", "totalRevenue", "revenue", "totalRevenue"),
+    {
+      key: "avgRevenue", label: "Recette moy. / intervention", align: "right", sortKey: "averageRevenuePerIntervention", hideBelow: "lg",
+      hint: "Total recettes ÷ nombre d'interventions de ce type (indicatif).",
+      render: (r) => (r.interventionCount > 0 ? <Amount amount={r.averageRevenuePerIntervention} kind="amount" currency={r.currency} /> : "—"),
+    },
+    {
+      key: "avgMissionCost", label: "Coût moyen de mission associée", align: "right", sortKey: "averageAssociatedMissionCost", hideBelow: "lg",
+      hint: "Rémunération instrumentiste totale moyenne des missions comportant ce type. Indicatif : une mission à plusieurs types figure dans chaque groupe. Ce n'est pas un coût par intervention.",
+      render: (r) => (r.averageAssociatedMissionCost !== null ? <Amount amount={r.averageAssociatedMissionCost} kind="amount" currency={r.currency} /> : "—"),
+    },
+    { key: "duration", label: "Durée moy. (min)", align: "right", sortKey: "averageDurationMinutes", hideBelow: "xl", render: (r) => r.averageDurationMinutes },
   ];
 
   return (
-    <Stack spacing={1}>
-      <Typography variant="caption" color="text.secondary">
-        La rémunération instrumentiste est attribuée à l'intervention primaire de la mission (aucun lien direct n'existe entre une ligne instrumentiste et une intervention précise).
-      </Typography>
-      <RankingTable
-        columns={columns}
-        rows={query.data?.items ?? []}
-        total={query.data?.total ?? 0}
-        page={p.page}
-        limit={20}
-        isLoading={query.isLoading}
-        sortBy={p.sortBy}
-        sortDirection={p.sortDirection}
-        sortOptions={[
-          { value: "interventionRevenue", label: "CA interventions" },
-          { value: "materialRevenue", label: "CA matériel" },
-          { value: "missionCount", label: "Missions" },
-          { value: "interventionCodeSnapshot", label: "Code" },
-        ]}
-        onPageChange={p.setPage}
-        onSortChange={(sb, sd) => { p.setSortBy(sb); p.setSortDirection(sd); p.setPage(1); }}
-      />
-    </Stack>
+    <RankingTab
+      query={query} columns={columns} p={p} view="by-intervention" filter={filter}
+      caption={<>
+        La rémunération instrumentiste appartient à la <strong>mission</strong>, jamais à une intervention : aucune part n'est
+        imputée à un type d'intervention. « Coût moyen de mission associée » est un indicateur contextuel (rémunération totale
+        moyenne des missions comportant ce type, une mission à plusieurs types figurant dans chaque groupe) — ce n'est pas un
+        coût par intervention. Les dépenses ci-dessous sont comptées une seule fois par mission.
+      </>}
+      summary={(t) => [
+        { label: "Total recettes (interventions + matériel)", amount: t.totalRevenue, kind: "revenue" },
+        { label: "Total dépenses (au niveau mission)", amount: t.missionInstrumentistCompensation, kind: "expense" },
+        { label: "Solde net", amount: t.netBalance, kind: "net" },
+      ]}
+    />
   );
 }
 
-function TopMaterialsTab({ filter }: { filter: ReturnType<typeof toApiFilter> }) {
+function TopMaterialsTab({ filter }: { filter: ApiFilter }) {
   const p = usePaginationState("generatedRevenue");
   const query = useQuery({
     queryKey: ["fin-stats", "top-materials", filter, p.sortBy, p.sortDirection],
@@ -476,32 +555,35 @@ function TopMaterialsTab({ filter }: { filter: ReturnType<typeof toApiFilter> })
     { key: "ref", label: "Référence", render: (r) => r.materialReferenceSnapshot ?? "—" },
     { key: "name", label: "Matériel", render: (r) => r.materialNameSnapshot },
     { key: "firm", label: "Firme", render: (r) => r.firmSnapshot },
-    { key: "currency", label: "Devise", render: (r) => r.currency },
-    { key: "qty", label: "Quantité", align: "right", render: (r) => r.quantity },
-    { key: "missions", label: "Missions", align: "right", render: (r) => r.missionCount },
-    { key: "revenue", label: "CA généré", align: "right", render: (r) => Number(r.generatedRevenue).toFixed(2) },
-    { key: "avgUnit", label: "CA moy./unité", align: "right", render: (r) => Number(r.averageUnitRevenue).toFixed(2) },
+    { key: "qty", label: "Quantité", align: "right", sortKey: "quantity", render: (r) => r.quantity },
+    { key: "missions", label: "Missions", align: "right", sortKey: "missionCount", render: (r) => r.missionCount },
+    moneyColumn("revenue", "CA généré", "generatedRevenue", "revenue", "generatedRevenue"),
+    { key: "avgUnit", label: "CA moyen / unité", align: "right", sortKey: "averageUnitRevenue", render: (r) => <Amount amount={r.averageUnitRevenue} kind="amount" currency={r.currency} /> },
   ];
 
   return (
-    <RankingTable
-      columns={columns}
-      rows={query.data?.items ?? []}
-      total={query.data?.total ?? 0}
-      page={1}
-      limit={50}
-      isLoading={query.isLoading}
-      sortBy={p.sortBy}
-      sortDirection={p.sortDirection}
-      sortOptions={[
-        { value: "generatedRevenue", label: "CA généré" },
-        { value: "quantity", label: "Quantité" },
-        { value: "missionCount", label: "Missions" },
-        { value: "averageUnitRevenue", label: "CA moy./unité" },
-      ]}
-      onPageChange={() => {}}
-      onSortChange={(sb, sd) => { p.setSortBy(sb); p.setSortDirection(sd); }}
-    />
+    <Stack spacing={2}>
+      <Typography variant="caption" color="text.secondary">
+        Les 50 premiers matériels sont affichés ; le total couvre tous les matériels filtrés (l'export PDF les reprend tous).
+      </Typography>
+      <FinancialSummary groups={summaryGroups(query.data?.totals, (t) => [
+        { label: "Total recettes matériel", amount: t.generatedRevenue, kind: "revenue" },
+      ])} />
+      <RankingTable
+        columns={columns}
+        rows={query.data?.items ?? []}
+        total={query.data?.total ?? 0}
+        totals={query.data?.totals}
+        page={1}
+        limit={50}
+        isLoading={query.isLoading}
+        sortBy={p.sortBy}
+        sortDirection={p.sortDirection}
+        onPageChange={() => {}}
+        onSortChange={(sb, sd) => { p.setSortBy(sb); p.setSortDirection(sd); }}
+        actions={<ExportPdfButton onExport={() => exportStatisticsPdf("top-materials", filter, { sortBy: p.sortBy, sortDirection: p.sortDirection })} />}
+      />
+    </Stack>
   );
 }
 
@@ -510,10 +592,10 @@ function TopMaterialsTab({ filter }: { filter: ReturnType<typeof toApiFilter> })
 const DRILLDOWN_CAPTIONS: Record<"missions" | "calculations" | "documents", string> = {
   missions: "Liste brute des missions correspondant aux filtres, avec leur statut d'exécution — point de départ pour retrouver une mission précise derrière un chiffre agrégé.",
   calculations: "Tous les calculs financiers (quel que soit leur statut : CALCULATED, APPROVED, LOCKED, SUPERSEDED, CANCELLED) — utile pour repérer un calcul jamais approuvé/verrouillé.",
-  documents: "Toutes les factures firmes et tous les décomptes instrumentistes (documents STANDARD et corrections) émis sur la période — vue transversale indépendante du détail par firme/instrumentiste.",
+  documents: "Toutes les factures firmes (recettes, +) et tous les décomptes instrumentistes (dépenses, −) émis sur la période — vue transversale indépendante du détail par firme/instrumentiste.",
 };
 
-function DrilldownTab({ filter, kind }: { filter: ReturnType<typeof toApiFilter>; kind: "missions" | "calculations" | "documents" }) {
+function DrilldownTab({ filter, kind }: { filter: ApiFilter; kind: "missions" | "calculations" | "documents" }) {
   const [page, setPage] = React.useState(1);
   const fn = kind === "missions" ? getMissionsDrilldown : kind === "calculations" ? getCalculationsDrilldown : getDocumentsDrilldown;
   const query = useQuery({

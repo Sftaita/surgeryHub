@@ -4,3 +4,5 @@ sentry:
     options:
         environment: '%kernel.environment%'
         traces_sample_rate: 0.1
+        # D-140 — jamais le code d'association MedVue ni le secret machine dans un rapport.
+        before_send: 'App\Monitoring\SentryIntegrationSecretScrubber'

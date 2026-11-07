@@ -13,7 +13,7 @@ vi.mock("../api/planning.api", () => ({
 
 const { toastSuccess, toastError } = vi.hoisted(() => ({ toastSuccess: vi.fn(), toastError: vi.fn() }));
 vi.mock("../../../ui/toast/useToast", () => ({
-  useToast: () => ({ success: toastSuccess, error: toastError }),
+  useToast: () => ({ success: toastSuccess, error: toastError, warning: vi.fn() }),
 }));
 
 import * as planningApi from "../api/planning.api";
@@ -89,7 +89,7 @@ describe("AbsenceReminderDialog — mode missing (Demander les congés)", () => 
 
     await user.click(screen.getByRole("button", { name: "Envoyer" }));
 
-    await waitFor(() => expect(planningApi.requestMissingAbsences).toHaveBeenCalledWith(expect.any(String), [1]));
+    await waitFor(() => expect(planningApi.requestMissingAbsences).toHaveBeenCalledWith(expect.any(String), [1], expect.any(String)));
   });
 
   it("pré-remplit un message par défaut modifiable", async () => {
@@ -121,7 +121,7 @@ describe("AbsenceReminderDialog — mode missing (Demander les congés)", () => 
 
     await user.click(screen.getByRole("button", { name: "Envoyer" }));
 
-    await waitFor(() => expect(planningApi.requestMissingAbsences).toHaveBeenCalledWith("Merci de répondre vite", [1]));
+    await waitFor(() => expect(planningApi.requestMissingAbsences).toHaveBeenCalledWith("Merci de répondre vite", [1], expect.any(String)));
     expect(planningApi.confirmEncodedAbsences).not.toHaveBeenCalled();
   });
 
@@ -224,7 +224,7 @@ describe("AbsenceReminderDialog — mode encoded (Confirmer les congés encodés
 
     await user.click(screen.getByRole("button", { name: "Envoyer" }));
 
-    await waitFor(() => expect(planningApi.confirmEncodedAbsences).toHaveBeenCalledWith(expect.any(String), [1, 2]));
+    await waitFor(() => expect(planningApi.confirmEncodedAbsences).toHaveBeenCalledWith(expect.any(String), [1, 2], expect.any(String)));
     expect(planningApi.requestMissingAbsences).not.toHaveBeenCalled();
   });
 
@@ -249,7 +249,7 @@ describe("AbsenceReminderDialog — mode encoded (Confirmer les congés encodés
 
     await user.click(screen.getByRole("button", { name: "Envoyer" }));
 
-    await waitFor(() => expect(planningApi.confirmEncodedAbsences).toHaveBeenCalledWith(expect.any(String), [1]));
+    await waitFor(() => expect(planningApi.confirmEncodedAbsences).toHaveBeenCalledWith(expect.any(String), [1], expect.any(String)));
   });
 
   it("le toast de succès reflète le nombre d'emails individuels envoyés, pas un destinataire unique", async () => {
@@ -266,7 +266,7 @@ describe("AbsenceReminderDialog — mode encoded (Confirmer les congés encodés
 
     await waitFor(() => expect(planningApi.confirmEncodedAbsences).toHaveBeenCalled());
     // No "recipient" is ever referenced for this mode — response shape has none.
-    expect(planningApi.confirmEncodedAbsences).toHaveBeenCalledWith(expect.any(String), [1]);
+    expect(planningApi.confirmEncodedAbsences).toHaveBeenCalledWith(expect.any(String), [1], expect.any(String));
   });
 });
 

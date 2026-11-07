@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.6; }
+    .container { max-width: 600px; margin: 0 auto; padding: 24px; }
+    .header { border-bottom: 2px solid #1B5FD0; padding-bottom: 12px; margin-bottom: 20px; }
+    .title { color: #1B5FD0; font-size: 18px; font-weight: bold; }
+    .mission { background: #F5F7FA; border-radius: 8px; padding: 12px 16px; margin: 10px 0; }
+    .mission .when { font-weight: bold; }
+    .cta { display: inline-block; margin-top: 12px; background: #1B5FD0; color: #fff !important; text-decoration: none; padding: 10px 18px; border-radius: 6px; font-weight: bold; }
+    .footer { margin-top: 32px; font-size: 12px; color: #888; border-top: 1px solid #eee; padding-top: 12px; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="title">SurgicalHub — {{ count > 1 ? count ~ ' missions disponibles' : 'Une mission disponible' }}</div>
+  </div>
+
+  <p>{{ greeting }},</p>
+  <p>
+    {% if count > 1 %}
+      {{ count }} missions sont disponibles et compatibles avec votre planning actuel.
+    {% else %}
+      Une mission est disponible et compatible avec votre planning actuel.
+    {% endif %}
+    Rien ne vous est encore attribué : si vous êtes intéressé·e, {{ count > 1 ? 'prenez celles qui vous conviennent' : 'prenez-la' }}
+    depuis l'écran Offres (une mission revient à la première personne qui la prend).
+  </p>
+
+  {% for m in missions %}
+  <div class="mission">
+    <div class="when">{{ m.weekday }} {{ m.dateLabel }}{% if m.timeLabel %} · {{ m.timeLabel }}{% endif %}{% if m.periodLabel %} ({{ m.periodLabel }}){% endif %}</div>
+    {% if m.siteName %}<div>Site : {{ m.siteName }}</div>{% endif %}
+    {% if m.surgeonName %}<div>Chirurgien : Dr {{ m.surgeonName }}</div>{% endif %}
+    <div>Type : {{ m.typeLabel }}</div>
+  </div>
+  {% endfor %}
+
+  {% if offersUrl %}<p><a class="cta" href="{{ offersUrl }}">Voir les offres</a></p>{% endif %}
+
+  <p>Bien à vous,<br>SurgicalHub</p>
+
+  {% include 'emails/_notification_preferences_cta.html.twig' %}
+
+  <div class="footer">SurgicalHub — document confidentiel</div>
+</div>
+</body>
+</html>

@@ -44,11 +44,7 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $this->em = self::getContainer()->get(EntityManagerInterface::class);
         // Construit directement — aucun consommateur câblé pour ce service seul dans ce
         // fichier de test, même raisonnement que les autres Integration de ce lot.
-        $this->service = new MissionInterventionDraftService(
-            $this->em,
-            new MissionEntryOrderAllocator($this->em),
-            new AuditService($this->em),
-        );
+        $this->service = \App\Tests\Support\CatalogueRequestServiceFactory::draftService($this->em);
     }
 
     protected function tearDown(): void
@@ -216,12 +212,14 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $firm = $this->makeFirm();
+        $intervention = $this->service->resolve($draft, $type, $firm, $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         self::assertSame($mission->getId(), $intervention->getMission()->getId());
         self::assertSame($type->getId(), $intervention->getInterventionType()?->getId());
-        self::assertNull($intervention->getPrimaryFirm());
+        // D-146 bis — la firme validée par le manager est toujours enregistrée.
+        self::assertSame($firm->getId(), $intervention->getPrimaryFirm()?->getId());
     }
 
     public function testResolvesWithSeveralMaterialLines(): void
@@ -235,7 +233,7 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $intervention = $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         $this->em->clear();
@@ -256,7 +254,7 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $intervention = $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         $this->em->clear();
@@ -278,7 +276,7 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $intervention = $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         $this->em->clear();
@@ -297,7 +295,7 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $intervention = $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         self::assertSame(7, $intervention->getOrderIndex());
@@ -313,7 +311,7 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $intervention = $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         self::assertSame(InterventionTypeRequest::STATUS_RESOLVED, $request->getStatus());
@@ -330,7 +328,7 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $intervention = $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         self::assertFalse($draft->acceptsNewMaterial());
@@ -401,11 +399,11 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $intervention = $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         $this->expectException(DraftAlreadyResolvedException::class);
-        $this->service->resolve($draft, $type, null, $manager);
+        $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
     }
 
     public function testASecondResolutionAttemptCreatesNoSecondIntervention(): void
@@ -416,11 +414,11 @@ final class MissionInterventionDraftServiceResolveTest extends KernelTestCase
         $type = $this->makeType();
         $manager = $this->makeUser('ROLE_MANAGER');
 
-        $intervention = $this->service->resolve($draft, $type, null, $manager);
+        $intervention = $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         $this->created['interventions'][] = $intervention->getId();
 
         try {
-            $this->service->resolve($draft, $type, null, $manager);
+            $this->service->resolve($draft, $type, $this->makeFirm(), $manager);
         } catch (DraftAlreadyResolvedException) {
             // attendu
         }

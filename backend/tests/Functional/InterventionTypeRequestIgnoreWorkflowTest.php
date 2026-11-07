@@ -92,7 +92,7 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
             $this->em->flush();
             foreach ($this->createdIds['missions'] as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
             foreach ($this->createdIds['types'] as $id) {
@@ -246,7 +246,7 @@ final class InterventionTypeRequestIgnoreWorkflowTest extends WebTestCase
 
     private function createPendingRequest(KernelBrowser $client, Mission $mission, string $instrToken, string $label = 'Demande IgnoreWF'): int
     {
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => $label,
         ]);
         self::assertSame(Response::HTTP_CREATED, $created->getStatusCode(), $created->getContent());

@@ -74,6 +74,49 @@ final readonly class EncodingTrackingItem
         public bool $isStale,
 
         public EncodingFinancialState $financialState,
+
+        /**
+         * D-138 — motifs de l'anomalie financière (vide hors ANOMALY), ventilés par code
+         * moteur à partir du dernier échec audité : la liste dit « pourquoi » sans que le
+         * frontend ne devine. Le détail localisé est servi par
+         * EncodingTrackingService::explainFinancialState().
+         *
+         * @var list<array{code: string, label: string, count: int}>
+         */
+        public array $financialAnomalyReasons = [],
+
+        /**
+         * D-143 — date de l'alerte managers J+4, tant que l'encodage est toujours attendu :
+         * l'alerte reste visible dans le suivi jusqu'à la soumission, même si la
+         * notification a été lue. null sinon.
+         */
+        public ?\DateTimeImmutable $escalatedAt = null,
+
+        /**
+         * D-155 — activité exécutée sans instrumentiste : qui l'a déclarée (chirurgien de la
+         * mission ou manager). null pour une mission classique.
+         */
+        public bool $executedWithoutInstrumentist = false,
+        public ?string $executedWithoutInstrumentistByName = null,
+
+        /**
+         * D-171 — qui a terminé (soumis) l'encodage en dernier : nom et rôle sur CETTE mission
+         * (INSTRUMENTIST, SURGEON ou MANAGER), lus sur le dernier audit
+         * MISSION_ENCODING_COMPLETED. null tant que rien n'a été soumis.
+         */
+        public ?string $submittedByName = null,
+        public ?string $submittedByRole = null,
+
+        /**
+         * D-156 — prestation regroupée multi-salles (null si la mission est seule) : clé du
+         * groupe et union de ses horaires planifiés. Un total « heures planifiées » compte
+         * chaque prestation une fois (jamais la somme brute des missions simultanées) ;
+         * effectiveMinutes est déjà la part imputée (somme du groupe = présence réelle).
+         */
+        public ?string $prestationKey = null,
+        public ?int $prestationPlannedUnionMinutes = null,
+        /** @var list<int> */
+        public array $prestationMissionIds = [],
     ) {}
 
     /** L'écart entre planifié et réel n'a de sens que si le réel existe. */

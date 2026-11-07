@@ -42,11 +42,7 @@ final class MissionInterventionDraftServiceTest extends KernelTestCase
         // MissionInterventionDraftService n'a pas non plus de consommateur HTTP dans ce
         // fichier de test — le conteneur retirerait ces services s'ils n'étaient fetchés
         // que via getContainer()->get(). EntityManager réel, donc AuditService réel aussi.
-        $this->service = new MissionInterventionDraftService(
-            $this->em,
-            new MissionEntryOrderAllocator($this->em),
-            new AuditService($this->em),
-        );
+        $this->service = \App\Tests\Support\CatalogueRequestServiceFactory::draftService($this->em);
     }
 
     protected function tearDown(): void

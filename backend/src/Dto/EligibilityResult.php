@@ -21,6 +21,9 @@ final readonly class EligibilityResult
      * gates, which only need the boolean/reason, never the entity). Never a second
      * eligibility computation — same reasons array either way.
      *
+     * D-165 — $conflictDetail: set instead of $conflictingMission when the conflict comes
+     * from a line proposed in the planning editor (not persisted, no Mission to point at).
+     *
      * @param EligibilityReason[] $reasons
      */
     public function __construct(
@@ -28,6 +31,7 @@ final readonly class EligibilityResult
         public array $reasons,
         public ?Absence $absence = null,
         public ?Mission $conflictingMission = null,
+        public ?ScheduleConflictDetail $conflictDetail = null,
     ) {
         $this->eligible = empty($reasons);
     }

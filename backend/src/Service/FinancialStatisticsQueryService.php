@@ -106,6 +106,7 @@ final class FinancialStatisticsQueryService
                 statementCreditNotesAmount: $stmt['credit'],
                 statementDebitNotesAmount: $stmt['debit'],
                 statementNetAmount: $stmt['net'],
+                documentedNetBalance: $this->sub($inv['net'], $stmt['net']),
                 paymentsIn: $cf['in'],
                 paymentsOut: $cf['out'],
                 netCashFlow: $netCashFlow,
@@ -156,10 +157,13 @@ final class FinancialStatisticsQueryService
                     currency: $currency,
                     generatedFirmRevenue: $g['firmRevenue'],
                     generatedInstrumentistCompensation: $g['instrumentistComp'],
+                    generatedNetBalance: $this->sub($g['firmRevenue'], $g['instrumentistComp']),
                     invoicedNetAmount: $inv,
                     statementNetAmount: $stmt,
+                    documentedNetBalance: $this->sub($inv, $stmt),
                     paymentsIn: $cf['in'],
                     paymentsOut: $cf['out'],
+                    netCashFlow: $this->sub($cf['in'], $cf['out']),
                 );
             }
 
@@ -172,6 +176,37 @@ final class FinancialStatisticsQueryService
         }
 
         return $points;
+    }
+
+    /**
+     * D-186 — totaux par devise de la série (somme des buckets, disjoints et couvrant
+     * exactement [from, to[), en centimes entiers : jamais de total mélangeant deux devises.
+     *
+     * @param FinancialTimeSeriesPointDto[] $points
+     * @return array<int, array<string, string>>
+     */
+    public function timeseriesTotals(array $points): array
+    {
+        $fields = ['generatedFirmRevenue', 'generatedInstrumentistCompensation', 'generatedNetBalance', 'invoicedNetAmount', 'statementNetAmount', 'documentedNetBalance', 'paymentsIn', 'paymentsOut', 'netCashFlow'];
+        $cents = [];
+        foreach ($points as $point) {
+            foreach ($point->currencies as $c) {
+                foreach ($fields as $field) {
+                    $cents[$c->currency][$field] = ($cents[$c->currency][$field] ?? 0) + (int) round((float) $c->{$field} * 100);
+                }
+            }
+        }
+        ksort($cents);
+
+        $totals = [];
+        foreach ($cents as $currency => $byField) {
+            $row = ['currency' => (string) $currency];
+            foreach ($fields as $field) {
+                $row[$field] = number_format($byField[$field] / 100, 2, '.', '');
+            }
+            $totals[] = $row;
+        }
+        return $totals;
     }
 
     // ── Pipeline (§17) ───────────────────────────────────────────────────
@@ -264,6 +299,7 @@ final class FinancialStatisticsQueryService
 
     // ── Activité (§2/§4) ─────────────────────────────────────────────────
 
+    /** D-182 — a cancelled mission did not take place: never counted (archived encoding included). */
     private function activityRow(FinancialStatisticsFilter $filter): FinancialOverviewActivityDto
     {
         [$missionWhere, $missionParams, $missionTypes] = $this->missionPopulationClause($filter, 'm');
@@ -277,6 +313,7 @@ final class FinancialStatisticsQueryService
                 LEFT JOIN mission_execution me ON me.mission_id = m.id
                 WHERE COALESCE(me.actual_start_at, m.start_at) >= :fBusiness
                   AND COALESCE(me.actual_start_at, m.start_at) < :tBusiness
+                  AND m.status <> 'CANCELLED'
                   $missionWhere";
 
         $row = $this->connection->fetchAssociative($sql, $missionParams + [
@@ -660,6 +697,7 @@ final class FinancialStatisticsQueryService
                 LEFT JOIN mission_execution me ON me.mission_id = m.id
                 WHERE COALESCE(me.actual_start_at, m.start_at) >= :fBusiness
                   AND COALESCE(me.actual_start_at, m.start_at) < :tBusiness
+                  AND m.status <> 'CANCELLED'
                   $missionWhere
                 GROUP BY bucket";
 

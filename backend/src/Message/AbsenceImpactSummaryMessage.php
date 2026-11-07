@@ -31,7 +31,7 @@ final class AbsenceImpactSummaryMessage
      * @param array<int, array<string, mixed>> $missionsRestoredOpen       reconciliation — restored but still OPEN (uncovered)
      * @param array<int, array<string, mixed>> $futureOccurrencesCancelled surgeon absence — Post occurrences neutralized, no Mission yet
      * @param array<int, array<string, mixed>> $futureOccurrencesRestored  reconciliation — neutralized occurrences reactivated
-     * @param int[] $recipientManagerIds every active manager/admin at dispatch time
+     * @param int[] $recipientManagerIds every operational manager/admin at dispatch time (D-149)
      */
     public function __construct(
         public readonly int $absenceId,
@@ -50,6 +50,11 @@ final class AbsenceImpactSummaryMessage
         public readonly array $futureOccurrencesRestored,
         public readonly array $recipientManagerIds,
         public readonly \DateTimeImmutable $occurredAt,
+        // H4 (D-130) — impacts the manager must see even though nothing was mutated yet.
+        public readonly array $draftsToCover = [],
+        public readonly array $draftsNeutralizedAtDeploy = [],
+        public readonly array $usualOccurrencesToCover = [],
+        public readonly array $managerDecisions = [],
     ) {
     }
 }

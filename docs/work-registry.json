@@ -1,0 +1,1136 @@
+{
+  "description": "Registre des travaux SurgicalHub (D-169). Seules les décisions humaines sont saisies ici : statut, priorité, impact, prochaine action, validations, opérations hors code. Tout ce qui est vérifiable (commits non fusionnés, PR, déploiement, migrations, scripts serveur, crontab, modifications locales) est CALCULÉ par deploy/work-inventory/inventory.mjs, qui signale aussi tout travail absent de ce registre. Statuts : a-analyser, en-developpement, developpe, teste, pr-ouverte, fusionne, deploye, valide-production, bloque, abandonne. Opérations : installation-serveur, reprise-donnees, activation-configuration, validation (statut en-attente, en-cours, fait, abandonne).",
+  "settings": {
+    "github": "Sftaita/surgeryHub",
+    "remote": "origin",
+    "mainRef": "origin/main",
+    "staleDays": 3,
+    "reviewMaxDays": 14,
+    "ignoredDirtyPaths": [
+      "backend/config/reference.php"
+    ],
+    "deployPerimeter": [
+      "backend/",
+      "frontend/",
+      "docker/",
+      "deploy/production/docker-compose.yml",
+      ".dockerignore"
+    ]
+  },
+  "items": [
+    {
+      "id": "D-157",
+      "title": "Sessions persistantes : fin des déconnexions répétées",
+      "description": "Le JWT expiré était envoyé à /api/auth/refresh (authentificateur JWT avant refresh_jwt) : 426/429 refresh en 401 en production depuis juin, déconnexion à chaque expiration. Correctif : firewall auth_session, sessions par appareil avec rotation, fenêtre glissante, révocation effective (claim sid), une session par navigateur partagée par ses onglets, login Google durci. Déployé v2026.10.24-prod-2.",
+      "kind": "fix",
+      "priority": "P1",
+      "userImpact": "Tous les utilisateurs doivent se reconnecter régulièrement, même avec « Rester connecté ».",
+      "status": "deploye",
+      "statusSince": "2026-10-24",
+      "prodEvidence": "v2026.10.24-prod-2 (9c26bf1), migration Version20261020090000 appliquée (90/90), contrôles API publique 16/16 avec compte jetable supprimé, premier utilisateur réel à 16:49 UTC : /api/me 401 → refresh 200 sans reconnexion.",
+      "refs": {
+        "decision": "D-157",
+        "branches": [
+          "feat/auth-session-persistence"
+        ],
+        "prs": [
+          23
+        ],
+        "commits": [
+          "0b9ebed"
+        ],
+        "worktrees": [
+          "SurgicalHub-auth-session"
+        ],
+        "migrations": [
+          "Version20261020090000"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "reprise-donnees",
+          "status": "fait",
+          "description": "Migration Version20261020090000 (sessions par appareil) à jouer au déploiement",
+          "validation": "accord de déploiement (2026-10-24)",
+          "confirmedAt": "2026-10-24",
+          "evidence": "deploy.sh migrate 9c26bf1 : « Successfully migrated to version Version20261020090000 », doctrine:migrations:status 90/90, New 0 ; sauvegarde préalable all_20261024_164628.sql.gz"
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Suivi 24 h du journal Traefik (refresh majoritairement 200, contre 426/429 en 401 avant ; aucune vague de reconnexions), puis confirmation de l'utilisateur qu'il n'est plus déconnecté",
+          "validation": "utilisateur",
+          "check": "grep /api/auth/refresh dans /opt/stack/traefik/logs/access.log depuis le 2026-10-24 16:46 UTC, comptage par statut"
+        }
+      ],
+      "validationNeeded": "Confirmation en usage réel (plus de reconnexion forcée, y compris PWA et mobile) avant « Validé en production ».",
+      "nextAction": "Suivre les refresh pendant 24 h puis faire confirmer par l'utilisateur.",
+      "lastReviewed": "2026-10-24",
+      "notes": "Testé le 2026-10-20 puis resté 4 jours en PR pendant que D-158 à D-167 étaient déployés : cas d'origine de D-169. Le 2026-10-24 : onglet dupliqué sans « Rester connecté » reproduit (session révoquée) puis corrigé (0b9ebed), recette 144/144 et sécurité 17/17 par moteur, déployé le jour même."
+    },
+    {
+      "id": "DOC-DEPLOY-2026-10-24-PROD-2",
+      "title": "Documentation du déploiement v2026.10.24-prod-2 (D-157)",
+      "description": "Ligne d'historique et « Dernier tag déployé » dans docs/production.md.",
+      "kind": "docs",
+      "priority": "P3",
+      "userImpact": "Aucun.",
+      "status": "valide-production",
+      "statusSince": "2026-10-25",
+      "prodEvidence": "PR #43 fusionnée (6835405) sur accord de l'utilisateur ; documentation seulement, rien à déployer.",
+      "refs": {
+        "branches": [
+          "docs/deploy-v2026.10.24-prod-2"
+        ],
+        "prs": [
+          43
+        ],
+        "worktrees": [
+          "SurgicalHub-docs-d157"
+        ]
+      },
+      "nextAction": "Aucune.",
+      "lastReviewed": "2026-10-25"
+    },
+    {
+      "id": "D-164",
+      "title": "Sauvegardes chiffrées, restauration distante et rotation",
+      "description": "Scripts versionnés deploy/server/backup (dumps, uploads et volume surgicalhub_var chiffrés, copie Drive vérifiée, rotation dry-run, test de restauration réelle locale et depuis le Drive). PR #36 fusionnée, PR #38 (restauration distante + audit) ouverte. Rien n'est installé sur le serveur.",
+      "kind": "ops",
+      "priority": "P1",
+      "userImpact": "Clés JWT et registre des versions jamais sauvegardés ; dumps en clair sur le Drive ; aucune restauration testée depuis la copie distante.",
+      "status": "fusionne",
+      "statusSince": "2026-10-25",
+      "refs": {
+        "decision": "D-164",
+        "branches": [
+          "feat/backup-remote-restore"
+        ],
+        "prs": [
+          36,
+          38
+        ],
+        "worktrees": [
+          "SurgicalHub-backups"
+        ],
+        "serverPaths": [
+          "/home/deploy/scripts/surgicalhub-backup/lib.sh",
+          "/home/deploy/scripts/surgicalhub-backup/backup_mysql.sh",
+          "/home/deploy/scripts/surgicalhub-backup/backup_volumes.sh",
+          "/home/deploy/scripts/surgicalhub-backup/backup_offsite.sh",
+          "/home/deploy/scripts/surgicalhub-backup/rotate_backups.sh",
+          "/home/deploy/scripts/surgicalhub-backup/restore_test.sh"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "fait",
+          "description": "Fusion de la PR #38",
+          "validation": "accord utilisateur",
+          "confirmedAt": "2026-10-25",
+          "evidence": "GitHub PR #38 fusionnée, commit 7cc1e828e08ef2cd66d364c73f6682ec3bd58446 ; CI backups D-164: rotation 31/31, offsite 20/20, e2e 21/21."
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Passphrase ~/.surgicalhub-backup-passphrase créée par l'utilisateur dans son propre terminal et rangée hors serveur ; .env de l'application conservé hors serveur",
+          "validation": "utilisateur seul"
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Décider d'adapter archive_mysql_weekly.sh aux *.gpg ou de l'arrêter (sinon copie hebdomadaire de tous les fichiers chiffrés)",
+          "validation": "décision utilisateur"
+        },
+        {
+          "type": "installation-serveur",
+          "status": "en-attente",
+          "description": "install.sh --apply-scripts puis premier cycle manuel (dumps chiffrés, restore_test.sh, backup_offsite.sh, restore_test.sh --from-remote)",
+          "validation": "accord explicite par étape",
+          "check": "inventory --server : scripts surgicalhub-backup « conforme »"
+        },
+        {
+          "type": "activation-configuration",
+          "status": "en-attente",
+          "description": "install.sh --apply-crontab (remplace les 4 anciennes lignes ; arrête les suppressions nocturnes de 30 jours)",
+          "validation": "accord explicite",
+          "check": "inventory --server : crontab de référence mise à jour dans la même PR"
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Rotation réelle locale et distante (suppressions) — non prévue tant que l'utilisateur demande de ne supprimer aucune sauvegarde",
+          "validation": "accord explicite après nouveau dry-run"
+        }
+      ],
+      "validationNeeded": "Passphrase créée par l'utilisateur, .env conservé hors serveur, décision sur archive hebdomadaire et validations explicites successives pour installation, test de restauration puis crontab.",
+      "nextAction": "Priorité de sécurité séparée (indépendante des déploiements D-156 / D-180). Scripts D-164 fusionnés dans main (PR #38, 7cc1e82, CI Docker 72/72). AUCUN script D-164 installé sur le serveur. Installer seulement après création sécurisée de la passphrase et décision sur archive_mysql_weekly.sh ; premier cycle + restauration locale et Drive vérifiés avant activation crontab. Rotation réelle interdite sans accord.",
+      "lastReviewed": "2026-11-03"
+    },
+    {
+      "id": "D-169",
+      "title": "Registre des travaux et inventaire automatique avant chaque release",
+      "description": "Registre docs/work-registry.json, inventaire deploy/work-inventory/inventory.mjs (Git, PR, worktrees, serveur en lecture seule), deploy.sh pending, workflow quotidien et sur PR. Corrections du 2026-10-25 : échec du contrôle avant release bloquant et explicite, instantané CI limité à l'audit de main avec contexte vérifié, vérification serveur section par section (« incomplet » / « Non vérifié »), masquage des secrets et e-mails.",
+      "kind": "ops",
+      "priority": "P2",
+      "userImpact": "Aucun direct ; empêche qu'un correctif terminé (comme D-157) reste oublié.",
+      "status": "fusionne",
+      "statusSince": "2026-10-25",
+      "refs": {
+        "decision": "D-169",
+        "branches": [
+          "chore/work-registry"
+        ],
+        "prs": [
+          44
+        ],
+        "worktrees": [
+          "SurgicalHub-work-registry"
+        ]
+      },
+      "validationNeeded": "Contrôles D-169 du registre et rapport pending en exploitation ; vérification récurrente des audits CI. PR #44 fusionnée.",
+      "nextAction": "PR #44 fusionnée (adf4439) ; deploy.sh pending utilisé pour v2026.10.25-prod. Outillage hors archive applicative : rien à déployer sur le serveur.",
+      "lastReviewed": "2026-10-25"
+    },
+    {
+      "id": "D-168",
+      "title": "Tiroir de détail mission manager (seul détail côté manager)",
+      "description": "ManagerMissionDrawer remplace la fiche pleine page ; /app/m/missions/:id redirige vers ?mission=ID ; corrections en ligne (réaffectation, heures, encodage). Frontend seulement.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Manager : un seul modèle de détail de mission partout.",
+      "status": "deploye",
+      "statusSince": "2026-10-25",
+      "prodEvidence": "v2026.10.25-prod (9345655) activé le 2026-10-25 06:36 UTC par deploy.sh ; mark OFFICIAL ; « Mon profil » = v2026.10.25-prod · 9345655 ; recette en lecture seule : tiroir depuis la liste, les plannings et le journal, redirection /app/m/missions/:id, 18 appels API 200, aucune erreur console.",
+      "refs": {
+        "decision": "D-168",
+        "branches": [
+          "feat/mission-drawer"
+        ],
+        "worktrees": [
+          "SurgicalHub-mission-drawer"
+        ],
+        "prs": [
+          45
+        ]
+      },
+      "validationNeeded": "Confirmation fonctionnelle de l'utilisateur en production (ouverture d'une mission → nouveau tiroir).",
+      "nextAction": "Déployé (v2026.10.25-prod). Attendre la confirmation fonctionnelle de l'utilisateur avant « Validé en production ».",
+      "lastReviewed": "2026-10-25",
+      "notes": "Non possible sans décision métier : reprogrammer une mission publiée hors Mode Modification, changer de chirurgien. Fusion PR #45 le 2026-10-25 ; GitHub Actions frontend build OK, 1791/1791 tests, D-169 vert. Déploiement effectué le 25/10/2026 à 06:36 UTC ; validation fonctionnelle manager en attente."
+    },
+    {
+      "id": "D-156",
+      "title": "Prestations regroupées multi-salles et cohérence Missions/Planning V2",
+      "description": "Présence réelle unique (WorkedPresence), ventilation EARLIEST_END_FIRST, encodage commun, confirmation ciblée des affectations multi-salles, identité stable poste ↔ mission. 3 migrations (Version20261018090000, Version20261019090000, Version20261102090000).",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Instrumentiste sur deux salles simultanées du même chirurgien : encodage et facturation en double aujourd'hui.",
+      "status": "deploye",
+      "statusSince": "2026-11-03",
+      "refs": {
+        "decision": "D-156",
+        "branches": [
+          "feat/prestations-regroupees",
+          "integration/d156-on-main"
+        ],
+        "worktrees": [
+          "SurgicalHub-prestations",
+          "SurgicalHub-d156-integration"
+        ],
+        "migrations": [
+          "Version20261018090000",
+          "Version20261019090000",
+          "Version20261102090000"
+        ],
+        "prs": [
+          67,
+          68,
+          69
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve de recette multi-salles (prestation réelle 426/427, Salve, 02/09) : présence commune validée (11h30) et répartition 6h00 + 5h30 sans double comptage validées ; soumission commune non encore vérifiée (attend la saisie de Salve) ; validation manager à contrôler après soumission ; tarif du 02/09 absent, aucune correction autorisée. Ne pas modifier 426/427 ni les tarifs de Salve."
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "description": "app:mission:link-schedule-posts --apply, sur accord distinct après validation de c154f18 (simulation en production le 2026-11-03 : 221 CLEAR, 0 INTERCHANGEABLE, 0 TO_REVIEW, aucune écriture).",
+          "validation": "accord explicite"
+        }
+      ],
+      "validationNeeded": "Officialisé le 2026-11-03 (v2026.11.03-prod, c154f18) sur accord explicite, avec une réserve de recette fonctionnelle ouverte (soumission commune et validation manager de 426/427). Accord distinct encore requis : app:mission:link-schedule-posts --apply (221 liens).",
+      "nextAction": "Suivre la réserve 426/427 jusqu'à sa clôture (soumission de Salve, puis validation manager, signalement du tarif manquant au 02/09). link --apply sur accord distinct. D-156 officialisé : D-180 (PR #70) peut être fusionné et déployé sur autorisation.",
+      "lastReviewed": "2026-11-03",
+      "notes": "Officialisé v2026.11.03-prod (c154f18, OFFICIAL, 2026-11-03 21:16 UTC), activé le 2026-11-03 11:25 UTC ; la release 1e45953 (2026-11-02, PENDING_VALIDATION) n'a jamais été officialisée. Rollback : deploy.sh rollback 1e45953 (code seul, présences compatibles) ; vers d9e6ee9 seulement avec les verrous SQL (deploy/rollback/d156/). Postes #3/#4/#5 du Dr Deltour inchangés. Tarif de Salve tranché (65 €/h à partir du 01/10, jamais rétroactif)."
+    },
+    {
+      "id": "D-156-ENCODAGE-UNIQUE",
+      "title": "Complément D-156 : un seul encodage par prestation multi-salles",
+      "description": "Aucun choix de salle pour l'instrumentiste : une prestation « Multi-salles · N missions », une saisie d'heures, une liste d'interventions et de matériel, une soumission. Contenu enregistré sur une mission de référence choisie par le serveur (plus petit id parmi les missions encodées, sinon plus petit id) ; ajout refusé ailleurs (409 PRESTATION_REFERENCE_REQUIRED). Justification « sans matériel » appréciée sur toute la prestation. Validation, renvoi en correction, réouverture et « Terminer et valider » du manager sur toute la prestation, une notification par prestation. Une seule liste d'interventions pour toute la prestation (historique compris, GET /prestation/encoding) ; matériel ajoutable à une intervention historique, qui reste sur sa mission. Aucune migration, aucun tarif ni formule financière modifiés, historique conservé sur sa mission d'origine.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Instrumentiste sur deux salles du même chirurgien : devait choisir une salle pour chaque intervention et chaque matériel.",
+      "status": "deploye",
+      "statusSince": "2026-11-03",
+      "refs": {
+        "decision": "D-156",
+        "branches": [
+          "feat/d156-prestation-encodage-unique"
+        ],
+        "worktrees": [
+          "SurgicalHub-prestation-unique"
+        ],
+        "prs": [
+          69
+        ],
+        "commits": [
+          "9327cb8",
+          "366627f"
+        ]
+      },
+      "validationNeeded": "Déployé et officialisé avec D-156 (v2026.11.03-prod, c154f18, 2026-11-03). Réserve de recette ouverte : soumission commune et validation manager de la prestation réelle 426/427 non encore vérifiées (suivi sur D-156).",
+      "nextAction": "Clôturer la réserve avec D-156 après la soumission de Salve (426/427) et la validation manager.",
+      "lastReviewed": "2026-11-03",
+      "notes": "Décisions utilisateur du 2026-11-02 : référence décidée par le serveur, refus explicite hors référence (jamais de redirection), décisions manager sur toute la prestation, livraison séparée de D-156. Décisions du 2026-11-02 (2) : liste réellement unifiée, matériel autorisé sur intervention historique, stabilité de la référence vérifiée.\nPR #69 fusionnée (main 366627f, arbre testé 9327cb8). Frontend 2040/2040 en CI, recette visuelle isolée complète. Non déployé au 2026-11-03.\nDéployé dans c154f18 (activation 2026-11-03 11:25 UTC, aucune release 366627f distincte : main contenait aussi #68), officialisé v2026.11.03-prod le 2026-11-03."
+    },
+    {
+      "id": "D-139",
+      "title": "Traçabilité de la résolution des demandes catalogue",
+      "description": "Manager, date exacte et élément du catalogue enregistrés à la résolution d'une demande (PR #4, titre encore « D-138 »).",
+      "kind": "feature",
+      "priority": "P3",
+      "userImpact": "Manager : on ne sait pas qui a résolu une demande catalogue ni quand exactement.",
+      "status": "bloque",
+      "statusSince": "2026-10-08",
+      "blockedReason": "130 commits de retard, conflits (decisions.md, MaterialItemRequestService, MissionInterventionDraftService depuis D-146 bis) ; décision de rattrapage historique ouverte.",
+      "refs": {
+        "decision": "D-139",
+        "branches": [
+          "feat/catalogue-request-resolution-traceability"
+        ],
+        "prs": [
+          4
+        ],
+        "worktrees": [
+          "SurgicalHub-catalogue-comment"
+        ]
+      },
+      "validationNeeded": "Décider : reprendre (rebase) ou abandonner.",
+      "nextAction": "Demander à l'utilisateur si D-139 est toujours voulu.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-167",
+      "title": "Alertes de conflit synchronisées avec le planning réel",
+      "description": "Une alerte par paire, réconciliée quel que soit le côté modifié ; « Vérifier les conflits » réconcilie. Déployé v2026.10.24-prod.",
+      "kind": "fix",
+      "priority": "P2",
+      "userImpact": "Manager : alertes de conflit obsolètes qui restaient ouvertes.",
+      "status": "valide-production",
+      "statusSince": "2026-10-24",
+      "prodEvidence": "v2026.10.24-prod (fd91eaf), contrôles API 11/11 en lecture seule, Mon profil OFFICIAL (docs/production.md).",
+      "refs": {
+        "decision": "D-167",
+        "prs": [
+          41
+        ],
+        "commits": [
+          "3992a19"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "description": "26 alertes de conflit OPEN obsolètes (16 SURGEON_CONFLICT double salle chirurgien #8, 10 INSTRUMENTIST_CONFLICT instrumentiste #18) — recompté le 2026-10-24 : 16 + 10 OPEN",
+          "validation": "décision du manager (réconciliation contrôlée version par version, ou au fil des modifications)"
+        }
+      ],
+      "nextAction": "Décision utilisateur sur la réconciliation des 26 alertes.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-159-ABSENCES-66-67",
+      "title": "Salles libérées des absences #66/#67 (postes #3–#7)",
+      "description": "Le rattrapage D-160 a couvert 7 absences / 9 salles le 2026-10-21. Les absences #66/#67 du chirurgien concerné restent sans salle libérée : ses postes #3–#7 ont été modifiés le 2026-10-10 et attendent une validation métier ; missions #429/#430 et alertes #59/#60 associées.",
+      "kind": "data",
+      "priority": "P2",
+      "userImpact": "Chirurgiens : salles libérées par les absences #66/#67 non proposées.",
+      "status": "bloque",
+      "statusSince": "2026-10-21",
+      "blockedReason": "Validation métier des postes #3–#7 attendue.",
+      "refs": {
+        "decision": "D-159",
+        "prs": [
+          26,
+          28
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Valider les postes #3–#7 (JOURNEE/MATIN/APRES_MIDI, instrumentistes)",
+          "validation": "utilisateur"
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "description": "app:available-rooms:backfill --dry-run --absence=66,67 puis réel sur accord",
+          "validation": "accord explicite"
+        }
+      ],
+      "nextAction": "Présenter les postes #3–#7 pour validation.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-142-DATA",
+      "title": "Matériel à régulariser : éléments sans décision",
+      "description": "Au 2026-10-11 : 45 éléments (40 UNSPECIFIED, 5 BILLABLE), 31 missions bloquées par le matériel. Aucune décision de facturation prise depuis.",
+      "kind": "data",
+      "priority": "P2",
+      "userImpact": "Facturation : missions bloquées tant que le matériel n'est pas régularisé.",
+      "status": "bloque",
+      "statusSince": "2026-10-11",
+      "blockedReason": "Décisions de facturation attendues de l'utilisateur (aucune régularisation sans décision explicite).",
+      "refs": {
+        "decision": "D-142",
+        "prs": [
+          8
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Décider la facturation des ~40 éléments UNSPECIFIED (chiffre du 2026-10-11, non revérifié)",
+          "validation": "utilisateur, via « Matériel à régulariser »"
+        }
+      ],
+      "nextAction": "Recompter en lecture seule et présenter la liste.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-143-DATA",
+      "title": "Missions soumises ou validées sans horaires réels",
+      "description": "Missions 434 et 1225 (VALIDATED, réouverture possible), 435, 451 et 1224 (SUBMITTED, renvoi possible) sans heures ; 434/435/451 = instrumentiste #35. Rapport : docs/incidents/2026-10-11-missions-soumises-sans-horaires.md.",
+      "kind": "data",
+      "priority": "P2",
+      "userImpact": "Facturation et relevés impossibles pour ces missions.",
+      "status": "bloque",
+      "statusSince": "2026-10-11",
+      "blockedReason": "Régularisation par l'interface (renvoyer/rouvrir) non autorisée par l'utilisateur à ce jour.",
+      "refs": {
+        "decision": "D-143"
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Renvoyer en correction 435/451/1224 et rouvrir 434/1225 depuis « Suivi des encodages »",
+          "validation": "manager (aucune modification SQL)"
+        }
+      ],
+      "nextAction": "Demander au manager de régulariser via l'interface.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-149-DATA",
+      "title": "Compte générique #62 et missions OPEN passées",
+      "description": "Le compte #62 (actif, dans le pool OPEN, reçoit de vrais e-mails et push) ressemble à un compte générique ou de test ; missions OPEN passées 396, 490, 491, 492, 1052.",
+      "kind": "data",
+      "priority": "P2",
+      "userImpact": "Notifications réelles envoyées à un compte peut-être sans titulaire ; missions passées encore ouvertes.",
+      "status": "a-analyser",
+      "refs": {
+        "decision": "D-149"
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Confirmer le titulaire de #62 (désactiver ou conserver)",
+          "validation": "utilisateur"
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Statuer sur les missions OPEN passées 396/490/491/492/1052",
+          "validation": "utilisateur"
+        }
+      ],
+      "nextAction": "Poser la question à l'utilisateur.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "OPS-ROTATE-2026-10-23",
+      "title": "Modifications serveur hors dépôt du 2026-10-23 (rotation corrigée, archive hebdomadaire)",
+      "description": "rotate_backups.sh corrigé sur le serveur (supprime réellement > 30 jours, local + miroir Drive via sync_gdrive.sh) après archivage de 150 dumps dans gdrive:…/archive-mysql-20261023 ; archive_mysql_weekly.sh ajouté (dimanche 02:30). Fait par la session MedVue, documenté dans medvue/docs/backup.md, absent de ce dépôt.",
+      "kind": "ops",
+      "priority": "P2",
+      "userImpact": "Chaque nuit, les dumps quotidiens de plus de 30 jours sont supprimés (un par mois reste archivé).",
+      "status": "a-analyser",
+      "refs": {
+        "serverPaths": [
+          "/home/deploy/scripts/rotate_backups.sh",
+          "/home/deploy/scripts/rotate_backups.sh.orig-20261023",
+          "/home/deploy/scripts/archive_mysql_weekly.sh"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Versionner ces scripts (ou les remplacer par D-164) et décider de l'interaction avec D-164",
+          "validation": "utilisateur"
+        }
+      ],
+      "nextAction": "Traiter avec D-164 (étape « archive hebdomadaire »).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "OPS-SERVER-SCRIPTS",
+      "title": "Scripts cron de production non versionnés",
+      "description": "missions_start_due.sh (D-064), check_uncovered_escalations.sh (D-110), send_encoding_reminders.sh (D-143/D-144) et l'ancien système de sauvegarde (backup_mysql.sh, backup_uploads.sh, sync_gdrive.sh) n'existent que sur le serveur ; empreintes de référence dans deploy/production/server-reference/manifest.json.",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun direct ; un serveur reconstruit perdrait ces tâches.",
+      "status": "a-analyser",
+      "refs": {
+        "serverPaths": [
+          "/home/deploy/scripts/missions_start_due.sh",
+          "/home/deploy/scripts/check_uncovered_escalations.sh",
+          "/home/deploy/scripts/send_encoding_reminders.sh",
+          "/home/deploy/scripts/backup_mysql.sh",
+          "/home/deploy/scripts/backup_uploads.sh",
+          "/home/deploy/scripts/sync_gdrive.sh"
+        ]
+      },
+      "nextAction": "Proposer de les versionner dans deploy/server/ (copie à l'identique, sans installation).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "WT-MAIN-H1H8",
+      "title": "Dossier principal : ancienne copie non commitée du chantier H1–H8",
+      "description": "C:\\wamp64\\www\\SurgicalHub (main local à 815831e) contient des modifications non commitées du 2026-10-03 au 2026-10-06. Vérifié le 2026-10-24 : chaque fichier modifié ou supprimé est identique (fins de ligne près) à main ou à l'instantané snapshot/h1-h8-wip-2026-10-11 (05d5b39, contenu dans main). EXCEPTION : 17 fichiers non suivis absents de Git — consignes de design « docs/design/Instruction design/Mission-drawer/ » (2026-10-24, base de D-168) et « …/Affichage heure dans suivi des encodage/ » (2026-10-11).",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun ; risque de confusion pour une session qui travaillerait dans ce dossier.",
+      "status": "a-analyser",
+      "refs": {
+        "worktrees": [
+          "SurgicalHub"
+        ],
+        "preservedIn": [
+          "snapshot/h1-h8-wip-2026-10-11"
+        ]
+      },
+      "validationNeeded": "Décision de nettoyage par l'utilisateur (ne rien modifier sans accord).",
+      "nextAction": "Décider de versionner les 17 fichiers de design (sinon ils n'existent que sur ce poste), puis proposer de remettre le dossier sur main une fois l'accord donné.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "BR-OBSOLETE",
+      "title": "Branches dont le contenu est intégré autrement",
+      "description": "fix/manager-notification-test-accounts (D-149, intégré par la PR #19 en c2a6bd6, même sujet) ; backup/firm-billing-pre-rebase-c9c25e1 (4 commits D-133→D-137, rebasés dans main sous les mêmes sujets) ; backup/pre-push-history-fix (2 commits de juillet, mêmes sujets dans main).",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun.",
+      "status": "a-analyser",
+      "refs": {
+        "branches": [
+          "fix/manager-notification-test-accounts",
+          "backup/firm-billing-pre-rebase-c9c25e1",
+          "backup/pre-push-history-fix"
+        ]
+      },
+      "validationNeeded": "Archivage éventuel sur décision (comparer le contenu, pas seulement les sujets).",
+      "nextAction": "Proposer l'archivage après comparaison des diffs.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "WT-DETACHED",
+      "title": "Worktrees détachés de vérification",
+      "description": "SurgicalHub-commit-check (3b8c9c0) et SurgicalHub-surgeon-refusal-baseline (8b61500), propres et contenus dans main ; ainsi que 19 worktrees de branches déjà fusionnées.",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun.",
+      "status": "a-analyser",
+      "refs": {
+        "worktrees": [
+          "SurgicalHub-commit-check",
+          "SurgicalHub-surgeon-refusal-baseline"
+        ]
+      },
+      "nextAction": "Proposer le nettoyage des worktrees fusionnés (sur accord).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "UX-MANAGER-MOBILE",
+      "title": "Interface manager / admin utilisable sur téléphone",
+      "description": "Sous 900 px : barre supérieure (menu, cloche) et navigation en tiroir à la place de la sidebar permanente ; tableaux défilants, tiroirs pleine largeur, en-têtes et filtres qui passent à la ligne, Planning V2 et Prestations empilés. Mise en page seulement : aucune règle métier, aucun backend, aucune migration.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Manager sur téléphone : écrans difficiles à utiliser.",
+      "status": "deploye",
+      "statusSince": "2026-11-06",
+      "refs": {
+        "branches": [
+          "feat/manager-admin-responsive"
+        ],
+        "decision": "D-185",
+        "worktrees": [
+          "SurgicalHub-responsive"
+        ],
+        "prs": [
+          79
+        ],
+        "commits": [
+          "ad45ef6582360ebe3c0184874ebad61e066ef190"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : utilisation réelle de l'interface manager/admin sur un vrai téléphone (menu, tableaux défilants, tiroirs), à confirmer par l'utilisateur."
+        }
+      ],
+      "nextAction": "Officialisé v2026.11.06-prod (ad45ef6). Clôturer la réserve après retour de l'utilisateur sur téléphone. Rollback : deploy/deploy.sh rollback 8707cd16ef3620bb550c5a3d67e4d070cc15ff27.",
+      "lastReviewed": "2026-11-06",
+      "validationNeeded": "Contrôles de santé validés en production ; recette 390 px faite en local. Retour de l'utilisateur sur un vrai téléphone encore attendu.",
+      "prodEvidence": "v2026.11.06-prod (ad45ef6) : 0 migration (99/99) ; activate 2026-11-06 07:34 UTC ; mark OFFICIAL ; bundle servi contenant la barre mobile ; /api/me MANAGER : voir docs/production.md."
+    },
+    {
+      "id": "DEBT-MUI-TOOLTIP",
+      "title": "Avertissement MUI : Tooltip sur bouton désactivé",
+      "description": "Avertissement console relevé pendant la recette D-165.",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun visible.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Envelopper le bouton désactivé dans un span.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "TEST-DST",
+      "title": "Test dépendant du changement d'heure (SurgeonAssignmentRefusalFunctionalTest)",
+      "description": "Échoue autour du 25/10 (passage à l'heure d'hiver), identique sans D-167.",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; suite backend rouge certains jours.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Figer l'horloge du test (ClockSensitiveTrait).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "TEST-TIMEZONE",
+      "title": "MissionBusinessTimezoneIntegrationTest en échec préexistant",
+      "description": "Échec reproduit à l'identique sans D-167 (relevé le 2026-10-24).",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; suite backend rouge.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Diagnostiquer.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "TEST-MEMLIMIT",
+      "title": "PlanningV2DraftControllerTest plafonne la mémoire du processus (256M)",
+      "description": "ini_set('memory_limit','256M') dans le test casse l'exécution complète de PHPUnit (OOM) ; contourné par un lancement fichier par fichier.",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; suite complète impossible en un seul processus.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Retirer le ini_set ou restaurer la limite après le test.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "TEST-VITEST-TIMEOUTS",
+      "title": "Délais dépassés Vitest sous charge",
+      "description": "10 à 11 tests en timeout lors des suites complètes (GeneratePlanningTab, PlanningSchedulePage…), verts en isolé.",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; bruit dans les rapports de tests.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Augmenter le testTimeout des fichiers lents ou alléger leurs rendus.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "DOC-HEALTHZ",
+      "title": "Documentation : /api/health au lieu de /healthz",
+      "description": "docs/production.md ligne 21 cite /api/health (404) ; la route réelle est /healthz.",
+      "kind": "docs",
+      "priority": "P3",
+      "userImpact": "Aucun.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Corriger la ligne (hors historique, qui ne se réécrit pas).",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "H-D114-SHIFTPERIOD",
+      "title": "Anomalie D-114 / ShiftPeriodConfig relevée pendant H1–H8",
+      "description": "Relevée le 2026-10-05 sans correction ; probablement couverte par D-158 (neutralisation des occurrences non générées). Non vérifié.",
+      "kind": "fix",
+      "priority": "P3",
+      "userImpact": "À confirmer.",
+      "status": "a-analyser",
+      "refs": {},
+      "nextAction": "Vérifier si D-158 l'a corrigée ; sinon décrire et prioriser.",
+      "lastReviewed": "2026-10-24"
+    },
+    {
+      "id": "D-171",
+      "title": "Encodage sans instrumentiste et reprise manager : « Terminer et valider », blocages expliqués",
+      "description": "Cause du bouton « Valider l'encodage » grisé sur #1079 : validate exige SUBMITTED et l'action submit servie au manager n'était affichée nulle part. Ajout de POST .../encoding/complete-and-validate, raison du blocage servie, auteur de la soumission dans le suivi. Reprise manager d'un encodage non soumis (confirmation explicite, empreinte anti-concurrence, audit MISSION_ENCODING_TAKEN_OVER, notification ENCODING_TAKEN_OVER), validation indépendante des heures (jamais inventées ; encore déclarables après validation). En-têtes D-153/154/155 corrigés après vérification en production.",
+      "kind": "fix",
+      "priority": "P1",
+      "userImpact": "Les managers ne peuvent pas valider les missions encodées sans instrumentiste (#1079).",
+      "status": "valide-production",
+      "refs": {
+        "branches": [
+          "feat/encodage-sans-instrumentiste"
+        ],
+        "decision": "D-171",
+        "migrations": [
+          "Version20261027090000"
+        ],
+        "worktrees": [
+          "SurgicalHub-encodage-chirurgien"
+        ],
+        "prs": [
+          47
+        ]
+      },
+      "nextAction": "Validé en production (tests manuels, 2026-10-29). Reste : « Terminer et valider » de #1079 par un manager, puis calcul firme.",
+      "lastReviewed": "2026-10-29",
+      "pendingOps": [
+        {
+          "type": "reprise-donnees",
+          "status": "fait",
+          "description": "Migration additive Version20261027090000 (mission.encoding_validated_without_hours_at) à jouer au déploiement",
+          "validation": "accord final de déploiement",
+          "confirmedAt": "2026-10-29",
+          "evidence": "deploy.sh migrate 2026-10-29 05:37:18 UTC : Version20261027090000 exécutée, 91/91, colonnes présentes (docs/production.md, v2026.10.29-prod)."
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Après déploiement : « Terminer et valider » de la mission #1079 par un manager depuis l'interface, sans script ni modification des données existantes",
+          "validation": "utilisateur"
+        }
+      ],
+      "prodEvidence": "v2026.10.29-prod (8b3a962) activé le 2026-10-29 05:37 UTC par deploy.sh, migration Version20261027090000 appliquée (91/91), mark OFFICIAL ; contrôles API publique en lecture seule 27/27 (comptes jetables supprimés), #1079 : « Terminer et valider » proposé ; tests manuels de la version validés par l'utilisateur le 2026-10-29 (docs/production.md)."
+    },
+    {
+      "id": "D-172",
+      "title": "Tarifs instrumentistes à date d'effet choisie, état d'encodage et verrous réels des missions, annulées masquées, délégué « non renseigné »",
+      "description": "Date de prise d'effet rétroactive (frontière déplacée, période verrouillée refusée, calculs obsolètes signalés et recalculés à la demande), ancien flux tarifaire retiré de la fiche, état d'encodage NOT_DECLARED et bloc encoding (auteur, verrous par niveau) dans la liste et le détail manager, annulées masquées par défaut avec compteur, délégué « Information non renseignée » en correction manager. Diagnostic #1079 : même cause que D-171.",
+      "kind": "fix",
+      "priority": "P1",
+      "userImpact": "Tarif de Salve inapplicable avant le 11/10 ; missions passées sans instrumentiste illisibles ; Validée/Verrouillée confondues ; listes encombrées d'annulées.",
+      "status": "valide-production",
+      "refs": {
+        "branches": [
+          "fix/tarifs-missions-encodage"
+        ],
+        "decision": "D-172",
+        "worktrees": [
+          "SurgicalHub-tarifs-missions"
+        ],
+        "prs": [
+          48
+        ]
+      },
+      "nextAction": "Validé en production (tests manuels, 2026-10-29). Salve régularisée ; reste #1079 (suivi sous D-171).",
+      "lastReviewed": "2026-10-29",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "fait",
+          "description": "Après déploiement : fiche de Salve Decorte, « Modifier la date d'effet » du tarif 65 € au 01/10/2026 (vérifier l'aperçu), recalculer les prestations listées dont la mission #1039 depuis leur tiroir, contrôler les montants avant approbation (aucun script)",
+          "validation": "utilisateur",
+          "confirmedAt": "2026-10-29",
+          "evidence": "Lecture seule 2026-10-29 : audit INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED 05:45:06 UTC (rate 12 depuis 2026-10-01, rate 8 jusqu'au 2026-10-01) ; #1039 calcul 29 (INSTRUMENTIST_HOURLY 11 h × 65 € = 715 €) approuvé 05:46:22 et verrouillé 05:46:23, calcul 27 (0 €) SUPERSEDED."
+        }
+      ],
+      "prodEvidence": "v2026.10.29-prod (8b3a962), mark OFFICIAL ; contrôles API publique en lecture seule (annulées masquées, « Aucun encodage », verrous, aperçu de date d'effet sans écriture) ; tests manuels validés par l'utilisateur le 2026-10-29 ; régularisation Salve faite depuis l'interface (#1039 : 715 € verrouillé, docs/production.md)."
+    },
+    {
+      "id": "D-173",
+      "title": "Heures réelles affichées telles que déclarées (tiroir mission, suivi des encodages)",
+      "description": "Durée seule (#1218) et déclarations partielles affichées sans borne ni durée inventée ; barre « Réel » remplie uniquement par une durée déclarée ; explication du verrou fondée sur les droits et motifs servis. Frontend uniquement.",
+      "kind": "fix",
+      "priority": "P2",
+      "userImpact": "« — » inexpliqués sur 48 exécutions sur 75 ; durée planifiée affichée comme réelle sur une déclaration partielle.",
+      "status": "deploye",
+      "refs": {
+        "branches": [
+          "fix/affichage-heures-reelles"
+        ],
+        "decision": "D-173",
+        "worktrees": [
+          "SurgicalHub-heures-reelles"
+        ],
+        "prs": [
+          51
+        ]
+      },
+      "nextAction": "Déployé v2026.10.29-prod-2 (23cb707). Reste : validation fonctionnelle par l'utilisateur.",
+      "lastReviewed": "2026-10-29",
+      "prodEvidence": "v2026.10.29-prod-2 (23cb707) activé le 2026-10-29 10:10 UTC par deploy.sh, aucune migration (91/91), mark OFFICIAL ; contrôles API publique en lecture seule (comptes jetables supprimés) et session manager existante : voir docs/production.md. #1218 : « 8h30 · déclarée », bornes « Non renseigné », motif du verrou financier ; barre « Réel » vide sans heure (#1081)."
+    },
+    {
+      "id": "D-174",
+      "title": "Une seule pastille de statut par mission côté manager",
+      "description": "Pastille + ligne grise (vue par jour, tableau, tiroir) à la place du statut, du badge d'encodage et du cadenas ; verrou le plus restrictif servi, finalisation par le chirurgien conservée, encoding.started servi par le serveur, filtres alignés sur les pastilles.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Jusqu'à deux pastilles et un cadenas par mission dans la liste manager.",
+      "status": "deploye",
+      "refs": {
+        "branches": [
+          "feat/mission-status-pill",
+          "fix/libelle-a-approuver"
+        ],
+        "decision": "D-174",
+        "worktrees": [
+          "SurgicalHub-mission-status"
+        ],
+        "prs": [
+          52,
+          53
+        ]
+      },
+      "nextAction": "Déployé v2026.10.29-prod-2 (23cb707), terminologie « À approuver » (DECLARED) / « À valider » (SUBMITTED) incluse. Reste : validation fonctionnelle par l'utilisateur.",
+      "lastReviewed": "2026-10-29",
+      "prodEvidence": "v2026.10.29-prod-2 (23cb707) activé le 2026-10-29 10:10 UTC par deploy.sh, aucune migration (91/91), mark OFFICIAL ; contrôles API publique en lecture seule (comptes jetables supprimés) et session manager existante : voir docs/production.md. Une pastille par mission, verrous réels (21 calcul financier, 2 encodage), encoding.started sur 236/236 missions passées, onglet et tuile « À approuver »."
+    },
+    {
+      "id": "D-175",
+      "title": "Fiabilisation Web Push : réconciliation, endpoints morts, accusés de réception",
+      "description": "POST /api/push/sync à l'ouverture (reconnu / enregistré / renouvelé / à renouveler), mémoire des endpoints 404/410 jamais réenregistrés, renouvellement anti-boucle, pushsubscriptionchange par jeton d'appareil dédié, accusés du service worker (reçu, affichage demandé, ouvert), détection journalisée des échecs silencieux sans renouvellement automatique, état de l'appareil dans Mon profil ; D-081 révisé : aucun transfert d'abonnement entre comptes.",
+      "kind": "feature",
+      "priority": "P1",
+      "userImpact": "Un abonnement push mort côté navigateur pouvait rester accepté (201) sans aucune notification affichée ; seule une désactivation/réactivation manuelle le réparait (cas du 29/10, compte #11, cause historique non démontrée).",
+      "status": "deploye",
+      "statusSince": "2026-10-30",
+      "refs": {
+        "branches": [
+          "feat/push-reliability"
+        ],
+        "decision": "D-175",
+        "worktrees": [
+          "SurgicalHub-push-reliability"
+        ],
+        "prs": [
+          55
+        ],
+        "commits": [
+          "5b5b914f15ab5b7b79cb0c57400168978a4866c8",
+          "45b87ee09ac27a8cb6729df88064e6daa1a1befe",
+          "e177fa1f54c8a9e17b19dae5cb950ffddbea745e"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "description": "Test réel sur un appareil et un compte de test dédiés (jamais l'abonnement Android #28) : réception, accusé RECEIVED, affichage demandé, ouverture, désactivation durable ; non réalisé au déploiement (aucun second appareil disponible pour l'agent)."
+        },
+        {
+          "type": "activation-configuration",
+          "status": "en-attente",
+          "description": "Après la surveillance de 48 h (jusqu'au 2026-11-01 06:37 UTC) et sur décision de l'utilisateur : PUSH_AUTO_RENEW_INVALIDATED=1 ; seuils de suspicion à décider sur mesures avant tout PUSH_AUTO_RENEW_SUSPECTED=1."
+        }
+      ],
+      "nextAction": "Déployé v2026.10.30-prod (d32dbe7) en observation, drapeaux à 0 vérifiés dans les conteneurs. Reste : surveillance 48 h, test réel sur appareil dédié, puis décision séparée sur l'activation de la réparation automatique.",
+      "lastReviewed": "2026-10-30",
+      "prodEvidence": "v2026.10.30-prod (d32dbe7) activé le 2026-10-30 06:37 UTC par deploy.sh, migration Version20261030090000 (92/92), mark OFFICIAL ; 7 abonnements préexistants identiques ; API publique 24/24 avec comptes jetables supprimés : voir docs/production.md."
+    },
+    {
+      "id": "D-177",
+      "title": "Reprise de salle : publication immédiate, priorité exclusive de 48 h, demande chirurgien = vraie reprise",
+      "description": "Mission de reprise publiée dans la transaction (priorité TARGETED avec échéance 48 h à l'instrumentiste habituelle, sinon pool avec motif), expiration automatique (message différé + commande de rattrapage), fin sur refus / absence / levée manager, historique par créneau, correspondance demande chirurgien ↔ salle libérée acceptée comme reprise, publication au pool idempotente, commande de régularisation administrative. Périmètre strict : seules les priorités de reprise sont closes ou rouvertes au pool ; les demandes D-125 ordinaires gardent le comportement d'avant (audit de non-régression du 2026-10-31).",
+      "kind": "feature",
+      "priority": "P1",
+      "userImpact": "Incident du 4 novembre : une reprise faite par demande libre restait en brouillon 53 jours, les salles libérées du jour restaient reprenables (double occupation possible) et la publication au pool a notifié deux fois chaque instrumentiste.",
+      "status": "deploye",
+      "statusSince": "2026-10-31",
+      "refs": {
+        "branches": [
+          "feat/room-takeover-priority"
+        ],
+        "decision": "D-177",
+        "worktrees": [
+          "SurgicalHub-room-priority"
+        ],
+        "prs": [
+          58,
+          61
+        ],
+        "migrations": [
+          "Version20261030150000"
+        ],
+        "commits": [
+          "36b3967afb71ebac07386efd465ab41c160f5ab3",
+          "69f1732dbcf2a4e30bb809d2edd10728b82914c3",
+          "953ce9a7c83925a14ccecb0e56c97833439f54bd"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "reprise-donnees",
+          "status": "fait",
+          "description": "Régularisation salle #14 ↔ mission #626 uniquement (#15/#16 non touchées) : sauvegarde ciblée, nouveau dry-run, exécution sur accord distinct de l'utilisateur.",
+          "validation": "accord utilisateur (2026-10-31), rapport avant/après validé",
+          "confirmedAt": "2026-10-31",
+          "evidence": "app:released-rooms:regularize-takeover --slot=14 --mission=626 --request=1 : dry-run 11/11 OK puis --execute 2026-10-31 14:20:41 UTC (une seule fois) ; salle #14 CLAIMED (claimed_by #15, takeover_mission #626), audit #1373 ROOM_SLOT_TAKEOVER_REGULARIZED ; #626 inchangée (ASSIGNED #19, 07:45–17:00), #15/#16 et les 38 autres salles inchangées, missions/affectations/publications identiques, 0 notification, 0 priorité ; sauvegarde regularisation-14-626_20261031_142018.sql.gz, traces /home/deploy/d177/runs/regul14_20261031_142018."
+        },
+        {
+          "type": "validation",
+          "status": "fait",
+          "description": "Trois libellés d'interface d'avant D-177 à corriger (dialogue de reprise chirurgien, carte d'offre prioritaire, dialogue de refus) — non bloquant, sur décision.",
+          "validation": "accord utilisateur (PR #61 fusionnée, déploiement autorisé 2026-10-31)",
+          "confirmedAt": "2026-10-31",
+          "evidence": "PR #61 (ec14cb1, merge 9e922c7) déployée v2026.10.31-prod-2 (OFFICIAL) le 2026-10-31 16:15 UTC ; bundle servi index-4e06xFW8.js : nouveaux libellés présents, libellés des demandes nominatives ordinaires conservés, anciens libellés absents."
+        },
+        {
+          "type": "validation",
+          "status": "fait",
+          "description": "Salles libérées #15 (matin) et #16 (après-midi) du 04/11, même absence #64 que #14 : ne pas supposer une seconde salle indépendante ; disponibilité physique réelle à confirmer avec le bloc avant le 04/11. Aucune modification de données de production pour #15/#16 sans accord explicite.",
+          "validation": "confirmation utilisateur après vérification auprès du bloc (2026-10-31)",
+          "confirmedAt": "2026-10-31",
+          "evidence": "D-160 : organisation confirmée — aucun correctif nécessaire. Le mercredi, Delta compte deux salles physiques : #14 (journée, reprise par la mission #626) et une seconde salle découpée en #15 (matin) et #16 (après-midi) pour organiser les instrumentistes (une instrumentiste couvre les deux salles le matin, deux l'après-midi). #15/#16 restent reprenables selon les règles habituelles ; aucun mécanisme de suspension, aucune donnée de production modifiée."
+        }
+      ],
+      "nextAction": "Déployé v2026.10.31-prod (953ce9a) puis v2026.10.31-prod-2 (9e922c7, libellés) le 2026-10-31 ; cron */5 vérifié ; régularisation #14 ↔ #626 effectuée (audit #1373) ; D-160 clos (#15/#16 = seconde salle réelle). Aucune opération restante.",
+      "lastReviewed": "2026-10-31",
+      "prodEvidence": "v2026.10.31-prod (953ce9a) : migration pré-bascule Version20261030150000 (09:44 UTC, d32dbe7 en service), activate 11:00 UTC, migrate 93/93, mark OFFICIAL ; empreintes publications/missions/salles identiques, 0 notification créée ; cron room_takeover_expire_priorities.sh */5 (OK 11:15, 11:20) ; repli : branche rollback/d177 : voir docs/production.md."
+    },
+    {
+      "id": "D-178",
+      "title": "Encodage : firmes et interventions récemment utilisées, recherche instantanée, interventions sans firme",
+      "description": "Raccourcis « Firmes récemment utilisées » (utilisateur connecté) et « Interventions récemment utilisées avec cette firme et ce chirurgien » (chirurgien de la mission) dans l'ajout et la correction d'une intervention, recherche instantanée sans casse ni accents, navigation clavier ; colonne mission_intervention.created_by_id ; flux métier (matériel, choix obligatoire/exclusif, délégué) inchangé. Interventions sans firme (décision 2026-11-01, amende D-146 bis) : « Aucune firme » à l'étape 1, types autorisés par le manager (intervention_type.allowed_without_firm), choix enregistré sur l'intervention (mission_intervention.without_firm) et la demande (mission_intervention_draft.without_firm) ; complétude, calcul financier (pas d'anomalie MISSING_PRIMARY_FIRM) et facturation alignés ; validité historique conservée si l'autorisation est retirée.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Encoder une intervention fréquente demandait de parcourir toute la liste des firmes puis une liste déroulante de types.",
+      "status": "deploye",
+      "statusSince": "2026-11-01",
+      "refs": {
+        "branches": [
+          "feat/encodage-suggestions-recherche",
+          "rollback/d178-compat"
+        ],
+        "decision": "D-178",
+        "worktrees": [
+          "SurgicalHub-d178"
+        ],
+        "prs": [
+          57
+        ],
+        "migrations": [
+          "Version20261031180000"
+        ],
+        "commits": [
+          "b271f4284ac8ba37cec880a0ca47b16b3291b6c4",
+          "304d6079885284c9a01cc7878c1e876c5f677fca"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "fait",
+          "confirmedAt": "2026-11-01",
+          "description": "Validation utilisateur du parcours, y compris « Aucune firme », avant fusion.",
+          "evidence": "GO fusion PR #57 (2026-11-01), GO production conditionnel (2026-11-01)."
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "fait",
+          "confirmedAt": "2026-11-01",
+          "description": "Migration additive Version20261031180000 jouée AVANT la bascule (le nouveau code sur l'ancien schéma répond 500 à la lecture de l'encodage).",
+          "evidence": "Jouée 2026-11-01 10:25:38 UTC depuis l'image 304d607, 9e922c7 en service ; 94/94 ; aucune ligne marquée."
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Le manager autorise « Aucune firme » depuis Catalogue › Interventions pour CLE (id 54) et SUT-PLAS-TEND-QUAD (id 58) — jamais par écriture directe en base."
+        },
+        {
+          "type": "reprise-donnees",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Interventions historiques sans firme (8 : #15, #16, #73, #74, #75, #76, #95, #99) : contrôle personnel de l'utilisateur dans l'application ; aucune correction automatique."
+        }
+      ],
+      "nextAction": "Activation par l'utilisateur de CLE (54) et SUT-PLAS-TEND-QUAD (58) dans Catalogue › Interventions ; contrôle personnel des 8 interventions historiques. En cas d'incident : deploy.sh activate 38b4469a95070427bb7ad284a8594dd01a6c5dbc (repli compatible).",
+      "lastReviewed": "2026-11-01",
+      "prodEvidence": "v2026.11.01-prod (304d607) : migration Version20261031180000 jouée depuis l'image 304d607 à 10:25:38 UTC, 9e922c7 en service (94/94, SQL identique au validé) ; activate 10:27 UTC, migrate « Already at latest », mark OFFICIAL ; instantanés financiers/interventions/demandes identiques avant migration, après migration et après activation ; 8 interventions historiques inchangées ; calcul à blanc identique 9e922c7 / 304d607 / repli 38b4469 sur 77 missions ; cron D-177 OK 10:30 ; repli prêt : release 38b4469 (rollback/d178-compat) construite : voir docs/production.md."
+    },
+    {
+      "id": "D-179",
+      "title": "« Mes heures » : relevé mensuel personnel de l'instrumentiste",
+      "description": "Écran /app/i/hours (onglet « Heures », « Mes heures » dans le rail) et endpoint self-scopé GET /api/me/hours : heures encodées (soumises + validées, CLOSED inclus) et validées du mois, heures réelles uniquement, aucune pause ni heure planifiée, passage de minuit, filtre par site sur listes, compteurs et montants ; estimation indicative au tarif personnel (horaire bloc, forfait consultation) visible uniquement par l'intéressé, sans tarif firme ni donnée manager ni texte libre patient. Aucune migration.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "L'instrumentiste n'avait aucun écran récapitulant ses heures encodées et validées ni l'estimation correspondante.",
+      "status": "deploye",
+      "statusSince": "2026-11-01",
+      "refs": {
+        "branches": [
+          "feat/mes-heures"
+        ],
+        "decision": "D-179",
+        "worktrees": [
+          "SurgicalHub-mes-heures"
+        ],
+        "prs": [
+          65,
+          66
+        ],
+        "commits": [
+          "ab6546a2f15d149f17a384cac9b39f9be3f03769",
+          "62eb92a9e084bf5ce5a791aa327b784e505cd8f6",
+          "d9e6ee98e583dfee3de6c3b611bf0236a2e66480"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "fait",
+          "confirmedAt": "2026-11-01",
+          "description": "Rapport d'écart branche / main / production, test de restauration, puis décision utilisateur de fusion et de mise en production.",
+          "evidence": "GO conditionnel utilisateur 2026-11-01 (restauration réussie, CI verte, écart inchangé) ; PR #65 fusionnée (d9e6ee9) ; v2026.11.01-prod-2 OFFICIAL."
+        },
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Validation fonctionnelle par l'utilisateur sur un compte instrumentiste réel (connexion personnelle, aucun compte de test créé en production par l'agent)."
+        }
+      ],
+      "nextAction": "Validation fonctionnelle de « Mes heures » par l'utilisateur en production. En cas d'incident : deploy/deploy.sh rollback 304d6079885284c9a01cc7878c1e876c5f677fca.",
+      "lastReviewed": "2026-11-01",
+      "prodEvidence": "v2026.11.01-prod-2 (d9e6ee9) : aucune migration (94/94) ; activate 21:46 UTC ; mark OFFICIAL ; API publique en lecture seule : 401/403/422 conformes, 34 missions de 4 instrumentistes identiques au recalcul SQL et aux calculs financiers persistés : voir docs/production.md."
+    },
+    {
+      "id": "D-180",
+      "title": "Suivi manager des heures instrumentistes : Top 5, page et tiroir",
+      "description": "Carte « Top 5 des instrumentistes » (Dashboard › Classements), page Facturation › Heures instrumentistes (/app/m/billing/hours) et tiroir individuel ; endpoints GET /api/manager/instrumentist-hours et GET /api/manager/instrumentists/{id}/hours (MANAGER / ADMIN). Mêmes règles que D-179 (heures réelles, parts imputées D-156, estimation au tarif personnel, forfaits consultation distincts) ; comparaisons vs mois précédent et moyenne personnelle sur l'historique observable (première prestation connue, sans migration). Aucune migration.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Le manager n'avait aucune vue des heures encodées et validées par instrumentiste ni de leur coût estimé.",
+      "status": "deploye",
+      "statusSince": "2026-11-05",
+      "refs": {
+        "branches": [
+          "feat/heures-instrumentistes-manager"
+        ],
+        "decision": "D-180",
+        "worktrees": [
+          "SurgicalHub-heures-instrumentistes"
+        ],
+        "prs": [
+          70
+        ],
+        "commits": [
+          "8707cd16ef3620bb550c5a3d67e4d070cc15ff27"
+        ]
+      },
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : affichage réel de la carte Top 5 (et « En savoir plus »), de la page Facturation → Heures instrumentistes (filtres mois / site / recherche, aucune donnée périmée) et du tiroir avec une session manager réelle, à confirmer par l'utilisateur."
+        }
+      ],
+      "nextAction": "Officialisé v2026.11.05-prod (8707cd1). Clôturer la réserve visuelle après confirmation de l'utilisateur. Rollback : deploy/deploy.sh rollback e97d879a1f5cbd4975484dd7b0f135c018352c63.",
+      "lastReviewed": "2026-11-05",
+      "validationNeeded": "Contrôles API et financiers validés en production (418 contrôles, 0 erreur). Validation visuelle par l'utilisateur avec une session manager réelle encore ouverte.",
+      "prodEvidence": "v2026.11.05-prod (8707cd1) : 0 migration (99/99) ; activate 2026-11-05 07:46 UTC ; mark OFFICIAL ; /api/version = OFFICIAL v2026.11.05-prod · 8707cd1 ; 418 contrôles API en lecture seule sans erreur : voir docs/production.md."
+    },
+    {
+      "id": "STATS-RECETTES-DEPENSES",
+      "title": "Statistiques financières : recettes (+), dépenses (−), solde net, totaux et export PDF",
+      "description": "Convention recettes vertes (+) / dépenses rouges (−) / solde net calculé serveur sur tous les onglets ; un solde par couche (calculé, facturé/décompté, trésorerie) ; totaux par devise sur tout le filtre ; Par chirurgien avec solde net et TOTAL GÉNÉRAL ; Par intervention en recettes uniquement (rémunération instrumentiste liée à la mission, jamais imputée à une intervention ; coût moyen de mission associée indicatif) ; export PDF serveur audité. Aucune migration, aucune donnée source modifiée.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Manager : rentabilité illisible (recettes et dépenses additionnées), pas de totaux ni d'export.",
+      "status": "deploye",
+      "statusSince": "2026-11-06",
+      "refs": {
+        "branches": [
+          "feat/stats-recettes-depenses"
+        ],
+        "decision": "D-186",
+        "worktrees": [
+          "SurgicalHub-stats-finance"
+        ],
+        "prs": [
+          81
+        ],
+        "commits": [
+          "2d2d37e02092cf0aee12357433cc3e7ec2687de8"
+        ]
+      },
+      "nextAction": "Officialisé v2026.11.06-prod-2 (2d2d37e). Clôturer la réserve après retour de l'utilisateur. Rollback : deploy/deploy.sh rollback ad45ef6582360ebe3c0184874ebad61e066ef190 (voir docs/production.md : audits FINANCIAL_STATISTICS_EXPORTED illisibles par ad45ef6).",
+      "lastReviewed": "2026-11-06",
+      "validationNeeded": "Contrôles de santé et tests ciblés validés en production par l'API publique (comptes jetables) ; retour de l'utilisateur sur les montants réels attendu.",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : lecture des montants réels à l'écran et d'un export PDF avec une session manager réelle, à confirmer par l'utilisateur."
+        }
+      ],
+      "prodEvidence": "v2026.11.06-prod-2 (2d2d37e) : 0 migration (99/99) ; activate 2026-11-06 17:59 UTC ; mark OFFICIAL ; vue d'ensemble identique avant/après, 7 exports PDF 200, permissions 403/401 : voir docs/production.md."
+    },
+    {
+      "id": "ROLLBACK-COMPAT-EXPORT-SLOTS",
+      "title": "Rollback compatible avec les données déjà écrites ; exports PDF simultanés limités",
+      "description": "Contrôle de compatibilité des données (colonnes enumType) exécuté dans l'image cible avant activate / rollback, refus explicite et fail-closed ; release corrective rollback/ad45ef6-compat pour le retour arrière de D-186 ; au plus 2 exports PDF générés en même temps (flock, 429 STATISTICS_EXPORT_BUSY). Aucune migration, aucune donnée modifiée, aucun paramètre global du VPS.",
+      "kind": "fix",
+      "priority": "P2",
+      "userImpact": "Exploitation : un rollback de D-186 cassait le journal d'activité ; plusieurs gros exports simultanés pouvaient saturer la RAM du VPS.",
+      "status": "deploye",
+      "statusSince": "2026-11-07",
+      "refs": {
+        "branches": [
+          "feat/rollback-compat-export-slots",
+          "rollback/ad45ef6-compat"
+        ],
+        "decision": "D-187",
+        "worktrees": [
+          "SurgicalHub-stats-finance"
+        ],
+        "prs": [
+          83
+        ],
+        "commits": [
+          "e24a8f9030f9ab5650b96c37f23881a8f9184523"
+        ]
+      },
+      "nextAction": "Officialisé v2026.11.07-prod (e24a8f9). Rollback : deploy/deploy.sh rollback 2d2d37e02092cf0aee12357433cc3e7ec2687de8 (compatible) ; vers ad45ef6 : release corrective rollback/ad45ef6-compat (jamais fusionnée dans main).",
+      "lastReviewed": "2026-11-07",
+      "validationNeeded": "Contrôles de santé, compatibilité et exports concurrents validés en production le 2026-11-07.",
+      "prodEvidence": "v2026.11.07-prod (e24a8f9) : 0 migration (99/99) ; activate 2026-11-07 08:16 UTC ; mark OFFICIAL ; compat ad45ef6 INCOMPATIBLE (FINANCIAL_STATISTICS_EXPORTED), e24a8f9 et 2d2d37e compatibles ; 3 exports lourds simultanés → 200/200/429 ; voir docs/production.md."
+    }
+  ]
+}

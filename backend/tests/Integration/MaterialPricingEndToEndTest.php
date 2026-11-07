@@ -24,6 +24,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * Audit "la tarification du matériel par firme ne fonctionne pas" — preuve du scénario
@@ -41,6 +42,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class MaterialPricingEndToEndTest extends WebTestCase
 {
+    use DeclaresActualHours;
+
     private const PASSWORD = 'MatPricingE2E15!';
     private const TZ = 'Europe/Brussels';
 
@@ -86,7 +89,7 @@ final class MaterialPricingEndToEndTest extends WebTestCase
             $this->em->flush();
             foreach ($this->createdIds['missions'] as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
             foreach ($this->createdIds['rules'] as $id) {
@@ -268,6 +271,7 @@ final class MaterialPricingEndToEndTest extends WebTestCase
         $mission->setInstrumentist($this->em->find(User::class, $instrumentist->getId()));
         $this->em->persist($mission);
         $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->createdIds['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();

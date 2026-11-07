@@ -48,6 +48,22 @@ enum EncodingState: string
      */
     case NOT_APPLICABLE = 'NOT_APPLICABLE';
 
+    /**
+     * D-172 — mission terminée, publiée sans instrumentiste (OPEN), dont aucune activité n'a
+     * été déclarée réalisée (D-155) : rien n'indique qu'elle a eu lieu ni qu'elle a été
+     * encodée. Jamais déduit « réalisée » de sa seule date. Comme NOT_APPLICABLE, n'entre pas
+     * dans les KPI d'encodage attendu (aucune instrumentiste à relancer) ; seul le manager peut
+     * déclarer l'activité puis l'encoder.
+     */
+    case NOT_DECLARED = 'NOT_DECLARED';
+
+    /**
+     * D-184 — mission annulée (MissionStatus::CANCELLED). Jamais « Sans objet » : c'est un
+     * fait distinct. Exclue par défaut du suivi des encodages et de tous ses indicateurs ;
+     * visible uniquement sur demande explicite (« Afficher les missions annulées »).
+     */
+    case CANCELLED = 'CANCELLED';
+
     /** Libellé français centralisé — ne jamais réécrire ces libellés côté frontend. */
     public function label(): string
     {
@@ -59,6 +75,8 @@ enum EncodingState: string
             self::VALIDATED      => 'Validé',
             self::LOCKED         => 'Verrouillé',
             self::NOT_APPLICABLE => 'Sans objet',
+            self::NOT_DECLARED   => 'Aucun encodage',
+            self::CANCELLED      => 'Annulée',
         };
     }
 
@@ -69,7 +87,7 @@ enum EncodingState: string
      */
     public function isEncodingExpected(): bool
     {
-        return $this !== self::NOT_APPLICABLE;
+        return $this !== self::NOT_APPLICABLE && $this !== self::NOT_DECLARED && $this !== self::CANCELLED;
     }
 
     /** Nécessite une action du manager (et non de l'instrumentiste). */

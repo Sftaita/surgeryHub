@@ -114,6 +114,7 @@ describe("MobileLayout — bannière d'activation des notifications push", () =>
       logout: vi.fn(),
     });
     mockMobile();
+    window.localStorage.clear();
   });
 
   it("n'affiche pas la bannière quand le navigateur ne supporte pas le push", async () => {
@@ -121,17 +122,40 @@ describe("MobileLayout — bannière d'activation des notifications push", () =>
     renderLayout();
 
     await screen.findByRole("navigation", { name: "Navigation instrumentiste" });
-    expect(screen.queryByText("Activer")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("push-invitation")).not.toBeInTheDocument();
   });
 
-  it("affiche la bannière avec un bouton Activer quand la permission n'a jamais été demandée", async () => {
+  it("affiche l'invitation et ne demande la permission native qu'au clic (D-143)", async () => {
     mockPushStatus = "permission-default";
     renderLayout();
 
-    const activer = await screen.findByRole("button", { name: "Activer" });
-    await userEvent.click(activer);
+    expect(await screen.findByText("Ne manquez aucune information importante")).toBeInTheDocument();
+    expect(mockSubscribe).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Activer les notifications" }));
 
     expect(mockSubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("« Plus tard » masque l'invitation et la reporte (7 jours) sans rien demander", async () => {
+    mockPushStatus = "permission-default";
+    const first = renderLayout();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Plus tard" }));
+    expect(screen.queryByTestId("push-invitation")).not.toBeInTheDocument();
+    expect(mockSubscribe).not.toHaveBeenCalled();
+
+    first.unmount();
+    renderLayout();
+    await screen.findByRole("navigation", { name: "Navigation instrumentiste" });
+    expect(screen.queryByTestId("push-invitation")).not.toBeInTheDocument();
+  });
+
+  it("ne sollicite jamais un utilisateur qui a refusé les notifications", async () => {
+    mockPushStatus = "permission-denied";
+    renderLayout();
+
+    await screen.findByRole("navigation", { name: "Navigation instrumentiste" });
+    expect(screen.queryByTestId("push-invitation")).not.toBeInTheDocument();
   });
 
   it("n'affiche plus la bannière une fois abonné", async () => {
@@ -139,6 +163,6 @@ describe("MobileLayout — bannière d'activation des notifications push", () =>
     renderLayout();
 
     await screen.findByRole("navigation", { name: "Navigation instrumentiste" });
-    expect(screen.queryByText("Activer")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("push-invitation")).not.toBeInTheDocument();
   });
 });

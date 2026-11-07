@@ -111,7 +111,7 @@ final class PricingRuleVersioningService
         User $actor,
     ): PricingRule {
         $this->assertCurrentlyActive($currentRule);
-        $this->assertPositiveAmount($newAmount);
+        $this->assertPositiveAmount($newAmount, $currentRule->getRuleType());
         $this->assertValidCurrency($newCurrency);
 
         $today = new \DateTimeImmutable('today');
@@ -181,7 +181,7 @@ final class PricingRuleVersioningService
         ];
 
         if ($amount !== null) {
-            $this->assertPositiveAmount($amount);
+            $this->assertPositiveAmount($amount, $rule->getRuleType());
             $rule->setUnitPrice($amount);
         }
         if ($currency !== null) {
@@ -266,7 +266,7 @@ final class PricingRuleVersioningService
         ?\DateTimeImmutable $validTo,
         ?ChoiceOption $choiceOption = null,
     ): PricingRule {
-        $this->assertPositiveAmount($amount);
+        $this->assertPositiveAmount($amount, $ruleType);
         $this->assertValidCurrency($currency);
 
         if ($validFrom !== null && $validTo !== null && $validTo <= $validFrom) {
@@ -324,10 +324,17 @@ final class PricingRuleVersioningService
         }
     }
 
-    private function assertPositiveAmount(string $amount): void
+    private function assertPositiveAmount(string $amount, ?PricingRuleType $ruleType = null): void
     {
+        if (!is_numeric(trim($amount))) {
+            throw new \InvalidArgumentException('Le montant doit être un nombre.');
+        }
         if ((float) $amount < 0) {
             throw new \InvalidArgumentException('Le montant doit être positif ou nul.');
+        }
+        // D-142 — jamais de tarif matériel à 0 € : « non facturable » est un statut de l'article.
+        if ($ruleType === PricingRuleType::MATERIAL_FEE && (float) $amount <= 0) {
+            throw new \InvalidArgumentException('Un tarif matériel doit être supérieur à 0 €.');
         }
     }
 

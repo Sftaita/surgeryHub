@@ -6,6 +6,7 @@ use App\Entity\SurgeonMissionRequest;
 use App\Entity\User;
 use App\Enum\MissionType;
 use App\Security\Voter\SurgeonMissionRequestVoter;
+use App\Service\ReleasedRoomRequestMatcher;
 use App\Service\SurgeonMissionRequestService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -23,8 +24,10 @@ use Symfony\Component\Security\Http\Attribute\CurrentUser;
 #[Route('/api/surgeon/mission-requests')]
 final class SurgeonMissionRequestController extends AbstractController
 {
-    public function __construct(private readonly SurgeonMissionRequestService $service)
-    {
+    public function __construct(
+        private readonly SurgeonMissionRequestService $service,
+        private readonly ReleasedRoomRequestMatcher $roomMatcher,
+    ) {
     }
 
     #[Route('', name: 'api_surgeon_mission_requests_list', methods: ['GET'])]
@@ -109,6 +112,11 @@ final class SurgeonMissionRequestController extends AbstractController
             'reviewedAt' => $r->getReviewedAt()?->format(\DateTimeInterface::ATOM),
             'reviewComment' => $r->getReviewComment(),
             'createdMissionId' => $r->getCreatedMission()?->getId(),
+            // D-177 — a pending request that designates a released room: the surgeon is told
+            // at once (creation response) and offered the existing take-over path.
+            'releasedRoomMatch' => $r->getStatus() === SurgeonMissionRequest::STATUS_PENDING
+                ? $this->roomMatcher->matchRequest($r)->toArray()
+                : null,
         ];
     }
 }

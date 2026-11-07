@@ -100,13 +100,13 @@ export function AbsenceCommunicationSettings() {
                 {item.site.name}
               </Typography>
 
-              {/* Libération de salle — Lot A, comportement inchangé */}
+              {/* Libération de salle — D-161 : annonce push (e-mail si le chirurgien l'a activé) */}
               <Stack direction="row" alignItems="flex-start" spacing={1.75} sx={{ px: 2.25, py: 2, borderBottom: `1px solid ${planningV2Colors.divider}` }}>
                 <IconBadge on={item.notifyColleaguesEnabled} icon={<CampaignOutlinedIcon sx={{ fontSize: 17 }} />} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                   <Typography sx={{ fontSize: 13, fontWeight: 700 }}>Libération de salle</Typography>
                   <Typography sx={{ fontSize: 12.5, color: planningV2Colors.textMuted, mt: 0.25 }}>
-                    Envoie aux chirurgiens du site les dates des blocs opératoires libérés lorsqu'un chirurgien encode une absence.
+                    Annonce aux chirurgiens du site chaque salle opératoire libérée par une absence : notification push, e-mail uniquement pour ceux qui l'ont activé.
                   </Typography>
                 </Box>
                 <SwitchPill

@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\MissionEncodingDataGuard;
 use App\Entity\Absence;
 use App\Entity\Hospital;
 use App\Entity\Mission;
@@ -15,6 +16,7 @@ use App\Message\MissionLifecycleChangedMessage;
 use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Clock\Clock;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -107,11 +109,19 @@ use Symfony\Component\Messenger\MessageBusInterface;
  */
 class AbsenceMissionReactionService
 {
-    /** Instrumentist absence is only ever actionable against a mission that is ASSIGNED. */
-    private const INSTRUMENTIST_ACTIONABLE_STATUSES = [MissionStatus::ASSIGNED];
+    /**
+     * Instrumentist absence is only ever actionable against a mission that is ASSIGNED � since
+     * D-158 only while still to come and without encoded activity (AbsenceMissionProtectionPolicy,
+     * re-checked under the mission lock in processInstrumentistAbsence()).
+     */
+    private const INSTRUMENTIST_ACTIONABLE_STATUSES = AbsenceMissionProtectionPolicy::INSTRUMENTIST_ACTIONABLE_STATUSES;
 
-    /** Surgeon absence is actionable against a mission that is OPEN or already ASSIGNED. */
-    private const SURGEON_ACTIONABLE_STATUSES = [MissionStatus::OPEN, MissionStatus::ASSIGNED];
+    /**
+     * Surgeon absence is actionable against a mission that is OPEN or already ASSIGNED — since
+     * D-158 only while still to come and without encoded activity (AbsenceMissionProtectionPolicy,
+     * re-checked under the mission lock in processSurgeonAbsence()).
+     */
+    private const SURGEON_ACTIONABLE_STATUSES = AbsenceMissionProtectionPolicy::ACTIONABLE_STATUSES;
 
     public function __construct(
         private readonly EntityManagerInterface $em,
@@ -159,27 +169,44 @@ class AbsenceMissionReactionService
      *
      * @return array<string, mixed>|null mission summary — see buildMissionSummary()
      */
-    public function reconcileMissionAgainstCurrentAbsences(Mission $mission, User $actor): ?array
+    public function reconcileMissionAgainstCurrentAbsences(Mission $mission, User $actor, bool $notify = true): ?array
     {
+        [$summary, $absence, $role] = [null, null, null];
+
         $surgeon = $mission->getSurgeon();
         if ($surgeon !== null && in_array($mission->getStatus(), self::SURGEON_ACTIONABLE_STATUSES, true)) {
             $absence = $this->findCoveringAbsence($surgeon, $mission->getStartAt());
             if ($absence !== null) {
-                return $this->processSurgeonAbsence($mission, $actor, $absence);
+                [$summary, $role] = [$this->processSurgeonAbsence($mission, $actor, $absence), 'SURGEON'];
             }
         }
 
-        if ($mission->getStatus() === MissionStatus::ASSIGNED) {
+        if ($summary === null && $mission->getStatus() === MissionStatus::ASSIGNED) {
             $instrumentist = $mission->getInstrumentist();
             if ($instrumentist !== null) {
                 $absence = $this->findCoveringAbsence($instrumentist, $mission->getStartAt());
                 if ($absence !== null) {
-                    return $this->processInstrumentistAbsence($mission, $actor, $absence);
+                    [$summary, $role] = [$this->processInstrumentistAbsence($mission, $actor, $absence), 'INSTRUMENTIST'];
                 }
             }
         }
 
-        return null;
+        // H4 (D-130) — a late correction is still an absence impact on a published mission:
+        // the people concerned get the same level-3 recap as at absence creation (formerly
+        // nobody was told on this path). Not from Planning Modification ($notify = false):
+        // its own change recap already informs them, after the batch commits.
+        if ($summary !== null && $notify && $absence !== null && $absence->getUser() !== null) {
+            $this->bus->dispatch(new AbsenceMissionsReactedMessage(
+                absenceId: $absence->getId(),
+                absentUserId: $absence->getUser()->getId(),
+                absentUserRole: $role,
+                actorId: $actor->getId(),
+                missions: [$summary],
+                occurredAt: new \DateTimeImmutable(),
+            ));
+        }
+
+        return $summary;
     }
 
     /** Earliest-starting Absence row currently covering this user on this date, if any. */
@@ -247,7 +274,7 @@ class AbsenceMissionReactionService
         return $summaries;
     }
 
-    /** @return array<string, mixed>|null null if the mission was no longer ASSIGNED under lock */
+    /** @return array<string, mixed>|null null if the mission was no longer ASSIGNED under lock, or is not auto-releasable (D-158) */
     private function processInstrumentistAbsence(Mission $mission, User $actor, Absence $absence): ?array
     {
         $reason = sprintf(
@@ -262,8 +289,16 @@ class AbsenceMissionReactionService
         $this->em->wrapInTransaction(function () use ($mission, $actor, $reason, $absence, &$captured, &$summary): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
 
-            if ($mission->getStatus() !== MissionStatus::ASSIGNED) {
-                return; // handled concurrently between the overlap query and now
+            // Status handled concurrently between the overlap query and now, or (D-158) a
+            // mission already started / carrying encoded activity: never put back in the pool �
+            // left as is, AbsenceImpactService raises the manager's absence alert.
+            if (!AbsenceMissionProtectionPolicy::canAutoRelease($mission, Clock::get()->now())) {
+                return;
+            }
+            // D-156 — a mission whose work is already encoded is never released automatically
+            // (its hours/interventions would move to the pool): left to the manager.
+            if (MissionEncodingDataGuard::hasEncodingData($mission)) {
+                return;
             }
 
             $instrumentist = $mission->getInstrumentist();
@@ -282,10 +317,10 @@ class AbsenceMissionReactionService
 
         // Dispatched here, AFTER the transaction above committed — mirrors what
         // MissionPostDeployService::release() would itself have dispatched with notify=true,
-        // just correctly timed. Preserves the existing free notification pipeline
-        // (SURGEON_POST_UNCOVERED in-app+push to the surgeon, OPEN_MISSION_AVAILABLE fan-out
-        // to eligible instrumentists) — this service never re-implements that, only adds the
-        // absence-specific recap email on top via AbsenceMissionsReactedMessage.
+        // just correctly timed. The lifecycle handler solicits the eligible pool through
+        // OpenMissionPoolNotifier (H3, D-129 — the absent person is ineligible, so never
+        // solicited); the surgeon and the absent instrumentist are informed by the
+        // absence-specific recap (AbsenceMissionsReactedMessage) — never twice.
         $this->bus->dispatch(new MissionLifecycleChangedMessage(
             missionId: $mission->getId(),
             changeType: MissionChangeType::RELEASED,
@@ -293,6 +328,14 @@ class AbsenceMissionReactionService
             payload: [
                 'fromInstrumentistId'   => $captured['fromInstrumentistId'],
                 'fromInstrumentistName' => $captured['fromInstrumentistName'],
+                // H3 (D-129) — the handler keys on it: pool episode INSTRUMENTIST_ABSENCE, no
+                // SURGEON_POST_UNCOVERED / PLANNING_MISSION_RELEASED (the absence recap informs
+                // them), no "removed by manager" exclusion. Was missing: the release() audit had
+                // it, this hand-built payload did not.
+                'causedByAbsenceId'     => $absence->getId(),
+                // H4 (D-130) — the absent person is never notified of the consequences of
+                // her own absence (reflexive notification).
+                'absentUserId'          => $absence->getUser()?->getId(),
                 'reason'                => $reason,
                 'actorId'               => $actor->getId(),
                 'actorName'             => self::displayName($actor),
@@ -303,7 +346,7 @@ class AbsenceMissionReactionService
         return $summary;
     }
 
-    /** @return array<string, mixed>|null null if the mission was no longer OPEN|ASSIGNED under lock */
+    /** @return array<string, mixed>|null null if the mission was no longer OPEN|ASSIGNED under lock, or is not auto-cancellable (D-158) */
     private function processSurgeonAbsence(Mission $mission, User $actor, Absence $absence): ?array
     {
         $reason = sprintf(
@@ -318,13 +361,20 @@ class AbsenceMissionReactionService
         $this->em->wrapInTransaction(function () use ($mission, $actor, $reason, $absence, &$captured, &$summary): void {
             $this->em->lock($mission, LockMode::PESSIMISTIC_WRITE);
 
-            if (!in_array($mission->getStatus(), self::SURGEON_ACTIONABLE_STATUSES, true)) {
-                return; // handled concurrently between the overlap query and now
+            // Status handled concurrently between the overlap query and now, or (D-158) a
+            // mission already started / carrying encoded activity: never cancelled blindly —
+            // left as is, AbsenceImpactService raises the manager's SURGEON_ABSENCE alert.
+            if (!AbsenceMissionProtectionPolicy::canAutoCancel($mission, Clock::get()->now())) {
+                return;
+            }
+            // D-156 — already-encoded work is never cancelled automatically: left to the manager.
+            if (MissionEncodingDataGuard::hasEncodingData($mission)) {
+                return;
             }
 
             $instrumentist = $mission->getInstrumentist();
             $captured = [
-                'instrumentist'         => $instrumentist,
+                'instrumentist'       => $instrumentist,
                 'fromInstrumentistId'   => $instrumentist?->getId(),
                 'fromInstrumentistName' => $instrumentist !== null ? self::displayName($instrumentist) : null,
             ];
@@ -350,6 +400,10 @@ class AbsenceMissionReactionService
                 'reason'                => $reason,
                 'fromInstrumentistId'   => $captured['fromInstrumentistId'],
                 'fromInstrumentistName' => $captured['fromInstrumentistName'],
+                // H3 (D-129) — same fix: lets the handler leave the instrumentist to the absence
+                // recap (ABSENCE_MISSION_CANCELLED) instead of a second PLANNING_MISSION_CANCELLED.
+                'causedByAbsenceId'     => $absence->getId(),
+                'absentUserId'          => $absence->getUser()?->getId(),
                 'actorId'               => $actor->getId(),
                 'actorName'             => self::displayName($actor),
             ],
@@ -424,7 +478,7 @@ class AbsenceMissionReactionService
      * Best same-day, same-site, genuinely uncovered OPEN mission, ranked per the documented
      * CAS B matching order: largest overlap with the freed slot first, then smallest gap to
      * it, then earliest start time, then id as the final stable tie-break. No existing
-     * scoring engine in this codebase does this (MissionEligibilityService::findEligible() is
+     * scoring engine in this codebase does this (MissionEligibilityService::findEligibleByMission() is
      * a fan-out — candidates per mission — never "best mission for one already-known
      * candidate"), so this is deliberately new, minimal, and scoped to exactly this need.
      *

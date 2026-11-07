@@ -17,6 +17,13 @@ final readonly class RepresentativePolicy
         public bool $representativeSuppressesInterventionFee,
         public bool $representativeSuppressesOwnMaterialFees,
         public bool $feeApplicable,
+        /**
+         * Une FirmServiceOffering existe pour ce couple. Purement explicatif : distingue
+         * « forfait attendu, prestation configurée sans tarif » de « prestation jamais
+         * configurée pour cette firme » dans l'explication d'un tarif manquant — ne change
+         * aucune décision du moteur.
+         */
+        public bool $offeringConfigured = true,
     ) {}
 
     /**
@@ -33,6 +40,7 @@ final readonly class RepresentativePolicy
             representativeSuppressesInterventionFee: false,
             representativeSuppressesOwnMaterialFees: false,
             feeApplicable: true,
+            offeringConfigured: false,
         );
     }
 }

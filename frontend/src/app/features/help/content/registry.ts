@@ -4,6 +4,7 @@ import { firms } from "./topics/firms";
 import { materialCatalogue } from "./topics/materialCatalogue";
 import { billingConfig } from "./topics/billingConfig";
 import { missionEncoding } from "./topics/missionEncoding";
+import { instrumentistHours } from "./topics/instrumentistHours";
 
 /**
  * Un topic = un écran. Pour ajouter l'aide d'un nouvel écran :
@@ -18,6 +19,7 @@ export const HELP_REGISTRY: Record<string, HelpTopic> = {
   "material-catalogue": materialCatalogue,
   "billing-config": billingConfig,
   "mission-encoding": missionEncoding,
+  "instrumentist-hours": instrumentistHours,
 };
 
 export type HelpTopicId = keyof typeof HELP_REGISTRY;

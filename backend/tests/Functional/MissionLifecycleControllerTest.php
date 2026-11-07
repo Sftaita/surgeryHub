@@ -15,6 +15,7 @@ use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 /**
  * Functional HTTP tests for Batch 15B — post-deploy mission lifecycle.
@@ -22,6 +23,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class MissionLifecycleControllerTest extends WebTestCase
 {
+    // D-151 — "now" is frozen just before the fixture dates: a started mission is no
+    // longer claimable (MISSION_ALREADY_STARTED), so the fixtures must stay in the future.
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'Lifecycle15B!';
 
     private EntityManagerInterface $em;
@@ -31,6 +36,7 @@ final class MissionLifecycleControllerTest extends WebTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-08-01 00:00:00');
         parent::setUp();
         self::ensureKernelShutdown();
     }
@@ -47,7 +53,7 @@ final class MissionLifecycleControllerTest extends WebTestCase
 
             foreach ($this->createdMissionIds as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
 

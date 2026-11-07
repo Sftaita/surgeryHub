@@ -48,8 +48,20 @@ describe("InterventionTypeDetailDialog", () => {
 
     expect(await screen.findByText("Utilisée par 3 firmes")).toBeInTheDocument();
     expect(screen.getByText("191.00 EUR HTVA")).toBeInTheDocument();
-    expect(screen.getByText(/Tarif à définir/)).toBeInTheDocument();
+    expect(screen.getByText(/Tarif non configuré/)).toBeInTheDocument();
     expect(screen.getByText(/Pas de forfait/)).toBeInTheDocument();
+  });
+
+  it("D-138 — un conflit de forfaits s'affiche « Conflit tarifaire », distinct de « Tarif non configuré »", async () => {
+    getInterventionTypeOfferingsMock.mockResolvedValue([
+      { offeringId: 401, firm: { id: 13, name: "Arthrex", logoPath: null }, active: true, feeApplicable: true, forfait: null, pricingConflictRuleIds: [81, 82] },
+      { offeringId: 402, firm: { id: 14, name: "ConMed", logoPath: null }, active: true, feeApplicable: true, forfait: null, pricingConflictRuleIds: null },
+    ]);
+    renderDialog();
+
+    await screen.findByText("Arthrex");
+    expect(screen.getAllByText(/Conflit tarifaire/)).toHaveLength(1);
+    expect(screen.getAllByText(/Tarif non configuré/)).toHaveLength(1);
   });
 
   it("état vide : aucune firme n'utilise encore cette intervention", async () => {

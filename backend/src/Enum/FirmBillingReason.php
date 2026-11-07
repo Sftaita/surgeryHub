@@ -28,6 +28,8 @@ enum FirmBillingReason: string
     case FEE_NOT_APPLICABLE = 'FEE_NOT_APPLICABLE';
     /** MaterialItem.billingStatus = NOT_BILLABLE : décision catalogue explicite. */
     case MATERIAL_NOT_BILLABLE = 'MATERIAL_NOT_BILLABLE';
+    /** D-178 — intervention enregistrée « Aucune firme » (type autorisé sans firme) : aucune prestation de firme. */
+    case WITHOUT_FIRM = 'WITHOUT_FIRM';
     /** Tarif actif mais montant nul (prix unitaire 0 ou quantité 0). */
     case ZERO_AMOUNT = 'ZERO_AMOUNT';
 
@@ -38,8 +40,15 @@ enum FirmBillingReason: string
     case RECALCULATION_REQUIRED = 'RECALCULATION_REQUIRED';
     /** Encodage rouvert après le calcul : la mission n'est plus validée. */
     case ENCODING_REOPENED = 'ENCODING_REOPENED';
+    /** D-153 — encodage rouvert puis revalidé : le calcul actif date d'avant la correction. */
+    case CALCULATION_OBSOLETE = 'CALCULATION_OBSOLETE';
     /** L'élément est correct mais une autre anomalie de la mission bloque tout le calcul. */
     case CALCULATION_BLOCKED = 'CALCULATION_BLOCKED';
+    /**
+     * D-141 — le calcul de la mission a échoué, mais le moteur, rejoué sur la configuration
+     * actuelle, n'y trouve plus aucune anomalie : il reste à relancer le calcul.
+     */
+    case FIXED_PENDING_RECALCULATION = 'FIXED_PENDING_RECALCULATION';
     /** D-135 — le brouillon contient une version périmée de la ligne (calcul modifié depuis l'ajout). */
     case DRAFT_LINE_STALE = 'DRAFT_LINE_STALE';
 
@@ -52,6 +61,18 @@ enum FirmBillingReason: string
     case MISSING_REPRESENTATIVE_PRESENCE_ANSWER = 'MISSING_REPRESENTATIVE_PRESENCE_ANSWER';
     case MISSING_REQUIRED_CHOICE_ANSWER = 'MISSING_REQUIRED_CHOICE_ANSWER';
     case INVALID_EFFECTIVE_DURATION = 'INVALID_EFFECTIVE_DURATION';
+    /** D-143 — aucune heure réelle déclarée : jamais une rémunération sur le planifié. */
+    case MISSING_ACTUAL_HOURS = 'MISSING_ACTUAL_HOURS';
+    /** D-156 — part imputée d'une présence partagée obsolète (présence modifiée depuis). */
+    case SHARED_PRESENCE_STALE = 'SHARED_PRESENCE_STALE';
+    /** D-156 — une mission sœur est déjà approuvée/verrouillée sur une autre version de la présence. */
+    case SHARED_PRESENCE_SETTLED = 'SHARED_PRESENCE_SETTLED';
+    /** D-156 — missions simultanées d'une même prestation portant chacune leurs propres heures. */
+    case OVERLAPPING_HOURS_IN_PRESTATION = 'OVERLAPPING_HOURS_IN_PRESTATION';
+    /** D-138 — plusieurs règles actives couvrent la même cible à la même date. */
+    case CONFLICTING_FIRM_INTERVENTION_RATE = 'CONFLICTING_FIRM_INTERVENTION_RATE';
+    case CONFLICTING_FIRM_MATERIAL_RATE = 'CONFLICTING_FIRM_MATERIAL_RATE';
+    case CONFLICTING_INSTRUMENTIST_RATE = 'CONFLICTING_INSTRUMENTIST_RATE';
     /** Repli pour tout code moteur inconnu de ce catalogue. */
     case CALCULATION_FAILED = 'CALCULATION_FAILED';
 
@@ -90,7 +111,7 @@ enum FirmBillingReason: string
         return match ($this) {
             self::BILLABLE, self::IN_DRAFT => FirmBillingStatus::BILLABLE,
             self::INVOICED => FirmBillingStatus::INVOICED,
-            self::REPRESENTATIVE_PRESENT, self::FEE_NOT_APPLICABLE, self::MATERIAL_NOT_BILLABLE, self::ZERO_AMOUNT => FirmBillingStatus::NOT_BILLABLE,
+            self::REPRESENTATIVE_PRESENT, self::FEE_NOT_APPLICABLE, self::MATERIAL_NOT_BILLABLE, self::WITHOUT_FIRM, self::ZERO_AMOUNT => FirmBillingStatus::NOT_BILLABLE,
             default => FirmBillingStatus::TO_REVIEW,
         };
     }
@@ -100,8 +121,29 @@ enum FirmBillingReason: string
         return in_array($this, [
             self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE,
             self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
-            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::CALCULATION_FAILED,
+            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::MISSING_ACTUAL_HOURS, self::CALCULATION_FAILED,
+            self::SHARED_PRESENCE_STALE, self::SHARED_PRESENCE_SETTLED, self::OVERLAPPING_HOURS_IN_PRESTATION,
+            self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE,
         ], true);
+    }
+
+    /**
+     * D-138 — catégorie d'une anomalie du moteur (null hors anomalies moteur) :
+     * CONFIGURATION = un tarif manque (action : catalogue / fiche instrumentiste) ;
+     * ENCODING      = une donnée d'encodage manque ou est invalide (action : la mission) ;
+     * TECHNICAL     = code moteur non reconnu — jamais présenté comme un problème métier.
+     */
+    public function anomalyCategory(): ?string
+    {
+        return match ($this) {
+            self::MISSING_FIRM_INTERVENTION_RATE, self::MISSING_FIRM_MATERIAL_RATE, self::MISSING_INSTRUMENTIST_RATE,
+            self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE => 'CONFIGURATION',
+            self::MISSING_PRIMARY_FIRM, self::MISSING_INTERVENTION_TYPE, self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER,
+            self::MISSING_REQUIRED_CHOICE_ANSWER, self::INVALID_EFFECTIVE_DURATION, self::MISSING_ACTUAL_HOURS,
+            self::SHARED_PRESENCE_STALE, self::SHARED_PRESENCE_SETTLED, self::OVERLAPPING_HOURS_IN_PRESTATION => 'ENCODING',
+            self::CALCULATION_FAILED => 'TECHNICAL',
+            default => null,
+        };
     }
 
     public function label(): string
@@ -114,12 +156,15 @@ enum FirmBillingReason: string
             self::REPRESENTATIVE_PRESENT => 'Délégué présent',
             self::FEE_NOT_APPLICABLE => 'Aucun forfait prévu',
             self::MATERIAL_NOT_BILLABLE => 'Matériel non facturable',
+            self::WITHOUT_FIRM => 'Réalisée sans firme',
             self::ZERO_AMOUNT => 'Tarif à 0 €',
             self::CALCULATION_REQUIRED => 'Calcul financier à effectuer',
             self::CALCULATION_PENDING_APPROVAL => 'Calcul à approuver',
             self::RECALCULATION_REQUIRED => 'Calcul à mettre à jour',
             self::ENCODING_REOPENED => 'Encodage rouvert',
+            self::CALCULATION_OBSOLETE => 'Calcul obsolète',
             self::CALCULATION_BLOCKED => 'Calcul bloqué',
+            self::FIXED_PENDING_RECALCULATION => 'Corrigé — à recalculer',
             self::MISSING_FIRM_INTERVENTION_RATE => "Tarif d'intervention manquant",
             self::MISSING_FIRM_MATERIAL_RATE => 'Tarif matériel manquant',
             self::MISSING_INSTRUMENTIST_RATE => 'Tarif instrumentiste manquant',
@@ -128,7 +173,14 @@ enum FirmBillingReason: string
             self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER => 'Présence du délégué non renseignée',
             self::MISSING_REQUIRED_CHOICE_ANSWER => 'Choix obligatoire non renseigné',
             self::INVALID_EFFECTIVE_DURATION => 'Durée de mission invalide',
+            self::MISSING_ACTUAL_HOURS => 'Heures prestées non déclarées',
+            self::SHARED_PRESENCE_STALE => 'Heures communes modifiées depuis la ventilation',
+            self::SHARED_PRESENCE_SETTLED => 'Prestation multi-salles déjà arrêtée sur une autre version',
+            self::OVERLAPPING_HOURS_IN_PRESTATION => 'Heures simultanées saisies sur plusieurs salles',
             self::CALCULATION_FAILED => 'Calcul financier en erreur',
+            self::CONFLICTING_FIRM_INTERVENTION_RATE => "Tarifs d'intervention contradictoires",
+            self::CONFLICTING_FIRM_MATERIAL_RATE => 'Tarifs matériel contradictoires',
+            self::CONFLICTING_INSTRUMENTIST_RATE => 'Tarifs instrumentiste contradictoires',
         };
     }
 
@@ -142,12 +194,15 @@ enum FirmBillingReason: string
             self::REPRESENTATIVE_PRESENT => "Cette prestation n'est pas facturée par SurgicalHub : le délégué de la firme était présent.",
             self::FEE_NOT_APPLICABLE => "La firme ne prévoit aucun forfait pour cette prestation (décision commerciale) : rien n'est facturé.",
             self::MATERIAL_NOT_BILLABLE => 'Ce matériel est marqué « non facturable » dans le catalogue de la firme.',
+            self::WITHOUT_FIRM => "L'intervention a été réalisée sans firme (type autorisé sans firme) : aucune prestation de firme, rien à facturer pour elle.",
             self::ZERO_AMOUNT => 'Le tarif applicable donne un montant nul : rien à facturer.',
             self::CALCULATION_REQUIRED => "La mission est validée mais n'a pas encore été valorisée.",
             self::CALCULATION_PENDING_APPROVAL => 'Les montants sont calculés mais doivent être approuvés avant facturation.',
             self::RECALCULATION_REQUIRED => "Cet élément a été encodé après le dernier calcul financier : il n'y figure pas encore.",
             self::ENCODING_REOPENED => "L'encodage de la mission a été rouvert après le calcul : il doit être revalidé avant facturation.",
+            self::CALCULATION_OBSOLETE => "L'encodage de la mission a été rouvert après ce calcul : ses montants ne reflètent plus l'encodage revalidé. Recalculez la mission avant facturation.",
             self::CALCULATION_BLOCKED => 'Cet élément est correct, mais une autre anomalie de la mission empêche tout le calcul.',
+            self::FIXED_PENDING_RECALCULATION => "Les causes de l'échec du dernier calcul sont corrigées : relancez le calcul pour enregistrer les montants.",
             self::MISSING_FIRM_INTERVENTION_RATE => "Aucun tarif applicable n'est configuré pour cette prestation à la date de la mission.",
             self::MISSING_FIRM_MATERIAL_RATE => "Aucun tarif applicable n'est configuré pour ce matériel à la date de la mission.",
             self::MISSING_INSTRUMENTIST_RATE => "Aucun tarif instrumentiste actif à la date de la mission : tant qu'il manque, aucune ligne de la mission (firmes comprises) ne peut être calculée.",
@@ -155,8 +210,14 @@ enum FirmBillingReason: string
             self::MISSING_INTERVENTION_TYPE => "L'intervention n'est rattachée à aucune prestation du référentiel.",
             self::MISSING_REPRESENTATIVE_PRESENCE_ANSWER => "L'encodage doit indiquer si le délégué de la firme était présent : cela détermine le forfait.",
             self::MISSING_REQUIRED_CHOICE_ANSWER => "Une réponse obligatoire manque dans l'encodage de cette intervention : elle détermine le forfait.",
-            self::INVALID_EFFECTIVE_DURATION => 'La durée réelle de la mission est nulle ou négative : corrigez les horaires.',
+            self::INVALID_EFFECTIVE_DURATION => 'La durée prestée de la mission est nulle ou négative : corrigez les heures prestées.',
+            self::MISSING_ACTUAL_HOURS => "Aucune heure prestée n'a été déclarée : la prestation n'est jamais rémunérée sur les heures planifiées. Renvoyez l'encodage à l'instrumentiste.",
+            self::SHARED_PRESENCE_STALE => "Les heures communes de cette prestation multi-salles ont changé depuis la ventilation enregistrée : réenregistrez la présence commune, puis relancez le calcul.",
+            self::SHARED_PRESENCE_SETTLED => "Une autre mission de la même prestation multi-salles est déjà approuvée ou verrouillée sur une version antérieure des heures communes : régularisez-la explicitement avant de valoriser celle-ci (aucun double paiement possible).",
+            self::OVERLAPPING_HOURS_IN_PRESTATION => "Plusieurs missions simultanées de la même prestation multi-salles portent chacune leurs propres heures : additionnées, ces heures seraient payées deux fois. Déclarez une seule présence commune pour la prestation.",
             self::CALCULATION_FAILED => 'Le calcul financier a échoué pour une raison non reconnue. Le détail technique est disponible dans les journaux.',
+            self::CONFLICTING_FIRM_INTERVENTION_RATE, self::CONFLICTING_FIRM_MATERIAL_RATE, self::CONFLICTING_INSTRUMENTIST_RATE
+                => "Plusieurs tarifs actifs s'appliquent à la même date : le calcul ne choisit jamais entre eux. Clôturez ou corrigez l'un d'eux.",
         };
     }
 }

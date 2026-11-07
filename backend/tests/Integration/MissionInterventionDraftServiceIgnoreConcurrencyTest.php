@@ -79,7 +79,7 @@ final class MissionInterventionDraftServiceIgnoreConcurrencyTest extends KernelT
 
     private function serviceFor(EntityManagerInterface $em): MissionInterventionDraftService
     {
-        return new MissionInterventionDraftService($em, new MissionEntryOrderAllocator($em), new AuditService($em));
+        return \App\Tests\Support\CatalogueRequestServiceFactory::draftService($em);
     }
 
     private function setLockTimeout(EntityManagerInterface $em, int $seconds): void

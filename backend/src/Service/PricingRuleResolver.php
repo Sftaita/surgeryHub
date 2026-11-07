@@ -8,6 +8,7 @@ use App\Entity\InterventionType;
 use App\Entity\MaterialItem;
 use App\Entity\PricingRule;
 use App\Enum\PricingRuleType;
+use App\Exception\PricingRuleConflictException;
 use Doctrine\ORM\EntityManagerInterface;
 
 /**
@@ -16,13 +17,18 @@ use Doctrine\ORM\EntityManagerInterface;
  * (voir docs/decisions.md — l'invariant central de tout ce module).
  *
  * Résolution déterministe : jamais de choix silencieux entre plusieurs règles actives
- * qui se chevauperaient — si l'anti-chevauchement (hasOverlap, appelé à l'écriture) a
+ * qui se chevaucheraient — si l'anti-chevauchement (hasOverlap, appelé à l'écriture) a
  * été respecté, au plus une règle peut jamais matcher une date donnée. Si ce n'est pas
- * le cas (données corrompues, contrainte contournée), on lève plutôt qu'on ne devine.
+ * le cas (données écrites hors application), on lève PricingRuleConflictException
+ * (exception MÉTIER, D-138) plutôt qu'on ne devine : anomalie explicite dans le moteur,
+ * 409 ailleurs — jamais un 500.
  */
 final class PricingRuleResolver
 {
-    public function __construct(private readonly EntityManagerInterface $em) {}
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly ?ReadScopeCache $readCache = null,
+    ) {}
 
     /**
      * $choiceOption : discriminant optionnel (tarification firme conditionnée à un choix
@@ -35,10 +41,7 @@ final class PricingRuleResolver
         $matching = $this->matchingRules($firm, PricingRuleType::INTERVENTION_FEE, $date, interventionType: $interventionType, choiceOption: $choiceOption);
 
         if (count($matching) > 1) {
-            throw new \LogicException(sprintf(
-                'Plusieurs PricingRule INTERVENTION_FEE actives se chevauchent pour firm=%d, interventionType=%d, choiceOption=%s à la date %s.',
-                $firm->getId(), $interventionType->getId(), $choiceOption?->getId() ?? 'null', $date->format('Y-m-d'),
-            ));
+            throw new PricingRuleConflictException($matching, $date);
         }
 
         return $matching[0] ?? null;
@@ -46,17 +49,63 @@ final class PricingRuleResolver
 
     public function resolveMaterialFee(MaterialItem $materialItem, \DateTimeImmutable $date): ?PricingRule
     {
-        $firm = $materialItem->getFirm();
-        $matching = $this->matchingRules($firm, PricingRuleType::MATERIAL_FEE, $date, materialItem: $materialItem);
+        return self::resolveMaterialFeeAmong($this->materialFeeRulesFor($materialItem), $date);
+    }
+
+    /**
+     * Même résolution que resolveMaterialFee(), sur les règles de l'article déjà chargées
+     * (materialFeeRulesFor() ou materialFeeRulesByItem()) : actives, couvrant $date, conflit
+     * si plusieurs. Évite une requête par article quand on parcourt tout le catalogue (D-142).
+     *
+     * @param PricingRule[] $rules toutes les règles MATERIAL_FEE de l'article (actives ou non)
+     */
+    public static function resolveMaterialFeeAmong(array $rules, \DateTimeImmutable $date): ?PricingRule
+    {
+        $matching = self::coveringRules($rules, $date);
 
         if (count($matching) > 1) {
-            throw new \LogicException(sprintf(
-                'Plusieurs PricingRule MATERIAL_FEE actives se chevauchent pour materialItem=%d à la date %s.',
-                $materialItem->getId(), $date->format('Y-m-d'),
-            ));
+            throw new PricingRuleConflictException($matching, $date);
         }
 
         return $matching[0] ?? null;
+    }
+
+    /**
+     * Toutes les règles de la cible (actives ou non, quelle que soit leur période), triées
+     * par début de validité — jamais utilisées pour résoudre un montant : seulement pour
+     * expliquer une absence de tarif (« un tarif existe, mais pas à cette date » ≠ « aucun
+     * tarif n'a jamais été configuré »).
+     *
+     * @return PricingRule[]
+     */
+    public function interventionFeeRulesFor(Firm $firm, InterventionType $interventionType, ?ChoiceOption $choiceOption = null): array
+    {
+        return $this->targetRules($firm, PricingRuleType::INTERVENTION_FEE, activeOnly: false, interventionType: $interventionType, choiceOption: $choiceOption);
+    }
+
+    /** @return PricingRule[] voir interventionFeeRulesFor() */
+    public function materialFeeRulesFor(MaterialItem $materialItem): array
+    {
+        return $this->targetRules($materialItem->getFirm(), PricingRuleType::MATERIAL_FEE, activeOnly: false, materialItem: $materialItem);
+    }
+
+    /**
+     * Instantané stable de règles (même forme que PricingRuleConflictException::rulesSnapshot(),
+     * plus `active`) — repris tel quel dans un contexte audité.
+     *
+     * @param PricingRule[] $rules
+     * @return list<array{id: ?int, unitPrice: ?string, currency: ?string, validFrom: ?string, validTo: ?string, active: bool}>
+     */
+    public static function snapshotRules(array $rules): array
+    {
+        return array_map(static fn (PricingRule $r) => [
+            'id' => $r->getId(),
+            'unitPrice' => $r->getUnitPrice(),
+            'currency' => $r->getCurrency(),
+            'validFrom' => $r->getValidFrom()?->format('Y-m-d'),
+            'validTo' => $r->getValidTo()?->format('Y-m-d'),
+            'active' => $r->isActive(),
+        ], array_values($rules));
     }
 
     /**
@@ -110,16 +159,99 @@ final class PricingRuleResolver
         ?MaterialItem $materialItem = null,
         ?ChoiceOption $choiceOption = null,
     ): array {
+        $candidates = $this->targetRules($firm, $type, activeOnly: true, interventionType: $interventionType, materialItem: $materialItem, choiceOption: $choiceOption);
+
+        return self::coveringRules($candidates, $date);
+    }
+
+    /**
+     * Règles actives couvrant $date, triées par id — le seul critère de sélection, partagé
+     * par la résolution unitaire et la résolution sur règles préchargées.
+     *
+     * @param PricingRule[] $rules
+     * @return PricingRule[]
+     */
+    private static function coveringRules(array $rules, \DateTimeImmutable $date): array
+    {
+        $matching = array_values(array_filter($rules, static fn (PricingRule $r) => $r->isActive() && $r->coversDate($date)));
+        usort($matching, static fn (PricingRule $a, PricingRule $b) => $a->getId() <=> $b->getId());
+
+        return $matching;
+    }
+
+    /**
+     * Toutes les règles MATERIAL_FEE (actives ou non) indexées par id d'article, en UNE
+     * requête, avec le même périmètre (firme de la règle = firme de l'article) et le même
+     * ordre que materialFeeRulesFor() (D-142, vue de régularisation du catalogue).
+     *
+     * @return array<int, PricingRule[]>
+     */
+    public function materialFeeRulesByItem(): array
+    {
+        /** @var PricingRule[] $rules */
+        $rules = $this->em->getRepository(PricingRule::class)->createQueryBuilder('r')
+            ->join('r.materialItem', 'mi')
+            ->andWhere('r.ruleType = :type')
+            ->andWhere('r.firm = mi.firm')
+            ->setParameter('type', PricingRuleType::MATERIAL_FEE)
+            ->orderBy('r.validFrom', 'ASC')
+            ->addOrderBy('r.id', 'ASC')
+            ->getQuery()
+            ->getResult();
+
+        $byItem = [];
+        foreach ($rules as $rule) {
+            $byItem[$rule->getMaterialItem()->getId()][] = $rule;
+        }
+
+        return $byItem;
+    }
+
+    /** @return PricingRule[] */
+    private function targetRules(
+        ?Firm $firm,
+        PricingRuleType $type,
+        bool $activeOnly,
+        ?InterventionType $interventionType = null,
+        ?MaterialItem $materialItem = null,
+        ?ChoiceOption $choiceOption = null,
+    ): array {
         if ($firm === null) {
             return [];
         }
 
+        // D-142 — mémorisé seulement dans une portée de lecture explicite (ReadScopeCache).
+        $key = $firm->getId() === null || ($interventionType !== null && $interventionType->getId() === null)
+            || ($materialItem !== null && $materialItem->getId() === null) || ($choiceOption !== null && $choiceOption->getId() === null)
+            ? null
+            : sprintf('pricing_rule:%d:%s:%d:%s:%s:%s', $firm->getId(), $type->value, (int) $activeOnly,
+                $interventionType?->getId() ?? '-', $materialItem?->getId() ?? '-', $choiceOption?->getId() ?? '-');
+        if ($this->readCache !== null) {
+            return $this->readCache->remember($key, fn () => $this->queryTargetRules($firm, $type, $activeOnly, $interventionType, $materialItem, $choiceOption));
+        }
+
+        return $this->queryTargetRules($firm, $type, $activeOnly, $interventionType, $materialItem, $choiceOption);
+    }
+
+    /** @return PricingRule[] */
+    private function queryTargetRules(
+        Firm $firm,
+        PricingRuleType $type,
+        bool $activeOnly,
+        ?InterventionType $interventionType,
+        ?MaterialItem $materialItem,
+        ?ChoiceOption $choiceOption,
+    ): array {
         $qb = $this->em->getRepository(PricingRule::class)->createQueryBuilder('r')
             ->andWhere('r.firm = :firm')
             ->andWhere('r.ruleType = :type')
-            ->andWhere('r.active = true')
             ->setParameter('firm', $firm)
-            ->setParameter('type', $type);
+            ->setParameter('type', $type)
+            ->orderBy('r.validFrom', 'ASC')
+            ->addOrderBy('r.id', 'ASC');
+        if ($activeOnly) {
+            $qb->andWhere('r.active = true');
+        }
 
         if ($type === PricingRuleType::INTERVENTION_FEE) {
             $qb->andWhere('r.interventionType = :it')->setParameter('it', $interventionType);
@@ -132,9 +264,9 @@ final class PricingRuleResolver
             $qb->andWhere('r.materialItem = :mi')->setParameter('mi', $materialItem);
         }
 
-        /** @var PricingRule[] $candidates */
-        $candidates = $qb->getQuery()->getResult();
+        /** @var PricingRule[] $rules */
+        $rules = $qb->getQuery()->getResult();
 
-        return array_values(array_filter($candidates, static fn (PricingRule $r) => $r->coversDate($date)));
+        return $rules;
     }
 }

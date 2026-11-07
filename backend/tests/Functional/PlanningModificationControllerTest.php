@@ -15,13 +15,18 @@ use App\Enum\AuditEventType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Enum\PlanningVersionStatus;
+use App\Message\PlanningModificationAppliedMessage;
 use App\Message\SendBillingEmailMessage;
+use App\Message\SendTemplatedEmailMessage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Component\Messenger\Stamp\ReceivedStamp;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 /**
  * Functional HTTP tests for Planning V2 Modification mode's batch-apply endpoint —
@@ -31,6 +36,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class PlanningModificationControllerTest extends WebTestCase
 {
+    // D-151 — "now" is frozen just before the fixture dates: a started mission is no
+    // longer claimable (MISSION_ALREADY_STARTED), so the fixtures must stay in the future.
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'Modification16A!';
 
     private EntityManagerInterface $em;
@@ -42,6 +51,7 @@ final class PlanningModificationControllerTest extends WebTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-08-01 00:00:00');
         parent::setUp();
         self::ensureKernelShutdown();
     }
@@ -49,6 +59,24 @@ final class PlanningModificationControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // H3 (D-129) — the recaps and pool offers are now traced notifications (dispatch,
+            // per-channel outbound rows, in-app items): removed before their users/missions.
+            if ($this->createdUserIds !== []) {
+                $conn = $this->em->getConnection();
+                $ids  = implode(',', array_map('intval', $this->createdUserIds));
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM notification_event WHERE user_id IN ($ids)");
+                $conn->executeStatement("DELETE FROM site_membership WHERE user_id IN ($ids)");
+                // Pool offers may also reach instrumentists outside this test (e.g. freelancers):
+                // their in-app items point to this test's missions.
+                $versions = implode(',', array_map('intval', $this->createdVersionIds)) ?: '0';
+                $missions = implode(',', array_map('intval', $this->createdMissionIds)) ?: '0';
+                $conn->executeStatement("DELETE FROM notification_event WHERE mission_id IN ($missions) OR mission_id IN (SELECT id FROM mission WHERE planning_version_id IN ($versions))");
+                // Forget the notification entities the in-process worker left managed.
+                $this->em->clear();
+            }
             foreach ($this->createdMissionIds as $id) {
                 foreach ($this->em->getRepository(AuditEvent::class)->findBy(['mission' => $id]) as $evt) {
                     $this->em->remove($evt);
@@ -76,6 +104,9 @@ final class PlanningModificationControllerTest extends WebTestCase
                     foreach ($this->em->getRepository(PlanningAlert::class)->findBy(['mission' => $m->getId()]) as $alert) {
                         $this->em->remove($alert);
                     }
+                    foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $m]) as $assignment) {
+                        $this->em->remove($assignment); // D-150 — affectation history first
+                    }
                     $this->em->remove($m);
                 }
                 $this->em->flush();
@@ -83,7 +114,7 @@ final class PlanningModificationControllerTest extends WebTestCase
 
             foreach ($this->createdMissionIds as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
 
@@ -883,24 +914,32 @@ final class PlanningModificationControllerTest extends WebTestCase
     }
 
     // ── Notification targeting — real diff, real dispatch, captured on the in-memory
-    // async transport (when@test: async -> in-memory://). Proves the full chain from HTTP
-    // request to SendBillingEmailMessage dispatch, independent of any Mailpit/worker state.
+    // async transport (when@test: async -> in-memory://). Since H3 (D-129) the recap is sent
+    // after the batch commits, by PlanningModificationAppliedMessage → NotificationDispatcher
+    // → SendTemplatedEmailMessage: the helper plays the worker for that message, then
+    // collects the emails. Independent of any Mailpit/worker state.
 
-    /** @return SendBillingEmailMessage[] */
+    /** @return list<SendBillingEmailMessage|SendTemplatedEmailMessage> */
     private function drainSentMessages(InMemoryTransport $transport): array
     {
-        return array_map(
-            static fn ($envelope) => $envelope->getMessage(),
-            $transport->getSent(),
-        );
+        $bus    = static::getContainer()->get(MessageBusInterface::class);
+        $emails = [];
+        for ($i = 0; $i < count($transport->getSent()); $i++) {
+            $envelope = $transport->getSent()[$i];
+            $message  = $envelope->getMessage();
+            if ($message instanceof SendBillingEmailMessage || $message instanceof SendTemplatedEmailMessage) {
+                $emails[] = $message;
+            } elseif ($message instanceof PlanningModificationAppliedMessage) {
+                $bus->dispatch($envelope->with(new ReceivedStamp('async')));
+            }
+        }
+
+        return $emails;
     }
 
     private function emailsTo(array $messages, string $email): array
     {
-        return array_values(array_filter(
-            $messages,
-            fn (SendBillingEmailMessage $m) => $m->to === $email,
-        ));
+        return array_values(array_filter($messages, static fn ($m) => $m->to === $email));
     }
 
     public function test_reassignment_notifies_old_instrumentist_new_instrumentist_and_surgeon_only(): void
@@ -1163,5 +1202,297 @@ final class PlanningModificationControllerTest extends WebTestCase
         $response = $this->postJson($client, $token, '/api/planning/versions/' . $version->getId() . '/cancel-all', []);
 
         self::assertSame(Response::HTTP_FORBIDDEN, $response->getStatusCode());
+    }
+
+    /**
+     * H3 (D-129) — the historic gap: a manager removing an instrumentist in Modification mode
+     * used to notify nobody (release(notify: false)). Now, after the batch commits:
+     *   - the removed instrumentist gets her recap (PLANNING_CHANGE_SUMMARY), not a pool offer
+     *     for the mission she was removed from (excluded for that episode only);
+     *   - the eligible pool gets ONE email for the whole batch, listing only the missions
+     *     each person can take (the released one + the one the batch created).
+     */
+    public function test_modification_batch_notifies_the_pool_once_after_commit_and_excludes_the_removed_instrumentist(): void
+    {
+        $client    = $this->boot();
+        $manager   = $this->createUser('ROLE_MANAGER');
+        $token     = $this->login($client, $manager);
+        $surgeon   = $this->createUser('ROLE_SURGEON');
+        $removed   = $this->createUser('ROLE_INSTRUMENTIST');
+        $colleague = $this->createUser('ROLE_INSTRUMENTIST');
+        $site      = $this->makeSite();
+        foreach ([$removed, $colleague] as $person) {
+            $this->em->persist((new \App\Entity\SiteMembership())->setUser($person)->setSite($site)->setSiteRole('INSTRUMENTIST'));
+        }
+        $this->em->flush();
+        $version = $this->makeVersion($site, $manager);
+        $mission = $this->makeMission($version, $site, $surgeon, $manager, MissionStatus::ASSIGNED, $removed);
+
+        /** @var InMemoryTransport $transport */
+        $transport = static::getContainer()->get('messenger.transport.async');
+        $transport->reset();
+
+        $response = $this->postJson($client, $token, "/api/planning/versions/{$version->getId()}/apply-modifications", ['lines' => [
+            $this->lineFor($mission, ['instrumentistId' => null, 'status' => 'UNCOVERED']),
+            $this->newLineFor($site, $surgeon, null, '2026-09-16', '14:00', '18:00'),
+        ]]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
+
+        $queued = array_map(static fn ($e) => $e->getMessage(), $transport->getSent());
+        self::assertCount(1, array_filter($queued, static fn ($m) => $m instanceof PlanningModificationAppliedMessage), 'one post-commit message for the whole batch');
+        self::assertCount(0, array_filter($queued, static fn ($m) => $m instanceof SendTemplatedEmailMessage || $m instanceof SendBillingEmailMessage), 'nothing is sent before the batch has committed');
+
+        $sent = $this->drainSentMessages($transport);
+        $pool = static fn (array $mails) => array_values(array_filter($mails, static fn ($m) => $m->htmlTemplate === 'emails/open_missions_available.html.twig'));
+
+        $toRemoved = $this->emailsTo($sent, $removed->getEmail());
+        self::assertCount(1, array_filter($toRemoved, static fn ($m) => $m->htmlTemplate === 'emails/planning_change_summary_instrumentist.html.twig'), 'her recap');
+        $removedPool = $pool($toRemoved);
+        self::assertCount(1, $removedPool);
+        self::assertSame(['16/09/2026'], array_column($removedPool[0]->context['missions'], 'dateLabel'), 'offered the new mission, never the one she was removed from');
+
+        $colleaguePool = $pool($this->emailsTo($sent, $colleague->getEmail()));
+        self::assertCount(1, $colleaguePool, 'ONE pool email for the whole batch');
+        self::assertSame(['15/09/2026', '16/09/2026'], array_column($colleaguePool[0]->context['missions'], 'dateLabel'));
+
+        $conn = $this->em->getConnection();
+        $correlation = $conn->fetchOne("SELECT correlation_id FROM activity_event WHERE event_type = 'PLANNING_MODIFICATION_APPLIED' AND planning_version_id = ? ORDER BY id DESC LIMIT 1", [$version->getId()]);
+        $evaluation = $conn->fetchAssociative("SELECT * FROM activity_event WHERE event_type = 'OPEN_POOL_EVALUATED' AND mission_id = ?", [$mission->getId()]);
+        self::assertSame($correlation, $evaluation['correlation_id'], 'same correlation from the HTTP request to the pool');
+        $ep = json_decode((string) $evaluation['payload'], true);
+        self::assertSame(['PLANNING_MODIFICATION', 'BATCH', 1], [$ep['cause'], $ep['mode'], $ep['excludedCount']]);
+    }
+
+    // ── D-165 — horaires modifiés et conflits d'affectation (cas Schiepers / Berger) ──
+
+    /** @return array{0: KernelBrowser, 1: string, 2: PlanningVersion, 3: Mission, 4: Mission, 5: User} */
+    private function schiepersBergerDay(MissionStatus $schiepersStatus = MissionStatus::ASSIGNED): array
+    {
+        $client   = $this->boot();
+        $manager  = $this->createUser('ROLE_MANAGER');
+        $token    = $this->login($client, $manager);
+        $philippe = $this->createUser('ROLE_SURGEON');
+        $philippe->setFirstname('Philippe')->setLastname('Schiepers');
+        $yorick   = $this->createUser('ROLE_SURGEON');
+        $yorick->setFirstname('Yorick')->setLastname('Berger');
+        $francoise = $this->createUser('ROLE_INSTRUMENTIST');
+        $francoise->setFirstname('Françoise')->setLastname('Detrembleur');
+        $this->em->flush();
+        $site    = $this->makeSite();
+        $version = $this->makeVersion($site, $manager);
+        // #1085 — Schiepers, Françoise, 07:45–18:00 ; #1084 — Berger, ouverte, 07:45–18:00.
+        $schiepers = $this->makeMission($version, $site, $philippe, $manager, $schiepersStatus, $francoise, '07:45:00', '18:00:00');
+        $berger    = $this->makeMission($version, $site, $yorick, $manager, MissionStatus::OPEN, null, '07:45:00', '18:00:00');
+
+        return [$client, $token, $version, $schiepers, $berger, $francoise];
+    }
+
+    private function applyLines(KernelBrowser $client, string $token, PlanningVersion $version, array $lines): Response
+    {
+        return $this->postJson($client, $token, '/api/planning/versions/' . $version->getId() . '/apply-modifications', ['lines' => $lines]);
+    }
+
+    /** @return PlanningAlert[] */
+    private function instrumentistConflictAlerts(Mission ...$missions): array
+    {
+        return array_values(array_filter(
+            $this->em->getRepository(PlanningAlert::class)->findBy(['mission' => array_map(fn (Mission $m) => $m->getId(), $missions)]),
+            fn (PlanningAlert $a) => $a->getType() === \App\Enum\PlanningAlertType::INSTRUMENTIST_CONFLICT && $a->getResolvedAt() === null,
+        ));
+    }
+
+    /** @return string[] audit event types of a mission, oldest first */
+    private function auditTypes(Mission $m): array
+    {
+        return array_map(
+            fn (AuditEvent $e) => $e->getEventType()->value,
+            $this->em->getRepository(AuditEvent::class)->findBy(['mission' => $m->getId()], ['id' => 'ASC']),
+        );
+    }
+
+    /**
+     * Scénarios 1, 4, 6 — Philippe 07:45–14:00 et Yorick 14:45–18:00 : Françoise couvre les
+     * deux, sans perdre son affectation chez Philippe, mêmes missions (ids), historique audité.
+     * Yorick's line is sent FIRST on purpose: the batch must apply Philippe's shortening before
+     * assigning her (formerly she was checked against Philippe's old 07:45–18:00).
+     */
+    public function test_d165_successive_slots_keep_both_assignments_same_missions_and_audit(): void
+    {
+        [$client, $token, $version, $schiepers, $berger, $francoise] = $this->schiepersBergerDay();
+
+        $response = $this->applyLines($client, $token, $version, [
+            $this->lineFor($berger, ['startTime' => '14:45', 'instrumentistId' => $francoise->getId(), 'status' => 'COVERED']),
+            $this->lineFor($schiepers, ['endTime' => '14:00']),
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+        $body = json_decode($response->getContent(), true);
+        self::assertSame(2, $body['updated'], json_encode($body));
+        self::assertSame(0, $body['created'], 'never a delete + recreate');
+
+        $this->em->clear();
+        $schiepers = $this->em->find(Mission::class, $schiepers->getId());
+        $berger    = $this->em->find(Mission::class, $berger->getId());
+        self::assertSame(MissionStatus::ASSIGNED, $schiepers->getStatus());
+        self::assertSame($francoise->getId(), $schiepers->getInstrumentist()?->getId(), 'Françoise stays with Philippe');
+        self::assertSame('07:45–14:00', $schiepers->getStartAt()->format('H:i') . '–' . $schiepers->getEndAt()->format('H:i'));
+        self::assertSame(MissionStatus::ASSIGNED, $berger->getStatus());
+        self::assertSame($francoise->getId(), $berger->getInstrumentist()?->getId());
+        self::assertSame('14:45–18:00', $berger->getStartAt()->format('H:i') . '–' . $berger->getEndAt()->format('H:i'));
+        self::assertSame([], $this->instrumentistConflictAlerts($schiepers, $berger), 'successive slots are not a conflict');
+
+        self::assertSame([AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY->value], $this->auditTypes($schiepers));
+        self::assertSame([AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY->value, AuditEventType::MISSION_REASSIGNED_POST_DEPLOY->value], $this->auditTypes($berger),
+            'schedule first, then the assignment evaluated on the new slot');
+    }
+
+    /** Scénario 2 — 07:45–14:00 et 14:00–18:00 : intervalles [début, fin) contigus, aucun conflit. */
+    public function test_d165_adjacent_slots_touching_at_14_00_are_not_a_conflict(): void
+    {
+        [$client, $token, $version, $schiepers, $berger, $francoise] = $this->schiepersBergerDay();
+
+        $response = $this->applyLines($client, $token, $version, [
+            $this->lineFor($schiepers, ['endTime' => '14:00']),
+            $this->lineFor($berger, ['startTime' => '14:00', 'instrumentistId' => $francoise->getId(), 'status' => 'COVERED']),
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $this->em->clear();
+        self::assertSame($francoise->getId(), $this->em->find(Mission::class, $berger->getId())->getInstrumentist()?->getId());
+        self::assertSame([], $this->instrumentistConflictAlerts($schiepers, $berger));
+    }
+
+    /** Scénario 3 — 07:45–14:01 et 14:00–18:00 : chevauchement d'une minute détecté (alerte D-091, non bloquante). */
+    public function test_d165_one_minute_overlap_is_detected(): void
+    {
+        [$client, $token, $version, $schiepers, $berger, $francoise] = $this->schiepersBergerDay();
+
+        $response = $this->applyLines($client, $token, $version, [
+            $this->lineFor($schiepers, ['endTime' => '14:01']),
+            $this->lineFor($berger, ['startTime' => '14:00', 'instrumentistId' => $francoise->getId(), 'status' => 'COVERED']),
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $this->em->clear();
+        self::assertCount(1, $this->instrumentistConflictAlerts(
+            $this->em->find(Mission::class, $schiepers->getId()), $this->em->find(Mission::class, $berger->getId()),
+        ), 'a real overlap is surfaced as an INSTRUMENTIST_CONFLICT alert');
+    }
+
+    /** Scénario 7 — mission En cours : horaire prévu corrigé, statut et instrumentiste conservés. */
+    public function test_d165_in_progress_mission_end_time_can_be_corrected(): void
+    {
+        self::mockTime('2026-09-15 10:00:00');
+        [$client, $token, $version, $schiepers, $berger, $francoise] = $this->schiepersBergerDay(MissionStatus::IN_PROGRESS);
+
+        $response = $this->applyLines($client, $token, $version, [
+            $this->lineFor($schiepers, ['endTime' => '14:00']),
+            $this->lineFor($berger, ['startTime' => '14:45', 'instrumentistId' => $francoise->getId(), 'status' => 'COVERED']),
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        $this->em->clear();
+        $schiepers = $this->em->find(Mission::class, $schiepers->getId());
+        self::assertSame(MissionStatus::IN_PROGRESS, $schiepers->getStatus());
+        self::assertSame($francoise->getId(), $schiepers->getInstrumentist()?->getId());
+        self::assertSame('14:00', $schiepers->getEndAt()->format('H:i'));
+        self::assertSame([AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY->value], $this->auditTypes($schiepers));
+        self::assertSame($francoise->getId(), $this->em->find(Mission::class, $berger->getId())->getInstrumentist()?->getId());
+    }
+
+    /**
+     * Scénario 7 (refus) — changer l'instrumentiste d'une mission En cours est refusé
+     * explicitement (409) et le lot entier est annulé : formerly silently "unchanged".
+     */
+    public function test_d165_in_progress_instrumentist_change_is_refused_explicitly_and_nothing_is_kept(): void
+    {
+        self::mockTime('2026-09-15 10:00:00');
+        [$client, $token, $version, $schiepers, $berger, $francoise] = $this->schiepersBergerDay(MissionStatus::IN_PROGRESS);
+
+        $response = $this->applyLines($client, $token, $version, [
+            $this->lineFor($berger, ['startTime' => '14:45', 'instrumentistId' => $francoise->getId(), 'status' => 'COVERED']),
+            $this->lineFor($schiepers, ['instrumentistId' => null, 'status' => 'UNCOVERED']),
+        ]);
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode(), $response->getContent());
+        $message = json_decode($response->getContent(), true)['error']['message'] ?? '';
+        self::assertStringContainsString('« En cours »', $message);
+        self::assertStringContainsString('son instrumentiste ne peut plus être modifié', $message);
+
+        $this->em->clear();
+        $schiepers = $this->em->find(Mission::class, $schiepers->getId());
+        $berger    = $this->em->find(Mission::class, $berger->getId());
+        self::assertSame($francoise->getId(), $schiepers->getInstrumentist()?->getId());
+        self::assertSame(MissionStatus::OPEN, $berger->getStatus(), 'whole batch rolled back');
+        self::assertSame('07:45', $berger->getStartAt()->format('H:i'));
+    }
+
+    private function roster(KernelBrowser $client, string $token, Mission $target, string $start, string $end, array $proposals): array
+    {
+        $response = $this->postJson($client, $token, '/api/planning/v2/eligible-instrumentists', [
+            'siteId' => $target->getSite()->getId(), 'date' => '2026-09-15', 'startTime' => $start, 'endTime' => $end,
+            'excludeMissionId' => $target->getId(), 'policy' => 'PLANNING_MODIFICATION', 'proposals' => $proposals,
+        ]);
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
+
+        return json_decode($response->getContent(), true);
+    }
+
+    private static function candidate(array $roster, User $u): array
+    {
+        foreach ($roster['candidates'] as $c) {
+            if ($c['id'] === $u->getId()) {
+                return $c;
+            }
+        }
+        self::fail('candidate not in roster');
+    }
+
+    /**
+     * Section C/D — roster evaluated against the editor's proposed day: the conflict names
+     * the responsible mission, its surgeon, its times and whether it is saved or proposed.
+     */
+    public function test_d165_roster_reflects_proposed_schedules_and_explains_the_conflict(): void
+    {
+        [$client, $token, , $schiepers, $berger, $francoise] = $this->schiepersBergerDay();
+
+        // Saved state only: Philippe 07:45–18:00 → conflict with the saved mission.
+        $c = self::candidate($this->roster($client, $token, $berger, '14:45', '18:00', []), $francoise);
+        self::assertContains('SCHEDULE_CONFLICT', $c['reasons']);
+        self::assertTrue($c['selectable'], 'non-blocking in Mode Modification (D-091)');
+        self::assertSame($schiepers->getId(), $c['conflict']['missionId']);
+        self::assertSame('Philippe Schiepers', $c['conflict']['surgeonName']);
+        self::assertSame('PERSISTED', $c['conflict']['source']);
+        self::assertSame('ASSIGNED', $c['conflict']['missionStatus']);
+        self::assertStringStartsWith('2026-09-15T07:45', $c['conflict']['startAt']);
+        self::assertStringStartsWith('2026-09-15T18:00', $c['conflict']['endAt']);
+
+        $philippeProposed = fn (string $end) => [[
+            'missionId' => $schiepers->getId(), 'instrumentistId' => $francoise->getId(), 'startTime' => '07:45', 'endTime' => $end,
+            'surgeonId' => $schiepers->getSurgeon()->getId(), 'siteId' => $schiepers->getSite()->getId(), 'cancelled' => false,
+        ]];
+
+        // Scénarios 1 & 2 — Philippe proposed until 14:00: Françoise free from 14:45 and from 14:00.
+        // (NO_SITE_MEMBERSHIP is informational here — the fixture has no site membership, D-101.)
+        self::assertNotContains('SCHEDULE_CONFLICT', self::candidate($this->roster($client, $token, $berger, '14:45', '18:00', $philippeProposed('14:00')), $francoise)['reasons']);
+        self::assertNotContains('SCHEDULE_CONFLICT', self::candidate($this->roster($client, $token, $berger, '14:00', '18:00', $philippeProposed('14:00')), $francoise)['reasons']);
+
+        // Scénario 3 — proposed until 14:01: overlap, reported as a PROPOSED line.
+        $c = self::candidate($this->roster($client, $token, $berger, '14:00', '18:00', $philippeProposed('14:01')), $francoise);
+        self::assertContains('SCHEDULE_CONFLICT', $c['reasons']);
+        self::assertSame('PROPOSED', $c['conflict']['source']);
+        self::assertSame('Philippe Schiepers', $c['conflict']['surgeonName']);
+        self::assertStringStartsWith('2026-09-15T14:01', $c['conflict']['endAt']);
+
+        // A proposed cancellation of Philippe frees her entirely.
+        $cancelled = $philippeProposed('18:00');
+        $cancelled[0]['cancelled'] = true;
+        self::assertNotContains('SCHEDULE_CONFLICT', self::candidate($this->roster($client, $token, $berger, '07:45', '18:00', $cancelled), $francoise)['reasons']);
+
+        // A brand-new proposed line holding Françoise conflicts too (no mission id).
+        $newLine = [['missionId' => null, 'instrumentistId' => $francoise->getId(), 'startTime' => '15:00', 'endTime' => '16:00',
+            'surgeonId' => $berger->getSurgeon()->getId(), 'siteId' => $berger->getSite()->getId(), 'cancelled' => false]];
+        $c = self::candidate($this->roster($client, $token, $berger, '14:45', '18:00', [...$philippeProposed('14:00'), ...$newLine]), $francoise);
+        self::assertSame('PROPOSED', $c['conflict']['source']);
+        self::assertNull($c['conflict']['missionId']);
+        self::assertSame('Yorick Berger', $c['conflict']['surgeonName']);
     }
 }

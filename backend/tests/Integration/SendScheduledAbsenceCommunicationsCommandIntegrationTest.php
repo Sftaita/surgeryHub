@@ -578,9 +578,10 @@ final class SendScheduledAbsenceCommunicationsCommandIntegrationTest extends Ker
         $command = new SendScheduledAbsenceCommunicationsCommand(
             $this->em,
             self::getContainer()->get(\App\Service\AbsenceCommunicationJournalService::class),
-            $throwingBus,
-            'from@example.com',
-            'SurgicalHub',
+            new \App\Service\AbsenceCommunicationDeliverySender(new \App\Notification\TransactionalEmailSender(
+                $this->em, self::getContainer()->get(\App\Activity\Recorder\NotificationActivityRecorder::class), self::getContainer()->get(\App\Activity\CorrelationContext::class),
+                $throwingBus, 'no-reply@surgicalhub.test', 'SurgicalHub',
+            ), $this->em),
         );
         $tester = new CommandTester($command);
         $tester->execute([]);

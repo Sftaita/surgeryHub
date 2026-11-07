@@ -7,8 +7,15 @@ use App\Entity\User;
 use App\Enum\EmploymentType;
 use App\Enum\MissionStatus;
 use App\Enum\PublicationScope;
+use App\Service\MissionAssignmentService;
 use App\Service\MissionDispatchService;
+use App\Service\MissionEncodingCorrectionPolicy;
+use App\Service\EncodingReminderPolicy;
 use App\Service\MissionHoursReminderPolicy;
+use App\Service\ExecutedWithoutInstrumentistPolicy;
+use App\Service\RoomTakeoverPriorityService;
+use App\Service\SurgeonEncodingPolicy;
+use Symfony\Component\Clock\Clock;
 use Symfony\Component\Security\Core\Authentication\Token\TokenInterface;
 use Symfony\Component\Security\Core\Authorization\Voter\Voter;
 
@@ -39,12 +46,16 @@ class MissionVoter extends Voter
     public const RELEASE  = 'MISSION_RELEASE';
     public const CANCEL   = 'MISSION_CANCEL';
     public const REASSIGN = 'MISSION_REASSIGN';
+    // D-181 — statut réel des notifications d'une opération de réaffectation (évalué sur la classe).
+    public const VIEW_REASSIGNMENT_OPERATION = 'MISSION_VIEW_REASSIGNMENT_OPERATION';
 
     // Pre-deploy DRAFT instrumentist assignment (RC1-C, Cluster C fix)
     public const ASSIGN_INSTRUMENTIST = 'MISSION_ASSIGN_INSTRUMENTIST';
 
     // D-125 — the target of a pending nominative request refuses it (accepting = CLAIM).
     public const DECLINE_OFFER = 'MISSION_DECLINE_OFFER';
+    // D-177 — a manager lifts the exclusive priority of a room take-over (urgency) and opens the pool.
+    public const LIFT_PRIORITY = 'MISSION_LIFT_PRIORITY';
 
     // Manager support (Batch 15D)
     public const VIEW_ELIGIBLE_INSTRUMENTISTS = 'MISSION_VIEW_ELIGIBLE_INSTRUMENTISTS';
@@ -57,6 +68,10 @@ class MissionVoter extends Voter
     public const ENCODING_VALIDATE = 'MISSION_ENCODING_VALIDATE';
     public const ENCODING_REJECT   = 'MISSION_ENCODING_REJECT';
     public const ENCODING_REOPEN   = 'MISSION_ENCODING_REOPEN';
+    // D-171 — « Terminer et valider » (manager), MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason().
+    public const ENCODING_COMPLETE_AND_VALIDATE = 'MISSION_ENCODING_COMPLETE_AND_VALIDATE';
+    // D-172 — correction manager : présence du délégué enregistrée « non renseignée » (inconnue).
+    public const RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE = 'MISSION_RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE';
 
     // Relance manuelle (cockpit Suivi des encodages, D-120) — manager/admin uniquement,
     // ne mute aucun statut : simple envoi de notification + trace d'audit.
@@ -66,6 +81,36 @@ class MissionVoter extends Voter
     // ENCODING_REMIND : condition unique dans MissionHoursReminderPolicy.
     public const HOURS_REMIND = 'MISSION_HOURS_REMIND';
 
+    // D-156 — correction contrôlée : détacher une mission de sa présence réelle partagée
+    // (prestation multi-salles). Manager/admin uniquement, mission liée et non verrouillée ;
+    // les gardes métier (calculs arrêtés, présence orpheline) restent dans WorkedPresenceService.
+    public const PRESENCE_DETACH = 'MISSION_PRESENCE_DETACH';
+
+    // D-156 — libellé de salle facultatif : manager/admin, mission non annulée/refusée.
+    public const EDIT_ROOM_LABEL = 'MISSION_EDIT_ROOM_LABEL';
+    // D-151 — the mission's own surgeon (ROLE_SURGEON): refuse the instrumentist who accepted
+    // it / ask the managers to intervene. The business conditions (refusal window, imminent
+    // mission, financial guards) are decided by MissionAssignmentRefusalPolicy under the lock.
+    public const REFUSE_ASSIGNMENT         = 'MISSION_REFUSE_ASSIGNMENT';
+    public const REQUEST_ASSIGNMENT_REVIEW = 'MISSION_REQUEST_ASSIGNMENT_REVIEW';
+
+    // D-151 — an instrumentist whose affectation to this mission ended keeps a minimal,
+    // read-only view of it ("Affectation annulée"), never anything about why.
+    public const VIEW_FORMER_ASSIGNMENT = 'MISSION_VIEW_FORMER_ASSIGNMENT';
+
+    // D-153 — the encoding correction history (hours, interventions, material): managers only.
+    public const VIEW_ENCODING_HISTORY = 'MISSION_VIEW_ENCODING_HISTORY';
+
+    // D-155 — activity executed without instrumentist: declared by the mission's surgeon or a
+    // manager (ExecutedWithoutInstrumentistPolicy), an erroneous declaration cancelled by a manager.
+    public const DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST = 'MISSION_DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST';
+    public const CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST  = 'MISSION_CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST';
+
+    public function __construct(
+        // Optional only so plain unit tests can build the voter; always autowired.
+        private readonly ?MissionAssignmentService $assignments = null,
+    ) {}
+
     protected function supports(string $attribute, mixed $subject): bool
     {
         if (!in_array($attribute, [
@@ -74,6 +119,7 @@ class MissionVoter extends Voter
             self::PUBLISH,
             self::CLAIM,
             self::DECLINE_OFFER,
+            self::LIFT_PRIORITY,
             self::SUBMIT,
             self::EDIT,
             self::EDIT_ENCODING,
@@ -84,6 +130,7 @@ class MissionVoter extends Voter
             self::RELEASE,
             self::CANCEL,
             self::REASSIGN,
+            self::VIEW_REASSIGNMENT_OPERATION,
             self::ASSIGN_INSTRUMENTIST,
             self::VIEW_ELIGIBLE_INSTRUMENTISTS,
             self::VIEW_AUDIT,
@@ -91,14 +138,24 @@ class MissionVoter extends Voter
             self::ENCODING_VALIDATE,
             self::ENCODING_REJECT,
             self::ENCODING_REOPEN,
+            self::ENCODING_COMPLETE_AND_VALIDATE,
+            self::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE,
             self::ENCODING_REMIND,
             self::HOURS_REMIND,
+            self::REFUSE_ASSIGNMENT,
+            self::REQUEST_ASSIGNMENT_REVIEW,
+            self::VIEW_FORMER_ASSIGNMENT,
+            self::VIEW_ENCODING_HISTORY,
+            self::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST,
+            self::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST,
+            self::PRESENCE_DETACH,
+            self::EDIT_ROOM_LABEL,
         ], true)) {
             return false;
         }
 
         // CREATE et DECLARE peuvent être évalués sur la classe
-        if (in_array($attribute, [self::CREATE, self::DECLARE], true)) {
+        if (in_array($attribute, [self::CREATE, self::DECLARE, self::VIEW_REASSIGNMENT_OPERATION], true)) {
             return $subject === Mission::class || $subject instanceof Mission;
         }
 
@@ -116,7 +173,7 @@ class MissionVoter extends Voter
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
 
         // CREATE / DECLARE ne dépendent pas d'une mission existante
-        if ($attribute === self::CREATE) {
+        if ($attribute === self::CREATE || $attribute === self::VIEW_REASSIGNMENT_OPERATION) {
             return $isManager;
         }
 
@@ -130,6 +187,7 @@ class MissionVoter extends Voter
         return match ($attribute) {
             self::VIEW             => $this->canView($mission, $user, $isManager),
             self::PUBLISH          => $isManager,
+            self::LIFT_PRIORITY    => $isManager && RoomTakeoverPriorityService::pendingPriority($mission) !== null,
             self::CLAIM            => $this->canClaim($mission, $user),
             self::DECLINE_OFFER    => in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true)
                 && MissionDispatchService::pendingOffer($mission)?->getTargetInstrumentist()?->getId() === $user->getId(),
@@ -149,10 +207,33 @@ class MissionVoter extends Voter
             self::ENCODING_VALIDATE           => $isManager && $mission->getStatus() === MissionStatus::SUBMITTED,
             self::ENCODING_REJECT             => $isManager && $mission->getStatus() === MissionStatus::SUBMITTED,
             self::ENCODING_REOPEN             => $isManager && $mission->getStatus() === MissionStatus::VALIDATED,
+            self::ENCODING_COMPLETE_AND_VALIDATE => $isManager
+                && MissionEncodingCorrectionPolicy::completeAndValidateBlockedReason($mission, Clock::get()->now()) === null,
+            self::RECORD_UNKNOWN_REPRESENTATIVE_PRESENCE => $isManager && $this->canEditEncoding($mission, $user, $isManager),
             self::ENCODING_REMIND             => $isManager && $this->canEncodingRemind($mission),
             self::HOURS_REMIND                => $isManager && MissionHoursReminderPolicy::isReminderRelevant($mission),
+            self::REFUSE_ASSIGNMENT,
+            self::REQUEST_ASSIGNMENT_REVIEW   => $this->isMissionSurgeon($mission, $user),
+            self::VIEW_FORMER_ASSIGNMENT      => in_array('ROLE_INSTRUMENTIST', $roles, true)
+                && $mission->getInstrumentist()?->getId() !== $user->getId()
+                && ($this->assignments?->hasEndedAffectationOf($mission, $user) ?? false),
+            self::VIEW_ENCODING_HISTORY       => $isManager,
+            self::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST => ExecutedWithoutInstrumentistPolicy::canDeclare($mission, $user, Clock::get()->now()),
+            self::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST  => ExecutedWithoutInstrumentistPolicy::canCancel($mission, $user),
+            self::PRESENCE_DETACH             => $isManager
+                && $mission->getExecution()?->getPresence() !== null
+                && !$mission->isEncodingLocked(),
+            self::EDIT_ROOM_LABEL             => $isManager
+                && !in_array($mission->getStatus(), [MissionStatus::CANCELLED, MissionStatus::REJECTED], true),
             default                           => false,
         };
+    }
+
+    /** D-151 — the surgeon of THIS mission (a colleague's mission is never his to refuse). */
+    private function isMissionSurgeon(Mission $mission, User $user): bool
+    {
+        return in_array('ROLE_SURGEON', $user->getRoles(), true)
+            && $mission->getSurgeon()?->getId() === $user->getId();
     }
 
     private function canView(Mission $mission, User $user, bool $managerContext): bool
@@ -214,6 +295,11 @@ class MissionVoter extends Voter
             return true;
         }
 
+        // D-155 — activité déclarée sans instrumentiste : le chirurgien de la mission la soumet.
+        if (ExecutedWithoutInstrumentistPolicy::surgeonCanSubmit($mission, $user, Clock::get()->now())) {
+            return true;
+        }
+
         // SUBMIT = action instrumentiste
         if (!in_array('ROLE_INSTRUMENTIST', $user->getRoles(), true)) {
             return false;
@@ -271,8 +357,15 @@ class MissionVoter extends Voter
 
     private function canEditEncoding(Mission $mission, User $user, bool $managerContext): bool
     {
-        // manager/admin: OK (support / correction)
+        // manager/admin: correction (D-153) in the correctable statuses, never on a locked
+        // encoding (a validated one is reopened first) — same rule as 'edit_encoding'.
         if ($managerContext) {
+            return MissionEncodingCorrectionPolicy::managerCanEditEncoding($mission);
+        }
+
+        // D-154 — the mission's surgeon (own mission, started, open encoding) — interventions
+        // and material only: hours (MissionExecutionVoter) and transitions stay unchanged.
+        if (SurgeonEncodingPolicy::canEditEncoding($mission, $user, Clock::get()->now())) {
             return true;
         }
 
@@ -328,12 +421,17 @@ class MissionVoter extends Voter
         $roles = $user->getRoles();
 
         if (in_array('ROLE_INSTRUMENTIST', $roles, true) && $mission->getInstrumentist()?->getId() === $user->getId()) {
+            // D-146 bis — après validation (et clôture), l'instrumentiste assignée consulte
+            // encore son encodage, en lecture seule : VIEW_ENCODING n'ouvre aucune écriture
+            // (EDIT_ENCODING / MissionEncodingGuard restent inchangés).
             return in_array($mission->getStatus(), [
                 MissionStatus::DECLARED,
                 MissionStatus::ASSIGNED,
                 MissionStatus::IN_PROGRESS,
                 MissionStatus::ENCODING_IN_PROGRESS,
                 MissionStatus::SUBMITTED,
+                MissionStatus::VALIDATED,
+                MissionStatus::CLOSED,
             ], true);
         }
 
@@ -360,16 +458,8 @@ class MissionVoter extends Voter
      */
     private function canEncodingRemind(Mission $mission): bool
     {
-        if ($mission->getInstrumentist() === null) {
-            return false;
-        }
-
-        return in_array($mission->getStatus(), [
-            MissionStatus::DECLARED,
-            MissionStatus::ASSIGNED,
-            MissionStatus::IN_PROGRESS,
-            MissionStatus::ENCODING_IN_PROGRESS,
-        ], true);
+        // D-166 — règle métier unique (instrumentiste affectée + encodage attendu).
+        return EncodingReminderPolicy::canSendManualReminder($mission);
     }
 
     private function canApproveDeclared(Mission $mission, bool $managerContext): bool
@@ -408,6 +498,13 @@ class MissionVoter extends Voter
                     }
                 }
             }
+        }
+
+        // D-177 — an active room take-over priority reserves the mission for its recipient
+        // alone: no pool rule can open it to anyone else while it runs.
+        $priority = RoomTakeoverPriorityService::pendingPriority($mission);
+        if ($priority !== null) {
+            return $priority->getTargetInstrumentist()?->getId() === $instrumentist->getId();
         }
 
         foreach ($mission->getPublications() as $pub) {

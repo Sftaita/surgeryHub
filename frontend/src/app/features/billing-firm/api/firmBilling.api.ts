@@ -74,6 +74,8 @@ export interface FirmServiceOffering {
   representativeSuppressesInterventionFee: boolean;
   representativeSuppressesOwnMaterialFees: boolean;
   feeApplicable: boolean;
+  /** D-138 — ids des règles de forfait unique contradictoires ; null = aucun conflit. */
+  pricingConflictRuleIds?: number[] | null;
   suggestedMaterials: SuggestedMaterialDto[];
   choiceGroupConfig: ChoiceGroupConfigDto | null;
 }

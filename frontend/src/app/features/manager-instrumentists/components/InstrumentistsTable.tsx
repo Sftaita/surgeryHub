@@ -88,6 +88,7 @@ export function InstrumentistsTable({
         field: "displayName",
         headerName: "Nom",
         flex: 1.6,
+        minWidth: 220,
         sortable: false,
         valueGetter: (_value, row) => buildDisplayName(row),
         renderCell: ({ row }) => {
@@ -115,6 +116,7 @@ export function InstrumentistsTable({
         field: "active",
         headerName: "Statut",
         flex: 0.8,
+        minWidth: 110,
         sortable: false,
         renderCell: ({ row }) => (
           <Chip
@@ -129,6 +131,7 @@ export function InstrumentistsTable({
         field: "employmentType",
         headerName: "Type",
         flex: 0.9,
+        minWidth: 120,
         sortable: false,
         valueGetter: (value) =>
           getEmploymentTypeLabel(
@@ -139,6 +142,7 @@ export function InstrumentistsTable({
         field: "hasCurrentHourlyRate",
         headerName: "Tarif",
         flex: 0.9,
+        minWidth: 120,
         sortable: false,
         renderCell: ({ row }) => (
           <Chip
@@ -153,6 +157,7 @@ export function InstrumentistsTable({
         field: "actions",
         headerName: "Actions",
         flex: 0.7,
+        minWidth: 100,
         sortable: false,
         filterable: false,
         renderCell: ({ row }) => (

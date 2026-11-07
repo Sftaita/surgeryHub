@@ -14,6 +14,8 @@ import type {
   InterventionTypeEncodingContext,
   CatalogInterventionType,
   ChoiceGroupSummary,
+  RecentFirmsResponse,
+  RecentInterventionTypesResponse,
 } from "./encoding.types";
 
 export async function fetchMissionEncoding(
@@ -56,14 +58,38 @@ export async function createMissionIntervention(
   return data;
 }
 
+/**
+ * D-154 — protection contre les écrasements concurrents (instrumentiste, chirurgien,
+ * manager sur la même mission) : la version lue est renvoyée en `If-Match` ; le backend
+ * répond 409 ENCODING_CONCURRENT_MODIFICATION si l'élément a changé entre-temps.
+ */
+function ifMatch(expectedVersion?: number | null): [] | [{ headers: Record<string, string> }] {
+  return expectedVersion != null ? [{ headers: { "If-Match": `"${expectedVersion}"` } }] : [];
+}
+
+export const ENCODING_CONCURRENT_MODIFICATION = "ENCODING_CONCURRENT_MODIFICATION";
+
+/**
+ * D-171 — validation refusée (409) parce que l'encodage a changé depuis sa lecture : la
+ * confirmation donnée ne vaut que pour la révision relue, jamais pour la nouvelle.
+ */
+export const ENCODING_CHANGED_BEFORE_VALIDATION =
+  "L'encodage a été modifié depuis votre dernière consultation. Consultez les modifications avant de recommencer la validation.";
+
+export function isEncodingConcurrentModification(err: unknown): boolean {
+  return (err as { response?: { data?: { error?: { code?: string } } } })?.response?.data?.error?.code === ENCODING_CONCURRENT_MODIFICATION;
+}
+
 export async function patchMissionIntervention(
   missionId: number,
   interventionId: number,
   body: PatchInterventionBody,
+  expectedVersion?: number | null,
 ): Promise<MissionInterventionDto> {
   const { data } = await apiClient.patch<MissionInterventionDto>(
     `/api/missions/${missionId}/interventions/${interventionId}`,
     body,
+    ...ifMatch(expectedVersion),
   );
   return data;
 }
@@ -71,9 +97,11 @@ export async function patchMissionIntervention(
 export async function deleteMissionIntervention(
   missionId: number,
   interventionId: number,
+  expectedVersion?: number | null,
 ): Promise<void> {
   await apiClient.delete(
     `/api/missions/${missionId}/interventions/${interventionId}`,
+    ...ifMatch(expectedVersion),
   );
 }
 
@@ -98,10 +126,12 @@ export async function patchMissionMaterialLine(
   missionId: number,
   lineId: number,
   body: PatchMaterialLineBody,
+  expectedVersion?: number | null,
 ): Promise<MaterialLineDto> {
   const { data } = await apiClient.patch<MaterialLineDto>(
     `/api/missions/${missionId}/material-lines/${lineId}`,
     body,
+    ...ifMatch(expectedVersion),
   );
   return data;
 }
@@ -109,8 +139,9 @@ export async function patchMissionMaterialLine(
 export async function deleteMissionMaterialLine(
   missionId: number,
   lineId: number,
+  expectedVersion?: number | null,
 ): Promise<void> {
-  await apiClient.delete(`/api/missions/${missionId}/material-lines/${lineId}`);
+  await apiClient.delete(`/api/missions/${missionId}/material-lines/${lineId}`, ...ifMatch(expectedVersion));
 }
 
 /**
@@ -164,6 +195,24 @@ export type FirmServiceOfferingSummary = {
   choiceGroup: ChoiceGroupSummary | null;
 };
 
+/** D-178 — les deux dernières firmes distinctes encodées par l'utilisateur connecté. */
+export async function fetchRecentFirms(missionId: number): Promise<RecentFirmsResponse> {
+  const { data } = await apiClient.get<RecentFirmsResponse>(`/api/missions/${missionId}/encoding-suggestions/firms`);
+  return data;
+}
+
+/**
+ * D-178 — les deux derniers types distincts encodés avec cette firme pour le chirurgien de la
+ * mission ; `"none"` = encodés « Aucune firme » (types actuellement autorisés sans firme).
+ */
+export async function fetchRecentInterventionTypes(missionId: number, firmId: number | "none"): Promise<RecentInterventionTypesResponse> {
+  const { data } = await apiClient.get<RecentInterventionTypesResponse>(
+    `/api/missions/${missionId}/encoding-suggestions/intervention-types`,
+    { params: { firmId } },
+  );
+  return data;
+}
+
 export async function fetchFirmServiceOfferings(firmId: number): Promise<FirmServiceOfferingSummary[]> {
   const { data } = await apiClient.get<FirmServiceOfferingSummary[]>(`/api/firms/${firmId}/service-offerings`);
   return data;
@@ -178,8 +227,25 @@ export async function fetchFirmServiceOfferings(firmId: number): Promise<FirmSer
  * `POST /api/missions/{id}/submit` (submitMission dans missions.api.ts) — le backend
  * délègue au même MissionEncodingWorkflowService::complete(), jamais deux implémentations.
  */
-export async function validateMissionEncoding(missionId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${missionId}/encoding/validate`);
+/** D-171 — `expectedRevision` (encodingRevision du détail) : 409 si l'encodage a changé depuis sa lecture. */
+export async function validateMissionEncoding(missionId: number, expectedRevision?: string | null): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/validate`, expectedRevision ? { expectedRevision } : undefined);
+}
+
+/**
+ * D-171 — « Terminer et valider » (manager) : clôt puis valide un encodage encore ouvert.
+ * `expectedRevision` = `encodingRevision` du détail de mission (409 si l'encodage a changé
+ * entre-temps) ; `takeoverConfirmed` = reprise confirmée (exigée quand une instrumentiste est affectée).
+ */
+export async function completeAndValidateMissionEncoding(
+  missionId: number,
+  body: { comment: string | null; expectedRevision: string | null; takeoverConfirmed: boolean },
+): Promise<void> {
+  await apiClient.post(`/api/missions/${missionId}/encoding/complete-and-validate`, {
+    ...(body.comment !== null ? { comment: body.comment } : {}),
+    expectedRevision: body.expectedRevision,
+    takeoverConfirmed: body.takeoverConfirmed,
+  });
 }
 
 export async function rejectMissionEncoding(
@@ -189,14 +255,29 @@ export async function rejectMissionEncoding(
   await apiClient.post(`/api/missions/${missionId}/encoding/reject`, { comment });
 }
 
+/** D-148 — motif de la correction obligatoire (refusé en 422 par le backend sinon). */
 export async function reopenMissionEncoding(
   missionId: number,
-  comment?: string,
+  comment: string,
 ): Promise<void> {
   await apiClient.post(`/api/missions/${missionId}/encoding/reopen`, { comment });
 }
 
-/** D-120 — relance manuelle (cockpit Suivi des encodages). Ne mute aucun statut. */
-export async function remindMissionEncoding(missionId: number): Promise<void> {
-  await apiClient.post(`/api/missions/${missionId}/encoding/remind`);
+/**
+ * D-120 — relance manuelle (cockpit Suivi des encodages). Ne mute aucun statut.
+ * H5a — `batchId` : une relance = un lot ; une requête rejouée avec le même lot n'envoie
+ * jamais une seconde relance (l'email de cette action explicite est obligatoire).
+ * D-143 — renvoie le détail mission à jour (lastManualReminderChannel : canaux réellement
+ * utilisés, 'push+email' | 'push' | 'email' | 'none') ; 409 si une relance date de < 10 min.
+ */
+export async function remindMissionEncoding(missionId: number, batchId?: string): Promise<{ lastManualReminderChannel?: string | null }> {
+  const { data } = await apiClient.post(`/api/missions/${missionId}/encoding/remind`, batchId ? { batchId } : {});
+  return data ?? {};
+}
+
+/** H5a — identifiant d'un lot d'action manager (idempotence côté serveur). */
+export function newActionBatchId(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 }

@@ -36,7 +36,7 @@ describe("NotificationPreferencesSection — toggles par catégorie (Lot 3, jusq
     renderSection();
 
     expect(await screen.findByText("Alertes planning")).toBeInTheDocument();
-    expect(screen.getByText("Nouvelles offres disponibles")).toBeInTheDocument();
+    expect(screen.getByText("Nouvelles missions disponibles")).toBeInTheDocument();
   });
 
   it("un type inconnu du frontend retombe sur son identifiant brut plutôt que de casser l'écran", async () => {

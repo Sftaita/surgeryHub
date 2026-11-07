@@ -3,83 +3,69 @@
 namespace App\Controller;
 
 use App\Entity\User;
-use App\EventListener\AuthenticationSuccessListener;
-use Doctrine\ORM\EntityManagerInterface;
+use App\Repository\UserRepository;
+use App\Security\Google\GoogleIdTokenVerifier;
+use App\Security\Google\GoogleTokenRejectedException;
+use App\Security\Google\GoogleUnavailableException;
+use App\Security\Session\DeviceSessionService;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
-use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\Routing\Attribute\Route;
-use Symfony\Contracts\HttpClient\HttpClientInterface;
-use Lexik\Bundle\JWTAuthenticationBundle\Services\JWTTokenManagerInterface;
-use Gesdinet\JWTRefreshTokenBundle\Generator\RefreshTokenGeneratorInterface;
-use Gesdinet\JWTRefreshTokenBundle\Model\RefreshTokenManagerInterface;
 
+/**
+ * Google Sign-In (no UI yet). D-157 hardening:
+ * - disabled (404) while GOOGLE_OAUTH_CLIENT_ID is not configured;
+ * - ID token checked by GoogleIdTokenVerifier (audience, issuer, expiry, verified email);
+ * - existing, active accounts only: accounts are created by invitation, never by a Google login;
+ * - same device session as the password login.
+ */
 final class AuthGoogleController
 {
     #[Route('/api/auth/google', methods: ['POST'])]
     public function __invoke(
         Request $request,
-        HttpClientInterface $http,
-        EntityManagerInterface $em,
-        JWTTokenManagerInterface $jwtManager,
-        RefreshTokenManagerInterface $refreshTokenManager,
-        RefreshTokenGeneratorInterface $refreshTokenGenerator,
-        UserPasswordHasherInterface $hasher,
+        GoogleIdTokenVerifier $google,
+        UserRepository $users,
+        DeviceSessionService $sessions,
+        LoggerInterface $logger,
     ): JsonResponse {
+        if (!$google->isEnabled()) {
+            return new JsonResponse(['error' => 'Not found'], 404);
+        }
+
         $payload = json_decode($request->getContent(), true) ?? [];
         $credential = $payload['credential'] ?? null;
         $rememberMe = (bool) ($payload['rememberMe'] ?? false);
 
-        if (!$credential) {
+        if (!is_string($credential) || $credential === '') {
             return new JsonResponse(['error' => 'Missing credential'], 400);
         }
 
-        // Vérifie l'ID token auprès de Google
-        $resp = $http->request('GET', 'https://oauth2.googleapis.com/tokeninfo', [
-            'query' => ['id_token' => $credential],
-        ]);
+        try {
+            $email = $google->verify($credential);
+        } catch (GoogleUnavailableException) {
+            return new JsonResponse(['error' => 'Google unavailable'], 503);
+        } catch (GoogleTokenRejectedException $e) {
+            $logger->info('Google login refused', ['reason' => $e->getMessage()]);
 
-        if (200 !== $resp->getStatusCode()) {
             return new JsonResponse(['error' => 'Invalid Google token'], 401);
         }
 
-        $info = $resp->toArray(false);
-        $email = $info['email'] ?? null;
-        $googleSub = $info['sub'] ?? null;
+        // Same answer for an unknown and a suspended account: no account enumeration.
+        $user = $users->findOneByEmailInsensitive($email);
+        if (!$user instanceof User || !$user->isActive()) {
+            $logger->info('Google login refused', ['reason' => $user === null ? 'unknown_account' : 'inactive_account']);
 
-        if (!$email || !$googleSub) {
-            return new JsonResponse(['error' => 'Google token missing fields'], 401);
+            return new JsonResponse(['error' => 'Invalid Google token'], 401);
         }
 
-        // Trouver ou créer user
-        $user = $em->getRepository(User::class)->findOneBy(['email' => $email]);
-
-        if (!$user) {
-            $user = new User();
-            $user->setEmail($email);
-            // Mot de passe random (non utilisé), mais champ requis si non nullable
-            $user->setPassword($hasher->hashPassword($user, bin2hex(random_bytes(16))));
-            $user->setRoles(['ROLE_USER']);
-            // si tu as un champ googleId :
-            // $user->setGoogleId($googleSub);
-
-            $em->persist($user);
-            $em->flush();
-        }
-
-        // Générer JWT
-        $token = $jwtManager->create($user);
-
-        // Générer refresh token
-        $ttl = $rememberMe ? AuthenticationSuccessListener::TTL_REMEMBER_ME : AuthenticationSuccessListener::TTL_DEFAULT;
-
-        $refreshToken = $refreshTokenGenerator->createForUserWithTtl($user, $ttl);
-        $refreshToken->setRememberMe($rememberMe);
-        $refreshTokenManager->save($refreshToken);
+        // D-157 — session d'appareil (refresh token glissant, rotation au refresh)
+        $session = $sessions->open($user, $rememberMe);
 
         return new JsonResponse([
-            'token' => $token,
-            'refresh_token' => $refreshToken->getRefreshToken(),
+            'token' => $sessions->accessToken($user, $session),
+            'refresh_token' => $session->getRefreshToken(),
         ]);
     }
 }

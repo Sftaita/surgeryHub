@@ -98,7 +98,7 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
             $this->em->flush();
             foreach ($this->createdIds['missions'] as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
             foreach ($this->createdIds['materials'] as $id) {
@@ -274,6 +274,9 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         $body = [
             'label' => $label,
             'missionInterventionId' => $intervention->getId(),
+            // D-146 bis — firme (proposée en texte libre) et quantité désormais obligatoires.
+            'proposedFirmName' => 'Firme proposée (test D-146)',
+            'quantity' => '1',
         ];
         if ($comment !== null) {
             $body['comment'] = $comment;
@@ -288,7 +291,7 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
     /** @return array{0: int, 1: int} [materialRequestId, draftId] */
     private function createMaterialRequestOnOpenDraft(KernelBrowser $client, Mission $mission, string $instrToken, string $label = 'Demande MatReqWF sur draft'): array
     {
-        $draftCreated = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, [
+        $draftCreated = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/intervention-type-requests", $instrToken, ['proposedFirmName' => 'Firme proposée (test D-146)', 
             'label' => 'Intervention MatReqWF ' . bin2hex(random_bytes(2)),
         ]);
         self::assertSame(Response::HTTP_CREATED, $draftCreated->getStatusCode(), $draftCreated->getContent());
@@ -296,7 +299,7 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         $this->createdIds['requests'][] = $draftData['id'];
         $draftId = $draftData['draftId'];
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $instrToken, [
+        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/material-item-requests", $instrToken, ['proposedFirmName' => 'Firme proposée (test D-146)', 'quantity' => '1', 
             'label' => $label,
             'interventionDraftId' => $draftId,
         ]);
@@ -435,7 +438,7 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         // findBy/findOneBy, on repart du draft pour retrouver sa demande.
         $draft = $this->em->find(MissionInterventionDraft::class, $draftId);
         $draftRequest = $draft->getInterventionTypeRequest();
-        $resolveDraft = $this->request($client, 'POST', "/api/intervention-type-requests/{$draftRequest->getId()}/resolve", $managerToken, [
+        $resolveDraft = $this->request($client, 'POST', "/api/intervention-type-requests/{$draftRequest->getId()}/resolve", $managerToken, ['newFirmName' => 'Firme D-146 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED', 
             'interventionTypeId' => $type->getId(),
         ]);
         self::assertSame(Response::HTTP_OK, $resolveDraft->getStatusCode(), $resolveDraft->getContent());
@@ -471,8 +474,12 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), $response->getContent());
         $body = json_decode($response->getContent(), true);
 
-        self::assertEqualsCanonicalizing(['request', 'materialLine'], array_keys($body));
-        self::assertEqualsCanonicalizing(['id'], array_keys($body['materialLine']));
+        // D-146 bis — enrichissement additif : quantité de la ligne et créations éventuelles
+        // (firme / matériel) signalées au manager.
+        self::assertEqualsCanonicalizing(['request', 'materialLine', 'createdFirm', 'createdItem'], array_keys($body));
+        self::assertEqualsCanonicalizing(['id', 'quantity'], array_keys($body['materialLine']));
+        self::assertFalse($body['createdFirm']);
+        self::assertFalse($body['createdItem']);
         self::assertSame('RESOLVED', $body['request']['status']);
         self::assertSame($requestId, $body['request']['id']);
         self::assertSame('Vis titane', $body['request']['label']);
@@ -480,7 +487,8 @@ final class MaterialItemRequestManagerControllerTest extends WebTestCase
         // Motif/explication : propres à l'ignore, toujours null après une résolution.
         self::assertNull($body['request']['ignoreReason']);
         self::assertNull($body['request']['ignoreComment']);
-        // D-139 — décideur/date désormais posés aussi à la résolution (mêmes clés).
+        // D-146 bis / D-139 — décideur et date posés à la résolution comme à l'ignore : le
+        // décideur est le manager qui a résolu, jamais une valeur reconstituée.
         self::assertSame($manager->getId(), $body['request']['decidedBy']['id']);
         self::assertNotNull($body['request']['decidedAt']);
     }

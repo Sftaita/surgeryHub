@@ -47,6 +47,8 @@ export type EncodingMaterialLine = {
   item: EncodingMaterialItem;
   quantity: string; // backend: "1.00"
   comment: string; // backend: "Optionnel"
+  /** D-154 — version optimiste servie par le backend, renvoyée en If-Match à chaque modification / suppression. */
+  version?: number | null;
 };
 
 export type EncodingMaterialItemRequest = {
@@ -54,6 +56,11 @@ export type EncodingMaterialItemRequest = {
   label: string;
   referenceCode: string;
   comment: string; // backend: "Optionnel"
+  /** D-146 bis — firme fabricante choisie (référentiel) OU proposée en texte libre. */
+  proposedFirm?: { id: number; name: string } | null;
+  proposedFirmName?: string | null;
+  /** D-146 bis — quantité déclarée ("2.00") ; null pour une demande antérieure. */
+  quantity?: string | null;
 };
 
 /** Référentiel fermé (Lot 1) — voir intervention-types feature. */
@@ -61,6 +68,10 @@ export type CatalogInterventionType = {
   id: number;
   code: string;
   label: string;
+  /** D-178 — autorisée sans firme par le manager (Catalogue › Interventions). */
+  allowedWithoutFirm?: boolean;
+  /** D-183 — proposée sous « Aucune firme » : calculé par le serveur (sans rattachement à une firme, ou autorisée). */
+  selectableWithoutFirm?: boolean;
 };
 
 /**
@@ -146,6 +157,12 @@ export type MissionEncodingInterventionEntry = {
   /** Tarification firme conditionnée à un choix obligatoire — donnée factuelle, jamais un montant. */
   selectedChoiceOptionId?: number | null;
   selectedChoiceOptionLabel?: string | null;
+  /** D-154 — version optimiste servie par le backend, renvoyée en If-Match à chaque modification / suppression. */
+  version?: number | null;
+  /** D-178 — « Aucune firme » enregistré (légitimement sans firme), distinct d'une firme manquante. */
+  withoutFirm?: boolean;
+  /** Complément D-156 — mission qui porte l'intervention (liste unifiée d'une prestation multi-salles). */
+  missionId?: number | null;
 };
 
 export type MissionEncodingDraftEntry = {
@@ -160,11 +177,17 @@ export type MissionEncodingDraftEntry = {
    *  supprimée/renommée ; voir requestedFirmNameSnapshot pour le nom figé à la création. */
   firm: { id: number; name: string } | null;
   requestedFirmNameSnapshot: string | null;
+  /** D-146 bis — firme proposée en texte libre (« Ma firme n'est pas dans la liste »). */
+  proposedFirmName?: string | null;
+  /** D-178 — demande faite « Aucune firme ». */
+  withoutFirm?: boolean;
   /** "OPEN" (modifiable) ou "KEPT_AS_HISTORY" (lecture seule, voir readOnly). */
   status: "OPEN" | "KEPT_AS_HISTORY" | string;
   readOnly: boolean;
   materialLines: EncodingEntryMaterialLine[];
   materialItemRequests: EncodingEntryMaterialItemRequest[];
+  /** Complément D-156 — mission qui porte la demande (liste unifiée d'une prestation multi-salles). */
+  missionId?: number | null;
 };
 
 export type MissionEncodingEntry = MissionEncodingInterventionEntry | MissionEncodingDraftEntry;
@@ -255,6 +278,8 @@ export type MissionEncodingResponse = {
     id: number;
     type: "BLOCK" | "CONSULTATION" | string;
     status: string;
+    /** D-178 — chirurgien réellement porté par la mission (clé des interventions récentes). */
+    surgeonId?: number | null;
     allowedActions: string[];
   };
   /**
@@ -276,6 +301,12 @@ export type MissionEncodingResponse = {
   coherenceSummary: MissionEncodingCoherenceSummary;
   encodingComments: EncodingComment[];
   progress: MissionEncodingProgress;
+  /**
+   * Complément D-156 — null pour une mission seule. Dans une prestation multi-salles, le
+   * nouveau contenu ne s'ajoute que sur la mission de référence (acceptsNewContent) : décidé
+   * par le serveur, jamais déduit ici.
+   */
+  prestation?: { size: number; missionIds: number[]; referenceMissionId: number; acceptsNewContent: boolean } | null;
 };
 
 /**
@@ -300,9 +331,13 @@ export type MissionInterventionDto = {
 export type CreateInterventionBody = {
   interventionTypeId: number;
   primaryFirmId?: number;
+  /** D-178 — « Aucune firme » choisi explicitement (exclusif de primaryFirmId). */
+  withoutFirm?: true;
   orderIndex: number;
   /** Refonte Catalogue/Prestations (D-092) — facultatif, uniquement si déjà connu à la création. */
-  representativePresent?: boolean;
+  representativePresent?: boolean | null;
+  /** D-172 — correction manager : présence du délégué historiquement inconnue (jamais « non »). */
+  representativePresenceUnknown?: true;
   /** Tarification firme conditionnée à un choix obligatoire — facultatif tant que non exigé. */
   selectedChoiceOptionId?: number;
 };
@@ -315,8 +350,12 @@ export type CreateInterventionBody = {
 export type PatchInterventionBody = {
   interventionTypeId?: number;
   primaryFirmId?: number | null;
+  /** D-178 — true = « Aucune firme » (avec primaryFirmId null) ; une firme fournie le lève. */
+  withoutFirm?: boolean;
   orderIndex?: number;
   representativePresent?: boolean | null;
+  /** D-172 — correction manager : présence du délégué historiquement inconnue (jamais « non »). */
+  representativePresenceUnknown?: true;
   selectedChoiceOptionId?: number | null;
   /** §8 du prompt — requis pour confirmer le retrait de matériel devenu incompatible. */
   confirmRemoveIncompatibleMaterial?: boolean;
@@ -331,7 +370,11 @@ export type CreateInterventionTypeRequestBody = {
   label: string;
   suggestedCode?: string;
   comment?: string;
+  /** D-146 bis — firme obligatoire : exactement l'un des deux. */
   requestedFirmId?: number;
+  proposedFirmName?: string;
+  /** D-178 — « Aucune firme » : troisième réponse, exclusive des deux autres. */
+  withoutFirm?: true;
 };
 
 /**
@@ -378,6 +421,8 @@ export type MaterialLineDto = {
   item: EncodingMaterialItem;
   quantity: string;
   comment: string;
+  /** D-154 — version optimiste servie par le backend, renvoyée en If-Match à chaque modification / suppression. */
+  version?: number | null;
 };
 
 /** Voir CreateMaterialLineBody — même exclusivité mutuelle. */
@@ -387,6 +432,11 @@ export type CreateMaterialItemRequestBody = {
   label: string;
   referenceCode?: string;
   comment?: string;
+  /** D-146 bis — exactement l'un des deux (firme existante OU nom proposé). */
+  firmId?: number;
+  proposedFirmName?: string;
+  /** D-146 bis — obligatoire, strictement positive. */
+  quantity: string;
 };
 
 /**
@@ -404,4 +454,20 @@ export type MaterialItemRequestDto = {
   referenceCode?: string | null;
   comment?: string | null;
   status?: "PENDING" | "RESOLVED" | "IGNORED";
+};
+
+/**
+ * D-178 — raccourcis de saisie calculés par le backend sur les seules interventions réellement
+ * enregistrées (au plus deux). Jamais un type particulier : un raccourci se sélectionne
+ * exactement comme la même entrée de la liste complète.
+ */
+export type RecentFirmsResponse = {
+  firms: Array<{ id: number; name: string }>;
+};
+
+export type RecentInterventionTypesResponse = {
+  /** null = « Aucune firme ». */
+  firmId: number | null;
+  surgeonId: number | null;
+  interventionTypes: CatalogInterventionType[];
 };

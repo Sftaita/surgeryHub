@@ -56,5 +56,20 @@ final class MissionEncodingEntryDto
         /** Tarification firme conditionnée à un choix obligatoire — toujours null pour kind=DRAFT. */
         public readonly ?int $selectedChoiceOptionId = null,
         public readonly ?string $selectedChoiceOptionLabel = null,
+        /**
+         * D-146 bis — kind=DRAFT : firme proposée en texte libre (« Ma firme n'est pas dans
+         * la liste ») quand `firm` est null. Toujours null pour kind=INTERVENTION.
+         */
+        public readonly ?string $proposedFirmName = null,
+        /** D-154 — version optimiste (If-Match) d'une intervention réelle ; null pour kind=DRAFT. */
+        public readonly ?int $version = null,
+        /** D-178 — « Aucune firme » : intervention enregistrée sans firme, ou demande faite sans firme. */
+        public readonly bool $withoutFirm = false,
+        /**
+         * Complément D-156 — mission qui porte l'élément. Dans la liste unifiée d'une
+         * prestation multi-salles, les éléments de plusieurs missions se côtoient : le client
+         * adresse chaque modification à la mission de l'élément, jamais à une autre.
+         */
+        public readonly ?int $missionId = null,
     ) {}
 }

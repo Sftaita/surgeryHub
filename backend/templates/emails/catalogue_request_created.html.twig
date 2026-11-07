@@ -18,7 +18,11 @@ body { font-family: Arial, sans-serif; color: #333; font-size: 14px; line-height
 
   <p>Bonjour {{ firstname }},</p>
 
-  <p>Un instrumentiste a proposé un(e) {{ kindLabel }} qui n'existe pas encore dans le catalogue :</p>
+  {% if requesterRole %}
+  <p>{{ requesterRole }} a proposé un(e) {{ kindLabel }} qui n'existe pas encore dans le catalogue :</p>
+  {% else %}
+  <p>Un(e) {{ kindLabel }} qui n'existe pas encore dans le catalogue a été proposé(e) :</p>
+  {% endif %}
 
   <div class="details">
     <div><strong>{{ label }}</strong></div>

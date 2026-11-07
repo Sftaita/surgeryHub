@@ -57,6 +57,12 @@ function formatFr(iso: string): string {
  * The preview is always fetched from the backend (never recomputed client-side) so the list
  * shown here is guaranteed identical to what the send endpoint would consider — see D-051.
  */
+function newBatchId(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function AbsenceReminderDialog({ mode, open, onClose }: Props) {
   const toast = useToast();
   const [message, setMessage] = React.useState(DEFAULT_MESSAGES[mode]);
@@ -99,6 +105,13 @@ export function AbsenceReminderDialog({ mode, open, onClose }: Props) {
     }
   }, [open]);
 
+  // H5a — one reminder batch per open dialog: a retried send (network error, double submit
+  // slipping through) reuses it, and the server never emails anyone twice for it.
+  const batchIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    batchIdRef.current = open ? newBatchId() : null;
+  }, [open, mode]);
+
   React.useEffect(() => {
     if (open && !isLoading && initializedForRef.current !== mode) {
       setSelectedIds(new Set(allIds));
@@ -117,10 +130,15 @@ export function AbsenceReminderDialog({ mode, open, onClose }: Props) {
 
   const sendMutation = useMutation({
     mutationFn: () => mode === "missing"
-      ? requestMissingAbsences(message, [...selectedIds])
-      : confirmEncodedAbsences(message, [...selectedIds]),
+      ? requestMissingAbsences(message, [...selectedIds], batchIdRef.current ?? undefined)
+      : confirmEncodedAbsences(message, [...selectedIds], batchIdRef.current ?? undefined),
     onSuccess: (result) => {
-      toast.success(`${result.count} email${result.count > 1 ? "s" : ""} individuel${result.count > 1 ? "s" : ""} envoyé${result.count > 1 ? "s" : ""}`);
+      // Honest wording: handed to the sending queue, not "received" (see the send history).
+      toast.success(`${result.count} email${result.count > 1 ? "s" : ""} individuel${result.count > 1 ? "s" : ""} en cours d'envoi`);
+      const notSent = result.notSent ?? [];
+      if (notSent.length > 0) {
+        toast.warning(`Non envoyé à : ${notSent.map((p) => p.name).join(", ")}`);
+      }
       onClose();
     },
     onError: (err: any) => toast.error(err?.response?.data?.error?.message ?? err?.message ?? String(err)),

@@ -10,3 +10,6 @@
 # Captures d'écran de travail personnelles, hors dépôt applicatif.
 /Visuel/
 /Erruer templates.png
+
+# D-163 — archives de déploiement locales (deploy/deploy.sh prepare)
+/.deploy-dist/

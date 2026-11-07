@@ -36,5 +36,17 @@ final class CatalogueRequestProcessedMessage
         public readonly \DateTimeImmutable $occurredAt,
         public readonly ?CatalogueRequestIgnoreReason $ignoreReason = null,
         public readonly ?string $explanation = null,
+        /**
+         * D-146 bis — instantané de ce que le manager a DÉFINITIVEMENT enregistré
+         * (scalaires uniquement, jamais re-résolu dans le handler), pour dire à
+         * l'instrumentiste sous quel nom retrouver l'élément la prochaine fois :
+         *  - matériel : name, reference, firm, quantity, existingItem ;
+         *  - intervention : name, code, firm, createdType.
+         * Vide pour un refus, ou pour un message émis avant D-146 bis (repli sur l'ancien
+         * comportement : aucun envoi rétroactif, aucun champ inventé).
+         *
+         * @var array<string, scalar|null>
+         */
+        public readonly array $resolution = [],
     ) {}
 }

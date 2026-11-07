@@ -1,5 +1,6 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { SessionRestoreUnavailable } from "../auth/SessionRestoreUnavailable";
 
 export function RequireAuth() {
   const { state } = useAuth();
@@ -7,6 +8,11 @@ export function RequireAuth() {
 
   if (state.status === "loading" || state.status === "initializing") {
     return <div style={{ padding: 16 }}>Chargement…</div>;
+  }
+
+  // D-157 — session stockée non vérifiable (serveur injoignable) : jamais de redirection /login.
+  if (state.status === "unavailable") {
+    return <SessionRestoreUnavailable />;
   }
 
   if (state.status === "anonymous") {

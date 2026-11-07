@@ -2,6 +2,7 @@
 
 namespace App\Service;
 
+use App\Activity\Recorder\PlanningActivityRecorder;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningDeployment;
@@ -10,18 +11,29 @@ use App\Entity\User;
 use App\Enum\MissionStatus;
 use App\Enum\PlanningDeploymentStatus;
 use App\Enum\PlanningVersionStatus;
+use App\Exception\MultiRoomConfirmationRequiredException;
 use App\Exception\PlanningDraftConflictException;
 use App\Message\PlanningDeployPdfsMessage;
+use App\Service\Prestation\MultiRoomConfirmationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 class PlanningDeploymentService
 {
+    /** D-150 — opens the affectations of the missions this deploy publishes as ASSIGNED. */
+    private readonly MissionAssignmentService $assignments;
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly MessageBusInterface $bus,
         private readonly PlanningDraftRevalidationService $draftRevalidation,
-    ) {}
+        private readonly PlanningActivityRecorder $activity,
+        private readonly MultiRoomConfirmationService $multiRoom,
+        ?MissionAssignmentService $assignments = null,
+    ) {
+        // Always autowired; a plain unit test that omits it still gets the real writer.
+        $this->assignments = $assignments ?? new MissionAssignmentService($em);
+    }
 
     /**
      * Deploy a PlanningVersion — only fast DB operations run synchronously:
@@ -70,17 +82,27 @@ class PlanningDeploymentService
             if (!empty($revalidation['blockingConflicts'])) {
                 throw new PlanningDraftConflictException($revalidation['blockingConflicts']);
             }
+            // D-156 — multi-room assignments proposed by the posts must be confirmed (or
+            // reorganised) by the manager first: checked here, server-side, never only in UI.
+            $unconfirmed = $this->multiRoom->unconfirmedGroups($version);
+            if ($unconfirmed !== []) {
+                throw new MultiRoomConfirmationRequiredException(MultiRoomConfirmationService::describe($unconfirmed));
+            }
             if (!empty($revalidation['neutralized'])) {
                 $this->draftRevalidation->neutralize($revalidation['neutralized'], $deployedBy);
             }
         }
+        $neutralizedCount  = isset($revalidation) ? count($revalidation['neutralized'] ?? []) : 0;
+        $archivedVersionId = null;
+        $assignedCount     = null;
 
         // ── 2. Archive the current ACTIVE version (if any) ───────────────────
         if ($version !== null) {
-            $previousActive = $this->findActiveVersion($version->getSite()?->getId(), $fromDate, $toDate);
+            $previousActive = $this->findActiveVersion($version->getSite()?->getId(), $fromDate, $toDate, $version->getSiteGroup()?->getId());
             if ($previousActive !== null && $previousActive->getId() !== $version->getId()) {
                 $previousActive->setStatus(PlanningVersionStatus::ARCHIVED);
                 $previousActive->setArchivedAt(new \DateTimeImmutable());
+                $archivedVersionId = $previousActive->getId();
             }
 
             // ── 3. Activate the target version ────────────────────────────────
@@ -101,29 +123,45 @@ class PlanningDeploymentService
         // ── 4. Publish missions — two targeted bulk UPDATEs ──────────────────
         $openMissionIds = [];
         if ($version !== null) {
-            // 4a. Pre-assigned missions (instrumentist already set) → ASSIGNED.
-            //     These instrumentists own their mission immediately; no pool claim needed.
-            $assignedCount = (int) $this->em->createQuery(
-                'UPDATE App\Entity\Mission m SET m.status = :assigned
-                 WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NOT NULL'
-            )
-                ->setParameter('assigned', MissionStatus::ASSIGNED)
-                ->setParameter('v',        $version)
-                ->setParameter('draft',    MissionStatus::DRAFT)
-                ->execute();
+            // D-150 — publishing and opening the affectations of the published missions commit
+            // together: a mission is never ASSIGNED without its MissionAssignment.
+            $publication = $this->em->getConnection();
+            $publication->beginTransaction();
+            try {
+                // 4a. Pre-assigned missions (instrumentist already set) → ASSIGNED.
+                //     These instrumentists own their mission immediately; no pool claim needed.
+                $assignedCount = (int) $this->em->createQuery(
+                    'UPDATE App\Entity\Mission m SET m.status = :assigned
+                     WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NOT NULL'
+                )
+                    ->setParameter('assigned', MissionStatus::ASSIGNED)
+                    ->setParameter('v',        $version)
+                    ->setParameter('draft',    MissionStatus::DRAFT)
+                    ->execute();
 
-            // 4b. V2 rule (Batch 15A): ALL uncovered DRAFT missions → OPEN automatically.
-            //     No manual selection required — the manager already reviewed assignments
-            //     in the Preview Editor. Every DRAFT without an instrumentist goes to pool.
-            //     $selectedUncoveredMissionIds is intentionally ignored for V2 path.
-            $poolCount = (int) $this->em->createQuery(
-                'UPDATE App\Entity\Mission m SET m.status = :open
-                 WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NULL'
-            )
-                ->setParameter('open',  MissionStatus::OPEN)
-                ->setParameter('v',     $version)
-                ->setParameter('draft', MissionStatus::DRAFT)
-                ->execute();
+                // 4a'. D-150 — their affectations start now (source PLANNING_DEPLOYMENT).
+                $this->assignments->openForDeployedVersion((int) $version->getId(), $deployedBy);
+
+                // 4b. V2 rule (Batch 15A): ALL uncovered DRAFT missions → OPEN automatically.
+                //     No manual selection required — the manager already reviewed assignments
+                //     in the Preview Editor. Every DRAFT without an instrumentist goes to pool.
+                //     $selectedUncoveredMissionIds is intentionally ignored for V2 path.
+                $poolCount = (int) $this->em->createQuery(
+                    'UPDATE App\Entity\Mission m SET m.status = :open
+                     WHERE m.planningVersion = :v AND m.status = :draft AND m.instrumentist IS NULL'
+                )
+                    ->setParameter('open',  MissionStatus::OPEN)
+                    ->setParameter('v',     $version)
+                    ->setParameter('draft', MissionStatus::DRAFT)
+                    ->execute();
+
+                $publication->commit();
+            } catch (\Throwable $e) {
+                if ($publication->isTransactionActive()) {
+                    $publication->rollBack();
+                }
+                throw $e;
+            }
 
             $this->em->clear(Mission::class);
             $missionCount = $assignedCount + $poolCount;
@@ -188,7 +226,31 @@ class PlanningDeploymentService
         }
 
         $this->em->persist($deployment);
-        $this->em->flush();
+
+        // H1 (D-126) — the PlanningDeployment row and its PLANNING_DEPLOYED journal entry
+        // commit together. (The earlier steps of deploy() keep their pre-existing,
+        // non-atomic sequence of flushes/bulk UPDATEs — unchanged by H1.)
+        $connection = $this->em->getConnection();
+        $connection->beginTransaction();
+        try {
+            $this->em->flush();
+            $this->activity->deployed($version, (int) $deployment->getId(), [
+                'periodFrom'        => $fromDate->format('Y-m-d'),
+                'periodTo'          => $toDate->format('Y-m-d'),
+                'siteId'            => $siteId,
+                'missionCount'      => $missionCount,
+                'assignedCount'     => $assignedCount,
+                'openPoolCount'     => $poolCount,
+                'archivedVersionId' => $archivedVersionId,
+                'neutralizedCount'  => $neutralizedCount,
+            ], $deployment->getDeployedBy());
+            $connection->commit();
+        } catch (\Throwable $e) {
+            if ($connection->isTransactionActive()) {
+                $connection->rollBack();
+            }
+            throw $e;
+        }
 
         // ── 6. Dispatch async PDF + email + notifications ─────────────────────
         // flush() above populates $deployment->getId() via Doctrine's identity map.
@@ -213,7 +275,14 @@ class PlanningDeploymentService
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    private function findActiveVersion(?int $siteId, \DateTimeImmutable $from, \DateTimeImmutable $to): ?PlanningVersion
+    /**
+     * D-156 lot 1 — the ACTIVE version a deploy replaces is the one of the SAME target: same
+     * site, or same site group, or (legacy) the global scope. `v.site IS NULL` alone matched
+     * any group's or the global version: deploying group A could archive group B's ACTIVE
+     * month, whose missions then stayed live but could no longer be opened in Modification
+     * mode.
+     */
+    private function findActiveVersion(?int $siteId, \DateTimeImmutable $from, \DateTimeImmutable $to, ?int $siteGroupId = null): ?PlanningVersion
     {
         $qb = $this->em->createQueryBuilder()
             ->select('v')
@@ -228,10 +297,21 @@ class PlanningDeploymentService
 
         if ($siteId !== null) {
             $qb->andWhere('v.site = :siteId')->setParameter('siteId', $siteId);
-        } else {
-            $qb->andWhere('v.site IS NULL');
+
+            return $qb->getQuery()->getOneOrNullResult();
         }
 
-        return $qb->getQuery()->getOneOrNullResult();
+        $qb->andWhere('v.site IS NULL');
+        if ($siteGroupId !== null) {
+            // Same group first; otherwise a legacy global version (no site, no group) that
+            // this group deploy supersedes — never another group's version.
+            $sameGroup = (clone $qb)->andWhere('v.siteGroup = :siteGroupId')->setParameter('siteGroupId', $siteGroupId)
+                ->getQuery()->getOneOrNullResult();
+            if ($sameGroup !== null) {
+                return $sameGroup;
+            }
+        }
+
+        return $qb->andWhere('v.siteGroup IS NULL')->getQuery()->getOneOrNullResult();
     }
 }

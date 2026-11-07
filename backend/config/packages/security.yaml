@@ -31,6 +31,33 @@ security:
                 success_handler: lexik_jwt_authentication.handler.authentication_success
                 failure_handler: lexik_jwt_authentication.handler.authentication_failure
 
+        # D-140 — API machine-à-machine dédiée à MedVue (lecture des congés, dissociation).
+        # AVANT le firewall `api` : un JWT utilisateur n'y est jamais accepté, et le secret
+        # MedVue n'ouvre aucune autre route /api.
+        medvue_integration:
+            pattern: ^/api/integrations/medvue/
+            stateless: true
+            custom_authenticators:
+                - App\Security\MedVueIntegration\MedVueIntegrationAuthenticator
+            entry_point: App\Security\MedVueIntegration\MedVueIntegrationAuthenticator
+
+        # D-157 — refresh et logout d'une session d'appareil : AUCUN authentificateur JWT ici.
+        # Sur le firewall `api`, l'authentificateur JWT (priorité -10) passait avant
+        # `refresh_jwt` (-50) : le jeton d'accès expiré que le client envoie encore faisait
+        # répondre « Expired JWT Token » avant même la lecture du refresh token (déconnexion
+        # à chaque expiration), et un logout ne révoquait rien. AuthSessionController lit le
+        # seul refresh token du corps (DeviceSessionService).
+        auth_session:
+            pattern: ^/api/auth/(refresh|logout)$
+            security: false
+
+        # D-175 — routes du service worker (accusés de réception, pushsubscriptionchange) : appelées
+        # sans session, chacune authentifiée par un jeton dédié (PushReceiptService,
+        # PushDeviceRenewalService) et plafonnée globalement (PushDeviceController). AUCUN authentificateur JWT ici.
+        push_device:
+            pattern: ^/api/push/(receipts|device/renew)$
+            security: false
+
         # API protégée par JWT
         api:
             pattern: ^/api
@@ -39,10 +66,6 @@ security:
             provider: app_user_provider
             user_checker: App\Security\UserChecker
             jwt: ~
-            refresh_jwt:
-                check_path: /api/auth/refresh
-            logout:
-                path: /api/auth/logout
 
         # Firewall "site" (si tu ajoutes des pages non-API un jour)
         main:
@@ -59,6 +82,10 @@ security:
         - { path: ^/api/auth/logout, roles: PUBLIC_ACCESS }
         - { path: ^/api/auth/google, roles: PUBLIC_ACCESS }
         - { path: ^/api/invitations, roles: PUBLIC_ACCESS }
+        - { path: ^/api/push/(receipts|device/renew)$, roles: PUBLIC_ACCESS }
+
+        # D-140 — client machine MedVue uniquement
+        - { path: ^/api/integrations/medvue/, roles: ROLE_MEDVUE_INTEGRATION }
 
         # Tout le reste de /api nécessite un JWT valide
         - { path: ^/api, roles: IS_AUTHENTICATED_FULLY }

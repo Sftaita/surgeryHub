@@ -81,6 +81,12 @@ final class EncodingTrackingRequestParser
         return $type;
     }
 
+    /** D-184 — « Afficher les missions annulées » : consultation explicite, jamais par défaut. */
+    public function parseIncludeCancelled(Request $request): bool
+    {
+        return filter_var($request->query->get('includeCancelled', false), FILTER_VALIDATE_BOOLEAN);
+    }
+
     /** @return array{page: int, limit: int} */
     public function parsePagination(Request $request): array
     {

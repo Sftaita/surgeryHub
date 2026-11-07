@@ -18,6 +18,8 @@ export type AllowedAction =
   | "start_encoding"
   | "validate"
   | "reopen"
+  // D-171 — manager : terminer et valider lui-même un encodage encore ouvert
+  | "complete_and_validate"
   // Lot 6 (D-100) — lecture seule chirurgien, jamais un droit d'édition
   | "view_encoding"
   // D-120 — cockpit Suivi des encodages, relance manuelle
@@ -27,7 +29,20 @@ export type AllowedAction =
   // D-125 — manager : (re)diffuser une mission OPEN sans demande en attente ;
   // instrumentiste : refuser une demande nominative ('claim' = accepter)
   | "dispatch"
-  | "decline_offer";
+  | "decline_offer"
+  // D-177 — manager : lever la priorité de reprise de salle et ouvrir le pool (Cas D).
+  | "lift_priority"
+  // D-151 — chirurgien de la mission : refuser l'instrumentiste qui l'a acceptée (dans le
+  // délai), sinon demander l'intervention du manager. Décidé par le backend uniquement.
+  | "refuse_assignment"
+  | "request_assignment_review"
+  // D-155 — activité exécutée sans instrumentiste : déclarer (chirurgien de la mission, manager), annuler (manager).
+  | "declare_executed_without_instrumentist"
+  | "cancel_executed_without_instrumentist"
+  // Manager : réaffecter une mission ASSIGNED (déjà renvoyé par le backend).
+  | "reassign"
+  // D-165 — manager : corriger l'horaire prévu (OPEN/ASSIGNED, et IN_PROGRESS pour ses heures du jour).
+  | "reschedule";
 
 export type SchedulePrecision = "APPROXIMATE" | "EXACT";
 export type MissionType = "BLOCK" | "CONSULTATION";
@@ -56,6 +71,9 @@ export type CreateMissionBody = {
   startAt: string;
   endAt: string;
   surgeonUserId: number;
+  /** D-156 lot 1 — dispatch decided in the same request (validated before creation). */
+  dispatchMode?: "POOL" | "TARGETED" | "DIRECT";
+  dispatchInstrumentistId?: number | null;
 };
 
 export type CreateMissionResult = Mission;
@@ -65,6 +83,42 @@ export type PaginatedResponse<T> = {
   total: number;
   page?: number;
   limit?: number;
+  /** D-172 — GET /api/missions : missions annulées masquées par `excludeCancelled` (null : aucun masquage). */
+  cancelledExcluded?: number | null;
+};
+
+/**
+ * D-172 — état d'encodage d'une mission, distinct de son statut de planification
+ * (EncodingStateResolver côté backend, jamais recalculé ici).
+ */
+export type MissionEncodingState =
+  | "UPCOMING" | "TO_ENCODE" | "IN_PROGRESS" | "SUBMITTED" | "VALIDATED" | "LOCKED" | "NOT_APPLICABLE" | "NOT_DECLARED" | "CANCELLED";
+
+/** D-172 — un verrou réel confirmé par le backend, par niveau (jamais déduit d'un statut). */
+export type MissionLock = {
+  level: "ENCODING" | "FINANCIAL_CALCULATION" | "DOCUMENT" | "CLOSED";
+  label: string;
+  reason: string;
+};
+
+export type MissionEncodingActor = { name: string | null; role: "INSTRUMENTIST" | "SURGEON" | "MANAGER" | null; at: string };
+
+/** D-172 — servi aux managers seulement (liste et détail), null sinon. */
+export type MissionEncodingOverview = {
+  state: MissionEncodingState;
+  stateLabel: string;
+  /** Début planifié passé, avec la même horloge serveur que `state` — jamais comparé côté client. */
+  started?: boolean;
+  /** Activité déclarée réalisée sans instrumentiste (D-155) — un fait backend. */
+  executedWithoutInstrumentist?: boolean;
+  /** Interventions et lignes de matériel enregistrées — jamais une preuve de finalisation. */
+  interventionCount?: number | null;
+  materialLineCount?: number | null;
+  /** Auteur de la dernière finalisation (soumission) de l'encodage. */
+  finalizedBy: MissionEncodingActor | null;
+  /** Auteur de la validation, quand l'encodage est validé. */
+  validatedBy: MissionEncodingActor | null;
+  locks: MissionLock[];
 };
 
 export type SiteListItem = {
@@ -155,6 +209,32 @@ export interface InstrumentistService {
   [key: string]: unknown;
 }
 
+/**
+ * D-181 — servi par le backend (MissionReassignmentPolicy) : `modes` vide = impossible, le
+ * premier mode est celui à proposer ; `blockedReason` explique pourquoi. Jamais déduit du statut.
+ */
+export interface MissionReassignmentInfo {
+  modes: Array<"DIRECT" | "RELAY">;
+  blockedReason: { code: string; message: string } | null;
+  relayWindow: { from: string; to: string } | null;
+}
+
+/**
+ * D-182 — servi par le backend (MissionCancellationPolicy) : `blockedReason` null = annulable
+ * maintenant ; sinon le chemin de correction à suivre. Jamais déduit du statut.
+ */
+export interface MissionCancellationInfo {
+  /** Pourquoi la mission ne peut pas être annulée : l'action est affichée désactivée avec ce message. */
+  blockedReason: { code: string; message: string } | null;
+  /**
+   * Encodage soumis (REJECT) ou validé non facturé (REOPEN) : correction tracée faite d'abord,
+   * dans la même opération, une fois confirmée par le manager (`correctionConfirmed`).
+   */
+  correction?: { action: "REJECT" | "REOPEN"; message: string } | null;
+  /** Encodage existant : archivé sans aucune incidence financière si la mission est annulée (détail seulement). */
+  hasEncodingData?: boolean;
+}
+
 export interface Mission {
   id: number;
 
@@ -204,19 +284,99 @@ export interface Mission {
   nextAutomaticReminderAt?: string | null;
   lastManualReminderAt?: string | null;
   lastManualReminderByName?: string | null;
+  /** D-143 — canal de la dernière relance manuelle ('push' | 'email'). */
+  lastManualReminderChannel?: string | null;
+  /** D-143 — relances automatiques déjà envoyées (manager uniquement). */
+  automaticReminders?: AutomaticReminder[];
+  /** D-143 — dernière soumission de l'encodage (null si jamais soumis). */
+  submittedAt?: string | null;
 
   /** D-125 — demande nominative, calculée backend (jamais re-déduite) : PENDING = OPEN, non
    *  couverte, en attente de la réponse de cet instrumentiste ; DECLINED = refusée. */
   targetedOffer?: TargetedOffer | null;
+  /** D-148 — pourquoi l'encodage ne peut pas être rouvert (clôture, verrou financier), managers seulement. */
+  encodingCorrectionBlockedReason?: string | null;
+  /** D-153 — conséquence financière d'une correction (calcul actif à recalculer après revalidation), managers seulement. */
+  encodingCorrectionFinancialNotice?: string | null;
+  /** D-155 — activité exécutée sans instrumentiste (null sinon) : aucune heure, facturation firme seule. */
+  executedWithoutInstrumentist?: { declaredAt: string | null; declaredByName: string | null } | null;
+  /** D-171 — pourquoi « Valider l'encodage » n'est pas proposé (managers seulement), affiché tel quel. */
+  encodingValidationBlockedReason?: string | null;
+  /** D-171 — empreinte de l'encodage lu (managers, quand « Terminer et valider » est proposé), renvoyée telle quelle. */
+  encodingRevision?: string | null;
+  /** D-171 — « Terminer et valider » est une reprise : confirmation explicite exigée (managers). */
+  encodingTakeover?: { instrumentistName: string; hoursMissing: boolean } | null;
+  /** D-171 — dernière reprise de l'encodage par un manager (managers et instrumentiste affectée). */
+  lastEncodingTakeover?: { byName: string | null; at: string; hoursMissing: boolean } | null;
+  /** D-171 — encodage validé sans les heures prestées, toujours manquantes : seules elles restent déclarables. */
+  hoursPendingAfterValidation?: boolean;
+
+  /** D-172 — état d'encodage, auteur et verrous réels (managers seulement). */
+  encoding?: MissionEncodingOverview | null;
+
+  /** D-151 — affectation en cours, servie au chirurgien de la mission et aux managers seulement. */
+  currentAssignment?: CurrentAssignment | null;
+  /** D-151 — "ENDED" : l'instrumentiste qui consulte a eu une affectation à cette mission, terminée. */
+  myAssignmentStatus?: "ENDED" | null;
+  /** D-156 — libellé de salle facultatif (manager). */
+  roomLabel?: string | null;
+  /** D-156 — prestation regroupée multi-salles (serveur), null si la mission est seule. */
+  prestation?: MissionPrestationSummary | null;
+  /** D-156 — vrais conflits d'horaire (serveur) : jamais recalculés côté client. */
+  scheduleConflictMissionIds?: number[];
+  /** D-181 — managers : comment l'instrumentiste peut être changée maintenant (serveur seul). */
+  reassignment?: MissionReassignmentInfo | null;
+  /** D-181 — relais : mission poursuivie / missions de relais. */
+  relay?: { relayOfMissionId: number | null; relayMissionIds: number[] } | null;
+  /** D-182 — managers : l'annulation est-elle possible maintenant (serveur seul). */
+  cancellation?: MissionCancellationInfo | null;
+  /** D-182 — doublon : mission conservée à la place / missions annulées remplacées par celle-ci. */
+  replacement?: { replacedByMissionId: number | null; replacesMissionIds: number[] } | null;
 
   [key: string]: unknown;
 }
+
+/**
+ * D-151 — calculé par le backend (MissionAssignmentRefusalPolicy), jamais recalculé ici :
+ * refusable / refusalBlockedReason disent ce que le chirurgien peut faire maintenant.
+ */
+export type CurrentAssignment = {
+  id: number;
+  instrumentist: { id: number; name: string };
+  source: string;
+  assignedAt: string;
+  /** Acceptations volontaires seulement (pool / demande nominative), sinon null. */
+  refusalDeadlineAt: string | null;
+  refusable: boolean;
+  refusalBlockedReason:
+    | "ASSIGNMENT_ALREADY_ENDED"
+    | "ASSIGNMENT_NOT_REFUSABLE"
+    | "REFUSAL_WINDOW_EXPIRED"
+    | "REFUSAL_REQUIRES_MANAGER"
+    | null;
+  reviewRequestedAt: string | null;
+};
+
+export type MissionPrestationSummary = {
+  key: string;
+  size: number;
+  missionIds: number[];
+  plannedStartAt: string;
+  plannedEndAt: string;
+  plannedUnionMinutes: number;
+};
 
 export type TargetedOffer = {
   status: "PENDING" | "DECLINED";
   instrumentist: { id: number; name: string } | null;
   offeredAt: string | null;
   declinedAt: string | null;
+  /** D-177 — priorité exclusive d'une reprise de salle (false : demande D-125 ordinaire). */
+  priority?: boolean;
+  /** D-177 — échéance de la priorité (48 h réelles après son émission). */
+  expiresAt?: string | null;
+  /** D-177 (Cas D) — la mission commence avant l'échéance : alerte manager. */
+  startsBeforeExpiry?: boolean;
 };
 
 /**
@@ -232,4 +392,12 @@ export type MissionSyncResponse = {
   changed: boolean;
   missions: Mission[];
   removedMissionIds: number[];
+};
+
+/** D-143 — une relance automatique J+1/J+2/J+4 déjà envoyée (historique serveur). */
+export type AutomaticReminder = {
+  stage: "D1" | "D2" | "D4";
+  sentAt: string | null;
+  channels: string[];
+  managersNotified: number | null;
 };

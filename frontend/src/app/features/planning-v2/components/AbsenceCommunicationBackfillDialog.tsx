@@ -18,6 +18,8 @@ const ROOM_RELEASE_LABELS: Record<string, string> = {
   NO_RECIPIENT: "0 destinataire",
   NO_FUTURE_BLOCK: "Aucun bloc futur",
   DISABLED: "Désactivé",
+  // D-161 — l'e-mail « Libération de salle » est remplacé par l'annonce des salles disponibles.
+  RETIRED: "Remplacé par les notifications de salles",
 };
 
 const BLOCK_MANAGEMENT_LABELS: Record<string, string> = {

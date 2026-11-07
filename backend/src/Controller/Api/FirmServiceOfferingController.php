@@ -11,7 +11,9 @@ use App\Entity\MissionIntervention;
 use App\Entity\PricingRule;
 use App\Entity\RequiredChoiceGroup;
 use App\Entity\SuggestedMaterial;
+use App\Exception\PricingRuleConflictException;
 use App\Security\Voter\BillingVoter;
+use App\Service\PricingRuleResolver;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -28,7 +30,10 @@ use Symfony\Component\Routing\Attribute\Route;
 #[Route('/api/firms/{firmId}/service-offerings')]
 final class FirmServiceOfferingController extends AbstractController
 {
-    public function __construct(private readonly EntityManagerInterface $em) {}
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly PricingRuleResolver $pricingRuleResolver,
+    ) {}
 
     #[Route('', name: 'api_firm_offerings_list', methods: ['GET'])]
     public function list(int $firmId): JsonResponse
@@ -579,6 +584,9 @@ final class FirmServiceOfferingController extends AbstractController
             $base['representativeSuppressesInterventionFee'] = $o->isRepresentativeSuppressesInterventionFee();
             $base['representativeSuppressesOwnMaterialFees'] = $o->isRepresentativeSuppressesOwnMaterialFees();
             $base['feeApplicable'] = $o->isFeeApplicable();
+            // D-138 — règles de forfait contradictoires signalées explicitement (résolues
+            // par le backend), jamais présentées comme « tarif non configuré ».
+            $base['pricingConflictRuleIds'] = $this->forfaitConflictRuleIds($o);
             // Vue complète (y compris groupe non encore opérationnel, options
             // désactivées) — réservée au manager pour la configuration ; l'instrumentiste
             // ne voit que 'choiceGroup' ci-dessus (jamais de montant nulle part ici).
@@ -588,6 +596,21 @@ final class FirmServiceOfferingController extends AbstractController
         }
 
         return $base;
+    }
+
+    /** @return int[]|null ids des règles de forfait unique (sans option) en conflit aujourd'hui */
+    private function forfaitConflictRuleIds(FirmServiceOffering $o): ?array
+    {
+        if (!$o->isFeeApplicable()) {
+            return null;
+        }
+        try {
+            $this->pricingRuleResolver->resolveInterventionFee($o->getFirm(), $o->getInterventionType(), new \DateTimeImmutable('today'));
+        } catch (PricingRuleConflictException $e) {
+            return array_column($e->rulesSnapshot(), 'id');
+        }
+
+        return null;
     }
 
     private function serializeSuggestion(SuggestedMaterial $s): array

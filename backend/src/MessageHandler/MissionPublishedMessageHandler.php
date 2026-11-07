@@ -2,19 +2,19 @@
 
 namespace App\MessageHandler;
 
+use App\Notification\OpenEpisode;
+use App\Notification\OpenMissionPoolNotifier;
+use App\Enum\OpenEpisodeCause;
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
 use App\Entity\User;
+use App\Enum\NotificationEmailPolicy;
 use App\Enum\NotificationType;
-use App\Enum\OutboundNotificationStatus;
-use App\Enum\PublicationChannel;
 use App\Message\MissionPublishedMessage;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\PushContent;
 use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
-use App\Service\OutboundNotificationService;
-use App\Service\WebPushService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -22,12 +22,11 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 /**
  * Point 8 (audit UX) — side effects of a Mission publish (DRAFT → OPEN):
  *
- * 1. Instrumentists on the mission's site — moved here from the synchronous call that
- *    used to live directly in MissionController::publish() (D-081 tech debt, "envoi push
- *    synchrone", resolved as a side effect of this lot). Behavior unchanged, only async now.
- * 2. The mission's surgeon — new. Push first (only if the preference resolver allows push
- *    for this type AND a subscription exists), email fallback only if push wasn't actually
- *    deliverable (D-083 pattern, via OutboundNotificationService/NotificationService).
+ * 1. The pool — H3 (D-129): OpenMissionPoolNotifier, i.e. only the instrumentists really
+ *    eligible for this mission, through NotificationDispatcher (in-app / email / push per
+ *    preferences). Formerly a push to every instrumentist of the site.
+ * 2. The mission's surgeon — in-app, push first, email fallback only if push wasn't actually
+ *    accepted (D-083 pattern) — H5a: through NotificationDispatcher, every channel traced.
  *    No patient data — date/time/site/type only.
  *
  * Failure isolation, matching MissionLifecycleChangedMessageHandler: each side effect is
@@ -39,10 +38,9 @@ final class MissionPublishedMessageHandler
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly WebPushService $webPushService,
-        private readonly OutboundNotificationService $outboundNotificationService,
+        private readonly OpenMissionPoolNotifier $poolNotifier,
+        private readonly NotificationDispatcher $dispatcher,
         private readonly NotificationService $notificationService,
-        private readonly NotificationPreferenceResolver $preferenceResolver,
         private readonly NotificationTargetResolver $targetResolver,
         private readonly LoggerInterface $logger,
     ) {}
@@ -57,28 +55,31 @@ final class MissionPublishedMessageHandler
             return;
         }
 
-        $this->notifySiteInstrumentists($mission);
-        $this->notifySurgeon($mission);
+        $this->solicitPool($mission, $message);
+        $this->notifySurgeon($mission, $message);
     }
 
-    private function notifySiteInstrumentists(Mission $mission): void
+    /**
+     * H3 (D-129) — the pool is solicited through the single entry point: only the
+     * instrumentists who can really take THIS mission (affiliation / freelancer, not absent,
+     * no overlapping mission), with their preferences per channel. Replaces the former push
+     * to EVERY instrumentist of the site (no eligibility, no in-app, no email).
+     */
+    private function solicitPool(Mission $mission, MissionPublishedMessage $message): void
     {
         try {
-            $this->webPushService->sendToSiteInstrumentists(
-                $mission,
-                'Nouvelle mission disponible',
-                'Une nouvelle mission a été publiée sur votre site.',
-                ['missionId' => $mission->getId()],
-            );
+            $this->poolNotifier->notify(OpenEpisode::forTransition(
+                (int) $mission->getId(), OpenEpisodeCause::PUBLISHED_TO_POOL, $message->occurredAt, actorId: $message->actorId,
+            ));
         } catch (\Throwable $e) {
-            $this->logger->error('MissionPublished: instrumentist push failed', [
+            $this->logger->error('MissionPublished: pool solicitation failed', [
                 'missionId' => $mission->getId(),
                 'error' => $e->getMessage(),
             ]);
         }
     }
 
-    private function notifySurgeon(Mission $mission): void
+    private function notifySurgeon(Mission $mission, MissionPublishedMessage $message): void
     {
         // Défensif — Mission.surgeon n'est pas nullable en base, mais jamais supposé ici.
         $surgeon = $mission->getSurgeon();
@@ -86,86 +87,35 @@ final class MissionPublishedMessageHandler
             return;
         }
 
-        $channels = $this->resolveChannelsSafely($surgeon, NotificationType::SURGEON_MISSION_OPEN_PUBLISHED);
-
-        if ($channels->inApp) {
-            try {
-                $evt = (new NotificationEvent())
-                    ->setUser($surgeon)
-                    ->setMission($mission)
-                    ->setEventType(NotificationType::SURGEON_MISSION_OPEN_PUBLISHED->value)
-                    ->setChannel(PublicationChannel::IN_APP)
-                    ->setSentAt(new \DateTimeImmutable())
-                    ->setPayload([
-                        'missionId' => $mission->getId(),
-                        'dayLabel'  => $mission->getStartAt()?->format('l'),
-                        'siteName'  => $mission->getSite()?->getName(),
-                    ]);
-                $this->em->persist($evt);
-                $this->em->flush();
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionPublished: surgeon inApp failed', [
-                    'missionId' => $mission->getId(),
-                    'surgeonId' => $surgeon->getId(),
-                    'error'     => $e->getMessage(),
-                ]);
-            }
-        }
-
-        if ($channels->push) {
-            try {
-                $title = 'Nouvelle mission ouverte';
-                $body = 'Une mission vous concernant a été publiée, actuellement sans instrumentiste.';
-                $data = [
-                    'missionId' => $mission->getId(),
-                    'url' => $this->targetResolver->resolve(NotificationType::SURGEON_MISSION_OPEN_PUBLISHED, $mission, $surgeon),
-                ];
-
-                $pushNotification = $this->outboundNotificationService->recordPushSend(
-                    $surgeon,
-                    NotificationType::SURGEON_MISSION_OPEN_PUBLISHED->value,
-                    $title,
-                    $body,
-                    $data,
-                    $mission,
-                );
-
-                if ($pushNotification->getStatus() !== OutboundNotificationStatus::SENT && $channels->email) {
-                    $this->notificationService->missionOpenNotifySurgeon(
-                        $mission,
-                        $surgeon,
-                        $pushNotification,
-                        OutboundNotificationService::fallbackReasonFor($pushNotification),
-                    );
-                }
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionPublished: surgeon push/fallback failed', [
-                    'missionId' => $mission->getId(),
-                    'surgeonId' => $surgeon->getId(),
-                    'error'     => $e->getMessage(),
-                ]);
-            }
-        } elseif ($channels->email) {
-            // Push désactivé par préférence (jamais tenté) — repli email direct, sans
-            // OutboundNotification "fallbackOf" puisqu'aucun push n'a été réellement essayé.
-            try {
-                $this->notificationService->missionOpenNotifySurgeon($mission, $surgeon);
-            } catch (\Throwable $e) {
-                $this->logger->error('MissionPublished: surgeon email failed', [
-                    'missionId' => $mission->getId(),
-                    'surgeonId' => $surgeon->getId(),
-                    'error'     => $e->getMessage(),
-                ]);
-            }
-        }
-    }
-
-    private function resolveChannelsSafely(User $user, NotificationType $type): NotificationChannels
-    {
+        // H5a — via NotificationDispatcher : in-app, push d'abord, repli email (politique
+        // FALLBACK_WHEN_PUSH_NOT_SENT, orchestration D-083 inchangée), chaque canal tracé,
+        // idempotent par publication.
         try {
-            return $this->preferenceResolver->resolve($user, $type);
-        } catch (\Throwable) {
-            return new NotificationChannels(inApp: true, email: false, push: false);
+            $type = NotificationType::SURGEON_MISSION_OPEN_PUBLISHED;
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $surgeon,
+                type: $type,
+                inAppPayload: [
+                    'missionId' => $mission->getId(),
+                    'dayLabel'  => $mission->getStartAt()?->format('l'),
+                    'siteName'  => $mission->getSite()?->getName(),
+                ],
+                mission: $mission,
+                email: $this->notificationService->missionOpenSurgeonEmail($mission, $surgeon),
+                push: new PushContent(
+                    'Nouvelle mission ouverte',
+                    'Une mission vous concernant a été publiée, actuellement sans instrumentiste.',
+                    ['missionId' => $mission->getId(), 'url' => $this->targetResolver->resolve($type, $mission, $surgeon)],
+                ),
+                episodeRef: 'published:' . $mission->getId() . ':' . $message->occurredAt->format('Y-m-d\TH:i:s.uP'),
+                emailPolicy: NotificationEmailPolicy::FALLBACK_WHEN_PUSH_NOT_SENT,
+            ));
+        } catch (\Throwable $e) {
+            $this->logger->error('MissionPublished: surgeon notification failed', [
+                'missionId' => $mission->getId(),
+                'surgeonId' => $surgeon->getId(),
+                'error'     => $e->getMessage(),
+            ]);
         }
     }
 }

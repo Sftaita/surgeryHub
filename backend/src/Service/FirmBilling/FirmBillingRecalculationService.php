@@ -58,13 +58,14 @@ final class FirmBillingRecalculationService
                 $results[] = $this->result($missionId, 'SKIPPED', "L'encodage de la mission n'est pas validé.");
                 continue;
             }
-            if ($mission->getInstrumentist() === null) {
+            if (!$mission->hasEncodableActivity()) { // D-155 — activité sans instrumentiste : firme seule
                 $results[] = $this->result($missionId, 'SKIPPED', "Aucun instrumentiste n'est assigné à la mission.");
                 continue;
             }
 
             $active = $this->em->getRepository(FinancialCalculation::class)->findOneBy(
-                ['mission' => $mission, 'status' => [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED]],
+                // D-171 — le calcul principal, jamais un complément instrumentiste.
+                ['mission' => $mission, 'supplementOf' => null, 'status' => [FinancialCalculationStatus::CALCULATED, FinancialCalculationStatus::APPROVED, FinancialCalculationStatus::LOCKED]],
                 ['version' => 'DESC'],
             );
             if ($active?->getStatus() === FinancialCalculationStatus::LOCKED) {

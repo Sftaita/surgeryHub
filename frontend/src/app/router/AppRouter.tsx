@@ -4,6 +4,7 @@ import { CircularProgress, Box } from "@mui/material";
 
 import { RequireAuth } from "./RequireAuth";
 import { RequireAppAccess } from "./RequireAppAccess";
+import { ManagerMissionRedirect } from "./ManagerMissionRedirect";
 
 import { MobileLayout } from "../layouts/MobileLayout";
 import { DesktopLayout } from "../layouts/DesktopLayout";
@@ -21,6 +22,7 @@ import LandingPage from "../pages/LandingPage";
 const TodayPage           = React.lazy(() => import("../pages/instrumentist/TodayPage"));
 const OffersPage          = React.lazy(() => import("../pages/instrumentist/OffersPage"));
 const MyMissionsPage      = React.lazy(() => import("../pages/instrumentist/MyMissionsPage"));
+const MyHoursPage         = React.lazy(() => import("../features/my-hours/MyHoursPage")); // D-179
 const PlanningPage        = React.lazy(() => import("../pages/instrumentist/PlanningPage"));
 const NotificationsPage   = React.lazy(() => import("../pages/instrumentist/NotificationsPage"));
 const DeclareMissionPage  = React.lazy(() => import("../pages/instrumentist/DeclareMissionPage"));
@@ -68,8 +70,8 @@ const DashboardPage          = React.lazy(() => import("../pages/manager/Dashboa
 const ProfilePageM           = React.lazy(() => import("../pages/manager/ProfilePage"));
 const NotificationsPageM     = React.lazy(() => import("../pages/manager/NotificationsPage"));
 const MissionsListPage       = React.lazy(() => import("../pages/manager/MissionsListPage"));
-const MissionDetailPageM     = React.lazy(() => import("../pages/manager/MissionDetailPage"));
 const MissionCreatePage      = React.lazy(() => import("../pages/manager/MissionCreatePage"));
+const ActivityJournalPage    = React.lazy(() => import("../pages/manager/ActivityJournalPage"));
 const InstrumentistsPage     = React.lazy(() => import("../pages/manager/InstrumentistsPage"));
 const SurgeonsPage           = React.lazy(() => import("../pages/manager/SurgeonsPage"));
 const CataloguePage                     = React.lazy(() => import("../pages/manager/CataloguePage"));
@@ -84,6 +86,7 @@ const FirmInvoiceDetailPage             = React.lazy(() => import("../pages/mana
 const InstrumentistStatementsPage       = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementsPage"));
 const InstrumentistStatementDetailPage  = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementDetailPage"));
 const CorrectionDetailPage              = React.lazy(() => import("../pages/manager/billing/CorrectionDetailPage"));
+const InstrumentistHoursPage            = React.lazy(() => import("../pages/manager/billing/InstrumentistHoursPage"));
 const FinancialStatisticsPage           = React.lazy(() => import("../pages/manager/FinancialStatisticsPage"));
 const AbsencesPage                      = React.lazy(() => import("../pages/manager/planning/AbsencesPage"));
 const PlanningV2Page                    = React.lazy(() => import("../pages/manager/planning/PlanningV2Page"));
@@ -157,6 +160,7 @@ export function AppRouter() {
                 <Route path="i/today" element={<TodayPage />} />
                 <Route path="i/offers" element={<OffersPage />} />
                 <Route path="i/my-missions" element={<MyMissionsPage />} />
+                <Route path="i/hours" element={<MyHoursPage />} />
                 <Route path="i/planning" element={<PlanningPage />} />
                 <Route path="i/notifications" element={<NotificationsPage />} />
                 <Route path="i/profile" element={<ProfilePage />} />
@@ -197,7 +201,8 @@ export function AppRouter() {
                 <Route path="m/missions/to-validate" element={<MissionsListPage />} />
                 <Route path="m/missions/requests" element={<MissionsListPage />} />
                 <Route path="m/missions/new" element={<MissionCreatePage />} />
-                <Route path="m/missions/:id" element={<MissionDetailPageM />} />
+                <Route path="m/missions/:id" element={<ManagerMissionRedirect />} />
+                <Route path="m/journal" element={<ActivityJournalPage />} />
                 <Route path="m/instrumentists" element={<InstrumentistsPage />} />
                 <Route path="m/surgeons" element={<SurgeonsPage />} />
                 <Route path="m/hospitals" element={<HospitalsPage />} />
@@ -207,6 +212,7 @@ export function AppRouter() {
                 <Route path="m/catalogue/prestations" element={<PrestationsPage />} />
                 <Route path="m/catalogue/requests" element={<CatalogueRequestsPage />} />
                 <Route path="m/billing/encodings" element={<EncodingTrackingPage />} />
+                <Route path="m/billing/hours" element={<InstrumentistHoursPage />} />
                 <Route path="m/billing/config" element={<Navigate to="/app/m/catalogue/prestations" replace />} />
                 <Route path="m/billing/firm-invoices" element={<FirmInvoicesPage />} />
                 <Route path="m/billing/firm-invoices/:id" element={<FirmInvoiceDetailPage />} />

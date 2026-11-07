@@ -34,6 +34,7 @@ use App\Service\FirmInvoiceService;
 use App\Service\InstrumentistStatementService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Pilotage financier, Lot 7 (D-077) — §31 du lot : overview (aucune donnée, une
@@ -43,6 +44,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FinancialStatisticsQueryServiceTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private FinancialCalculationService $calcService;
     private FirmInvoiceService $invoiceService;
@@ -221,6 +224,7 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
         $mission->setStatus(MissionStatus::VALIDATED);
         $mission->setInstrumentist($instrumentist);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $intervention = new MissionIntervention();
@@ -572,6 +576,7 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
         $mission->setEndAt($today->modify('+1 hour'));
         $mission->setStatus(MissionStatus::VALIDATED);
         $this->em->persist($mission); $this->em->flush();
+        $this->declareActualHours($mission); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $mission->getId();
 
         $pipeline = $this->stats->pipeline($this->filter(new \DateTimeImmutable('2026-05-01'), new \DateTimeImmutable('2026-06-01'), surgeonId: $surgeon->getId()));
@@ -665,6 +670,43 @@ final class FinancialStatisticsQueryServiceTest extends KernelTestCase
         self::assertSame(1, $points[0]->missionCount);
         self::assertSame(0, $points[1]->missionCount);
         self::assertSame([], $points[1]->currencies);
+    }
+
+    // ── D-186 — un solde par couche, jamais mélangées ─────────────────────
+
+    public function test_overview_exposes_one_net_balance_per_financial_layer(): void
+    {
+        [$invoice, , $actor, $firm] = $this->makeIssuedInvoice('2026-05-04', '300.00');
+        $payment = $this->paymentService->recordPayment($invoice, '120.00', 'EUR', new \DateTimeImmutable('2026-05-10'), PaymentMethod::BANK_TRANSFER, null, null, $actor);
+        $this->created['payments'][] = $payment->getId();
+
+        $eur = $this->stats->overview($this->wideFilter($firm->getId()))->currencies[0];
+
+        self::assertSame('300.00', $eur->generatedContributionMargin, 'Calculé : recettes − rémunérations (0 ici).');
+        self::assertSame('300.00', $eur->invoicedNetAmount);
+        self::assertSame('300.00', $eur->documentedNetBalance, 'Facturé/Décompté : net facturé − net décompté, sans y mêler les paiements.');
+        self::assertSame('120.00', $eur->netCashFlow, 'Encaissé/Décaissé : seuls les paiements réels.');
+    }
+
+    public function test_timeseries_net_balances_and_totals_match_the_overview(): void
+    {
+        $businessTz = new \DateTimeZone(\App\Doctrine\Type\BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
+        $firm = $this->makeFirm();
+        $this->makeApprovedMission($firm, '100.00', '0.00', '40.00', new \DateTimeImmutable('2026-05-01 09:00:00', $businessTz), 60);   // +60
+        $this->makeApprovedMission($firm, '20.00', '0.00', '60.00', new \DateTimeImmutable('2026-05-02 09:00:00', $businessTz), 60);    // −40
+        $filter = $this->filter(new \DateTimeImmutable('2026-05-01 00:00:00', $businessTz), new \DateTimeImmutable('2026-05-04 00:00:00', $businessTz), firmId: $firm->getId());
+
+        $points = $this->stats->timeseries($filter, StatisticsGranularity::DAY);
+        self::assertSame('60.00', $points[0]->currencies[0]->generatedNetBalance);
+        self::assertSame('-40.00', $points[1]->currencies[0]->generatedNetBalance);
+
+        $totals = $this->stats->timeseriesTotals($points);
+        self::assertCount(1, $totals);
+        $overview = $this->stats->overview($filter)->currencies[0];
+        self::assertSame($overview->generatedFirmRevenue, $totals[0]['generatedFirmRevenue']);
+        self::assertSame($overview->generatedInstrumentistCompensation, $totals[0]['generatedInstrumentistCompensation']);
+        self::assertSame($overview->generatedContributionMargin, $totals[0]['generatedNetBalance']);
+        self::assertSame('20.00', $totals[0]['generatedNetBalance']);
     }
 
     // ── Helpers de fixtures documentaires ─────────────────────────────────

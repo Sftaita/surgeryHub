@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
+import { isAxiosError } from "axios";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Alert,
@@ -16,7 +17,7 @@ import {
 } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 
-import { getMyAvailableRooms } from "../../features/planning-v2/api/planningV2.api";
+import { getMyAvailableRoom, getMyAvailableRooms } from "../../features/planning-v2/api/planningV2.api";
 import type { ShiftPeriod } from "../../features/planning-v2/api/planningV2.types";
 import { ReleasedRoomCard } from "../../features/mobile-planning/ReleasedRoomCard";
 import {
@@ -75,6 +76,10 @@ function rangeToDates(range: QuickRange, todayYmd: string): { dateFrom: string; 
  * « Libérer la salle » uniquement selon `allowedActions` serveur. Le serveur renvoie ici les
  * salles encore disponibles ET celles que ce chirurgien a lui-même reprises (état « Salle
  * reprise ») — jamais celles reprises par un confrère.
+ *
+ * D-161 — `?slot={id}` (clic sur une notification « Salle opératoire disponible ») : le créneau
+ * annoncé est relu par le serveur (`GET /api/me/available-rooms/{id}`) et affiché en tête ;
+ * s'il n'est plus disponible, la page le dit — la reprise reste revérifiée sous verrou.
  */
 export default function SurgeonAvailableRoomsPage() {
   const navigate = useNavigate();
@@ -85,6 +90,8 @@ export default function SurgeonAvailableRoomsPage() {
   const range: QuickRange = isQuickRange(rangeParam) ? rangeParam : "upcoming";
   const siteIdParam = searchParams.get("siteId");
   const siteId = siteIdParam ? Number(siteIdParam) : undefined;
+  const slotParam = searchParams.get("slot");
+  const announcedSlotId = slotParam && /^[1-9][0-9]*$/.test(slotParam) ? Number(slotParam) : undefined;
   const periodParam = searchParams.get("period");
   const period = isPeriod(periodParam) ? periodParam : undefined;
 
@@ -108,7 +115,14 @@ export default function SurgeonAvailableRoomsPage() {
     queryKey: ["available-rooms", "mine", "list", { dateFrom, dateTo, siteId, period }],
     queryFn: () => getMyAvailableRooms({ dateFrom, dateTo, siteId, period, limit: 100 }),
   });
-  const items = roomsQuery.data?.items ?? [];
+  const items = (roomsQuery.data?.items ?? []).filter((slot) => slot.id !== announcedSlotId);
+
+  const announcedQuery = useQuery({
+    queryKey: ["available-rooms", "mine", "slot", announcedSlotId],
+    queryFn: () => getMyAvailableRoom(announcedSlotId as number),
+    enabled: announcedSlotId !== undefined,
+    retry: false,
+  });
 
   // Options du filtre Établissement — dérivées d'une requête large indépendante des filtres
   // actifs (jamais bornée par la plage/période sélectionnée), pour que la liste ne se
@@ -173,6 +187,23 @@ export default function SurgeonAvailableRoomsPage() {
           ))}
         </Select>
       </Stack>
+
+      {announcedSlotId !== undefined && (
+        <Stack spacing={1}>
+          <Typography variant="subtitle2" fontWeight={700}>Salle signalée</Typography>
+          {announcedQuery.isLoading ? (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
+              <CircularProgress size={22} />
+            </Box>
+          ) : announcedQuery.data ? (
+            <ReleasedRoomCard slot={announcedQuery.data} />
+          ) : isAxiosError(announcedQuery.error) && announcedQuery.error.response?.status === 404 ? (
+            <Alert severity="info">Cette salle n'est plus disponible.</Alert>
+          ) : (
+            <Alert severity="error">Impossible de vérifier la disponibilité de cette salle.</Alert>
+          )}
+        </Stack>
+      )}
 
       {roomsQuery.isError && <Alert severity="error">Impossible de charger les salles disponibles.</Alert>}
 

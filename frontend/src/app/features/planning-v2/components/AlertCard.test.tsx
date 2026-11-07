@@ -37,6 +37,36 @@ function makeAlert(overrides: Partial<PlanningAlertV2> = {}): PlanningAlertV2 {
 
 const noop = vi.fn();
 
+describe("AlertCard — D-158 absence chirurgien sur mission non annulée automatiquement", () => {
+  const renderCard = (alert: PlanningAlertV2) =>
+    render(<AlertCard alert={alert} onAcknowledge={noop} onResolve={noop} onIgnore={noop} onReassign={noop} onOpenAsAvailable={noop} />);
+
+  it("mission déjà commencée : demande de vérifier si elle a eu lieu", () => {
+    renderCard(makeAlert({ type: "SURGEON_ABSENCE", autoActionBlockedReason: "MISSION_STARTED" }));
+    expect(screen.getByText(/mission déjà commencée, non annulée automatiquement : vérifiez si elle a eu lieu/)).toBeInTheDocument();
+  });
+
+  it("activité encodée : demande de vérifier l'encodage", () => {
+    renderCard(makeAlert({ type: "SURGEON_ABSENCE", autoActionBlockedReason: "ACTIVITY_ENCODED" }));
+    expect(screen.getByText(/activité déjà encodée, mission non annulée automatiquement : vérifiez l'encodage/)).toBeInTheDocument();
+  });
+
+  it("sans motif : libellé historique inchangé", () => {
+    renderCard(makeAlert({ type: "SURGEON_ABSENCE", autoActionBlockedReason: null }));
+    expect(screen.getByText(/poste à couvrir/)).toBeInTheDocument();
+  });
+
+  it("absence instrumentiste sur mission commencée : non remise au pool, vérification demandée", () => {
+    renderCard(makeAlert({ type: "REASSIGNMENT_REQUIRED", autoActionBlockedReason: "MISSION_STARTED" }));
+    expect(screen.getByText(/mission déjà commencée, non remise au pool : vérifiez si elle a eu lieu/)).toBeInTheDocument();
+  });
+
+  it("absence instrumentiste sans motif : libellé historique inchangé", () => {
+    renderCard(makeAlert({ type: "REASSIGNMENT_REQUIRED", autoActionBlockedReason: null }));
+    expect(screen.getByText(/réassignation nécessaire/)).toBeInTheDocument();
+  });
+});
+
 describe("AlertCard — D-091 cross-site conflict rendering", () => {
   it("shows both sites and both time slots for a SURGEON_CONFLICT with conflict data", () => {
     const alert = makeAlert({

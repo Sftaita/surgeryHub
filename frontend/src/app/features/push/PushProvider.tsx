@@ -7,9 +7,9 @@ import { useToast } from "../../ui/toast/useToast";
 import {
   isPushSupported,
   registerServiceWorker,
-  subscribeToPush,
   unsubscribeFromPush,
 } from "./pushSubscriptionClient";
+import { reconcilePush, type PushHealth, type ReconcileOutcome, type ReconcileTrigger } from "./pushReconcile";
 
 export type PushNotificationStatus =
   | "unsupported"
@@ -25,9 +25,13 @@ type PushNotificationContextValue = {
   isSupported: boolean;
   isSubscribed: boolean;
   lastError: string | null;
+  /** D-175 — dernier état de l'appareil courant rendu par le serveur (POST /api/push/sync), null avant la première réconciliation. */
+  health: PushHealth | null;
   subscribe: () => Promise<void>;
   unsubscribe: () => Promise<void>;
   refreshStatus: () => Promise<void>;
+  /** D-175 — réparation demandée par l'utilisateur (Mon profil) : renouvelle l'abonnement si le serveur le juge nécessaire. */
+  repair: () => Promise<void>;
 };
 
 const PushNotificationContext = createContext<PushNotificationContextValue | null>(null);
@@ -57,6 +61,7 @@ export function PushProvider({ children }: { children: ReactNode }) {
 
   const [status, setStatus] = useState<PushNotificationStatus>(computeInitialStatus);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [health, setHealth] = useState<PushHealth | null>(null);
   const swRegistered = useRef(false);
   // The user id (or null for anonymous) this provider has already reacted to. Distinct
   // from `undefined` (never processed yet, i.e. before the very first effect run) so
@@ -88,6 +93,33 @@ export function PushProvider({ children }: { children: ReactNode }) {
       setStatus("permission-default");
     }
   }, [isSupported]);
+
+  // D-175 — une réconciliation (jamais de demande de permission) et son effet sur le statut.
+  const reconcile = useCallback(
+    async (trigger: ReconcileTrigger, stage: string): Promise<ReconcileOutcome | null> => {
+      if (currentUserId === null) return null;
+      try {
+        const outcome = await reconcilePush({ trigger, userId: currentUserId });
+        if (outcome.kind === "synced") {
+          setHealth(outcome.health);
+          setStatus("subscribed");
+          setLastError(outcome.health.renewalPending === "failed" ? "renewal-failed" : null);
+        } else if (outcome.why === "permission-denied") {
+          setStatus("permission-denied");
+        } else if (outcome.why === "permission-default" || outcome.why === "opted-out") {
+          // opted-out : désactivées volontairement sur cet appareil (permission toujours accordée).
+          setStatus("permission-default");
+        }
+        return outcome;
+      } catch (err) {
+        setStatus("error");
+        setLastError(`${stage}-failed`);
+        Sentry.captureException(err, { tags: { feature: "push", stage } });
+        return null;
+      }
+    },
+    [currentUserId],
+  );
 
   // Register the SW once at app start (any role, any auth state) — does not request
   // permission or subscribe. Not yet the cache/offline SW (out of scope for this lot).
@@ -135,6 +167,7 @@ export function PushProvider({ children }: { children: ReactNode }) {
       // — never just leave the previous user's `status` hanging around. Never revokes the
       // browser-level subscription here (AuthContext::logout() already detached it
       // server-side) and never prompts for permission.
+      setHealth(null);
       if (isSupported) void refreshStatus();
       return;
     }
@@ -152,17 +185,40 @@ export function PushProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // granted: idempotently (re)attach the existing/new browser subscription to whichever
-    // user this session now is — safe to call for both a first-ever login and a same-tab
-    // account switch (backend upsert is keyed by endpoint, see PushSubscriptionController).
-    subscribeToPush()
-      .then(() => setStatus("subscribed"))
-      .catch((err) => {
-        setStatus("error");
-        setLastError("auto-resubscribe-failed");
-        Sentry.captureException(err, { tags: { feature: "push", stage: "auto-resubscribe" } });
-      });
-  }, [currentUserId, isSupported, refreshStatus]);
+    // granted: D-175 réconciliation — (re)rattache l'abonnement existant/nouveau à cette session
+    // (premier login comme changement de compte dans le même onglet), et le renouvelle si le
+    // serveur sait qu'il est mort. Upsert serveur indexé par endpoint (PushSubscriptionSyncService).
+    void reconcile("login", "auto-resubscribe");
+  }, [currentUserId, isSupported, refreshStatus, reconcile]);
+
+  // D-175 — retour au premier plan (PWA rouverte depuis l'arrière-plan) : réconciliation, au plus
+  // toutes les 6 h (pushReconcile.ts) ; changement de permission dans les réglages du navigateur.
+  useEffect(() => {
+    if (!isSupported || currentUserId === null) return;
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void reconcile("visibility", "visibility-sync");
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    let permissionStatus: PermissionStatus | null = null;
+    const onPermissionChange = () => {
+      void refreshStatus();
+      if (Notification.permission === "granted") void reconcile("permission", "permission-sync");
+    };
+    navigator.permissions
+      ?.query({ name: "notifications" as PermissionName })
+      .then((ps) => {
+        permissionStatus = ps;
+        ps.addEventListener?.("change", onPermissionChange);
+      })
+      .catch(() => {});
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      permissionStatus?.removeEventListener?.("change", onPermissionChange);
+    };
+  }, [isSupported, currentUserId, reconcile, refreshStatus]);
 
   const subscribe = useCallback(async () => {
     if (!isSupported) return;
@@ -177,14 +233,19 @@ export function PushProvider({ children }: { children: ReactNode }) {
         setStatus(result === "denied" ? "permission-denied" : "permission-default");
         return;
       }
-      await subscribeToPush();
-      setStatus("subscribed");
     } catch (err) {
       setStatus("error");
       setLastError("subscribe-failed");
       Sentry.captureException(err, { tags: { feature: "push", stage: "subscribe" } });
+      return;
     }
-  }, [isSupported]);
+    await reconcile("activate", "subscribe");
+  }, [isSupported, reconcile]);
+
+  const repair = useCallback(async () => {
+    if (!isSupported) return;
+    await reconcile("repair", "repair");
+  }, [isSupported, reconcile]);
 
   const unsubscribe = useCallback(async () => {
     if (!isSupported) return;
@@ -193,6 +254,7 @@ export function PushProvider({ children }: { children: ReactNode }) {
       await unsubscribeFromPush();
       setStatus("permission-default");
       setLastError(null);
+      setHealth(null);
     } catch (err) {
       setLastError("unsubscribe-failed");
       Sentry.captureException(err, { tags: { feature: "push", stage: "unsubscribe" } });
@@ -205,9 +267,11 @@ export function PushProvider({ children }: { children: ReactNode }) {
     isSupported,
     isSubscribed: status === "subscribed",
     lastError,
+    health,
     subscribe,
     unsubscribe,
     refreshStatus,
+    repair,
   };
 
   return <PushNotificationContext.Provider value={value}>{children}</PushNotificationContext.Provider>;

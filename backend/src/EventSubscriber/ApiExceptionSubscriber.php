@@ -5,6 +5,7 @@ namespace App\EventSubscriber;
 use App\Exception\InstrumentistIneligibleException;
 use App\Exception\InterventionTypeInactiveException;
 use App\Exception\InterventionTypeNotFoundException;
+use App\Enum\EligibilityReason;
 use App\Exception\MissionClaimIneligibleException;
 use App\Exception\MissionNotDraftException;
 use App\Exception\PlanningDraftScopeAlreadyConfirmedException;
@@ -15,7 +16,10 @@ use App\Exception\PrimaryFirmInactiveException;
 use App\Exception\PrimaryFirmNotFoundException;
 use App\Exception\PricingRuleImmutableException;
 use App\Exception\PricingRulePeriodOverlapException;
+use App\Exception\PricingRuleConflictException;
+use App\Exception\InstrumentistRateConflictException;
 use App\Exception\InstrumentistRateImmutableException;
+use App\Exception\InstrumentistRateLockedPeriodException;
 use App\Exception\InstrumentistRatePeriodOverlapException;
 use App\Exception\FinancialCalculationIneligibleException;
 use App\Exception\FinancialCalculationAnomaliesException;
@@ -37,10 +41,17 @@ use App\Exception\MaterialAttachmentTargetNotFoundException;
 use App\Exception\MaterialItemRequestAlreadyProcessedException;
 use App\Exception\MissingIgnoreStrategyException;
 use App\Exception\RefundExceedsOverpaidException;
+use App\Exception\AssignmentRefusalException;
+use App\Exception\IncompatibilityException;
+use App\Exception\EncodingConcurrencyException;
+use Doctrine\ORM\OptimisticLockException;
 use App\Exception\ReleasedRoomSlotConflictException;
+use App\Exception\StatisticsExportException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
 use App\Exception\EncodingAnomalyReportAlreadyResolvedException;
+use App\Exception\EncodingIncompleteException;
+use App\Exception\CatalogueRequestException;
 use App\Exception\IncompatibleChoiceMaterialException;
 use App\Exception\ChoiceOptionChangeRequiresConfirmationException;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
@@ -48,6 +59,10 @@ use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpKernel\Event\ExceptionEvent;
+use App\Exception\MissionCreatedNotDispatchedException;
+use App\Exception\PrestationConflictException;
+use App\Exception\MissionReassignmentException;
+use App\Exception\MissionCancellationException;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 use Symfony\Component\HttpKernel\KernelEvents;
 use Symfony\Component\HttpKernel\KernelInterface;
@@ -75,6 +90,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         $message = 'Internal server error';
         $violations = [];
         $extra = [];
+        $headers = [];
 
         if ($e instanceof UniqueConstraintViolationException) {
             $status = 409;
@@ -115,11 +131,16 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = 'MISSION_CLAIM_INELIGIBLE';
             $primary = $e->getPrimaryReason();
             $message = $primary?->label() ?? $e->getMessage();
+            // D-151 / D-152 — the claimer never learns that a surgeon refused or blocked her:
+            // both reasons leave the API under a neutral code (labels already neutral).
+            $publicCode = static fn (EligibilityReason $r): string => in_array($r, [EligibilityReason::REFUSED_FOR_MISSION, EligibilityReason::SURGEON_INCOMPATIBILITY], true)
+                ? 'MISSION_UNAVAILABLE'
+                : $r->value;
             $violations = array_map(
-                static fn ($r) => ['field' => null, 'message' => $r->value],
+                static fn ($r) => ['field' => null, 'message' => $publicCode($r)],
                 $e->getReasons(),
             );
-            $extra['reason'] = $primary?->value;
+            $extra['reason'] = $primary !== null ? $publicCode($primary) : null;
             $extra['date'] = $e->getDate()?->format('Y-m-d');
             $absence = $e->getBlockingAbsence();
             if ($absence !== null) {
@@ -127,6 +148,18 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
                 $extra['absenceDateStart'] = $absence->getDateStart()->format('Y-m-d');
                 $extra['absenceDateEnd'] = $absence->getDateEnd()->format('Y-m-d');
             }
+        } elseif ($e instanceof PricingRuleConflictException) {
+            // D-138 — données tarifaires contradictoires écrites hors application : 409
+            // explicite (règles en cause listées), jamais un 500.
+            $status = 409;
+            $code = 'PRICING_RULE_CONFLICT';
+            $message = $e->getMessage();
+            $violations = array_map(static fn (array $r) => ['field' => 'pricingRule', 'message' => sprintf('Règle #%d', $r['id'])] + $r, $e->rulesSnapshot());
+        } elseif ($e instanceof InstrumentistRateConflictException) {
+            $status = 409;
+            $code = 'INSTRUMENTIST_RATE_CONFLICT';
+            $message = $e->getMessage();
+            $violations = array_map(static fn (array $r) => ['field' => 'instrumentistRate', 'message' => sprintf('Tarif #%d', $r['id'])] + $r, $e->ratesSnapshot());
         } elseif ($e instanceof PricingRulePeriodOverlapException) {
             $status = 409;
             $code = 'PRICING_RULE_PERIOD_OVERLAP';
@@ -139,6 +172,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'INSTRUMENTIST_RATE_PERIOD_OVERLAP';
             $message = $e->getMessage() ?: 'Un tarif existe déjà pour cette période.';
+        } elseif ($e instanceof InstrumentistRateLockedPeriodException) {
+            $status = 409;
+            $code = 'INSTRUMENTIST_RATE_LOCKED_PERIOD';
+            $message = $e->getMessage() ?: 'La période modifiée contient des calculs financiers verrouillés.';
         } elseif ($e instanceof InstrumentistRateImmutableException) {
             $status = 409;
             $code = 'INSTRUMENTIST_RATE_IMMUTABLE';
@@ -266,6 +303,71 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $status = 409;
             $code = 'ENCODING_ANOMALY_REPORT_ALREADY_RESOLVED';
             $message = $e->getMessage() ?: 'Ce signalement a déjà été traité.';
+        } elseif ($e instanceof EncodingIncompleteException) {
+            // D-143 — ce qui manque, avec la section à ouvrir : le frontend n'en rejoue rien.
+            $status = 422;
+            $code = EncodingIncompleteException::CODE;
+            $message = $e->getMessage();
+            $extra = ['missing' => $e->getMissing()];
+        } elseif ($e instanceof CatalogueRequestException) {
+            // D-146 bis — refus explicite d'une demande / résolution catalogue, avec les
+            // données utiles au manager (firme existante, doublons, réponses à compléter).
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+        } elseif ($e instanceof EncodingConcurrencyException) {
+            // D-154 — If-Match differs from the element's version, or is missing for the surgeon.
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+        } elseif ($e instanceof OptimisticLockException) {
+            // D-154 — a concurrent write won the race between the If-Match check and the flush.
+            $status = 409;
+            $code = EncodingConcurrencyException::CONCURRENT_MODIFICATION;
+            $message = EncodingConcurrencyException::modified(EncodingConcurrencyException::SUBJECT_INTERVENTION)->getMessage();
+        } elseif ($e instanceof IncompatibilityException) {
+            // D-152 — incompatibility creation / lifting refused.
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+        } elseif ($e instanceof AssignmentRefusalException) {
+            // D-151 — surgeon refusal / manager-intervention request refused under the lock.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+        } elseif ($e instanceof MissionReassignmentException) {
+            // D-181 — changement d'instrumentiste refusé, avec un code stable et son contexte.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+        } elseif ($e instanceof MissionCancellationException) {
+            // D-182 — annulation refusée par un manager, avec un code stable et son contexte.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+        } elseif ($e instanceof PrestationConflictException) {
+            // D-156 — refus explicite, avec le contexte permettant de rafraîchir / corriger.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+        } elseif ($e instanceof MissionCreatedNotDispatchedException) {
+            // D-156 lot 1 — created as DRAFT, dispatch refused: the id avoids a duplicate on retry.
+            $status = 409;
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+        } elseif ($e instanceof StatisticsExportException) {
+            // D-186 — export PDF refusé explicitement (trop volumineux / données modifiées) ;
+            // D-187 — capacité simultanée atteinte (429 + Retry-After).
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+            $headers = $e->getHeaders();
         } elseif ($e instanceof ReleasedRoomSlotConflictException) {
             $status = 409;
             $code = $e->getErrorCode();
@@ -293,6 +395,10 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             && !$e instanceof PaymentCurrencyMismatchException
             && !$e instanceof CorrectionValidationException
             && !$e instanceof RefundExceedsOverpaidException
+            && !$e instanceof EncodingIncompleteException
+            && !$e instanceof CatalogueRequestException
+            && !$e instanceof IncompatibilityException
+            && !$e instanceof StatisticsExportException
         ) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {
@@ -342,7 +448,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             ];
         }
 
-        $event->setResponse(new JsonResponse($payload, $status));
+        $event->setResponse(new JsonResponse($payload, $status, $headers));
     }
 
     /**

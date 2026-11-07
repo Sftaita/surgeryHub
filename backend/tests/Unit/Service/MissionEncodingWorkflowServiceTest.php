@@ -4,13 +4,16 @@ namespace App\Tests\Unit\Service;
 
 use App\Entity\MaterialLine;
 use App\Entity\Mission;
+use App\Entity\MissionExecution;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\MissionChangeType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
 use App\Message\MissionLifecycleChangedMessage;
+use App\Exception\EncodingIncompleteException;
 use App\Service\AuditService;
+use App\Service\EncodingCompletenessService;
 use App\Service\MissionEncodingGuard;
 use App\Service\MissionEncodingWorkflowService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -54,6 +57,9 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
             new MissionEncodingGuard(),
             $this->audit,
             $this->bus,
+            new EncodingCompletenessService(),
+            \App\Tests\Support\CatalogueRequestServiceFactory::contentCompleteness($this->em),
+            $this->createMock(\App\Service\Prestation\PrestationGroupResolver::class), // D-156 — aucune prestation multi-salles ici
         );
     }
 
@@ -90,14 +96,75 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
      * mission that requires material encoding; MissionType::CONSULTATION is passed
      * explicitly where that exemption is the point of the test.
      */
-    private function makeMission(MissionStatus $status, ?\DateTimeImmutable $startAt = null, MissionType $type = MissionType::BLOCK): Mission
+    /** D-143 — heures réelles complètes par défaut ($withActualHours = false pour tester leur absence). */
+    private function makeMission(MissionStatus $status, ?\DateTimeImmutable $startAt = null, MissionType $type = MissionType::BLOCK, bool $withActualHours = true): Mission
     {
         $m = new Mission();
         $m->setStatus($status);
         $m->setType($type);
         $m->setStartAt($startAt ?? new \DateTimeImmutable('-1 hour'));
         $this->setId($m, self::$nextId++);
+        if ($withActualHours) {
+            $execution = (new MissionExecution())
+                ->setActualStartAt(new \DateTimeImmutable('-1 hour'))
+                ->setActualEndAt(new \DateTimeImmutable('now'));
+            $execution->setMission($m);
+            $m->setExecution($execution);
+        }
         return $m;
+    }
+
+    // ── D-143 — heures réelles obligatoires ─────────────────────────────────
+
+    public function test_complete_refuses_without_actual_hours_and_mutates_nothing(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS, withActualHours: false);
+        $actor   = $this->makeActor();
+        $this->audit->expects(self::never())->method('record');
+
+        try {
+            $this->service->complete($mission, $actor, 'Commentaire');
+            self::fail('complete() aurait dû refuser une soumission sans heures réelles');
+        } catch (EncodingIncompleteException $e) {
+            self::assertSame(['ACTUAL_START_TIME', 'ACTUAL_END_TIME'], array_column($e->getMissing(), 'code'));
+        }
+
+        self::assertSame(MissionStatus::ENCODING_IN_PROGRESS, $mission->getStatus());
+        self::assertNull($mission->getSubmittedAt());
+        self::assertNull($mission->getExecution(), 'jamais de copie du planifié dans le réel');
+        self::assertSame([], $this->dispatchedMessages);
+    }
+
+    public function test_complete_refuses_when_only_the_start_time_is_known(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ENCODING_IN_PROGRESS, withActualHours: false);
+        $execution = (new MissionExecution())->setActualStartAt(new \DateTimeImmutable('-2 hours'));
+        $execution->setMission($mission);
+        $mission->setExecution($execution);
+
+        $this->expectException(EncodingIncompleteException::class);
+        $this->service->complete($mission, $this->makeActor(), 'Commentaire');
+    }
+
+    public function test_validate_refuses_a_submitted_mission_without_actual_hours(): void
+    {
+        $mission = $this->makeMission(MissionStatus::SUBMITTED, withActualHours: false);
+
+        $this->expectException(EncodingIncompleteException::class);
+        $this->service->validate($mission, $this->makeManager());
+    }
+
+    /** Une durée seule déclarée avant D-143 (ancienne interface) reste validable. */
+    public function test_validate_accepts_a_legacy_duration_only_declaration(): void
+    {
+        $mission = $this->makeMission(MissionStatus::SUBMITTED, withActualHours: false);
+        $execution = (new MissionExecution())->setActualDurationMinutes(360);
+        $execution->setMission($mission);
+        $mission->setExecution($execution);
+
+        $this->service->validate($mission, $this->makeManager());
+
+        self::assertSame(MissionStatus::VALIDATED, $mission->getStatus());
     }
 
     // ── start() ──────────────────────────────────────────────────────────────
@@ -467,16 +534,62 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         self::assertSame(MissionChangeType::ENCODING_REOPENED, $this->dispatchedMessages[0]->changeType);
     }
 
-    public function test_reopen_without_comment_does_not_persist_a_comment(): void
+    /** D-148 — motif obligatoire : un texte vide ou d'espaces ne rouvre rien. */
+    public function test_reopen_with_blank_reason_is_refused_and_changes_nothing(): void
     {
         $mission = $this->makeMission(MissionStatus::VALIDATED);
+        $mission->setEncodingLockedAt(new \DateTimeImmutable());
+        $actor   = $this->makeManager();
+
+        $this->em->expects($this->never())->method('persist');
+        $this->audit->expects($this->never())->method('record');
+
+        try {
+            $this->service->reopen($mission, $actor, '   ');
+            self::fail('blank reason accepted');
+        } catch (\Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException) {
+        }
+
+        self::assertSame(MissionStatus::VALIDATED, $mission->getStatus());
+        self::assertNotNull($mission->getEncodingLockedAt());
+        self::assertCount(0, $this->dispatchedMessages);
+    }
+
+    /** D-148 — même règle pour le renvoi en correction. */
+    public function test_reject_with_blank_reason_is_refused_and_changes_nothing(): void
+    {
+        $mission = $this->makeMission(MissionStatus::SUBMITTED);
         $actor   = $this->makeManager();
 
         $this->em->expects($this->never())->method('persist');
 
-        $this->service->reopen($mission, $actor, null);
+        try {
+            $this->service->reject($mission, $actor, '');
+            self::fail('blank reason accepted');
+        } catch (\Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException) {
+        }
 
-        self::assertCount(0, $mission->getEncodingComments());
+        self::assertSame(MissionStatus::SUBMITTED, $mission->getStatus());
+        self::assertCount(0, $this->dispatchedMessages);
+    }
+
+    public function test_reject_and_reopen_audit_the_previous_and_new_status(): void
+    {
+        $actor = $this->makeManager();
+        $payloads = [];
+        $this->audit->method('record')->willReturnCallback(function ($m, $a, $type, array $payload) use (&$payloads) {
+            $payloads[$type->value] = $payload;
+        });
+
+        $this->service->reject($this->makeMission(MissionStatus::SUBMITTED), $actor, '  Horaires manquants  ');
+        $this->service->reopen($this->makeMission(MissionStatus::VALIDATED), $actor, 'Quantité incorrecte');
+
+        self::assertSame(['SUBMITTED', 'ENCODING_IN_PROGRESS', 'Horaires manquants'], [
+            $payloads['MISSION_ENCODING_REJECTED']['fromStatus'], $payloads['MISSION_ENCODING_REJECTED']['toStatus'], $payloads['MISSION_ENCODING_REJECTED']['comment'],
+        ]);
+        self::assertSame(['VALIDATED', 'ENCODING_IN_PROGRESS', 'Quantité incorrecte'], [
+            $payloads['MISSION_ENCODING_REOPENED']['fromStatus'], $payloads['MISSION_ENCODING_REOPENED']['toStatus'], $payloads['MISSION_ENCODING_REOPENED']['comment'],
+        ]);
     }
 
     public function test_reopen_rejects_closed_mission_with_dedicated_message(): void
@@ -485,9 +598,9 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         $actor   = $this->makeManager();
 
         $this->expectException(ConflictHttpException::class);
-        $this->expectExceptionMessage('A CLOSED mission can never be reopened');
+        $this->expectExceptionMessage(\App\Service\MissionEncodingCorrectionPolicy::CLOSED_MESSAGE);
 
-        $this->service->reopen($mission, $actor);
+        $this->service->reopen($mission, $actor, 'Tentative');
     }
 
     public function test_reopen_rejects_mission_not_validated(): void
@@ -497,7 +610,7 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
 
         $this->expectException(ConflictHttpException::class);
 
-        $this->service->reopen($mission, $actor);
+        $this->service->reopen($mission, $actor, 'Tentative');
     }
 
     /** EPIC Exécution & Valorisation, Lot 3 (D-073) — politique de réouverture à seuil. */
@@ -511,9 +624,9 @@ final class MissionEncodingWorkflowServiceTest extends TestCase
         $this->em->method('getRepository')->with(\App\Entity\FinancialCalculation::class)->willReturn($repo);
 
         $this->expectException(ConflictHttpException::class);
-        $this->expectExceptionMessage('LOCKED financial calculation');
+        $this->expectExceptionMessage(\App\Service\MissionEncodingCorrectionPolicy::FINANCIAL_LOCK_MESSAGE);
 
-        $this->service->reopen($mission, $actor);
+        $this->service->reopen($mission, $actor, 'Tentative');
     }
 
     // ── isBillable() / findMissionsReadyForBilling() ────────────────────────

@@ -2,6 +2,7 @@
 
 namespace App\Dto\Request;
 
+use App\Doctrine\Type\BusinessDateTimeImmutableType;
 use Symfony\Component\Validator\Constraints as Assert;
 use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
@@ -70,6 +71,32 @@ class MissionFilter
     public ?bool $validatedWithoutCalculation = null;
 
     /**
+     * D-172 — liste opérationnelle : missions annulées masquées (jamais supprimées). Sans effet
+     * quand un filtre `status` explicite est fourni : il prime (« Annulée » reste consultable).
+     */
+    #[Assert\Type('boolean')]
+    public ?bool $excludeCancelled = null;
+
+    /** D-172 — missions sans instrumentiste affectée (m.instrumentist IS NULL). */
+    #[Assert\Type('boolean')]
+    public ?bool $withoutInstrumentist = null;
+
+    /**
+     * D-147 — free-text search (manager missions list): surgeon / instrumentist name, site
+     * name, or the mission id (`#123` or `123`). Case-insensitive substring match, see
+     * MissionService::list().
+     */
+    #[Assert\Length(max: 100)]
+    public ?string $q = null;
+
+    /**
+     * D-147 — chronological order on startAt: `desc` (default, legacy) or `asc` (upcoming
+     * missions, soonest first). eligibleToMe keeps its own fixed ASC order.
+     */
+    #[Assert\Choice(choices: ['asc', 'desc'])]
+    public ?string $order = null;
+
+    /**
      * Only used programmatically (not part of the public query-string contract —
      * see MissionFilter::fromQuery) by the offers "unread count" endpoint
      * (GET /api/missions/offers/unread-count, Lot 6). Filters to missions created
@@ -109,9 +136,21 @@ class MissionFilter
             $dto->eligibleToMe = filter_var($q['eligibleToMe'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
         }
 
+        foreach (['excludeCancelled', 'withoutInstrumentist'] as $flag) {
+            if (isset($q[$flag])) {
+                $dto->{$flag} = filter_var($q[$flag], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            }
+        }
+
         if (isset($q['validatedWithoutCalculation'])) {
             $dto->validatedWithoutCalculation = filter_var($q['validatedWithoutCalculation'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
         }
+
+        $search = isset($q['q']) ? trim((string) $q['q']) : null;
+        $dto->q = ($search === '') ? null : $search;
+
+        $order = isset($q['order']) ? strtolower(trim((string) $q['order'])) : null;
+        $dto->order = ($order === '') ? null : $order;
 
         $periodStart = isset($q['periodStart']) ? trim((string) $q['periodStart']) : null;
         $dto->periodStart = ($periodStart === '') ? null : $periodStart;
@@ -172,8 +211,10 @@ class MissionFilter
         }
 
         try {
-            // Supporte ISO 8601 (avec ou sans timezone, selon conventions existantes)
-            return new \DateTimeImmutable($value);
+            // Supporte ISO 8601 (avec ou sans timezone, selon conventions existantes).
+            // D-156 lot 1 — une valeur SANS offset (« 2026-11-12 », « 2026-11-12T08:00 ») est
+            // une heure locale de Bruxelles (D-066), jamais l'heure UTC du conteneur PHP.
+            return new \DateTimeImmutable($value, new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE));
         } catch (\Throwable) {
             return null;
         }

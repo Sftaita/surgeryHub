@@ -1,7 +1,7 @@
-import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
+import { Box, Button, CircularProgress, Stack, Tooltip, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import type { EncodingState, EncodingTrackingItem } from "../api/encodingTracking.api";
-import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, MISSION_TYPE_LABEL, formatMinutes } from "../encodingStateMeta";
+import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, MISSION_TYPE_LABEL, NO_HOURS_WITHOUT_INSTRUMENTIST, formatMinutes } from "../encodingStateMeta";
 import { EmptyState } from "../../../ui/EmptyState";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
 
@@ -43,6 +43,8 @@ const STATE_TONE: Record<EncodingState, { bg: string; fg: string }> = {
   VALIDATED: { bg: GREEN_100, fg: GREEN_800 },
   LOCKED: { bg: GREEN_100, fg: GREEN_800 },
   NOT_APPLICABLE: { bg: GRAY_100, fg: GRAY_500 },
+  CANCELLED: { bg: "#FDECEC", fg: "#B42318" },
+  NOT_DECLARED: { bg: AMBER_100, fg: AMBER_700 },
 };
 
 function initials(name: string): string {
@@ -63,6 +65,16 @@ function dayLabel(key: string): string {
   const d = new Date(`${key}T00:00:00`);
   const label = d.toLocaleDateString("fr-BE", { weekday: "long", day: "numeric", month: "long" });
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/**
+ * D-138 — « pourquoi Anomalie ? » lu dans la ventilation backend (anomalyReasons), jamais
+ * déduit ici : « Tarif matériel manquant ×9 · Tarif d'intervention manquant ×2 ».
+ */
+function anomalyReasonsText(item: EncodingTrackingItem): string {
+  return item.financial.anomalyReasons
+    .map((r) => (r.count > 1 ? `${r.label} ×${r.count}` : r.label))
+    .join(" · ");
 }
 
 function financeStyle(item: EncodingTrackingItem): string {
@@ -93,6 +105,25 @@ interface Props {
  * collant (maquette validée). Une ligne = un item déjà entièrement résolu par le
  * backend ; ce composant n'affiche que ce qui est fourni, ne recalcule rien.
  */
+/**
+ * D-156 — heures planifiées d'un jour : une prestation multi-salles compte une fois (union
+ * des horaires, fournie par le serveur), jamais la somme brute des missions simultanées.
+ */
+function plannedMinutesOf(list: EncodingTrackingItem[]): number {
+  const seen = new Set<string>();
+  let total = 0;
+  for (const item of list) {
+    if (item.prestation) {
+      if (seen.has(item.prestation.key)) continue;
+      seen.add(item.prestation.key);
+      total += item.prestation.plannedUnionMinutes;
+    } else {
+      total += item.hours.plannedMinutes;
+    }
+  }
+  return total;
+}
+
 export function EncodingTrackingTable({
   items, total, page, limit, isLoading, isError, onPageChange, emptyTitle, emptyDescription, onOpen, selectedMissionId,
 }: Props) {
@@ -138,140 +169,184 @@ export function EncodingTrackingTable({
 
   return (
     <Box sx={{ borderRadius: "16px", border: "1px solid", borderColor: GRAY_150, background: "#fff", boxShadow: SHADOW_SM, overflow: "hidden" }}>
-      <Box sx={{
-        display: "flex", alignItems: "center", gap: "14px", padding: "0 18px", height: 40, background: GRAY_75,
-        borderBottom: "1px solid", borderColor: GRAY_150, fontSize: 11.5, fontWeight: 800, letterSpacing: ".06em", color: GRAY_500,
-      }}>
-        <Box sx={{ width: 52, flexShrink: 0 }}>HEURE</Box>
-        <Box sx={{ width: 172, flexShrink: 0 }}>INSTRUMENTISTE</Box>
-        <Box sx={{ flex: 1, minWidth: 0 }}>CHIRURGIEN · SITE</Box>
-        <Box sx={{ width: 150, flexShrink: 0 }}>ENCODAGE</Box>
-        <Box sx={{ width: 170, flexShrink: 0 }}>HEURES</Box>
-        <Box sx={{ width: 110, flexShrink: 0, textAlign: "right" }}>FINANCE</Box>
-        <Box sx={{ width: 26, flexShrink: 0 }} />
-      </Box>
+      {/* Colonnes à largeur fixe (maquette D-120) : sur écran étroit, la table défile
+          horizontalement dans sa carte au lieu d'être tronquée. */}
+      <Box sx={{ overflowX: "auto" }}>
+        <Box sx={{ minWidth: 880 }}>
+          <Box sx={{
+            display: "flex", alignItems: "center", gap: "14px", padding: "0 18px", height: 40, background: GRAY_75,
+            borderBottom: "1px solid", borderColor: GRAY_150, fontSize: 11.5, fontWeight: 800, letterSpacing: ".06em", color: GRAY_500,
+          }}>
+            <Box sx={{ width: 52, flexShrink: 0 }}>HEURE</Box>
+            <Box sx={{ width: 172, flexShrink: 0 }}>INSTRUMENTISTE</Box>
+            <Box sx={{ flex: 1, minWidth: 0 }}>CHIRURGIEN · SITE</Box>
+            <Box sx={{ width: 150, flexShrink: 0 }}>ENCODAGE</Box>
+            <Box sx={{ width: 170, flexShrink: 0 }}>HEURES</Box>
+            <Box sx={{ width: 110, flexShrink: 0, textAlign: "right" }}>FINANCE</Box>
+            <Box sx={{ width: 26, flexShrink: 0 }} />
+          </Box>
 
-      <Box sx={{ maxHeight: 560, overflowY: "auto" }}>
-        {order.map((key) => {
-          const list = byDay.get(key)!;
-          const late = list.filter((i) => i.encoding.isStale).length;
-          const planned = Math.round(list.reduce((a, i) => a + i.hours.plannedMinutes, 0) / 60);
-          return (
-            <Box key={key}>
-              <Box sx={{
-                display: "flex", alignItems: "center", gap: "10px", padding: "0 18px", height: 34, background: GRAY_75,
-                borderBottom: "1px solid", borderColor: GRAY_150, position: "sticky", top: 0, zIndex: 1,
-              }}>
-                <Box sx={{ fontSize: 12, fontWeight: 800, color: GRAY_800 }}>{dayLabel(key)}</Box>
-                <Box sx={{ fontSize: 11.5, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
-                  {list.length} mission{list.length > 1 ? "s" : ""}
-                </Box>
-                <Box sx={{ flex: 1 }} />
-                {late > 0 && (
-                  <Box sx={{ fontSize: 11.5, fontWeight: 800, color: RED_700 }}>{late} en retard</Box>
-                )}
-                <Box sx={{ fontSize: 11.5, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
-                  {planned}h planifiées
-                </Box>
-              </Box>
-
-              {list.map((item) => {
-                const tone = STATE_TONE[item.encodingState];
-                const selected = selectedMissionId === item.missionId;
-                const hoursTone = HOURS_COMPARISON_TONE[item.hours.comparison];
-                const pct = item.hours.plannedMinutes > 0
-                  ? Math.min(100, Math.round((item.hours.effectiveMinutes / item.hours.plannedMinutes) * 100))
-                  : 0;
-
-                return (
-                  <Box
-                    key={item.missionId}
-                    component="button"
-                    type="button"
-                    onClick={() => (onOpen ? onOpen(item.missionId) : navigate(`/app/m/missions/${item.missionId}`))}
-                    sx={{
-                      display: "flex", alignItems: "center", gap: "14px", width: "100%", padding: "0 18px", height: 72,
-                      border: 0, borderBottom: "1px solid", borderColor: GRAY_150,
-                      background: selected ? GREEN_100 : "#fff", boxShadow: selected ? `inset 3px 0 0 ${GREEN_600}` : undefined,
-                      fontFamily: "inherit", textAlign: "left", cursor: "pointer",
-                      "&:hover": { background: selected ? GREEN_100 : GRAY_50 },
-                    }}
-                  >
-                    <Box sx={{ width: 52, flexShrink: 0, fontSize: 14, fontWeight: 800, color: GRAY_950, fontVariantNumeric: "tabular-nums" }}>
-                      {formatTime(item.startAt)}
+          <Box sx={{ maxHeight: 560, overflowY: "auto" }}>
+            {order.map((key) => {
+              const all = byDay.get(key)!;
+              // D-184 — annulées affichées sur demande seulement, jamais comptées (état servi par le backend).
+              const list = all.filter((i) => i.encodingState !== "CANCELLED");
+              const cancelledCount = all.length - list.length;
+              const late = list.filter((i) => i.encoding.isStale).length;
+              const planned = Math.round(plannedMinutesOf(list) / 60);
+              return (
+                <Box key={key}>
+                  <Box sx={{
+                    display: "flex", alignItems: "center", gap: "10px", padding: "0 18px", height: 34, background: GRAY_75,
+                    borderBottom: "1px solid", borderColor: GRAY_150, position: "sticky", top: 0, zIndex: 1,
+                  }}>
+                    <Box sx={{ fontSize: 12, fontWeight: 800, color: GRAY_800 }}>{dayLabel(key)}</Box>
+                    <Box sx={{ fontSize: 11.5, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
+                      {list.length} mission{list.length > 1 ? "s" : ""}
+                      {cancelledCount > 0 ? ` · ${cancelledCount} annulée${cancelledCount > 1 ? "s" : ""} (non comptée${cancelledCount > 1 ? "s" : ""})` : ""}
                     </Box>
-                    <Box sx={{ width: 172, flexShrink: 0, display: "flex", alignItems: "center", gap: "9px", minWidth: 0 }}>
-                      <Box sx={{
-                        width: 30, height: 30, flexShrink: 0, borderRadius: "999px", background: GRAY_100, color: GRAY_700,
-                        display: "grid", placeItems: "center", fontSize: 11, fontWeight: 800, overflow: "hidden",
-                      }}>
-                        {item.instrumentist?.photoPath
-                          ? <Box component="img" src={resolveApiAssetUrl(item.instrumentist.photoPath)} alt="" sx={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                          : item.instrumentist ? initials(item.instrumentist.name ?? "—") : "—"}
-                      </Box>
-                      <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GRAY_950, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {item.instrumentist?.name ?? "—"}
-                      </Box>
-                    </Box>
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Box sx={{ fontSize: 13.5, fontWeight: 600, color: GRAY_800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {item.surgeon?.name ?? "—"}
-                      </Box>
-                      <Box sx={{ mt: "2px", fontSize: 12, color: GRAY_500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {item.site?.name ?? "—"} · {item.missionType ? MISSION_TYPE_LABEL[item.missionType] : "—"}
-                      </Box>
-                    </Box>
-                    <Box sx={{ width: 150, flexShrink: 0, display: "flex", alignItems: "center", gap: "6px", flexWrap: "nowrap" }}>
-                      <Box sx={{
-                        flexShrink: 0, display: "inline-flex", alignItems: "center", height: 24, padding: "0 10px",
-                        borderRadius: "999px", fontSize: 11.5, fontWeight: 800, whiteSpace: "nowrap",
-                        background: tone.bg, color: tone.fg,
-                      }}>
-                        {item.encodingStateLabel}
-                      </Box>
-                      {item.encoding.isStale && (
-                        <Box sx={{
-                          flexShrink: 0, display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px",
-                          borderRadius: "999px", fontSize: 11.5, fontWeight: 800, whiteSpace: "nowrap", background: RED_50, color: RED_700,
-                        }}>
-                          retard
-                        </Box>
-                      )}
-                    </Box>
-                    {/* D-136 — couleur = hours.comparison (backend) : vert dans le planifié,
-                        orange au-delà, neutre sans heure réelle (jamais le repli planifié en vert). */}
-                    <Box sx={{ width: 170, flexShrink: 0 }} data-testid="hours-cell" data-hours-comparison={item.hours.comparison} title={hoursTone.label}>
-                      <Box sx={{ display: "flex", alignItems: "baseline", gap: "6px", fontVariantNumeric: "tabular-nums" }}>
-                        {item.hours.hasRealHours ? (
-                          <>
-                            <Box sx={{ fontSize: 13.5, fontWeight: 800, color: hoursTone.fg }}>{formatMinutes(item.hours.effectiveMinutes)}</Box>
-                            <Box sx={{ fontSize: 12, color: GRAY_400 }}>/ {formatMinutes(item.hours.plannedMinutes)}</Box>
-                          </>
-                        ) : (
-                          <Box sx={{ fontSize: 13.5, fontWeight: 800, color: GRAY_400 }}>{formatMinutes(item.hours.plannedMinutes)} planifiées</Box>
-                        )}
-                      </Box>
-                      <Box sx={{ mt: "5px", height: 5, borderRadius: "99px", background: GRAY_150, overflow: "hidden" }}>
-                        <Box sx={{ height: "100%", borderRadius: "99px", width: `${pct}%`, background: item.hours.hasRealHours ? hoursTone.bar : "transparent" }} />
-                      </Box>
-                      <Box sx={{ mt: "2px", fontSize: 10.5, color: GRAY_400, fontStyle: item.hours.hasRealHours ? undefined : "italic" }}>
-                        {item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : hoursTone.label}
-                      </Box>
-                    </Box>
-                    <Box sx={{ width: 110, flexShrink: 0, textAlign: "right", fontSize: 13.5, fontWeight: 800, color: financeStyle(item) }}>
-                      {item.financial.label}
-                    </Box>
-                    <Box sx={{ width: 26, flexShrink: 0, color: GRAY_300, display: "grid", placeItems: "center" }}>
-                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="m9 6 6 6-6 6" />
-                      </svg>
+                    <Box sx={{ flex: 1 }} />
+                    {late > 0 && (
+                      <Box sx={{ fontSize: 11.5, fontWeight: 800, color: RED_700 }}>{late} en retard</Box>
+                    )}
+                    <Box sx={{ fontSize: 11.5, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums" }}>
+                      {planned}h planifiées
                     </Box>
                   </Box>
-                );
-              })}
-            </Box>
-          );
-        })}
+
+                  {all.map((item) => {
+                    const tone = STATE_TONE[item.encodingState];
+                    const selected = selectedMissionId === item.missionId;
+                    const hoursTone = HOURS_COMPARISON_TONE[item.hours.comparison];
+                    const pct = item.hours.plannedMinutes > 0
+                      ? Math.min(100, Math.round((item.hours.effectiveMinutes / item.hours.plannedMinutes) * 100))
+                      : 0;
+
+                    return (
+                      <Box
+                        key={item.missionId}
+                        component="button"
+                        type="button"
+                        onClick={() => (onOpen ? onOpen(item.missionId) : navigate(`/app/m/missions/${item.missionId}`))}
+                        sx={{
+                          display: "flex", alignItems: "center", gap: "14px", width: "100%", padding: "0 18px", height: 72,
+                          border: 0, borderBottom: "1px solid", borderColor: GRAY_150,
+                          background: selected ? GREEN_100 : "#fff", boxShadow: selected ? `inset 3px 0 0 ${GREEN_600}` : undefined,
+                          fontFamily: "inherit", textAlign: "left", cursor: "pointer",
+                          "&:hover": { background: selected ? GREEN_100 : GRAY_50 },
+                        }}
+                      >
+                        <Box sx={{ width: 52, flexShrink: 0, fontSize: 14, fontWeight: 800, color: GRAY_950, fontVariantNumeric: "tabular-nums" }}>
+                          {formatTime(item.startAt)}
+                        </Box>
+                        <Box sx={{ width: 172, flexShrink: 0, display: "flex", alignItems: "center", gap: "9px", minWidth: 0 }}>
+                          <Box sx={{
+                            width: 30, height: 30, flexShrink: 0, borderRadius: "999px", background: GRAY_100, color: GRAY_700,
+                            display: "grid", placeItems: "center", fontSize: 11, fontWeight: 800, overflow: "hidden",
+                          }}>
+                            {item.instrumentist?.photoPath
+                              ? <Box component="img" src={resolveApiAssetUrl(item.instrumentist.photoPath)} alt="" sx={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                              : item.instrumentist ? initials(item.instrumentist.name ?? "—") : "—"}
+                          </Box>
+                          <Box sx={{ fontSize: 13.5, fontWeight: 700, color: GRAY_950, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {item.executedWithoutInstrumentist
+                              ? <span data-testid="tracking-without-instrumentist" title={item.executedWithoutInstrumentist.declaredByName ? `Activité déclarée par ${item.executedWithoutInstrumentist.declaredByName}` : undefined}>Sans instrumentiste</span>
+                              : item.instrumentist?.name ?? "—"}
+                          </Box>
+                        </Box>
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Box sx={{ fontSize: 13.5, fontWeight: 600, color: GRAY_800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {item.surgeon?.name ?? "—"}
+                          </Box>
+                          <Box sx={{ mt: "2px", fontSize: 12, color: GRAY_500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {item.site?.name ?? "—"} · {item.missionType ? MISSION_TYPE_LABEL[item.missionType] : "—"}
+                          </Box>
+                        </Box>
+                        <Box sx={{ width: 150, flexShrink: 0, display: "flex", alignItems: "center", gap: "6px", flexWrap: "nowrap" }}>
+                          <Box sx={{
+                            flexShrink: 0, display: "inline-flex", alignItems: "center", height: 24, padding: "0 10px",
+                            borderRadius: "999px", fontSize: 11.5, fontWeight: 800, whiteSpace: "nowrap",
+                            background: tone.bg, color: tone.fg,
+                          }}>
+                            {item.encodingStateLabel}
+                          </Box>
+                          {item.encoding.isStale && (
+                            <Box sx={{
+                              flexShrink: 0, display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px",
+                              borderRadius: "999px", fontSize: 11.5, fontWeight: 800, whiteSpace: "nowrap", background: RED_50, color: RED_700,
+                            }}>
+                              retard
+                            </Box>
+                          )}
+                          {item.encoding.escalatedAt && (
+                            <Box data-testid="tracking-escalated" title={`Alerte J+4 envoyée le ${new Date(item.encoding.escalatedAt).toLocaleDateString("fr-BE")}`} sx={{
+                              flexShrink: 0, display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px",
+                              borderRadius: "999px", fontSize: 11.5, fontWeight: 800, whiteSpace: "nowrap", background: RED_50, color: RED_700,
+                            }}>
+                              J+4
+                            </Box>
+                          )}
+                        </Box>
+                        {/* D-136 — couleur = hours.comparison (backend) : vert dans le planifié,
+                            orange au-delà, neutre sans heure réelle (jamais le repli planifié en vert). */}
+                        {item.executedWithoutInstrumentist ? (
+                          // D-155 — aucune heure n'existe ni n'est attendue : jamais « non renseignées ».
+                          <Box sx={{ width: 170, flexShrink: 0 }} data-testid="hours-cell" data-hours-comparison="NOT_APPLICABLE" title={NO_HOURS_WITHOUT_INSTRUMENTIST}>
+                            <Box sx={{ fontSize: 13.5, fontWeight: 800, color: GRAY_400 }}>Sans heures</Box>
+                            <Box sx={{ mt: "2px", fontSize: 10.5, color: GRAY_400 }}>Aucune prestation horaire attendue</Box>
+                          </Box>
+                        ) : (
+                        <Box sx={{ width: 170, flexShrink: 0 }} data-testid="hours-cell" data-hours-comparison={item.hours.comparison} title={hoursTone.label}>
+                          <Box sx={{ display: "flex", alignItems: "baseline", gap: "6px", fontVariantNumeric: "tabular-nums" }}>
+                            {item.hours.hasRealHours ? (
+                              <>
+                                <Box sx={{ fontSize: 13.5, fontWeight: 800, color: hoursTone.fg }}>{formatMinutes(item.hours.effectiveMinutes)}</Box>
+                                <Box sx={{ fontSize: 12, color: GRAY_400 }}>/ {formatMinutes(item.hours.plannedMinutes)}</Box>
+                              </>
+                            ) : (
+                              <Box sx={{ fontSize: 13.5, fontWeight: 800, color: GRAY_400 }}>{formatMinutes(item.hours.plannedMinutes)} planifiées</Box>
+                            )}
+                          </Box>
+                          <Box sx={{ mt: "5px", height: 5, borderRadius: "99px", background: GRAY_150, overflow: "hidden" }}>
+                            <Box sx={{ height: "100%", borderRadius: "99px", width: `${pct}%`, background: item.hours.hasRealHours ? hoursTone.bar : "transparent" }} />
+                          </Box>
+                          <Box sx={{ mt: "2px", fontSize: 10.5, color: GRAY_400, fontStyle: item.hours.hasRealHours ? undefined : "italic" }}>
+                            {/* D-156 — 0 min imputed: hours paid on a sibling mission, never "not worked". */}
+                            {item.hours.effectiveSource === "PRESENCE_SHARE" && item.hours.effectiveMinutes === 0
+                              ? "Heures comptées sur une autre mission de la prestation"
+                              : item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : hoursTone.label}
+                          </Box>
+                        </Box>
+                        )}
+                        <Box sx={{ width: 110, flexShrink: 0, textAlign: "right" }}>
+                          <Box sx={{ fontSize: 13.5, fontWeight: 800, color: financeStyle(item) }}>{item.financial.label}</Box>
+                          {item.financial.state === "ANOMALY" && item.financial.anomalyCount > 0 && (
+                            <Tooltip title={anomalyReasonsText(item)} describeChild>
+                              <Box
+                                data-testid="finance-anomaly-reasons"
+                                aria-label={`${item.financial.anomalyCount} problème${item.financial.anomalyCount > 1 ? "s" : ""} : ${anomalyReasonsText(item)}`}
+                                sx={{ mt: "2px", fontSize: 10.5, fontWeight: 700, color: RED_700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                              >
+                                {item.financial.anomalyReasons.length === 1
+                                  ? item.financial.anomalyReasons[0].label
+                                  : `${item.financial.anomalyCount} problèmes`}
+                              </Box>
+                            </Tooltip>
+                          )}
+                        </Box>
+                        <Box sx={{ width: 26, flexShrink: 0, color: GRAY_300, display: "grid", placeItems: "center" }}>
+                          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="m9 6 6 6-6 6" />
+                          </svg>
+                        </Box>
+                      </Box>
+                    );
+                  })}
+                </Box>
+              );
+            })}
+          </Box>
+        </Box>
       </Box>
 
       {totalPages > 1 && (

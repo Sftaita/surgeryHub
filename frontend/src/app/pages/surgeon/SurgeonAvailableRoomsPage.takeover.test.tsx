@@ -110,7 +110,8 @@ describe("Reprendre une salle — CTA et confirmation", () => {
     expect(within(dialog).getByText("Jeudi 15 octobre")).toBeInTheDocument();
     expect(within(dialog).getByText("08:00–13:00")).toBeInTheDocument();
     expect(within(dialog).getByText("Salle libérée suite à l'absence du Dr Alain")).toBeInTheDocument();
-    expect(within(dialog).getByText(/une mission sera ouverte aux instrumentistes du site/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/une mission instrumentiste sera créée/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/d'abord proposée pendant 48 h à l'instrumentiste habituel\(le\) de ce créneau/)).toBeInTheDocument();
 
     await user.click(within(dialog).getByRole("button", { name: "Annuler" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -138,7 +139,7 @@ describe("Reprendre une salle — résultat serveur", () => {
     expect(within(card).getByText("Salle reprise")).toBeInTheDocument();
     expect(within(card).getByText("À pourvoir")).toBeInTheDocument();
     expect(within(card).queryByRole("button", { name: "Reprendre cette salle" })).not.toBeInTheDocument();
-    expect(screen.getByText("Salle reprise — une mission est ouverte aux instrumentistes du site.")).toBeInTheDocument();
+    expect(screen.getByText("Salle reprise — la mission instrumentiste est créée.")).toBeInTheDocument();
   });
 
   it("409 ROOM_SLOT_ALREADY_TAKEN : message « reprise par Dr X » et le créneau disparaît après rechargement serveur", async () => {

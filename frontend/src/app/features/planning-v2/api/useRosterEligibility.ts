@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { fetchRosterEligibility } from "./planningV2.api";
+import { fetchRosterEligibility, type RosterProposal } from "./planningV2.api";
 import type { CandidateEligibility, EligibilityEnforcementPolicy } from "./planningV2.types";
 
 export interface RosterSlot {
@@ -9,10 +9,19 @@ export interface RosterSlot {
   startTime: string;
   endTime: string;
   excludeMissionId?: number | null;
+  /** D-152 — the line's surgeon: his incompatible instrumentists come back flagged. */
+  surgeonId?: number | null;
+  /** D-156 — the line's mission type: a simultaneous BLOC room of the same surgeon is one prestation. */
+  missionType?: string | null;
+  /** D-165 — the editor's other unsaved lines that day (see buildRosterProposals). */
+  proposals?: RosterProposal[];
 }
 
 function slotKey(slot: RosterSlot): string {
-  return `${slot.siteId ?? "null"}|${slot.date}|${slot.startTime}|${slot.endTime}|${slot.excludeMissionId ?? "null"}`;
+  const proposals = (slot.proposals ?? [])
+    .map((p) => `${p.missionId ?? "new"}:${p.instrumentistId ?? "-"}:${p.startTime}-${p.endTime}:${p.surgeonId ?? "-"}:${p.siteId ?? "-"}:${p.missionType ?? "-"}:${p.cancelled ? "x" : ""}`)
+    .join(",");
+  return `${slot.siteId ?? "null"}|${slot.date}|${slot.startTime}|${slot.endTime}|${slot.excludeMissionId ?? "null"}|${slot.surgeonId ?? "null"}|${slot.missionType ?? "null"}|${proposals}`;
 }
 
 function isCompleteSlot(slot: RosterSlot): boolean {

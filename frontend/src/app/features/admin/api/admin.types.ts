@@ -105,7 +105,16 @@ export interface AdminPatchUserPayload {
 
 // ── Historique des notifications (D-084) ────────────────────────────────────
 
-export type OutboundNotificationChannel = "PUSH" | "EMAIL";
+/** H2 (D-128) — IN_APP: the in-app feed item, traced like the other channels. */
+export type OutboundNotificationChannel = "PUSH" | "EMAIL" | "IN_APP";
+
+/** H2 (D-128) — why a channel was deliberately not used (status SKIPPED). */
+export type NotificationDeliverySkipReason =
+  | "DISABLED_BY_PREFERENCE"
+  | "NO_PUSH_SUBSCRIPTION"
+  | "NO_EMAIL_ADDRESS"
+  | "COVERED_BY_PUSH"
+  | "NOT_APPLICABLE";
 
 /**
  * SENT signifie uniquement "accepté par le fournisseur/transport" — jamais que le
@@ -133,6 +142,9 @@ export interface OutboundNotificationListItem {
   missionId: number | null;
   attemptCount: number;
   fallback: boolean;
+  skipReason: NotificationDeliverySkipReason | null;
+  correlationId: string | null;
+  grouped: boolean;
 }
 
 export interface OutboundNotificationAttempt {
@@ -158,6 +170,8 @@ export interface OutboundNotificationDetail extends OutboundNotificationListItem
   fallbackOfId: number | null;
   fallbackReason: OutboundNotificationFallbackReason | null;
   attempts: OutboundNotificationAttempt[];
+  notificationEventId: number | null;
+  notificationEventSeenAt: string | null;
 }
 
 export interface OutboundNotificationListResponse {

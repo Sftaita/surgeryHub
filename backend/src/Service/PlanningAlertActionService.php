@@ -6,8 +6,14 @@ use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningAlert;
 use App\Entity\User;
+use App\Enum\MissionAssignmentEndReason;
+use App\Enum\MissionAssignmentSource;
 use App\Enum\MissionStatus;
+use App\Enum\OpenEpisodeCause;
+use App\Message\OpenMissionPoolMessage;
+use App\Notification\OpenEpisode;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
@@ -30,13 +36,26 @@ class PlanningAlertActionService
         MissionStatus::CLOSED,
     ];
 
+    /** D-150 — writer of the instrumentist (and affectation history) of a published mission. */
+    private readonly MissionAssignmentService $assignments;
+
     public function __construct(
         private readonly EntityManagerInterface    $em,
         private readonly PlanningAlertService      $alertService,
-        private readonly NotificationService       $notificationService,
         private readonly MissionPostDeployService  $missionPostDeployService,
         private readonly PlanningConflictDetectionService $conflictDetection,
-    ) {}
+        private readonly MessageBusInterface $bus,
+        ?MissionAssignmentService $assignments = null,
+        // D-152 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionEligibilityService $eligibility = null,
+        // D-177 — a room take-over mission reopened here stays reachable (active POOL).
+        private readonly ?RoomTakeoverPriorityService $priorities = null,
+        // D-181 — changing the instrumentist of a published mission; always autowired.
+        private readonly ?MissionReassignmentService $reassignments = null,
+    ) {
+        // D-150 — always autowired; a plain unit test that omits it still gets the real writer.
+        $this->assignments = $assignments ?? new MissionAssignmentService($em);
+    }
 
     /** @return array{mission: Mission, alert: PlanningAlert} */
     public function reassign(PlanningAlert $alert, int $instrumentistId, ?User $actor, ?string $note): array
@@ -52,27 +71,48 @@ class PlanningAlertActionService
 
         $this->assertEligible($mission, $instrumentist);
 
-        $oldInstrumentist = $mission->getInstrumentist();
 
-        if (in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
+        if ($this->reassignments !== null && $actor !== null && $mission->getInstrumentist() !== null
+            && in_array($mission->getStatus(), MissionReassignmentPolicy::REASSIGNABLE_STATUSES, true)) {
+            // D-181 — a published mission changing hands (ASSIGNED, or already started): the same
+            // operation as « Changer d'instrumentiste » — status kept, encoded data protected,
+            // audit, and the three people concerned told. The access decision is the caller's
+            // (PlanningVoter::PLANNING_MANAGE). The alert note stays internal (audit only).
+            $this->reassignments->reassign($actor, [[
+                'missionId'       => $mission->getId(),
+                'instrumentistId' => $instrumentistId,
+            ]], $note, static fn (): bool => true, throwOnFailure: true);
+        } elseif (in_array($mission->getStatus(), [MissionStatus::OPEN, MissionStatus::ASSIGNED], true)) {
             // Post-deploy: delegate to MissionPostDeployService so R-04/R-05/R-07 are enforced
             // (audit event + flush before dispatch + MissionLifecycleChangedMessage).
             if ($actor === null) {
                 throw new \LogicException('Actor must not be null for post-deploy mission mutation');
             }
             $this->missionPostDeployService->assign($mission, $actor, $instrumentistId);
-        } else {
-            // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
+        } elseif ($mission->getStatus() === MissionStatus::DRAFT) {
+            // DRAFT — pre-deploy setup: only the instrumentist changes. D-156 lot 1 — the status
+            // used to be flipped to ASSIGNED here, which published the mission silently (no
+            // publication, no audit, no notification, D-056 bypassed) while its draft version
+            // was not deployed. A DRAFT stays DRAFT; deploy() or the dispatch publish it.
             $mission->setInstrumentist($instrumentist);
-            $mission->setStatus(MissionStatus::ASSIGNED);
+        } else {
+            // D-150 — the other non-locked statuses (DECLARED, IN_PROGRESS, ENCODING_IN_PROGRESS,
+            // CANCELLED, REJECTED) keep their existing behaviour, but the mission is published:
+            // its affectation history follows, under the mission lock.
+            $this->assignments->inLockedChange($mission, function () use ($mission, $instrumentist, $actor): void {
+                $this->assignments->assign($mission, $instrumentist, MissionAssignmentSource::MANAGER_ASSIGNMENT, $actor);
+                $mission->setStatus(MissionStatus::ASSIGNED);
+                $this->em->flush();
+            });
         }
 
         $resolvedNote = $note ?? sprintf('Réassigné à %s.', $instrumentist->getEmail());
         $this->alertService->resolve($alert, $actor, $resolvedNote);
 
-        // In-app only, synchronous — this is direct feedback on an action the manager
-        // just took, not the async absence-detection fan-out (PlanningAlertRaisedMessage).
-        $this->notificationService->planningAlertReassignedNotify($mission, $oldInstrumentist, $instrumentist);
+        // H5b (D-132) — the former direct in-app PLANNING_ALERT_REASSIGNED_AWAY / _TO rows are
+        // gone: post-deploy, MissionPostDeployService::assign() already tells both instrumentists
+        // through the dispatcher (lifecycle, traced, no duplicate); on a DRAFT, nobody is told
+        // (a DRAFT is never communicated — D-127).
 
         return ['mission' => $mission, 'alert' => $alert];
     }
@@ -83,6 +123,7 @@ class PlanningAlertActionService
         $this->assertAlertActive($alert);
         $mission = $alert->getMission();
         $this->assertMissionMutable($mission);
+        $alreadyOpen = $mission->getStatus() === MissionStatus::OPEN && $mission->getInstrumentist() === null;
 
         if ($mission->getStatus() === MissionStatus::ASSIGNED) {
             // Post-deploy: delegate so audit + flush + MissionLifecycleChangedMessage are emitted.
@@ -90,15 +131,35 @@ class PlanningAlertActionService
                 throw new \LogicException('Actor must not be null for post-deploy mission mutation');
             }
             $this->missionPostDeployService->release($mission, $actor);
-        } elseif ($mission->getStatus() !== MissionStatus::OPEN) {
-            // DRAFT — pre-deploy setup; direct mutation is acceptable here (no lifecycle event).
+        } elseif ($mission->getStatus() === MissionStatus::DRAFT) {
+            // DRAFT — pre-deploy setup: the slot is simply left without instrumentist, still
+            // DRAFT (D-156 lot 1, same reason as reassign() above): it is deployed as OPEN.
             $mission->setInstrumentist(null);
-            $mission->setStatus(MissionStatus::OPEN);
+        } elseif ($mission->getStatus() !== MissionStatus::OPEN) {
+            // D-150 — same as reassign(): published non-locked statuses keep their behaviour,
+            // the affectation history follows, under the mission lock.
+            $this->assignments->inLockedChange($mission, function () use ($mission, $actor): void {
+                $this->assignments->unassign($mission, MissionAssignmentEndReason::RELEASED, $actor);
+                $mission->setStatus(MissionStatus::OPEN);
+                $this->priorities?->reopenToPool($mission, $actor); // D-177 — room take-over missions only
+                $this->em->flush();
+            });
         }
         // OPEN → already in the target state; no mutation needed.
+        // ASSIGNED → the RELEASED lifecycle message solicits the pool (OpenMissionPoolNotifier).
 
         $resolvedNote = $note ?? 'Mission ouverte au pool des missions disponibles.';
         $this->alertService->resolve($alert, $actor, $resolvedNote);
+
+        // H3 (D-129) — « ouvrir au pool » on a mission that was already OPEN (e.g. left out of
+        // the pool at deployment) used to change nothing: nobody was told. The manager's
+        // explicit decision now solicits the eligible pool, through the single entry point,
+        // after the alert resolution is flushed. Idempotent: an alert is resolved once.
+        if ($alreadyOpen && $mission->getId() !== null) {
+            $this->bus->dispatch(OpenMissionPoolMessage::of([OpenEpisode::forTransition(
+                $mission->getId(), OpenEpisodeCause::OPENED_FROM_ALERT, new \DateTimeImmutable(), actorId: $actor?->getId(),
+            )]));
+        }
 
         return ['mission' => $mission, 'alert' => $alert];
     }
@@ -149,6 +210,11 @@ class PlanningAlertActionService
         if ($this->hasConflict($instrumentist, $mission)) {
             throw new UnprocessableEntityHttpException("L'instrumentiste a déjà une mission en conflit sur ce créneau.");
         }
+        // D-152 — never re-affect an instrumentist incompatible with the mission's surgeon
+        // (the DRAFT branch does not go through MissionPostDeployService's eligibility gate).
+        if ($mission->getSurgeon() !== null && $this->eligibility?->isIncompatible($mission->getSurgeon(), $instrumentist)) {
+            throw new UnprocessableEntityHttpException("Cet instrumentiste est incompatible avec le chirurgien de cette mission.");
+        }
     }
 
     private function isAffiliatedWithSite(User $instrumentist, ?Hospital $site): bool
@@ -193,7 +259,7 @@ class PlanningAlertActionService
     private function hasConflict(User $instrumentist, Mission $mission): bool
     {
         return $this->conflictDetection->findConflict(
-            $instrumentist, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(),
+            $instrumentist, $mission->getStartAt(), $mission->getEndAt(), $mission->getId(), null, $mission,
         ) !== null;
     }
 }

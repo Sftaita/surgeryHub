@@ -14,9 +14,13 @@ use App\Enum\SchedulePrecision;
 use App\Service\MissionEligibilityService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 
 /**
- * Real-DB test for RC1-D/RC1-E — MissionEligibilityService::findEligible().
+ * Real-DB test for RC1-D/RC1-E — MissionEligibilityService::findEligibleByMission()
+ * (H3/D-129 replaced the per-site union findEligible(): candidates are now computed and
+ * returned PER MISSION, same three queries, so a pool message can only list the missions
+ * its recipient can actually take).
  *
  * RC1-D fixed invalid DQL (`JOIN FETCH sm.user u`, which is HQL syntax, not DQL) that threw a
  * Semantical Error on every real execution. RC1-E fixed a second, independent bug: the
@@ -29,6 +33,10 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
 {
+    // D-151 — "now" is frozen just before the fixture dates: a started mission is no
+    // longer claimable (MISSION_ALREADY_STARTED), so the fixtures must stay in the future.
+    use ClockSensitiveTrait;
+
     private EntityManagerInterface $em;
     private array $createdIds = [
         'missions' => [], 'memberships' => [], 'absences' => [], 'users' => [], 'sites' => [],
@@ -36,6 +44,7 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-08-01 00:00:00');
         self::bootKernel();
         $this->em = self::getContainer()->get(EntityManagerInterface::class);
     }
@@ -49,7 +58,7 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->em->flush();
         foreach ($this->createdIds['missions'] as $id) {
             $e = $this->em->find(Mission::class, $id);
-            if ($e !== null) { $this->em->remove($e); }
+            if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
         }
         $this->em->flush();
         foreach ($this->createdIds['memberships'] as $id) {
@@ -187,9 +196,9 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->makeMembership($candidate, $site);
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertContains($candidate->getId(), $ids);
     }
 
@@ -201,9 +210,9 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->makeMembership($candidate, $site);
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertNotContains($candidate->getId(), $ids);
     }
 
@@ -216,9 +225,9 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->makeAbsence($candidate, '2026-09-01', '2026-09-01');
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertNotContains($candidate->getId(), $ids);
     }
 
@@ -229,13 +238,30 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $candidate = $this->makeInstrumentist();
         $this->makeMembership($candidate, $site);
         // Existing ASSIGNED mission overlapping the OPEN mission's slot.
+        // D-156 — a real conflict: another surgeon (same surgeon + site would be a legitimate double room).
+        $this->makeAssignedMission($site, $otherSurgeon = $this->makeSurgeon(), $otherSurgeon, $candidate, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
+        $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
+
+        $result = $this->service()->findEligibleByMission([$mission]);
+
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
+        self::assertNotContains($candidate->getId(), $ids);
+    }
+
+    /** D-156 — same surgeon, same site, BLOC, same day: a second room of the same prestation, never a conflict. */
+    public function test_same_surgeon_same_site_overlap_is_a_double_room_not_a_conflict(): void
+    {
+        $site      = $this->makeSite();
+        $surgeon   = $this->makeSurgeon();
+        $candidate = $this->makeInstrumentist();
+        $this->makeMembership($candidate, $site);
         $this->makeAssignedMission($site, $surgeon, $surgeon, $candidate, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
-        self::assertNotContains($candidate->getId(), $ids);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
+        self::assertContains($candidate->getId(), $ids);
     }
 
     public function test_multiple_eligible_candidates_are_all_returned(): void
@@ -248,14 +274,14 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->makeMembership($candidate2, $site);
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertContains($candidate1->getId(), $ids);
         self::assertContains($candidate2->getId(), $ids);
     }
 
-    public function test_candidate_is_not_duplicated_across_multiple_open_missions_at_same_site(): void
+    public function test_candidate_is_listed_once_per_mission_she_can_take(): void
     {
         $site      = $this->makeSite();
         $surgeon   = $this->makeSurgeon();
@@ -264,16 +290,36 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $mission1 = $this->makeOpenMission($site, $surgeon, $surgeon, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
         $mission2 = $this->makeOpenMission($site, $surgeon, $surgeon, '2026-09-08 08:00:00', '2026-09-08 13:00:00');
 
-        $result = $this->service()->findEligible([$mission1, $mission2]);
+        $result = $this->service()->findEligibleByMission([$mission1, $mission2]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
-        $occurrences = array_count_values($ids);
-        self::assertSame(1, $occurrences[$candidate->getId()] ?? 0, 'candidate must appear exactly once per site, not once per mission');
+        foreach ([$mission1, $mission2] as $mission) {
+            $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
+            self::assertSame(1, array_count_values($ids)[$candidate->getId()] ?? 0, 'exactly once in each mission list');
+        }
+    }
+
+    public function test_a_conflict_on_one_mission_removes_the_candidate_from_that_mission_only(): void
+    {
+        // The defect H3 fixes: the per-site union offered a person every OPEN mission of the
+        // site as soon as she was free for ONE of them.
+        $site      = $this->makeSite();
+        $surgeon   = $this->makeSurgeon();
+        $candidate = $this->makeInstrumentist();
+        $this->makeMembership($candidate, $site);
+        $free     = $this->makeOpenMission($site, $surgeon, $surgeon, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
+        $busySlot = $this->makeOpenMission($site, $surgeon, $surgeon, '2026-09-08 08:00:00', '2026-09-08 13:00:00');
+        // D-156 — a real conflict: another surgeon (same surgeon + site would be a legitimate double room).
+        $this->makeAssignedMission($site, $otherSurgeon = $this->makeSurgeon(), $otherSurgeon, $candidate, '2026-09-08 09:00:00', '2026-09-08 12:00:00');
+
+        $result = $this->service()->findEligibleByMission([$free, $busySlot]);
+
+        self::assertContains($candidate->getId(), array_map(fn (User $u) => $u->getId(), $result[$free->getId()]));
+        self::assertNotContains($candidate->getId(), array_map(fn (User $u) => $u->getId(), $result[$busySlot->getId()]));
     }
 
     public function test_freelancer_without_site_membership_is_eligible(): void
     {
-        // RC1-E fix: findEligible()'s candidate pool must match evaluate()'s — a FREELANCER
+        // RC1-E fix: the candidate pool must match evaluate()'s — a FREELANCER
         // bypasses the SiteMembership requirement entirely (D-057 single source of truth).
         $site       = $this->makeSite();
         $surgeon    = $this->makeSurgeon();
@@ -281,9 +327,9 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         // No SiteMembership created for the freelancer — must still be eligible.
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertContains($freelancer->getId(), $ids);
     }
 
@@ -295,9 +341,9 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->makeMembership($freelancer, $site);
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         $occurrences = array_count_values($ids);
         self::assertSame(1, $occurrences[$freelancer->getId()] ?? 0, 'freelancer must not appear twice even with a membership row');
     }
@@ -312,9 +358,9 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $this->makeAbsence($freelancer, '2026-09-01', '2026-09-01');
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertNotContains($freelancer->getId(), $ids);
     }
 
@@ -323,12 +369,13 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $site       = $this->makeSite();
         $surgeon    = $this->makeSurgeon();
         $freelancer = $this->makeInstrumentist(employmentType: EmploymentType::FREELANCER);
-        $this->makeAssignedMission($site, $surgeon, $surgeon, $freelancer, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
+        // D-156 — a real conflict: another surgeon (same surgeon + site would be a legitimate double room).
+        $this->makeAssignedMission($site, $otherSurgeon = $this->makeSurgeon(), $otherSurgeon, $freelancer, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertNotContains($freelancer->getId(), $ids);
     }
 
@@ -342,10 +389,10 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $missionA = $this->makeOpenMission($siteA, $surgeon, $surgeon, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
         $missionB = $this->makeOpenMission($siteB, $surgeon, $surgeon, '2026-09-02 08:00:00', '2026-09-02 13:00:00');
 
-        $result = $this->service()->findEligible([$missionA, $missionB]);
+        $result = $this->service()->findEligibleByMission([$missionA, $missionB]);
 
-        $idsA = array_map(fn (User $u) => $u->getId(), $result[$siteA->getId()] ?? []);
-        $idsB = array_map(fn (User $u) => $u->getId(), $result[$siteB->getId()] ?? []);
+        $idsA = array_map(fn (User $u) => $u->getId(), $result[$missionA->getId()]);
+        $idsB = array_map(fn (User $u) => $u->getId(), $result[$missionB->getId()]);
         self::assertContains($freelancer->getId(), $idsA);
         self::assertContains($freelancer->getId(), $idsB);
     }
@@ -360,10 +407,10 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         $missionA = $this->makeOpenMission($siteA, $surgeon, $surgeon, '2026-09-01 08:00:00', '2026-09-01 13:00:00');
         $missionB = $this->makeOpenMission($siteB, $surgeon, $surgeon, '2026-09-02 08:00:00', '2026-09-02 13:00:00');
 
-        $result = $this->service()->findEligible([$missionA, $missionB]);
+        $result = $this->service()->findEligibleByMission([$missionA, $missionB]);
 
-        $idsA = array_map(fn (User $u) => $u->getId(), $result[$siteA->getId()] ?? []);
-        $idsB = array_map(fn (User $u) => $u->getId(), $result[$siteB->getId()] ?? []);
+        $idsA = array_map(fn (User $u) => $u->getId(), $result[$missionA->getId()]);
+        $idsB = array_map(fn (User $u) => $u->getId(), $result[$missionB->getId()]);
         self::assertContains($candidate->getId(), $idsA);
         self::assertNotContains($candidate->getId(), $idsB);
     }
@@ -380,15 +427,15 @@ final class MissionEligibilityServiceFindEligibleTest extends KernelTestCase
         // No SiteMembership created — an EMPLOYEE-type candidate must be excluded.
         $mission = $this->makeOpenMission($site, $surgeon, $surgeon);
 
-        $result = $this->service()->findEligible([$mission]);
+        $result = $this->service()->findEligibleByMission([$mission]);
 
-        $ids = array_map(fn (User $u) => $u->getId(), $result[$site->getId()] ?? []);
+        $ids = array_map(fn (User $u) => $u->getId(), $result[$mission->getId()]);
         self::assertNotContains($candidate->getId(), $ids);
     }
 
     public function test_empty_mission_list_returns_empty_array(): void
     {
-        $result = $this->service()->findEligible([]);
+        $result = $this->service()->findEligibleByMission([]);
 
         self::assertSame([], $result);
     }

@@ -45,6 +45,7 @@ vi.mock("../features/manager-catalogue/api/catalogue.api", () => ({
   getFirms: vi.fn().mockResolvedValue([]),
   getMaterialItems: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, limit: 200 }),
   createMaterialItem: vi.fn(),
+  getMaterialBillingRegularisation: vi.fn().mockResolvedValue({ summary: { itemCount: 0, toConfigureCount: 0, undecidedCount: 0, rateMissingCount: 0, billableCount: 0, notBillableCount: 0, blockedMissionCount: 0, pendingMissionCount: 0 }, items: [] }),
 }));
 vi.mock("../features/manager-catalogue/api/interventionTypeRequests.api", () => ({
   getInterventionTypeRequests: vi.fn().mockResolvedValue({ items: [], total: 0 }),
@@ -88,7 +89,7 @@ vi.mock("../features/manager-mission-requests/api/managerSurgeonMissionRequests.
   getSurgeonMissionRequests: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   acceptSurgeonMissionRequest: vi.fn(),
   rejectSurgeonMissionRequest: vi.fn(),
-  getPendingSurgeonMissionRequestsCount: vi.fn().mockResolvedValue(0),
+  getSurgeonMissionRequestCounts: vi.fn().mockResolvedValue({ PENDING: 0, ACCEPTED: 0, REJECTED: 0 }),
 }));
 vi.mock("../features/notifications/api/notifications.api", () => ({
   fetchUnreadNotificationsCount: vi.fn().mockResolvedValue(0),
@@ -346,8 +347,11 @@ describe("AppRouter — Absences self-service (Lot 3, D-097, 2026-08-06)", () =>
     authRole = "INSTRUMENTIST";
     renderAt("/app/i/absences");
     await waitFor(() => expect(screen.getByText("MES ABSENCES")).toBeInTheDocument(), { timeout: 5000 });
-    const nav = screen.getByRole("navigation", { name: "Navigation instrumentiste" });
-    expect(within(nav).getByRole("button", { name: "Absences" })).toHaveAttribute("aria-current", "page");
+    // D-166 — la présentation instrumentiste (« Bienvenue dans SurgicalHub », une fenêtre
+    // SheetModal) est ouverte dans ce scénario : la navigation est derrière elle, donc hors de
+    // l'arbre d'accessibilité (aria-hidden) — on vérifie quand même l'onglet actif.
+    const nav = screen.getByRole("navigation", { name: "Navigation instrumentiste", hidden: true });
+    expect(within(nav).getByRole("button", { name: "Absences", hidden: true })).toHaveAttribute("aria-current", "page");
   });
 });
 

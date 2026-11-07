@@ -39,9 +39,13 @@ final class MissionAssignInstrumentistControllerTest extends WebTestCase
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // H5b (D-132) — l'édition d'un brouillon est désormais auditée (AuditEvent FK mission).
+            foreach ($this->createdMissionIds as $id) {
+                $this->em->getConnection()->executeStatement('DELETE FROM audit_event WHERE mission_id = ?', [$id]);
+            }
             foreach ($this->createdMissionIds as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
 

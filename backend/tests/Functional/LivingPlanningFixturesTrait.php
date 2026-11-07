@@ -54,6 +54,7 @@ trait LivingPlanningFixturesTrait
                 'DELETE FROM App\Entity\MissionClaim c WHERE c.mission IN (:m)' => ['m' => $missionIds],
                 'DELETE FROM App\Entity\MissionPublication p WHERE p.mission IN (:m)' => ['m' => $missionIds],
                 'DELETE FROM App\Entity\SurgeonMissionRequest r WHERE r.surgeon IN (:u)' => ['u' => $users],
+                'DELETE FROM App\Entity\MissionAssignment a WHERE a.mission IN (:m)' => ['m' => $missionIds], // D-150
                 'DELETE FROM App\Entity\Mission m WHERE m.id IN (:m)' => ['m' => $missionIds],
                 'DELETE FROM App\Entity\PlanningAlert a WHERE a.absence IN (SELECT ab.id FROM App\Entity\Absence ab WHERE ab.user IN (:u))' => ['u' => $users],
                 'DELETE FROM App\Entity\PlanningDeployment d WHERE d.deployedBy IN (:u)' => ['u' => $users],

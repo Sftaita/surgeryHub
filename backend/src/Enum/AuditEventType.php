@@ -8,6 +8,13 @@ enum AuditEventType: string
     case MISSION_DECLARED_APPROVED = 'MISSION_DECLARED_APPROVED';
     case MISSION_DECLARED_REJECTED = 'MISSION_DECLARED_REJECTED';
 
+    // H5b (D-132) — a manager's DRAFT mission work, silent until now: created by hand, edited
+    // (structured before → after), instrumentist set / cleared before publication. Nobody is
+    // notified (a DRAFT is not communicated — D-127); the mission's history still says who did it.
+    case MISSION_CREATED_MANUALLY            = 'MISSION_CREATED_MANUALLY';
+    case MISSION_DRAFT_UPDATED               = 'MISSION_DRAFT_UPDATED';
+    case MISSION_DRAFT_INSTRUMENTIST_CHANGED = 'MISSION_DRAFT_INSTRUMENTIST_CHANGED';
+
     // Planning generation & deployment
     case PLANNING_GENERATED              = 'PLANNING_GENERATED';
     case PLANNING_UNASSIGNED_HANDLED     = 'PLANNING_UNASSIGNED_HANDLED';
@@ -78,6 +85,23 @@ enum AuditEventType: string
     case MISSION_RESTORED_AFTER_SURGEON_ABSENCE                   = 'MISSION_RESTORED_AFTER_SURGEON_ABSENCE';
     case MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE  = 'MISSION_ASSIGNMENT_RESTORED_AFTER_INSTRUMENTIST_ABSENCE';
 
+    // D-151 — surgeon refusal of a voluntary acceptance (ASSIGNED → OPEN, the refused
+    // instrumentist can never take this mission back), and the surgeon's request for a
+    // manager intervention on the current affectation (no state change).
+    case MISSION_ASSIGNMENT_REFUSED_BY_SURGEON = 'MISSION_ASSIGNMENT_REFUSED_BY_SURGEON';
+    case MISSION_ASSIGNMENT_REVIEW_REQUESTED   = 'MISSION_ASSIGNMENT_REVIEW_REQUESTED';
+
+    // D-155 — activité réellement exécutée sans instrumentiste : déclarée (OPEN commencée →
+    // ENCODING_IN_PROGRESS, par le chirurgien de la mission ou un manager) et, pour une
+    // déclaration erronée, annulée par un manager avec motif (→ OPEN).
+    case MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED = 'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_DECLARED';
+    case MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED = 'MISSION_EXECUTED_WITHOUT_INSTRUMENTIST_CANCELLED';
+
+    // D-152 — surgeon–instrumentist incompatibility created / lifted (mission is null: it
+    // concerns a pair of people, never one mission).
+    case SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED = 'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_CREATED';
+    case SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED  = 'SURGEON_INSTRUMENTIST_INCOMPATIBILITY_LIFTED';
+
     // Automated (D-064) — MissionStartDueCommand, ASSIGNED -> IN_PROGRESS on startAt.
     case MISSION_STARTED = 'MISSION_STARTED';
 
@@ -87,11 +111,14 @@ enum AuditEventType: string
     case MISSION_ENCODING_REOPENED  = 'MISSION_ENCODING_REOPENED';
     case MISSION_ENCODING_VALIDATED = 'MISSION_ENCODING_VALIDATED';
     case MISSION_ENCODING_REJECTED  = 'MISSION_ENCODING_REJECTED';
+    // D-171 — un manager reprend l'encodage non soumis de l'instrumentiste affectée (confirmation
+    // explicite) pour le terminer et le valider : instrumentiste, révision lue, heures manquantes.
+    case MISSION_ENCODING_TAKEN_OVER = 'MISSION_ENCODING_TAKEN_OVER';
 
     /**
      * D-120 — Suivi des encodages (cockpit manager). Relance manuelle déclenchée depuis le
-     * tiroir de détail, distincte de la relance automatique D+1 08h (D-083, qui ne journalise
-     * rien ici — elle marque seulement Mission.encodingReminderSentAt). Ne mute aucun statut :
+     * tiroir de détail, distincte des relances automatiques J+1/J+2/J+4 (D-143,
+     * MISSION_ENCODING_AUTO_REMINDER_SENT ci-dessous). Ne mute aucun statut :
      * seule trace qu'un manager a explicitement renvoyé la notification "encodage à
      * finaliser" à l'instrumentiste, et quand.
      */
@@ -104,6 +131,14 @@ enum AuditEventType: string
      */
     case MISSION_HOURS_MANUAL_REMINDER_SENT = 'MISSION_HOURS_MANUAL_REMINDER_SENT';
 
+    /**
+     * D-143 — relance automatique J+1/J+2/J+4 effectivement envoyée (acteur : compte
+     * système). Payload : échéance, situation de l'encodage, canaux utilisés, raison de
+     * l'e-mail, nombre de managers alertés (J+4). Le détail par canal reste dans
+     * OutboundNotification, l'idempotence dans mission_encoding_reminder.
+     */
+    case MISSION_ENCODING_AUTO_REMINDER_SENT = 'MISSION_ENCODING_AUTO_REMINDER_SENT';
+
     // Exécution & Valorisation, Lot 1 — MissionExecutionService. Le réalisé, distinct
     // du planifié (Mission) et de la future valorisation financière (FinancialCalculation).
     case MISSION_EXECUTION_CREATED           = 'MISSION_EXECUTION_CREATED';
@@ -112,6 +147,25 @@ enum AuditEventType: string
     case MISSION_EXECUTION_DISPUTE_OPENED    = 'MISSION_EXECUTION_DISPUTE_OPENED';
     case MISSION_EXECUTION_DISPUTE_RESOLVED  = 'MISSION_EXECUTION_DISPUTE_RESOLVED';
     case MISSION_EXECUTION_DISPUTE_REJECTED  = 'MISSION_EXECUTION_DISPUTE_REJECTED';
+
+    // D-156 — présence réelle partagée d'une prestation regroupée multi-salles
+    // (WorkedPresenceService). Enregistrés sur CHAQUE mission concernée, avec presenceId,
+    // révision, avant/après et missions membres : l'historique de chaque mission reste lisible.
+    case MISSION_EXECUTION_PRESENCE_DECLARED   = 'MISSION_EXECUTION_PRESENCE_DECLARED';
+    case MISSION_EXECUTION_PRESENCE_UPDATED    = 'MISSION_EXECUTION_PRESENCE_UPDATED';
+    case MISSION_EXECUTION_PRESENCE_LINKED     = 'MISSION_EXECUTION_PRESENCE_LINKED';
+    case MISSION_EXECUTION_PRESENCE_DETACHED   = 'MISSION_EXECUTION_PRESENCE_DETACHED';
+    /** Heures propres d'une mission (saisies avant le regroupement) converties explicitement en présence commune ; anciennes valeurs dans le payload. */
+    case MISSION_EXECUTION_OWN_HOURS_CONVERTED = 'MISSION_EXECUTION_OWN_HOURS_CONVERTED';
+
+    /** D-156 — libellé de salle facultatif modifié par un manager (avant/après). */
+    case MISSION_ROOM_LABEL_CHANGED = 'MISSION_ROOM_LABEL_CHANGED';
+    /** D-156 — réaffectation explicitement confirmée d'une mission qui porte déjà des interventions/matériel (restent sur la mission, auteurs conservés). */
+    case MISSION_REASSIGNED_WITH_ENCODING_DATA = 'MISSION_REASSIGNED_WITH_ENCODING_DATA';
+    /** D-181 — relais d'une mission commencée : enregistré sur la mission d'origine ET sur la mission de relais (payload `role`). */
+    case MISSION_RELAYED = 'MISSION_RELAYED';
+    /** D-182 — mission existante conservée à la place d'une mission annulée comme doublon (payload `cancelledMissionId`). */
+    case MISSION_KEPT_AS_REPLACEMENT = 'MISSION_KEPT_AS_REPLACEMENT';
 
     // Exécution & Valorisation, Lot 2 (D-072) — historisation des tarifs.
     // PricingRuleVersioningService / InstrumentistRateService. Non rattachés à une
@@ -128,6 +182,7 @@ enum AuditEventType: string
     case INSTRUMENTIST_RATE_REPLACED          = 'INSTRUMENTIST_RATE_REPLACED';
     case INSTRUMENTIST_RATE_FUTURE_UPDATED    = 'INSTRUMENTIST_RATE_FUTURE_UPDATED';
     case INSTRUMENTIST_RATE_FUTURE_CANCELLED  = 'INSTRUMENTIST_RATE_FUTURE_CANCELLED';
+    case INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED = 'INSTRUMENTIST_RATE_EFFECTIVE_DATE_CHANGED';
 
     // Exécution & Valorisation, Lot 3 (D-073) — FinancialCalculationService. Mission-
     // scopés (contrairement aux événements tarifaires du Lot 2) : AuditService::record()
@@ -139,6 +194,9 @@ enum AuditEventType: string
     case FINANCIAL_CALCULATION_SUPERSEDED    = 'FINANCIAL_CALCULATION_SUPERSEDED';
     case FINANCIAL_CALCULATION_CANCELLED     = 'FINANCIAL_CALCULATION_CANCELLED';
     case FINANCIAL_CALCULATION_FAILED        = 'FINANCIAL_CALCULATION_FAILED';
+
+    // D-186 — export PDF d'une vue « Statistiques financières » (lecture globale, recordGlobal()).
+    case FINANCIAL_STATISTICS_EXPORTED       = 'FINANCIAL_STATISTICS_EXPORTED';
 
     // Exécution & Valorisation, Lot 4 (D-074) — bascule des documents financiers vers
     // les lignes figées de FinancialCalculation. CREATED_FROM_CALCULATION est émis
@@ -299,4 +357,80 @@ enum AuditEventType: string
     case ROOM_SLOT_MADE_AVAILABLE = 'ROOM_SLOT_MADE_AVAILABLE';
     case ROOM_SLOT_TAKEN_OVER     = 'ROOM_SLOT_TAKEN_OVER';
     case ROOM_SLOT_REOPENED       = 'ROOM_SLOT_REOPENED';
+
+    /**
+     * D-177 — priorité exclusive de 48 heures de l'instrumentiste habituelle sur la mission
+     * d'une reprise de salle. Toujours record() sur la Mission de reprise, noms snapshotés.
+     *
+     * - ROOM_TAKEOVER_PRIORITY_OFFERED : proposition nominative émise (publicationId,
+     *   destinataire, offeredAt, expiresAt, missionStartsBeforeExpiry).
+     * - ROOM_TAKEOVER_PRIORITY_BYPASSED : aucune priorité, publication directe au pool —
+     *   `reason` (RoomTakeoverPoolReason : habituelle introuvable / absente / inéligible).
+     * - ROOM_TAKEOVER_PRIORITY_ENDED : fin de la priorité — `endReason` (ACCEPTED, DECLINED,
+     *   EXPIRED, RECIPIENT_UNAVAILABLE, LIFTED_BY_MANAGER, SUPERSEDED, MISSION_CLOSED), avec
+     *   publicationId, destinataire, offeredAt, expiresAt (et justification / absenceId).
+     * - ROOM_SLOT_TAKEOVER_REGULARIZED / _REVERTED : régularisation administrative d'une
+     *   reprise antérieure (créneau lié à une Mission existante, sans notification ni
+     *   priorité) et son retour arrière — `app:released-rooms:regularize-takeover`.
+     */
+    case ROOM_TAKEOVER_PRIORITY_OFFERED  = 'ROOM_TAKEOVER_PRIORITY_OFFERED';
+    case ROOM_TAKEOVER_PRIORITY_BYPASSED = 'ROOM_TAKEOVER_PRIORITY_BYPASSED';
+    case ROOM_TAKEOVER_PRIORITY_ENDED    = 'ROOM_TAKEOVER_PRIORITY_ENDED';
+    case ROOM_SLOT_TAKEOVER_REGULARIZED          = 'ROOM_SLOT_TAKEOVER_REGULARIZED';
+    case ROOM_SLOT_TAKEOVER_REGULARIZATION_REVERTED = 'ROOM_SLOT_TAKEOVER_REGULARIZATION_REVERTED';
+
+    // D-147 — journal d'activité manager : regroupement des événements par domaine, pour
+    // filtrer le journal. Purement descriptif (aucune règle métier ne s'appuie dessus).
+    public const CATEGORY_MISSION         = 'MISSION';
+    public const CATEGORY_SURGEON_REQUEST = 'SURGEON_REQUEST';
+    public const CATEGORY_PLANNING        = 'PLANNING';
+    public const CATEGORY_ENCODING        = 'ENCODING';
+    public const CATEGORY_FINANCE         = 'FINANCE';
+    public const CATEGORY_CATALOGUE       = 'CATALOGUE';
+
+    public const CATEGORIES = [
+        self::CATEGORY_MISSION,
+        self::CATEGORY_SURGEON_REQUEST,
+        self::CATEGORY_PLANNING,
+        self::CATEGORY_ENCODING,
+        self::CATEGORY_FINANCE,
+        self::CATEGORY_CATALOGUE,
+    ];
+
+    public function category(): string
+    {
+        $v = $this->value;
+
+        return match (true) {
+            str_starts_with($v, 'SURGEON_MISSION_REQUEST_') => self::CATEGORY_SURGEON_REQUEST,
+            str_starts_with($v, 'PLANNING_'),
+            str_starts_with($v, 'ROOM_SLOT_'),
+            str_starts_with($v, 'ROOM_TAKEOVER_')           => self::CATEGORY_PLANNING,
+            str_starts_with($v, 'MISSION_DECLARED'),
+            str_starts_with($v, 'MISSION_ENCODING_'),
+            str_starts_with($v, 'MISSION_EXECUTION_'),
+            str_starts_with($v, 'MISSION_INTERVENTION_DRAFT_'),
+            str_starts_with($v, 'ENCODING_ANOMALY_'),
+            $this === self::MISSION_STARTED,
+            $this === self::MISSION_HOURS_MANUAL_REMINDER_SENT => self::CATEGORY_ENCODING,
+            str_starts_with($v, 'PRICING_RULE_'),
+            str_starts_with($v, 'INSTRUMENTIST_RATE_'),
+            str_starts_with($v, 'FINANCIAL_'),
+            str_starts_with($v, 'FIRM_INVOICE_'),
+            str_starts_with($v, 'INSTRUMENTIST_STATEMENT_'),
+            str_starts_with($v, 'DOCUMENT_'),
+            str_ends_with($v, '_NOTE_CREATED'),
+            $this === self::REFUND_RECORDED                 => self::CATEGORY_FINANCE,
+            $this === self::INTERVENTION_TYPE_MERGED,
+            $this === self::MATERIAL_ITEM_REQUEST_IGNORED,
+            $this === self::MATERIAL_ITEM_REQUEST_RESOLVED  => self::CATEGORY_CATALOGUE,
+            default                                         => self::CATEGORY_MISSION,
+        };
+    }
+
+    /** @return list<self> */
+    public static function casesInCategory(string $category): array
+    {
+        return array_values(array_filter(self::cases(), static fn (self $t) => $t->category() === $category));
+    }
 }

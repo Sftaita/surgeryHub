@@ -99,7 +99,20 @@ class SurgeonAbsenceCommunicationDelivery
     #[Groups(['planning:read'])]
     private ?\DateTimeImmutable $dispatchClaimedAt = null;
 
+    /**
+     * H5b (D-132) — the delivery record on the common low-level email layer (attempts,
+     * QUEUED → SENT / FAILED, correlationId, timeline events): set when this delivery is
+     * actually handed to the queue. This journal keeps its own model (scheduling, claim,
+     * revision, snapshots); the outbound row adds the transport-level trace. SET NULL.
+     */
+    #[ORM\ManyToOne(targetEntity: OutboundNotification::class)]
+    #[ORM\JoinColumn(name: 'outbound_notification_id', nullable: true, onDelete: 'SET NULL')]
+    private ?OutboundNotification $outboundNotification = null;
+
     public function getId(): ?int { return $this->id; }
+
+    public function getOutboundNotification(): ?OutboundNotification { return $this->outboundNotification; }
+    public function setOutboundNotification(?OutboundNotification $outbound): static { $this->outboundNotification = $outbound; return $this; }
 
     public function getCommunication(): ?SurgeonAbsenceCommunication { return $this->communication; }
     public function setCommunication(SurgeonAbsenceCommunication $communication): static { $this->communication = $communication; return $this; }

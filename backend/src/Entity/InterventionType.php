@@ -45,6 +45,16 @@ class InterventionType
     private bool $active = true;
 
     /**
+     * D-178 — le manager autorise ce type à être encodé « Aucune firme » (Catalogue ›
+     * Interventions). Ne s'applique qu'aux NOUVEAUX encodages (création, correction du type
+     * ou de la firme, résolution d'une demande) : une intervention déjà enregistrée sans firme
+     * (MissionIntervention::$withoutFirm) garde sa validité si l'autorisation est retirée.
+     */
+    #[ORM\Column(options: ['default' => false])]
+    #[Groups(['intervention_type:read'])]
+    private bool $allowedWithoutFirm = false;
+
+    /**
      * Task 11 — non-null uniquement sur le type SOURCE d'une fusion explicite
      * (InterventionTypeMergeService::merge()). Le type source n'est jamais supprimé :
      * ses PricingRule/FirmServiceOffering historiques non réassignés (voir le service)
@@ -112,6 +122,17 @@ class InterventionType
     public function setActive(bool $active): static
     {
         $this->active = $active;
+        return $this;
+    }
+
+    public function isAllowedWithoutFirm(): bool
+    {
+        return $this->allowedWithoutFirm;
+    }
+
+    public function setAllowedWithoutFirm(bool $allowedWithoutFirm): static
+    {
+        $this->allowedWithoutFirm = $allowedWithoutFirm;
         return $this;
     }
 

@@ -49,6 +49,7 @@ final class EncodingTrackingController extends AbstractController
         $filter = $this->parser->parseFilter($request);
         $missionType = $this->parser->parseMissionType($request);
         $states = $this->parser->parseEncodingStates($request);
+        $includeCancelled = $this->parser->parseIncludeCancelled($request);
         ['page' => $page, 'limit' => $limit] = $this->parser->parsePagination($request);
 
         // Un instant unique partagé par le résumé et la liste : deux appels à "maintenant"
@@ -56,7 +57,8 @@ final class EncodingTrackingController extends AbstractController
         $now = new \DateTimeImmutable();
 
         $summary = $this->service->summarize($filter, $missionType, $now);
-        $result = $this->service->list($filter, $page, $limit, $states, $missionType, $now);
+        // D-184 — le résumé exclut toujours les annulées ; la liste seulement par défaut.
+        $result = $this->service->list($filter, $page, $limit, $states, $missionType, $now, $includeCancelled);
 
         return $this->json([
             'period' => [
@@ -68,6 +70,8 @@ final class EncodingTrackingController extends AbstractController
             'total' => $result['total'],
             'page' => $result['page'],
             'limit' => $result['limit'],
+            'includeCancelled' => $includeCancelled,
+            'cancelledCount' => $this->service->countCancelled($filter, $missionType),
         ]);
     }
 
@@ -109,6 +113,25 @@ final class EncodingTrackingController extends AbstractController
         return $this->json(['count' => $this->service->countPendingValidation()]);
     }
 
+    /**
+     * D-138 — détail du statut FINANCE d'une mission pour le tiroir du suivi : même état que
+     * la liste, et en ANOMALY chaque anomalie du dernier calcul échoué, expliquée et
+     * localisée (intervention / ligne de matériel / firme), avec l'action de résolution.
+     * Lecture seule : ne relance jamais le moteur.
+     */
+    #[Route('/missions/{missionId}/financial-anomalies', name: 'api_encoding_tracking_financial_anomalies', methods: ['GET'], requirements: ['missionId' => '\d+'])]
+    public function financialAnomalies(int $missionId): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+
+        $detail = $this->service->explainFinancialState($missionId);
+        if ($detail === null) {
+            throw $this->createNotFoundException('Mission not found.');
+        }
+
+        return $this->json($detail);
+    }
+
     /** @return array<string, mixed> */
     private function serializeSummary(EncodingTrackingSummary $summary): array
     {
@@ -122,6 +145,7 @@ final class EncodingTrackingController extends AbstractController
             'validated' => $summary->validated,
             'locked' => $summary->locked,
             'notApplicable' => $summary->notApplicable,
+            'notDeclared' => $summary->notDeclared,
             'staleInProgress' => $summary->staleInProgress,
             'financialAnomalies' => $summary->financialAnomalies,
             // Dérivés exposés explicitement : le frontend ne doit jamais les recomposer,
@@ -147,6 +171,14 @@ final class EncodingTrackingController extends AbstractController
             'instrumentist' => $item->instrumentistId !== null
                 ? ['id' => $item->instrumentistId, 'name' => $item->instrumentistName, 'photoPath' => $item->instrumentistPhotoPath]
                 : null,
+            // D-155 — « Sans instrumentiste — activité déclarée par … » (null pour une mission classique).
+            'executedWithoutInstrumentist' => $item->executedWithoutInstrumentist
+                ? ['declaredByName' => $item->executedWithoutInstrumentistByName]
+                : null,
+            // D-171 — auteur de la dernière soumission (null tant que rien n'est soumis).
+            'submittedBy' => $item->submittedByName !== null
+                ? ['name' => $item->submittedByName, 'role' => $item->submittedByRole]
+                : null,
             'surgeon' => $item->surgeonId !== null
                 ? ['id' => $item->surgeonId, 'name' => $item->surgeonName, 'photoPath' => $item->surgeonPhotoPath]
                 : null,
@@ -170,11 +202,24 @@ final class EncodingTrackingController extends AbstractController
                 // EncodingTrackingSummary::staleInProgress, exposée par mission pour la
                 // vue "À traiter" (ajouté lors de l'intégration frontend, D-118).
                 'isStale' => $item->isStale,
+                // D-143 — alerte J+4 envoyée aux managers, visible jusqu'à la soumission.
+                'escalatedAt' => $item->escalatedAt?->format(\DateTimeInterface::ATOM),
             ],
             'financial' => [
                 'state' => $item->financialState->value,
                 'label' => $item->financialState->label(),
                 'isBlocking' => $item->financialState->isBlocking(),
+                // D-138 — motifs de l'anomalie (vide hors ANOMALY) : la liste explique
+                // « Anomalie » sans que le frontend ne déduise rien.
+                'anomalyCount' => array_sum(array_column($item->financialAnomalyReasons, 'count')),
+                'anomalyReasons' => $item->financialAnomalyReasons,
+            ],
+            // D-156 — prestation regroupée multi-salles (null si la mission est seule) : un total
+            // « planifié » compte chaque prestation une fois (union), jamais la somme des salles.
+            'prestation' => $item->prestationKey === null ? null : [
+                'key' => $item->prestationKey,
+                'missionIds' => $item->prestationMissionIds,
+                'plannedUnionMinutes' => $item->prestationPlannedUnionMinutes,
             ],
         ];
     }

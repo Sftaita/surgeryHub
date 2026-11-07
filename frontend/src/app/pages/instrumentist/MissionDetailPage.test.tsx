@@ -6,11 +6,12 @@ import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { MissionDetailContent } from "./MissionDetailPage";
 
 const apiGetMock = vi.fn();
+const apiPostMock = vi.fn().mockResolvedValue({ data: {} });
 
 vi.mock("../../api/apiClient", () => ({
   apiClient: {
     get: (...args: unknown[]) => apiGetMock(...args),
-    post: vi.fn().mockResolvedValue({ data: {} }),
+    post: (...args: unknown[]) => apiPostMock(...args),
     patch: vi.fn().mockResolvedValue({ data: {} }),
   },
 }));
@@ -85,7 +86,7 @@ describe("MissionDetailPage (instrumentiste) — heures prestées (source de vé
     mockRoutes(baseMission(), executionInfo({ hasExecutionRecord: false }));
     renderPage();
 
-    expect(await screen.findByText("Non renseigné")).toBeInTheDocument();
+    expect(await screen.findByText("Non renseignées")).toBeInTheDocument();
   });
 
   it("affiche les heures réellement enregistrées, au même format que l'écran d'encodage", async () => {
@@ -93,7 +94,7 @@ describe("MissionDetailPage (instrumentiste) — heures prestées (source de vé
     renderPage();
 
     expect(await screen.findByText("4.5 h")).toBeInTheDocument();
-    expect(screen.queryByText("Non renseigné")).not.toBeInTheDocument();
+    expect(screen.queryByText("Non renseignées")).not.toBeInTheDocument();
   });
 });
 
@@ -247,5 +248,97 @@ describe("MissionDetailPage — régression instrumentiste (canEncoding priorita
     expect(screen.getByText("Gérer")).toBeInTheDocument();
     expect(screen.queryByText("Encodage de l'intervention")).not.toBeInTheDocument();
     expect(screen.queryByText("Voir")).not.toBeInTheDocument();
+  });
+});
+
+describe("MissionDetailPage — instrumentiste, mission validée (D-146 bis)", () => {
+  it("le CTA de consultation reste dans l'espace instrumentiste (/app/i/missions/:id/encoding)", async () => {
+    mockRoutes(baseMission({ status: "VALIDATED", allowedActions: ["view_encoding"] }), executionInfo());
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <MemoryRouter initialEntries={["/app/i/missions/690"]}>
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/app/i/missions/:id" element={<MissionDetailContent missionId={MISSION_ID} />} />
+            <Route path="/app/i/missions/:id/encoding" element={<div>Instrumentist encoding screen</div>} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    const user = userEvent.setup();
+    expect(await screen.findByText("Consultez vos heures prestées, interventions et matériel encodés (lecture seule).")).toBeInTheDocument();
+    expect(screen.queryByText("Encoder la mission")).not.toBeInTheDocument();
+    await user.click(screen.getByText("Encodage de l'intervention"));
+
+    expect(await screen.findByText("Instrumentist encoding screen")).toBeInTheDocument();
+  });
+});
+
+describe("MissionDetailPage — espace chirurgien : encodage et activité sans instrumentiste (D-154 / D-155)", () => {
+  function renderSurgeonAt(mission: any, execution: any = executionInfo()) {
+    mockRoutes(mission, execution);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    return render(
+      <MemoryRouter initialEntries={[`/app/s/missions/${MISSION_ID}`]}>
+        <QueryClientProvider client={client}>
+          <Routes>
+            <Route path="/app/s/missions/:id" element={<MissionDetailContent missionId={MISSION_ID} />} />
+            <Route path="/app/s/missions/:id/encoding" element={<div>Surgeon encoding screen</div>} />
+            <Route path="/app/i/missions/:id/encoding" element={<div>Instrumentist encoding screen</div>} />
+          </Routes>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  it("D-154 — « Encoder la mission » mène le chirurgien à SON écran d'encodage, jamais à celui de l'instrumentiste", async () => {
+    const user = userEvent.setup();
+    renderSurgeonAt(baseMission({ status: "ENCODING_IN_PROGRESS", allowedActions: ["view_encoding", "edit_encoding"] }));
+
+    await user.click(await screen.findByRole("button", { name: "Encoder la mission" }));
+
+    expect(await screen.findByText("Surgeon encoding screen")).toBeInTheDocument();
+    expect(screen.queryByText("Instrumentist encoding screen")).toBeNull();
+  });
+
+  it("D-155 — déclare l'activité réalisée sans instrumentiste après confirmation, puis ouvre l'encodage", async () => {
+    const user = userEvent.setup();
+    apiPostMock.mockResolvedValue({ data: baseMission({ status: "ENCODING_IN_PROGRESS" }) });
+    renderSurgeonAt(baseMission({ status: "OPEN", instrumentist: null, allowedActions: ["view", "declare_executed_without_instrumentist"] }));
+
+    await user.click(await screen.findByTestId("declare-without-instrumentist"));
+    expect(await screen.findByText(/Aucune heure ni aucune prestation d'instrumentiste/)).toBeInTheDocument();
+    await user.click(screen.getByTestId("confirm-declare-without-instrumentist"));
+
+    expect(apiPostMock).toHaveBeenCalledWith(`/api/missions/${MISSION_ID}/declare-executed-without-instrumentist`, {});
+    expect(await screen.findByText("Surgeon encoding screen")).toBeInTheDocument();
+  });
+
+  it("D-172 — encodage soumis : « en attente de validation », correction encore possible, plus de « Terminer l'encodage »", async () => {
+    renderSurgeonAt(baseMission({
+      status: "SUBMITTED", instrumentist: null, allowedActions: ["view_encoding", "edit_encoding", "submit"],
+      executedWithoutInstrumentist: { declaredAt: "2026-07-20T12:00:00Z", declaredByName: "Jean Dupont" },
+    }));
+    expect(await screen.findByText(/Encodage soumis — en attente de validation par le manager/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Modifier l'encodage" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Encoder la mission" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Terminer l'encodage" })).toBeNull();
+  });
+
+  it("D-155 — sans le droit servi par le backend, aucune déclaration n'est proposée", async () => {
+    renderSurgeonAt(baseMission({ status: "OPEN", instrumentist: null, allowedActions: ["view"] }));
+    expect(await screen.findByText("CHU Test")).toBeInTheDocument();
+    expect(screen.queryByTestId("declare-without-instrumentist")).toBeNull();
+  });
+
+  it("D-155 — activité déclarée : « Sans instrumentiste » et aucune heure, jamais « non renseignées »", async () => {
+    renderSurgeonAt(baseMission({
+      status: "ENCODING_IN_PROGRESS", instrumentist: null, allowedActions: ["view_encoding", "edit_encoding", "submit"],
+      executedWithoutInstrumentist: { declaredAt: "2026-07-20T12:00:00Z", declaredByName: "Jean Dupont" },
+    }));
+
+    expect(await screen.findByText("Sans instrumentiste — activité déclarée par Jean Dupont")).toBeInTheDocument();
+    expect(screen.getByText("Aucune — activité sans instrumentiste")).toBeInTheDocument();
   });
 });

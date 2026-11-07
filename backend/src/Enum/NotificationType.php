@@ -27,6 +27,15 @@ enum NotificationType: string
     // ── Post-deploy lifecycle notifications (Batch 15A / future) ─────────────
     case PLANNING_MISSION_REASSIGNED = 'PLANNING_MISSION_REASSIGNED';
     case PLANNING_MISSION_CANCELLED  = 'PLANNING_MISSION_CANCELLED';
+    // H2 (D-127/D-128) — to the instrumentist a manager deliberately removed from a
+    // published mission (ASSIGNED → OPEN): her planning changed. Distinct from
+    // PLANNING_MISSION_REASSIGNED (someone else was put in her place) and from
+    // OPEN_MISSION_AVAILABLE (a pool offer, which she must NOT receive for this episode).
+    case PLANNING_MISSION_RELEASED   = 'PLANNING_MISSION_RELEASED';
+    // H3 (D-129) — personalized recap of a Planning V2 Modification batch (only the
+    // recipient's own added / removed / modified missions, with the updated planning PDF).
+    // Formerly an untracked SendBillingEmailMessage; now dispatched like any notification.
+    case PLANNING_CHANGE_SUMMARY     = 'PLANNING_CHANGE_SUMMARY';
     case PLANNING_MISSION_ADDED      = 'PLANNING_MISSION_ADDED';
     case PLANNING_MISSION_UPDATED    = 'PLANNING_MISSION_UPDATED';
 
@@ -94,7 +103,12 @@ enum NotificationType: string
     // instrumentists with NO push subscription at all — never a duplicate of the push that
     // already went out to everyone else. Grouped: one email per recipient per
     // absence-processing run, covering every mission they're eligible for in that run.
-    case ABSENCE_POOL_MISSION_AVAILABLE = 'ABSENCE_POOL_MISSION_AVAILABLE'; // to eligible instrumentists without push
+    //
+    // RETIRED by H3 (D-129): nothing produces it any more — the absence's released missions
+    // are solicited by OpenMissionPoolNotifier like every other opening (email for everyone
+    // per preferences, not only for people without push). Kept so the history (feed items,
+    // outbound rows) stays readable; hidden from the preferences list (see isRetired()).
+    case ABSENCE_POOL_MISSION_AVAILABLE = 'ABSENCE_POOL_MISSION_AVAILABLE'; // retired — historical rows only
 
     // D-110 (J-14) — a Mission stayed OPEN into the 14-day-before-start window with no
     // escalation yet sent for the current episode. One per episode (never a daily repeat —
@@ -184,4 +198,192 @@ enum NotificationType: string
     // OPEN_MISSION_AVAILABLE. In-app + push selon préférences (même pipeline que
     // MissionLifecycleChangedMessageHandler), email=false par défaut. 27 caractères (< 32).
     case ROOM_TAKEOVER_MISSION_OFFER = 'ROOM_TAKEOVER_MISSION_OFFER';
+
+    // ── Salle opératoire disponible (D-161) ──────────────────────────────────
+    // Aux chirurgiens autorisés à reprendre la salle (affiliés au site, sauf le chirurgien
+    // absent) quand un créneau `ReleasedOperatingRoomSlot` vient réellement d'être créé.
+    // Remplace l'e-mail automatique « Libération de salle » (D-114) : push par défaut, e-mail
+    // uniquement si le chirurgien l'active dans ses préférences. 19 caractères (< 32).
+    case ROOM_SLOT_AVAILABLE = 'ROOM_SLOT_AVAILABLE';
+
+    // ── Réaffectation par un manager d'une mission publiée (D-181) ───────────
+    // À l'ancienne instrumentiste (mission retirée), à la nouvelle (mission attribuée) et au
+    // chirurgien (changement d'instrumentiste) : UNE notification par destinataire et par
+    // opération (BATCH, un seul e-mail récapitulatif même pour plusieurs missions ou plusieurs
+    // rôles). Opérationnelle : e-mail activé par défaut. Jamais le commentaire interne du
+    // manager ni un motif. 27 caractères (< 32).
+    case MISSION_REASSIGNMENT_NOTICE = 'MISSION_REASSIGNMENT_NOTICE';
+
+    // ── H5a — email flows migrated to NotificationDispatcher ─────────────────
+    // Encoding reminder D+1 (D-083) — RETIRED by D-143 (replaced by ENCODING_REMINDER,
+    // J+1/J+2/J+4). Value kept so the existing outbound / dispatch history keeps its type.
+    case ENCODING_REMINDER_D1 = 'ENCODING_REMINDER_D1';
+
+    // Absence reminders sent by a manager (D-051): one individual email per selected person.
+    // Explicit one-off manager action → MANDATORY email (see emailIsMandatory()).
+    case ABSENCE_REQUEST_MISSING = 'ABSENCE_REQUEST_MISSING';
+    case ABSENCE_ENCODED_RECAP   = 'ABSENCE_ENCODED_RECAP';
+
+    // Identity / security (category C) — never subject to business preferences.
+    case ACCOUNT_INVITATION    = 'ACCOUNT_INVITATION';
+    case ACCOUNT_EMAIL_CHANGED = 'ACCOUNT_EMAIL_CHANGED';
+
+    // H5b (D-132) — the mission declaration flow (Lot B3/B4): formerly in-app rows written
+    // directly (no preference, no trace). Same eventType values, so existing feed items keep
+    // reading the same; now through NotificationDispatcher (in-app, no email / push content).
+    case MISSION_DECLARED          = 'MISSION_DECLARED';          // to managers / admins
+    case MISSION_DECLARED_APPROVED = 'MISSION_DECLARED_APPROVED'; // to the declaring instrumentist
+    case MISSION_DECLARED_REJECTED = 'MISSION_DECLARED_REJECTED'; // to the declaring instrumentist
+
+    // ── Encodage progressif, relances et retour chirurgien (D-143) ────────────
+    // ENCODING_REMINDER   → instrumentiste : relance J+1/J+2/J+4 et relance manuelle (centre
+    //                       de notifications ; push / e-mail décidés par EncodingReminderService
+    //                       à travers NotificationDispatcher).
+    // ENCODING_ESCALATION → managers/admins : encodage toujours en attente à J+4.
+    // Ces deux-là sont des obligations de service (validation, rémunération) : jamais
+    // configurables (isOperationalObligation()), absentes de l'écran des préférences.
+    // ENCODING_SUBMITTED  → chirurgien : l'encodage de sa mission vient d'être soumis
+    //                       (ou re-soumis après correction) — lecture, aucune validation exigée.
+    // ENCODING_ANOMALY_INSTRUMENTIST → instrumentiste : le chirurgien a signalé un point à
+    //                       vérifier sur son encodage (D-100), la coordination le suit.
+    case ENCODING_REMINDER   = 'ENCODING_REMINDER';
+    case ENCODING_ESCALATION = 'ENCODING_ESCALATION';
+    case ENCODING_SUBMITTED  = 'ENCODING_SUBMITTED';
+    case ENCODING_ANOMALY_INSTRUMENTIST = 'ENCODING_ANOMALY_INSTRUMENTIST'; // 30 chars
+    // D-148 — instrumentiste : un manager a renvoyé son encodage en correction (SUBMITTED) ou
+    //                       l'a rouvert (VALIDATED), avec le motif. Mêmes canaux que
+    //                       ENCODING_ANOMALY_INSTRUMENTIST (in-app + push selon préférences).
+    case ENCODING_CORRECTION_REQUESTED = 'ENCODING_CORRECTION_REQUESTED'; // 29 chars
+    // D-154 — instrumentiste : le chirurgien de la mission a complété ou corrigé les
+    //                       interventions / le matériel de son encodage. Une notification par
+    //                       série de modifications (regroupées, jamais une par clic) ; in-app
+    //                       par défaut, push et e-mail selon ses préférences.
+    case ENCODING_UPDATED_BY_SURGEON = 'ENCODING_UPDATED_BY_SURGEON'; // 27 chars
+    // D-171 — instrumentiste : un manager a repris son encodage non soumis, l'a terminé et validé
+    //                       (données conservées ; heures prestées manquantes jamais inventées,
+    //                       encore à déclarer). Mêmes canaux que ENCODING_CORRECTION_REQUESTED.
+    case ENCODING_TAKEN_OVER = 'ENCODING_TAKEN_OVER';
+    // D-136 — « Rappeler les heures » (manager → instrumentiste), auparavant une chaîne libre
+    // sur les lignes outbound ; même valeur pour que l'historique existant garde son type.
+    case MISSION_HOURS_REMINDER = 'MISSION_HOURS_REMINDER';
+
+    // ── Refus d'affectation par le chirurgien (D-151) ─────────────────────────
+    // ASSIGNMENT_REFUSED_BY_SURGEON → managers opérationnels : la véritable origine d'une
+    //                       désaffectation (le chirurgien), que l'instrumentiste ne voit jamais
+    //                       (elle reçoit PLANNING_MISSION_RELEASED, formulation neutre).
+    // ASSIGNMENT_REVIEW_REQUESTED   → managers opérationnels : le chirurgien demande une
+    //                       intervention sur l'affectation (délai de refus écoulé, mission
+    //                       imminente ou affectation non refusable). Aucun changement d'état.
+    case ASSIGNMENT_REFUSED_BY_SURGEON = 'ASSIGNMENT_REFUSED_BY_SURGEON'; // 29 chars
+    case ASSIGNMENT_REVIEW_REQUESTED   = 'ASSIGNMENT_REVIEW_REQUESTED';   // 27 chars
+
+    /**
+     * H5a — types whose email is sent whatever the recipient's preferences
+     * (NotificationEmailPolicy::MANDATORY): identity / security emails and explicit one-off
+     * manager actions addressed to one person. Never offered as a preference switch.
+     */
+    public function emailIsMandatory(): bool
+    {
+        return in_array($this, [
+            self::PLANNING_RESENT_MANUAL, self::ABSENCE_REQUEST_MISSING, self::ABSENCE_ENCODED_RECAP,
+            self::ACCOUNT_INVITATION, self::ACCOUNT_EMAIL_CHANGED,
+        ], true);
+    }
+
+    /**
+     * D-143 — notifications opérationnelles d'encodage : délivrées même si l'utilisateur n'a
+     * jamais activé le push (repli e-mail), jamais coupables par une préférence.
+     */
+    public function isOperationalObligation(): bool
+    {
+        return in_array($this, [self::ENCODING_REMINDER, self::ENCODING_ESCALATION, self::MISSION_HOURS_REMINDER], true);
+    }
+
+    public const AUDIENCE_SURGEON = 'ROLE_SURGEON';
+    public const AUDIENCE_INSTRUMENTIST = 'ROLE_INSTRUMENTIST';
+    public const AUDIENCE_MANAGER = 'ROLE_MANAGER';
+
+    /**
+     * Roles that actually RECEIVE this type, as decided by the code that sends it (recipient
+     * chosen as the mission's surgeon / instrumentist, the operational managers, the creator of
+     * a catalogue request…). Drives which switches the preferences screen offers to a person
+     * (MeController) — never who receives a notification. ROLE_ADMIN counts as a manager.
+     * Types no code produces any more keep the audience their name and history describe.
+     *
+     * @return list<string>
+     */
+    public function audienceRoles(): array
+    {
+        $s = self::AUDIENCE_SURGEON;
+        $i = self::AUDIENCE_INSTRUMENTIST;
+        $m = self::AUDIENCE_MANAGER;
+
+        return match ($this) {
+            self::PLANNING_ALERT, self::PLANNING_DEPLOYED_MANAGER, self::MISSION_OFFER_DECLINED,
+            self::ABSENCE_SELF_DECLARED, self::ABSENCE_OCCURRENCE_CANCELLED_MGR, self::ABSENCE_OCCURRENCE_RESTORED_MGR,
+            self::MISSION_RESTORED_MGR, self::ABSENCE_IMPACT_SUMMARY, self::CATALOGUE_REQUEST_CREATED,
+            self::SURGEON_MISSION_REQUEST_CREATED, self::ENCODING_ANOMALY_REPORTED, self::MISSION_DECLARED,
+            self::ENCODING_ESCALATION, self::ASSIGNMENT_REFUSED_BY_SURGEON, self::ASSIGNMENT_REVIEW_REQUESTED => [$m],
+
+            self::PLANNING_DEPLOYED_SURGEON, self::SURGEON_POST_COVERED, self::SURGEON_POST_UNCOVERED,
+            self::ABSENCE_SURGEON_MISSION_OPENED, self::ABSENCE_OCCURRENCE_UNCOVERED, self::MISSION_UNCOVERED_ESCALATION,
+            self::SURGEON_MISSION_OPEN_PUBLISHED, self::SURGEON_MISSION_REQUEST_ACCEPTED, self::SURGEON_MISSION_REQUEST_REJECTED,
+            self::ENCODING_ANOMALY_RESOLVED, self::ENCODING_SUBMITTED, self::ROOM_SLOT_AVAILABLE => [$s],
+
+            self::PLANNING_DEPLOYED_INSTRUMENTIST, self::OPEN_MISSION_AVAILABLE, self::PLANNING_MISSION_REASSIGNED,
+            self::PLANNING_MISSION_RELEASED, self::MISSION_OFFERED, self::MISSION_ASSIGNED_DIRECTLY,
+            self::ABSENCE_INSTRUMENTIST_RELEASED, self::ABSENCE_MISSION_CANCELLED, self::ABSENCE_INSTRUMENTIST_REASSIGNED,
+            self::ABSENCE_OCCURRENCE_CANCELLED, self::ABSENCE_POOL_MISSION_AVAILABLE, self::ABSENCE_OCCURRENCE_RESTORED,
+            self::ROOM_TAKEOVER_MISSION_OFFER, self::ENCODING_REMINDER_D1, self::MISSION_DECLARED_APPROVED,
+            self::MISSION_DECLARED_REJECTED, self::ENCODING_REMINDER, self::ENCODING_ANOMALY_INSTRUMENTIST,
+            self::ENCODING_UPDATED_BY_SURGEON, self::MISSION_HOURS_REMINDER, self::ENCODING_TAKEN_OVER => [$i],
+
+            self::PLANNING_MISSION_CANCELLED, self::PLANNING_CHANGE_SUMMARY, self::PLANNING_MISSION_ADDED,
+            self::MISSION_REASSIGNMENT_NOTICE,
+            self::PLANNING_MISSION_UPDATED, self::MISSION_RESTORED, self::PLANNING_RESENT_MANUAL,
+            self::ABSENCE_REQUEST_MISSING, self::ABSENCE_ENCODED_RECAP => [$s, $i],
+
+            // D-155 — the surgeon of an activity executed without instrumentist encodes it.
+            self::ENCODING_CORRECTION_REQUESTED => [$i, $s],
+
+            // The creator of the request: an instrumentist, the mission's surgeon (D-154) or a manager (D-153).
+            self::CATALOGUE_REQUEST_RESOLVED, self::CATALOGUE_REQUEST_IGNORED => [$i, $s, $m],
+
+            self::ACCOUNT_INVITATION, self::ACCOUNT_EMAIL_CHANGED => [$s, $i, $m],
+        };
+    }
+
+    /** Does a person with these roles receive this type (ROLE_ADMIN counts as a manager)? */
+    public function concernsRoles(array $roles): bool
+    {
+        if (in_array('ROLE_ADMIN', $roles, true)) {
+            $roles[] = self::AUDIENCE_MANAGER;
+        }
+
+        return array_intersect($this->audienceRoles(), $roles) !== [];
+    }
+
+    /** Offered in the person's notification preferences (a switch must change something). */
+    public function isConfigurable(): bool
+    {
+        return !$this->isRetired() && !$this->emailIsMandatory() && !$this->isOperationalObligation();
+    }
+
+    /**
+     * H3 (D-129) — types no code produces any more, kept only so historical rows stay
+     * readable. Never offered as a preference (a switch that changes nothing would lie).
+     * D-143 — ENCODING_REMINDER_D1 replaced by ENCODING_REMINDER.
+     * D-155 (recette) — audited: no active producer for PLANNING_MISSION_ADDED / _UPDATED
+     * (superseded by PLANNING_CHANGE_SUMMARY, H3), ABSENCE_INSTRUMENTIST_RELEASED (never sent
+     * to the absent person, H4) nor the three *_MGR types (replaced by ABSENCE_IMPACT_SUMMARY,
+     * D-105). Hidden from the preferences only: stored rows stay, distribution is unchanged.
+     */
+    public function isRetired(): bool
+    {
+        return in_array($this, [
+            self::ABSENCE_POOL_MISSION_AVAILABLE, self::ENCODING_REMINDER_D1,
+            self::PLANNING_MISSION_ADDED, self::PLANNING_MISSION_UPDATED, self::ABSENCE_INSTRUMENTIST_RELEASED,
+            self::ABSENCE_OCCURRENCE_CANCELLED_MGR, self::ABSENCE_OCCURRENCE_RESTORED_MGR, self::MISSION_RESTORED_MGR,
+        ], true);
+    }
 }

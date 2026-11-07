@@ -18,6 +18,16 @@ vi.mock("../../ui/toast/useToast", () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn() }),
 }));
 
+// D-154 — la section d'encodage réutilisée est couverte par ses propres tests : seul son
+// branchement (droit servi par le backend, jamais de soumission) est vérifié ici.
+const interventionsSectionProps = vi.fn();
+vi.mock("../encoding/components/InterventionsSection", () => ({
+  default: (props: { canEdit: boolean; canSubmit: boolean; missionId: number }) => {
+    interventionsSectionProps(props);
+    return <div data-testid="interventions-section-stub">{props.canEdit ? "editable" : "read-only"}</div>;
+  },
+}));
+
 const MISSION_ID = 741;
 
 function baseMission(overrides: Record<string, any> = {}) {
@@ -214,19 +224,56 @@ describe("SurgeonEncodingPage — état vide", () => {
   });
 });
 
-describe("SurgeonEncodingPage — heures prestées", () => {
-  it("affiche 'Non renseigné' quand aucune saisie n'existe", async () => {
+describe("SurgeonEncodingPage — horaires (D-143)", () => {
+  it("indique que les heures réelles ne sont pas déclarées, sans inventer de plage", async () => {
     mockRoutes(baseMission(), baseEncoding({ entries: [] }), baseExecution({ hasExecutionRecord: false }));
     renderPage();
 
-    expect(await screen.findByText("Non renseigné")).toBeInTheDocument();
+    const summary = await screen.findByTestId("surgeon-hours-summary");
+    expect(summary).toHaveTextContent("Non déclarées");
+    expect(summary).not.toHaveTextContent("Écart");
   });
 
-  it("affiche les heures réellement enregistrées, même format que les autres écrans", async () => {
-    mockRoutes(baseMission(), baseEncoding({ entries: [] }), baseExecution({ hasExecutionRecord: true, actualDurationMinutes: 270 }));
+  it("affiche planifié, presté (début → fin), durée prestée = fin − début et écart — aucune pause (D-146 bis)", async () => {
+    mockRoutes(
+      baseMission({ startAt: "2026-07-05T08:00:00+02:00", endAt: "2026-07-05T16:00:00+02:00" }),
+      baseEncoding({ entries: [] }),
+      baseExecution({
+        hasExecutionRecord: true,
+        actualStartAt: "2026-07-05T07:45:00+02:00",
+        actualEndAt: "2026-07-05T17:15:00+02:00",
+        // Ancienne durée stockée diminuée d'une pause (D-143) : n'est plus prise en compte.
+        actualDurationMinutes: 540,
+      }),
+    );
     renderPage();
 
-    expect(await screen.findByText("4.5 h")).toBeInTheDocument();
+    const summary = await screen.findByTestId("surgeon-hours-summary");
+    expect(summary).toHaveTextContent("08h00 → 16h00");
+    expect(summary).toHaveTextContent("07h45 → 17h15");
+    expect(summary).not.toHaveTextContent("pause");
+    expect(summary).toHaveTextContent("9h30");
+    expect(summary).toHaveTextContent("+1h30 par rapport au planning");
+  });
+});
+
+describe("SurgeonEncodingPage — état de la synthèse (D-143)", () => {
+  it("encodage soumis : date de soumission affichée", async () => {
+    mockRoutes(baseMission({ status: "SUBMITTED", submittedAt: "2026-07-05T18:30:00+02:00" }), baseEncoding({ entries: [] }));
+    renderPage();
+    expect(await screen.findByTestId("surgeon-encoding-state")).toHaveTextContent("Encodage soumis le 05/07/2026");
+  });
+
+  it("brouillon jamais soumis : informations provisoires", async () => {
+    mockRoutes(baseMission({ status: "ENCODING_IN_PROGRESS", submittedAt: null }), baseEncoding({ entries: [] }));
+    renderPage();
+    expect(await screen.findByTestId("surgeon-encoding-state")).toHaveTextContent("informations provisoires");
+  });
+
+  it("correction après soumission : la synthèse n'est jamais présentée comme définitive", async () => {
+    mockRoutes(baseMission({ status: "ENCODING_IN_PROGRESS", submittedAt: "2026-07-05T18:30:00+02:00" }), baseEncoding({ entries: [] }));
+    renderPage();
+    expect(await screen.findByTestId("surgeon-encoding-state")).toHaveTextContent("en cours de correction");
   });
 });
 
@@ -265,5 +312,48 @@ describe("SurgeonEncodingPage — navigation retour", () => {
     await user.click(screen.getByLabelText("Retour"));
 
     expect(await screen.findByText("Mission detail screen")).toBeInTheDocument();
+  });
+});
+
+describe("SurgeonEncodingPage — encodage par le chirurgien (D-154)", () => {
+  it("edit_encoding servi par le backend : section d'encodage existante, modifiable, sans soumission ni heures", async () => {
+    const mission = baseMission({ status: "ENCODING_IN_PROGRESS", allowedActions: ["view_encoding", "edit_encoding"] });
+    mockRoutes(mission, baseEncoding({ entries: [interventionEntry()], catalog: { items: [], firms: [], interventionTypes: [] }, progress: { interventionCount: 1, encodedInterventionCount: 1, materialLineCount: 1 } }));
+    renderPage();
+
+    expect(await screen.findByTestId("interventions-section-stub")).toHaveTextContent("editable");
+    expect(interventionsSectionProps).toHaveBeenLastCalledWith(expect.objectContaining({ missionId: MISSION_ID, canEdit: true, canSubmit: false }));
+    expect(screen.getByTestId("surgeon-encoding-editable")).toHaveTextContent("Les heures prestées restent celles déclarées par l'instrumentiste");
+    // Les heures restent une synthèse en lecture : aucune action d'édition.
+    expect(screen.queryByRole("button", { name: /heures/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /soumettre|valider/i })).toBeNull();
+  });
+
+  it("sans edit_encoding (confrère, mission verrouillée…) : lecture seule inchangée", async () => {
+    mockRoutes(baseMission({ allowedActions: ["view_encoding"] }), baseEncoding({ entries: [interventionEntry()] }));
+    renderPage();
+
+    expect(await screen.findByText("PTG genou droit")).toBeInTheDocument();
+    expect(screen.queryByTestId("interventions-section-stub")).toBeNull();
+    expect(screen.queryByTestId("surgeon-encoding-editable")).toBeNull();
+  });
+});
+
+describe("SurgeonEncodingPage — activité réalisée sans instrumentiste (D-155)", () => {
+  it("le chirurgien encode et soumet lui-même ; aucune synthèse d'heures", async () => {
+    const mission = baseMission({
+      status: "ENCODING_IN_PROGRESS", allowedActions: ["view_encoding", "edit_encoding", "submit"],
+      executedWithoutInstrumentist: { declaredAt: "2026-07-20T12:00:00Z", declaredByName: "Jean Dupont" },
+    });
+    mockRoutes(mission, baseEncoding({ entries: [], catalog: { items: [], firms: [], interventionTypes: [] }, progress: { interventionCount: 0, encodedInterventionCount: 0, materialLineCount: 0 } }));
+    renderPage();
+
+    expect(await screen.findByTestId("interventions-section-stub")).toHaveTextContent("editable");
+    expect(interventionsSectionProps).toHaveBeenLastCalledWith(expect.objectContaining({ canEdit: true, canSubmit: true, submitLabel: "Soumettre l'encodage" }));
+    expect(screen.getByTestId("surgeon-encoding-draft")).toHaveTextContent("rien n'est transmis au manager avant « Soumettre l'encodage »");
+    expect(screen.getByTestId("surgeon-encoding-state")).toHaveTextContent("Activité réalisée sans instrumentiste");
+    expect(screen.getByTestId("surgeon-encoding-without-instrumentist")).toBeInTheDocument();
+    expect(screen.queryByTestId("surgeon-encoding-editable")).toBeNull();
+    expect(screen.queryByText(/Heures prestées/i)).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ use App\Entity\Mission;
 use App\Entity\User;
 use App\Enum\CatalogueRequestKind;
 use App\Enum\NotificationType;
+use App\Notification\ReleasedRoomAvailabilityNotifier;
 
 /**
  * Point 4 (audit UX) — cible de navigation structurée pour une notification, calculée
@@ -32,6 +33,7 @@ final class NotificationTargetResolver
         User $recipient,
         ?int $requestId = null,
         ?CatalogueRequestKind $kind = null,
+        ?int $roomSlotId = null,
     ): ?string {
         $roles = $recipient->getRoles();
         $isManager = in_array('ROLE_MANAGER', $roles, true) || in_array('ROLE_ADMIN', $roles, true);
@@ -80,6 +82,35 @@ final class NotificationTargetResolver
             return '/app/i/offers';
         }
 
+        // D-161 — une salle disponible se reprend depuis « Salles disponibles », ouverte sur le
+        // créneau annoncé (le serveur y revérifie qu'il est toujours disponible).
+        if ($type === NotificationType::ROOM_SLOT_AVAILABLE && $isSurgeon) {
+            return ReleasedRoomAvailabilityNotifier::roomsPath($roomSlotId);
+        }
+
+        // D-143 — une relance ou un signalement mène directement à l'écran qui permet d'agir :
+        // l'encodage pour l'instrumentiste et le chirurgien, le suivi des encodages (tiroir de
+        // la mission ouvert) pour le manager.
+        if ($mission !== null) {
+            if ($type === NotificationType::ENCODING_REMINDER && $isInstrumentist) {
+                return sprintf('/app/i/missions/%d/encoding', $mission->getId());
+            }
+            if ($type === NotificationType::ENCODING_ESCALATION && $isManager) {
+                return sprintf('/app/m/billing/encodings?missionId=%d', $mission->getId());
+            }
+            // D-155 — renvoi en correction d'une activité déclarée sans instrumentiste : son encodage chirurgien.
+            if (in_array($type, [NotificationType::ENCODING_SUBMITTED, NotificationType::ENCODING_ANOMALY_RESOLVED, NotificationType::ENCODING_CORRECTION_REQUESTED], true) && $isSurgeon) {
+                return sprintf('/app/s/missions/%d/encoding', $mission->getId());
+            }
+            if (in_array($type, [NotificationType::ENCODING_ANOMALY_INSTRUMENTIST, NotificationType::ENCODING_CORRECTION_REQUESTED, NotificationType::ENCODING_UPDATED_BY_SURGEON, NotificationType::ENCODING_TAKEN_OVER], true) && $isInstrumentist) {
+                return sprintf('/app/i/missions/%d/encoding', $mission->getId());
+            }
+        }
+
+        // H2 (D-127) / D-151 — the instrumentist no longer holds this mission: she opens the
+        // minimal "Affectation annulée" view of it (MissionVoter::VIEW_FORMER_ASSIGNMENT), the
+        // generic instrumentist route below.
+
         if ($mission !== null) {
             if ($isManager) {
                 return '/app/m/missions/' . $mission->getId();
@@ -99,6 +130,7 @@ final class NotificationTargetResolver
             NotificationType::PLANNING_DEPLOYED_SURGEON => '/app/s/planning',
             NotificationType::OPEN_MISSION_AVAILABLE => '/app/i/offers',
             NotificationType::PLANNING_ALERT => $isManager ? '/app/m/planning/v2' : null,
+            NotificationType::PLANNING_CHANGE_SUMMARY => $isInstrumentist ? '/app/i/planning' : ($isSurgeon ? '/app/s/planning' : null),
             NotificationType::PLANNING_RESENT_MANUAL => $isManager ? '/app/m/missions' : ($isInstrumentist ? '/app/i/planning' : ($isSurgeon ? '/app/s/planning' : null)),
             // Purement informatif ou sans cible connue aujourd'hui — jamais une route
             // devinée. Le frontend traite `null` comme non cliquable.

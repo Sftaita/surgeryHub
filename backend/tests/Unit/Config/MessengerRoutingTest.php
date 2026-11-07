@@ -6,7 +6,7 @@ use App\Message\MissionLifecycleChangedMessage;
 use App\Message\PlanningAlertRaisedMessage;
 use App\Message\PlanningDeployPdfsMessage;
 use App\Message\SendBillingEmailMessage;
-use App\Message\SurgeonAbsenceOccurrencesNeutralizedMessage;
+use App\Message\AbsenceImpactNotificationMessage;
 use App\Message\PlanningRestoredAfterAbsenceMessage;
 use App\Message\AbsenceImpactSummaryMessage;
 use PHPUnit\Framework\TestCase;
@@ -125,24 +125,24 @@ class MessengerRoutingTest extends TestCase
         );
     }
 
-    // ── SurgeonAbsenceOccurrencesNeutralizedMessage (Lot 3, D-103) ────────────
+    // ── AbsenceImpactNotificationMessage (H4, D-130) ──────────────────────
 
     /**
      * Dispatched from AbsenceController/SelfAbsenceController's create()/update() — DB
      * writes (PlanningOccurrenceException/AuditEvent) plus a per-recipient email fan-out
      * must not run synchronously in the HTTP request that recorded the absence.
      */
-    public function test_surgeon_absence_occurrences_neutralized_message_is_routed_to_async(): void
+    public function test_absence_impact_notification_message_is_routed_to_async(): void
     {
         $this->assertArrayHasKey(
-            SurgeonAbsenceOccurrencesNeutralizedMessage::class,
+            AbsenceImpactNotificationMessage::class,
             self::$routing,
-            'SurgeonAbsenceOccurrencesNeutralizedMessage has no transport routing — it would run synchronously in the HTTP request that created/updated the absence.'
+            'AbsenceImpactNotificationMessage has no transport routing — it would run synchronously in the HTTP request that created/updated the absence.'
         );
         $this->assertSame(
             'async',
-            self::$routing[SurgeonAbsenceOccurrencesNeutralizedMessage::class],
-            'SurgeonAbsenceOccurrencesNeutralizedMessage must be routed to "async".'
+            self::$routing[AbsenceImpactNotificationMessage::class],
+            'AbsenceImpactNotificationMessage must be routed to "async".'
         );
     }
 

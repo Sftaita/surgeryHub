@@ -223,6 +223,43 @@ describe("OffersPage — demande nominative du manager (D-125)", () => {
   });
 });
 
+describe("OffersPage — libellés : demande du manager vs priorité de reprise de salle (D-177)", () => {
+  const ordinary = () => makeMission({ id: 77, allowedActions: ["view", "claim", "decline_offer"], targetedOffer: { status: "PENDING", instrumentist: null, offeredAt: null, declinedAt: null, priority: false } });
+  const priority = () => makeMission({ id: 78, allowedActions: ["view", "claim", "decline_offer"], targetedOffer: { status: "PENDING", instrumentist: null, offeredAt: null, declinedAt: null, priority: true, expiresAt: "2026-07-04T10:00:00Z" } });
+
+  it("demande ordinaire : proposée par le manager, qui est prévenu du refus", async () => {
+    fetchOffersMock.mockResolvedValue({ items: [ordinary()] });
+    declineMissionOfferMock.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText("Le manager vous propose cette mission personnellement.")).toBeInTheDocument();
+    expect(screen.queryByText(/Reprise de salle/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refuser" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Le manager sera prévenu et pourra la proposer à quelqu'un d'autre.");
+    await user.click(within(dialog).getByRole("button", { name: "Refuser" }));
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Demande refusée. Le manager est prévenu."));
+  });
+
+  it("priorité de reprise : jamais présentée comme une demande du manager ; le refus ouvre la mission aux autres", async () => {
+    fetchOffersMock.mockResolvedValue({ items: [priority()] });
+    declineMissionOfferMock.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText("Reprise de salle : cette mission vous est proposée en priorité, comme instrumentiste habituel(le) de ce créneau.")).toBeInTheDocument();
+    expect(screen.queryByText("Le manager vous propose cette mission personnellement.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refuser" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Votre priorité prend fin : la mission sera proposée immédiatement aux autres instrumentistes éligibles.");
+    expect(dialog).not.toHaveTextContent("Le manager sera prévenu");
+    await user.click(within(dialog).getByRole("button", { name: "Refuser" }));
+    await waitFor(() => expect(declineMissionOfferMock).toHaveBeenCalledWith(78));
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Priorité refusée. La mission est proposée aux autres instrumentistes."));
+  });
+});
+
 describe("OffersPage — remise à zéro du badge non-lu (Lot 6, audit PWA/mobile/admin 2026-07-29)", () => {
   it("appelle markOffersSeen après un chargement réussi", async () => {
     fetchOffersMock.mockResolvedValue({ items: [makeMission()] });

@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import dayjs from "dayjs";
 import "dayjs/locale/fr";
@@ -17,6 +17,10 @@ import { MissionReadOnlyCard } from "../../features/encoding/components/MissionR
 import { WorkedHoursCard } from "../../features/encoding/components/WorkedHoursCard";
 import SubmitDialog from "../../features/missions/components/SubmitDialog";
 import EditServiceHoursDialog from "../../features/missions/components/EditServiceHoursDialog";
+import { fetchPrestation, fetchPrestationEncoding } from "../../features/prestations/api/prestations.api";
+import { PrestationPanel } from "../../features/prestations/components/PrestationPanel";
+import PrestationHoursDialog from "../../features/prestations/components/PrestationHoursDialog";
+import PrestationSubmitDialog from "../../features/prestations/components/PrestationSubmitDialog";
 import { SPECIALTIES } from "../../features/planning-manager/api/planning.api";
 
 dayjs.locale("fr");
@@ -85,10 +89,36 @@ export default function MissionEncodingPage() {
     mission?.allowedActions?.includes("encoding") ||
     mission?.allowedActions?.includes("edit_encoding");
 
-  const canSubmit = mission?.allowedActions?.includes("submit") ?? false;
-  const canEditHours = mission?.allowedActions?.includes("edit_hours") ?? false;
+  // D-146 bis — consultation en lecture seule d'une mission validée / clôturée : mêmes
+  // composants, aucune action d'écriture (canEdit / canSubmit / canEditHours restent faux).
+  const canView = !canEncoding && (mission?.allowedActions?.includes("view_encoding") ?? false);
 
-  // Même query key que EditServiceHoursDialog.tsx (mutation) et manager/MissionDetailPage.tsx
+  // D-156 — la prestation (calculée par le serveur) décide du mode : 2+ missions
+  // simultanées = une présence commune et une soumission commune.
+  const { data: prestation, isLoading: isPrestationLoading } = useQuery({
+    queryKey: ["prestation", missionId],
+    queryFn: () => fetchPrestation(missionId),
+    enabled: isValidId && !!mission,
+  });
+  const isPrestation = (prestation?.size ?? 1) > 1;
+  // Complément D-156 — un seul encodage par prestation multi-salles : le serveur désigne la
+  // mission qui reçoit les nouvelles interventions (referenceMissionId) et sert toute la
+  // prestation en une liste (historique compris, chaque élément sur sa mission d'origine) ;
+  // l'instrumentiste ne choisit jamais de salle.
+  const encodingMissionId = isPrestation && prestation ? prestation.referenceMissionId : missionId;
+  const encodingQueryKey = React.useMemo(
+    () => (isPrestation ? ["prestationEncoding", missionId] : ["missionEncoding", missionId]),
+    [isPrestation, missionId],
+  );
+
+  const canSubmit = isPrestation
+    ? prestation?.allowedActions.includes("submit") ?? false
+    : mission?.allowedActions?.includes("submit") ?? false;
+  const canEditHours = isPrestation
+    ? prestation?.allowedActions.includes("edit_presence") ?? false
+    : mission?.allowedActions?.includes("edit_hours") ?? false;
+
+  // Même query key que EditServiceHoursDialog.tsx (mutation) et le tiroir mission manager
   // (lecture) — une seule source de vérité pour les heures prestées, jamais un champ
   // dérivé de ["mission", missionId] (voir formatExecutionHours()).
   const { data: execution } = useQuery({
@@ -102,9 +132,9 @@ export default function MissionEncodingPage() {
     isLoading: isEncodingLoading,
     error: encodingError,
   } = useQuery({
-    queryKey: ["missionEncoding", missionId],
-    queryFn: () => fetchMissionEncoding(missionId),
-    enabled: isValidId && !!mission && !!canEncoding,
+    queryKey: encodingQueryKey,
+    queryFn: () => (isPrestation ? fetchPrestationEncoding(missionId) : fetchMissionEncoding(missionId)),
+    enabled: isValidId && !!mission && !isPrestationLoading && (!!canEncoding || canView),
   });
 
   if (!isValidId) return <Typography>Identifiant invalide</Typography>;
@@ -123,7 +153,7 @@ export default function MissionEncodingPage() {
 
   if (!mission) return <Typography>Mission introuvable</Typography>;
 
-  if (!canEncoding) {
+  if (!canEncoding && !canView) {
     return (
       <Stack spacing={2}>
         <Button variant="outlined" size="small" startIcon={<ArrowBackIcon />} onClick={handleBack}>
@@ -136,7 +166,7 @@ export default function MissionEncodingPage() {
     );
   }
 
-  if (isEncodingLoading) return <CircularProgress />;
+  if (isPrestationLoading || isEncodingLoading) return <CircularProgress />;
 
   if (encodingError) {
     return (
@@ -152,8 +182,8 @@ export default function MissionEncodingPage() {
   if (!encoding) return <Typography>Données d'encodage introuvables</Typography>;
 
   const canEdit =
-    encoding.mission?.allowedActions?.includes("encoding") ||
-    encoding.mission?.allowedActions?.includes("edit_encoding") ||
+    encoding?.mission?.allowedActions?.includes("encoding") ||
+    encoding?.mission?.allowedActions?.includes("edit_encoding") ||
     false;
 
   const surgeon = mission.surgeon;
@@ -175,6 +205,7 @@ export default function MissionEncodingPage() {
         onBack={handleBack}
         helpTopicId="mission-encoding"
         savedAt={lastSavedAt}
+        title={isPrestation ? "Prestation multi-salles" : undefined}
       />
 
       <Box
@@ -195,19 +226,37 @@ export default function MissionEncodingPage() {
           siteName={mission.site?.name ?? "—"}
           siteAddress={mission.site?.address ?? null}
           dateLabel={dateLabel}
-          scheduledLabel={scheduledLabel}
+          // Complément D-156 — prestation : l'horaire de la journée, jamais celui d'une salle.
+          scheduledLabel={isPrestation && prestation
+            ? `${dayjs(prestation.planned.startAt).format("HH[h]mm")} → ${dayjs(prestation.planned.endAt).format("HH[h]mm")}`
+            : scheduledLabel}
         />
 
         {/* Anomalie écran d'encodage (commit dédié) — EncodingStatusPanel (statut +
             signaux de cohérence informationnels + historique commentaires manager)
             formait un résumé intermédiaire redondant avec le véritable récapitulatif
-            affiché par SubmitDialog après "Terminer l'encodage". Retiré uniquement de
-            cette page : le composant reste utilisé tel quel par
-            pages/manager/MissionDetailPage.tsx (composant partagé, jamais modifié). */}
+            affiché par SubmitDialog après "Terminer l'encodage". Côté manager, ces
+            signaux et commentaires sont lus dans le tiroir mission (ManagerMissionDrawer). */}
+
+        {/* D-171 — encodage repris et validé par la coordination ; heures restées à déclarer. */}
+        {mission?.lastEncodingTakeover && (
+          <Alert severity={mission.hoursPendingAfterValidation ? "warning" : "info"} data-testid="encoding-taken-over">
+            Votre encodage a été repris et validé par {mission.lastEncodingTakeover.byName ?? "la coordination"} le{" "}
+            {dayjs(mission.lastEncodingTakeover.at).locale("fr").format("D MMMM YYYY [à] HH:mm")}. Ce que vous aviez encodé a été conservé.
+            {mission.hoursPendingAfterValidation ? " Vos heures prestées restent à déclarer ci-dessous." : ""}
+          </Alert>
+        )}
 
         {/* Zone 1 — "TEMPS DE TRAVAIL" (docs/design/Instruction design/Page encodage
             instrumentiste, DOCUMENTATION.md §1/§2) : bac neutre gris, une seule carte,
             aucune touche de vert — le vert n'appartient qu'aux interventions (zone 2). */}
+        {isPrestation && prestation ? (
+          <PrestationPanel
+            prestation={prestation}
+            canEditHours={canEditHours}
+            onEditHours={() => setOpenEditHours(true)}
+          />
+        ) : (
         <Box
           sx={{
             display: "flex", flexDirection: "column", gap: "14px",
@@ -226,6 +275,7 @@ export default function MissionEncodingPage() {
           </Box>
           <WorkedHoursCard execution={execution} canEdit={canEditHours} onOpen={() => setOpenEditHours(true)} />
         </Box>
+        )}
 
         {/* Interventions — entries (EPIC Revue instrumentiste, Lot 3, commit 8) est la
             source de vérité du rendu : liste unifiée interventions réelles + drafts,
@@ -234,18 +284,43 @@ export default function MissionEncodingPage() {
             construire la liste elle-même. Zone 2 (bac vert + progression + pied de
             validation) est entièrement rendue par InterventionsSection. */}
         <InterventionsSection
-          missionId={mission.id}
+          key={encodingMissionId}
+          missionId={encodingMissionId}
           canEdit={canEdit}
           entries={encoding.entries ?? []}
           legacyInterventions={encoding.interventions ?? []}
           catalog={encoding.catalog}
-          onSaved={() => setLastSavedAt(new Date())}
+          surgeonId={encoding.mission.surgeonId}
+          encodingQueryKey={encodingQueryKey}
+          onSaved={() => {
+            setLastSavedAt(new Date());
+            if (isPrestation) {
+              void queryClient.invalidateQueries({ queryKey: ["prestation", missionId] });
+              void queryClient.invalidateQueries({ queryKey: ["prestationEncoding", missionId] });
+            }
+          }}
           canSubmit={canSubmit}
           onValidate={() => setOpenSubmit(true)}
+          // Compteurs du serveur : exactement les interventions de la liste affichée.
           progress={encoding.progress}
+          prestationSize={isPrestation ? prestation?.size : undefined}
+          submitLabel={isPrestation ? "Soumettre la prestation" : undefined}
         />
       </Box>
 
+      {isPrestation && prestation ? (
+        <PrestationSubmitDialog
+          open={openSubmit}
+          anchorMissionId={mission.id}
+          prestation={prestation}
+          onClose={() => setOpenSubmit(false)}
+          onSubmitted={() => {
+            setOpenSubmit(false);
+            handleBack();
+          }}
+          helpTopicId="mission-encoding"
+        />
+      ) : (
       <SubmitDialog
         open={openSubmit}
         mission={mission}
@@ -257,9 +332,22 @@ export default function MissionEncodingPage() {
           handleBack();
         }}
         helpTopicId="mission-encoding"
+        onCompleteHours={canEditHours ? () => { setOpenSubmit(false); setOpenEditHours(true); } : undefined}
       />
+      )}
 
-      {canEditHours && openEditHours && (
+      {isPrestation && prestation && canEditHours && openEditHours && (
+        <PrestationHoursDialog
+          open={openEditHours}
+          onClose={() => setOpenEditHours(false)}
+          anchorMissionId={mission.id}
+          prestation={prestation}
+          onSaved={() => setLastSavedAt(new Date())}
+          helpTopicId="mission-encoding"
+        />
+      )}
+
+      {!isPrestation && canEditHours && openEditHours && (
         <EditServiceHoursDialog
           open={openEditHours}
           onClose={() => setOpenEditHours(false)}

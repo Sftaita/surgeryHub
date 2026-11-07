@@ -18,6 +18,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -35,6 +36,10 @@ use Symfony\Component\Messenger\MessageBusInterface;
  */
 final class AbsenceMissionReactionServiceTest extends TestCase
 {
+    // D-158 — "now" frozen before the fixture dates: a surgeon absence only cancels a
+    // mission still to come (AbsenceMissionProtectionPolicy).
+    use ClockSensitiveTrait;
+
     private EntityManagerInterface&MockObject $em;
     private MissionPostDeployService&MockObject $missionPostDeployService;
     private MessageBusInterface&MockObject $bus;
@@ -45,6 +50,7 @@ final class AbsenceMissionReactionServiceTest extends TestCase
 
     protected function setUp(): void
     {
+        self::mockTime('2026-08-01 00:00:00');
         $this->em = $this->createMock(EntityManagerInterface::class);
         $this->missionPostDeployService = $this->createMock(MissionPostDeployService::class);
         $this->bus = $this->createMock(MessageBusInterface::class);

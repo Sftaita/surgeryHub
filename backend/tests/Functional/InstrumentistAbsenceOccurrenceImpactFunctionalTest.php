@@ -17,11 +17,12 @@ use App\Enum\MissionType;
 use App\Enum\RecurrenceFrequency;
 use App\Enum\ShiftPeriod;
 use App\Message\AbsenceSelfDeclaredMessage;
-use App\Message\InstrumentistAbsenceOccurrenceImpactMessage;
-use App\MessageHandler\InstrumentistAbsenceOccurrenceImpactMessageHandler;
+use App\Message\AbsenceImpactNotificationMessage;
+use App\MessageHandler\AbsenceImpactNotificationMessageHandler;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\WithoutErrorHandler;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Clock\Test\ClockSensitiveTrait;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
@@ -37,6 +38,10 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCase
 {
+    // D-158 — "now" frozen before the fixture dates: an instrumentist absence only puts a
+    // mission still to come back in the pool (AbsenceMissionProtectionPolicy).
+    use ClockSensitiveTrait;
+
     private const PASSWORD = 'ComplOccurrenceTest123!';
 
     private EntityManagerInterface $em;
@@ -46,11 +51,21 @@ final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCa
     {
         parent::setUp();
         self::ensureKernelShutdown();
+        self::mockTime('2026-08-01 00:00:00');
     }
 
     protected function tearDown(): void
     {
         if (isset($this->em) && $this->em->isOpen()) {
+            // H4 (D-130) — absence notifications go through the dispatcher: decision and
+            // per-channel delivery rows are removed before the users they target.
+            if ($this->createdIds['users'] !== []) {
+                $users = implode(',', array_map('intval', $this->createdIds['users']));
+                $conn = $this->em->getConnection();
+                $conn->executeStatement("DELETE FROM notification_dispatch WHERE recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE a FROM outbound_notification_attempt a JOIN outbound_notification o ON o.id = a.notification_id WHERE o.recipient_user_id IN ($users)");
+                $conn->executeStatement("DELETE FROM outbound_notification WHERE recipient_user_id IN ($users)");
+            }
             foreach ($this->createdIds['absences'] as $id) {
                 $e = $this->em->find(Absence::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
@@ -62,6 +77,9 @@ final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCa
                 if ($mission === null) { continue; }
                 foreach ($this->em->createQueryBuilder()->select('e')->from(AuditEvent::class, 'e')->where('e.mission = :m')->setParameter('m', $mission)->getQuery()->getResult() as $event) {
                     $this->em->remove($event);
+                }
+                foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $mission]) as $assignment) {
+                    $this->em->remove($assignment); // D-150 — affectation history (FK without ON DELETE)
                 }
                 $this->em->remove($mission);
             }
@@ -402,14 +420,14 @@ final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCa
 
         $envelope = null;
         foreach ($transport->getSent() as $e) {
-            if ($e->getMessage() instanceof InstrumentistAbsenceOccurrenceImpactMessage) {
+            if ($e->getMessage() instanceof AbsenceImpactNotificationMessage) {
                 $envelope = $e;
             }
         }
         self::assertNotNull($envelope, 'Exactly one message dispatched for this absence-processing run');
-        self::assertCount(2, $envelope->getMessage()->newlyImpacted, 'One occurrence per surgeon, both carried in the same message');
+        self::assertCount(2, $envelope->getMessage()->impacts, 'One occurrence per surgeon, both carried in the same message (H4: AbsenceImpactNotificationMessage)');
 
-        static::getContainer()->get(InstrumentistAbsenceOccurrenceImpactMessageHandler::class)
+        static::getContainer()->get(AbsenceImpactNotificationMessageHandler::class)
             ->__invoke($envelope->getMessage());
         $this->em->flush();
         $this->em->clear();
@@ -422,8 +440,8 @@ final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCa
 
         self::assertCount(1, $notifsA, 'Dr A gets exactly one notification, for their own date only');
         self::assertCount(1, $notifsB, 'Dr B gets exactly one notification, for their own date only');
-        self::assertSame('2026-08-10', $notifsA[0]->getPayload()['occurrenceDate']);
-        self::assertSame('2026-08-12', $notifsB[0]->getPayload()['occurrenceDate']);
+        self::assertSame('2026-08-10', $notifsA[0]->getPayload()['date']);
+        self::assertSame('2026-08-12', $notifsB[0]->getPayload()['date']);
     }
 
     // ── §10/D — Plusieurs Posts, même binôme ──────────────────────────────────
@@ -459,13 +477,13 @@ final class InstrumentistAbsenceOccurrenceImpactFunctionalTest extends WebTestCa
 
         $envelope = null;
         foreach ($transport->getSent() as $e) {
-            if ($e->getMessage() instanceof InstrumentistAbsenceOccurrenceImpactMessage) {
+            if ($e->getMessage() instanceof AbsenceImpactNotificationMessage) {
                 $envelope = $e;
             }
         }
         self::assertNotNull($envelope);
 
-        static::getContainer()->get(InstrumentistAbsenceOccurrenceImpactMessageHandler::class)
+        static::getContainer()->get(AbsenceImpactNotificationMessageHandler::class)
             ->__invoke($envelope->getMessage());
         $this->em->flush();
         $this->em->clear();

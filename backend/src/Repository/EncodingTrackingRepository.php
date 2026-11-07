@@ -53,10 +53,11 @@ final class EncodingTrackingRepository
         }
 
         $missions = $this->em->createQueryBuilder()
-            ->select('m', 'surgeon', 'instrumentist', 'site', 'execution')
+            ->select('m', 'surgeon', 'instrumentist', 'site', 'execution', 'declaredBy')
             ->from(Mission::class, 'm')
             ->leftJoin('m.surgeon', 'surgeon')
             ->leftJoin('m.instrumentist', 'instrumentist')
+            ->leftJoin('m.executedWithoutInstrumentistBy', 'declaredBy') // D-155
             ->leftJoin('m.site', 'site')
             ->leftJoin('m.execution', 'execution')
             ->where('m.id IN (:ids)')
@@ -81,7 +82,8 @@ final class EncodingTrackingRepository
      */
     public function fetchFactsForPeriod(FinancialStatisticsFilter $filter, ?MissionType $missionType = null): array
     {
-        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm', $missionType);
+        // D-184 — les indicateurs ne portent jamais sur des missions annulées.
+        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm', $missionType, includeCancelled: false);
 
         $sql = "SELECT {$this->factColumns()}
                 FROM mission m
@@ -106,9 +108,9 @@ final class EncodingTrackingRepository
      *
      * @return array{ids: int[], total: int}
      */
-    public function fetchPageIds(FinancialStatisticsFilter $filter, int $page, int $limit, ?MissionType $missionType = null): array
+    public function fetchPageIds(FinancialStatisticsFilter $filter, int $page, int $limit, ?MissionType $missionType = null, bool $includeCancelled = false): array
     {
-        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm', $missionType);
+        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm', $missionType, $includeCancelled);
 
         $window = 'COALESCE(me.actual_start_at, m.start_at)';
         $from = "FROM mission m
@@ -165,6 +167,16 @@ final class EncodingTrackingRepository
      * Une tentative échouée est considérée résolue dès qu'un calcul actif plus récent
      * existe : sinon une mission recalculée avec succès resterait signalée en anomalie.
      *
+     * D-138 — « plus récent » = ORDRE DES ÉVÉNEMENTS, jamais une comparaison d'horodatages
+     * (à la seconde, un échec et un succès simultanés étaient indiscernables) : l'échec est
+     * résolu ssi un événement FINANCIAL_CALCULATION_CREATED/RECALCULATED d'identifiant
+     * SUPÉRIEUR désigne (payload.financialCalculationId) un calcul de la mission encore
+     * actif. Les identifiants d'audit sont attribués dans l'ordre réel : calculate() et
+     * recalculate() s'exécutent sous verrou pessimiste sur la mission, deux tentatives
+     * d'une même mission ne s'entrelacent donc jamais. Un calcul actif ensuite annulé ou
+     * remplacé ne résout plus rien ; un calcul LOCKED/APPROVED garde son événement de
+     * création et continue de résoudre les échecs antérieurs.
+     *
      * @param int[] $missionIds
      * @return array<int, true> indexé par mission id en anomalie
      */
@@ -180,10 +192,15 @@ final class EncodingTrackingRepository
              WHERE ae.mission_id IN (:ids)
                AND ae.event_type = 'FINANCIAL_CALCULATION_FAILED'
                AND NOT EXISTS (
-                   SELECT 1 FROM financial_calculation fc
-                   WHERE fc.mission_id = ae.mission_id
+                   SELECT 1
+                   FROM audit_event ok
+                   INNER JOIN financial_calculation fc
+                           ON fc.id = CAST(JSON_UNQUOTE(JSON_EXTRACT(ok.payload, '$.financialCalculationId')) AS UNSIGNED)
+                   WHERE ok.mission_id = ae.mission_id
+                     AND ok.event_type IN ('FINANCIAL_CALCULATION_CREATED','FINANCIAL_CALCULATION_RECALCULATED')
+                     AND ok.id > ae.id
+                     AND fc.mission_id = ae.mission_id
                      AND fc.status IN ('CALCULATED','APPROVED','LOCKED')
-                     AND fc.calculated_at >= ae.created_at
                )",
             ['ids' => $missionIds],
             ['ids' => ArrayParameterType::INTEGER],
@@ -211,7 +228,7 @@ final class EncodingTrackingRepository
                     AND EXISTS (SELECT 1 FROM material_line ml2 WHERE ml2.mission_intervention_id = mi2.id AND ml2.quantity > 0)
                 ) AS encodedInterventionCount,
                 CASE WHEN me.id IS NOT NULL
-                      AND (me.actual_start_at IS NOT NULL OR me.actual_end_at IS NOT NULL OR me.actual_duration_minutes IS NOT NULL)
+                      AND (me.presence_id IS NOT NULL OR me.actual_start_at IS NOT NULL OR me.actual_end_at IS NOT NULL OR me.actual_duration_minutes IS NOT NULL)
                      THEN 1 ELSE 0 END AS hasExecutionActuals";
     }
 
@@ -322,6 +339,26 @@ final class EncodingTrackingRepository
      * file d'attente réelle à l'instant présent, pas seulement la période affichée dans le
      * cockpit "Suivi des encodages" (dont le résumé, lui, est filtré par période).
      */
+    /**
+     * D-184 — missions annulées de la période, masquées du suivi actif (affichées seulement
+     * sur demande) : le nombre est servi pour l'annoncer, jamais pour les compter.
+     */
+    public function countCancelledForPeriod(FinancialStatisticsFilter $filter, ?MissionType $missionType = null): int
+    {
+        [$missionWhere, $params, $types] = $this->missionPopulationClause($filter, 'm', $missionType, includeCancelled: true);
+
+        return (int) $this->connection->fetchOne(
+            "SELECT COUNT(*) FROM mission m
+             LEFT JOIN mission_execution me ON me.mission_id = m.id
+             WHERE COALESCE(me.actual_start_at, m.start_at) >= :fBusiness
+               AND COALESCE(me.actual_start_at, m.start_at) < :tBusiness
+               AND m.status = 'CANCELLED'
+               $missionWhere",
+            $params + ['fBusiness' => $this->businessParam($filter->from), 'tBusiness' => $this->businessParam($filter->to)],
+            $types + ['fBusiness' => ParameterType::STRING, 'tBusiness' => ParameterType::STRING],
+        );
+    }
+
     public function countPendingEncodingValidation(): int
     {
         return (int) $this->connection->fetchOne("SELECT COUNT(*) FROM mission WHERE status = 'SUBMITTED'");
@@ -334,9 +371,16 @@ final class EncodingTrackingRepository
      *
      * @return array{0: string, 1: array<string, mixed>, 2: array<string, int>}
      */
-    private function missionPopulationClause(FinancialStatisticsFilter $filter, string $alias, ?MissionType $missionType = null): array
+    private function missionPopulationClause(FinancialStatisticsFilter $filter, string $alias, ?MissionType $missionType = null, bool $includeCancelled = false): array
     {
         [$where, $params, $types] = $this->missionPopulation->build($filter, $alias);
+
+        // D-184 — le suivi actif exclut les missions annulées (conservées en base et dans
+        // l'historique). Propre à ce module : MissionPopulationClauseBuilder est partagé avec
+        // les statistiques financières, qui excluent déjà l'annulé à leur façon (D-182).
+        if (!$includeCancelled) {
+            $where .= " AND $alias.status <> 'CANCELLED'";
+        }
 
         if ($missionType !== null) {
             $where .= " AND $alias.type = :missionType";

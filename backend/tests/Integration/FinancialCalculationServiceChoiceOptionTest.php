@@ -26,6 +26,7 @@ use App\Exception\FinancialCalculationAnomaliesException;
 use App\Service\FinancialCalculationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * Tarification firme conditionnée à un choix obligatoire — scénario réel du prompt :
@@ -36,6 +37,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FinancialCalculationServiceChoiceOptionTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private FinancialCalculationService $service;
     private array $created = [
@@ -181,6 +184,7 @@ final class FinancialCalculationServiceChoiceOptionTest extends KernelTestCase
         $m->setEndAt(new \DateTimeImmutable('2026-06-01 10:00:00'));
         $m->setStatus(MissionStatus::VALIDATED);
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
 
         $i = new MissionIntervention();

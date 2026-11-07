@@ -18,6 +18,16 @@ use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
  * - ROOM_SLOT_SCHEDULE_UNKNOWN  — aucun horaire connu pour créer la Mission (jamais inventé).
  * - ROOM_SLOT_NOT_RELEASABLE    — libération impossible (pas/plus repris, Mission démarrée).
  *
+ * D-177 — acceptation d'une demande chirurgien qui désigne une salle libérée
+ * (`SurgeonMissionRequestService::accept()`, `extra.releasedRoomMatch` = correspondance relue) :
+ * - ROOM_SLOT_DECISION_REQUIRED — correspondance multiple ou partielle : le manager choisit la
+ *                                 salle reprise, ou déclare (justification) qu'aucune ne correspond.
+ * - ROOM_SLOT_TAKEOVER_REQUIRED — correspondance certaine : la demande ne s'accepte que comme reprise.
+ * - ROOM_SLOT_NOT_MATCHING      — la salle choisie n'est pas (ou plus) une salle correspondante.
+ * - ROOM_SLOT_REQUEST_ALREADY_TAKEN_OVER — le chirurgien a déjà repris une salle chevauchante
+ *                                 ce jour-là : accepter créerait une seconde mission.
+ * - ROOM_SLOT_DISPATCH_NOT_ALLOWED — une reprise est diffusée automatiquement (priorité / pool).
+ *
  * `extra` est fusionné dans le corps d'erreur — jamais de donnée patient.
  */
 class ReleasedRoomSlotConflictException extends ConflictHttpException
@@ -28,6 +38,11 @@ class ReleasedRoomSlotConflictException extends ConflictHttpException
     public const SURGEON_ABSENT = 'ROOM_SLOT_SURGEON_ABSENT';
     public const SCHEDULE_UNKNOWN = 'ROOM_SLOT_SCHEDULE_UNKNOWN';
     public const NOT_RELEASABLE = 'ROOM_SLOT_NOT_RELEASABLE';
+    public const DECISION_REQUIRED = 'ROOM_SLOT_DECISION_REQUIRED';
+    public const TAKEOVER_REQUIRED = 'ROOM_SLOT_TAKEOVER_REQUIRED';
+    public const NOT_MATCHING = 'ROOM_SLOT_NOT_MATCHING';
+    public const REQUEST_ALREADY_TAKEN_OVER = 'ROOM_SLOT_REQUEST_ALREADY_TAKEN_OVER';
+    public const DISPATCH_NOT_ALLOWED = 'ROOM_SLOT_DISPATCH_NOT_ALLOWED';
 
     /** @param array<string, mixed> $extra */
     public function __construct(

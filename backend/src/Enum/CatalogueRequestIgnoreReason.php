@@ -13,7 +13,7 @@ namespace App\Enum;
  *
  * label() porte le seul wording de présentation FR : les messages/DTOs qui traversent les
  * frontières de service (CatalogueRequestProcessedMessage) transportent l'enum brut,
- * jamais un texte déjà traduit — voir NotificationService::catalogueRequestIgnoredNotifyInstrumentist().
+ * jamais un texte déjà traduit — voir NotificationService::catalogueRequestIgnoredEmail().
  */
 enum CatalogueRequestIgnoreReason: string
 {

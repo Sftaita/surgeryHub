@@ -14,17 +14,19 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 final class InstrumentistRateResolver
 {
-    public function __construct(private readonly EntityManagerInterface $em) {}
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly ?ReadScopeCache $readCache = null,
+    ) {}
 
     public function resolve(User $instrumentist, InstrumentistRateType $rateType, \DateTimeImmutable $effectiveAt): ?InstrumentistRate
     {
         $matching = $this->matchingRates($instrumentist, $rateType, $effectiveAt);
 
         if (count($matching) > 1) {
-            throw new \LogicException(sprintf(
-                'Plusieurs InstrumentistRate %s actifs se chevauchent pour instrumentist=%d à la date %s.',
-                $rateType->value, $instrumentist->getId(), $effectiveAt->format('Y-m-d'),
-            ));
+            // D-138 — exception métier, jamais un choix arbitraire ni un 500.
+            usort($matching, static fn ($a, $b) => $a->getId() <=> $b->getId());
+            throw new \App\Exception\InstrumentistRateConflictException($matching, $effectiveAt);
         }
 
         return $matching[0] ?? null;
@@ -61,13 +63,16 @@ final class InstrumentistRateResolver
     /** @return InstrumentistRate[] */
     private function matchingRates(User $instrumentist, InstrumentistRateType $rateType, \DateTimeImmutable $date): array
     {
-        $candidates = $this->em->getRepository(InstrumentistRate::class)->createQueryBuilder('r')
+        $query = fn () => $this->em->getRepository(InstrumentistRate::class)->createQueryBuilder('r')
             ->andWhere('r.instrumentist = :instrumentist')
             ->andWhere('r.rateType = :rateType')
             ->setParameter('instrumentist', $instrumentist)
             ->setParameter('rateType', $rateType)
             ->getQuery()
             ->getResult();
+        // D-142 — mémorisé seulement dans une portée de lecture explicite (ReadScopeCache).
+        $key = $instrumentist->getId() !== null ? sprintf('instrumentist_rate:%d:%s', $instrumentist->getId(), $rateType->value) : null;
+        $candidates = $this->readCache !== null ? $this->readCache->remember($key, $query) : $query();
 
         return array_values(array_filter($candidates, static fn (InstrumentistRate $r) => $r->coversDate($date)));
     }

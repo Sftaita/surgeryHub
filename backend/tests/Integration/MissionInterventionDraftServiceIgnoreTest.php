@@ -50,11 +50,7 @@ final class MissionInterventionDraftServiceIgnoreTest extends KernelTestCase
     {
         self::bootKernel();
         $this->em = self::getContainer()->get(EntityManagerInterface::class);
-        $this->service = new MissionInterventionDraftService(
-            $this->em,
-            new MissionEntryOrderAllocator($this->em),
-            new AuditService($this->em),
-        );
+        $this->service = \App\Tests\Support\CatalogueRequestServiceFactory::draftService($this->em);
     }
 
     protected function tearDown(): void

@@ -2,15 +2,14 @@
 
 namespace App\MessageHandler;
 
-use App\Entity\NotificationEvent;
 use App\Entity\User;
 use App\Enum\NotificationType;
-use App\Enum\PublicationChannel;
 use App\Message\SurgeonMissionRequestCreatedMessage;
-use App\Service\NotificationChannels;
-use App\Service\NotificationPreferenceResolver;
+use App\Service\NotificationService;
 use App\Service\NotificationTargetResolver;
-use App\Service\OutboundNotificationService;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
+use App\Notification\PushContent;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -21,21 +20,24 @@ use Symfony\Component\Messenger\Attribute\AsMessageHandler;
  * (destinataires figés sur le message, pas de scoping par site — voir docblock de
  * SurgeonMissionRequestCreatedMessage).
  *
- * In-app + push uniquement, JAMAIS d'email — une nouvelle demande n'est pas urgente
- * (le manager la retrouve sur MissionsListPage, onglet "Demandes chirurgien"), même
- * raisonnement que CatalogueRequestCreatedMessageHandler.
+ * Email opt-in : défaut email=false (une nouvelle demande n'est pas urgente, le manager la
+ * retrouve sur MissionsListPage, onglet "Demandes chirurgien"), mais un manager qui coche
+ * "E-mail" pour ce type dans ses préférences le reçoit (WHEN_ENABLED, canal indépendant).
  *
  * Failure isolation par destinataire — l'échec d'un manager ne doit jamais empêcher
  * les autres d'être notifiés.
+ *
+ * H5b (D-132) — through NotificationDispatcher (in-app + email + push per preferences),
+ * every channel traced, idempotent per request and manager.
  */
 #[AsMessageHandler]
 final class SurgeonMissionRequestCreatedMessageHandler
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
-        private readonly OutboundNotificationService $outboundNotificationService,
-        private readonly NotificationPreferenceResolver $preferenceResolver,
+        private readonly NotificationDispatcher $dispatcher,
         private readonly NotificationTargetResolver $targetResolver,
+        private readonly NotificationService $notificationService,
         private readonly LoggerInterface $logger,
     ) {
     }
@@ -54,64 +56,33 @@ final class SurgeonMissionRequestCreatedMessageHandler
     private function notifyManager(User $manager, SurgeonMissionRequestCreatedMessage $message): void
     {
         try {
-            $channels = $this->resolveChannelsSafely($manager, NotificationType::SURGEON_MISSION_REQUEST_CREATED);
-
-            if ($channels->inApp) {
-                $evt = (new NotificationEvent())
-                    ->setUser($manager)
-                    ->setMission(null)
-                    ->setEventType(NotificationType::SURGEON_MISSION_REQUEST_CREATED->value)
-                    ->setChannel(PublicationChannel::IN_APP)
-                    ->setSentAt(new \DateTimeImmutable())
-                    ->setPayload([
-                        'requestId'   => $message->requestId,
-                        'surgeonName' => $message->surgeonName,
-                        'siteName'    => $message->siteName,
-                        'startAt'     => $message->startAt,
-                        'endAt'       => $message->endAt,
-                    ]);
-                $this->em->persist($evt);
-                $this->em->flush();
-            }
-
-            if ($channels->push) {
-                $title = 'Nouvelle demande de mission';
-                $body = sprintf(
-                    'Dr %s a demandé une mission le %s à %s.',
-                    $message->surgeonName,
-                    (new \DateTimeImmutable($message->startAt))->format('d/m/Y'),
-                    $message->siteName,
-                );
-                $data = [
-                    'requestId' => $message->requestId,
-                    'url' => $this->targetResolver->resolve(NotificationType::SURGEON_MISSION_REQUEST_CREATED, null, $manager),
-                ];
-
-                // Pas de repli email en cas d'échec — voir docblock de classe.
-                $this->outboundNotificationService->recordPushSend(
-                    $manager,
-                    NotificationType::SURGEON_MISSION_REQUEST_CREATED->value,
-                    $title,
-                    $body,
-                    $data,
-                    null,
-                );
-            }
+            $type = NotificationType::SURGEON_MISSION_REQUEST_CREATED;
+            $this->dispatcher->dispatch(new NotificationIntent(
+                recipient: $manager,
+                type: $type,
+                inAppPayload: [
+                    'requestId'   => $message->requestId,
+                    'surgeonName' => $message->surgeonName,
+                    'siteName'    => $message->siteName,
+                    'startAt'     => $message->startAt,
+                    'endAt'       => $message->endAt,
+                ],
+                email: $this->notificationService->surgeonMissionRequestCreatedEmail($manager, $message->surgeonName, $message->siteName, $message->startAt, $message->endAt),
+                push: new PushContent(
+                    'Nouvelle demande de mission',
+                    sprintf('Dr %s a demandé une mission le %s à %s.', $message->surgeonName, (new \DateTimeImmutable($message->startAt))->format('d/m/Y'), $message->siteName),
+                    ['requestId' => $message->requestId, 'url' => $this->targetResolver->resolve($type, null, $manager)],
+                ),
+                episodeRef: 'surgeon_mission_request_created:' . $message->requestId,
+                subjectType: 'SurgeonMissionRequest',
+                subjectId: $message->requestId,
+            ));
         } catch (\Throwable $e) {
             $this->logger->error('SurgeonMissionRequestCreated: manager notification failed', [
                 'requestId' => $message->requestId,
                 'managerId' => $manager->getId(),
                 'error' => $e->getMessage(),
             ]);
-        }
-    }
-
-    private function resolveChannelsSafely(User $user, NotificationType $type): NotificationChannels
-    {
-        try {
-            return $this->preferenceResolver->resolve($user, $type);
-        } catch (\Throwable) {
-            return new NotificationChannels(inApp: true, email: false, push: false);
         }
     }
 }

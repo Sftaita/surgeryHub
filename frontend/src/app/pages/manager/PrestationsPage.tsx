@@ -56,10 +56,13 @@ import {
   updateInterventionType,
   findSimilarInterventionTypes,
   getInterventionTypeOfferings,
+  linkInterventionTypeFirm,
+  unlinkInterventionTypeFirm,
   type InterventionType,
+  type InterventionTypeOfferingRow,
   type SimilarInterventionTypeCandidate,
 } from "../../features/intervention-types/api/interventionTypes.api";
-import { getFirms, getMaterialItems, createMaterialItem, updateMaterialItem } from "../../features/manager-catalogue/api/catalogue.api";
+import { getFirms, getMaterialItems, createMaterialItem, updateMaterialItem, getMaterialBillingRegularisation } from "../../features/manager-catalogue/api/catalogue.api";
 import type { FirmDTO, MaterialItemDTO } from "../../features/manager-catalogue/api/catalogue.types";
 import { FirmAvatar } from "../../features/manager-catalogue/components/FirmAvatar";
 import { FirmLogoDialog } from "../../features/manager-catalogue/components/FirmLogoDialog";
@@ -67,6 +70,14 @@ import { useToast } from "../../ui/toast/useToast";
 import { PageHeader } from "../../ui/PageHeader";
 import { useDebouncedValue } from "../../ui/hooks/useDebouncedValue";
 import styles from "./prestationsDesign.module.css";
+import { MaterialRegularisationView } from "./MaterialRegularisationView";
+import {
+  PRICING_CONFLICT_LABEL,
+  PRICING_NOT_CONFIGURED_LABEL,
+  formatOfferingForfait,
+  hasPricingConflict,
+  pricingConflictTooltip,
+} from "../../features/billing-shared/pricingStatus";
 import { Modal, Btn, Switch, StatusPill, Tag } from "./prestationsUi";
 import { PlusIcon, SearchIcon, EditIcon as PrEditIcon, WarningIcon, BuildingIcon, BookIcon, ArrowLeftIcon, ChevronRightIcon } from "./prestationsIcons";
 
@@ -75,17 +86,28 @@ function extractError(err: unknown): string {
   return e?.response?.data?.error?.message ?? e?.response?.data?.message ?? e?.message ?? String(err);
 }
 
+/** D-183 — intervention existante renvoyée par le serveur quand le code est déjà utilisé (409). */
+function existingTypeFromError(err: unknown): InterventionType | null {
+  const e = (err as any)?.response?.data?.error;
+  return e?.code === "INTERVENTION_TYPE_CODE_EXISTS" && e.existingInterventionType ? (e.existingInterventionType as InterventionType) : null;
+}
+
 // ── Modale : créer une intervention dans le référentiel global ─────────────
 // Formulaire code/libellé/spécialité/statut, détection de doublon approximative
 // AVANT création (jamais un blocage) — utilisé à la fois depuis « Nouvelle
 // intervention » (écran Référentiel) et depuis le flux « Ajouter une
 // prestation » (création inline quand l'intervention n'existe pas encore).
+// D-183 — `firms` fourni (écran Référentiel) : « Firme associée » = « Aucune firme » (par
+// défaut : l'intervention seule, sans prestation ni tarif) ou une firme (rattachement créé
+// par le serveur dans la même opération, ou ajouté à l'intervention existante réutilisée).
 function NewInterventionModal({
   initialLabel = "",
+  firms,
   onClose,
   onCreated,
 }: {
   initialLabel?: string;
+  firms?: FirmDTO[];
   onClose: () => void;
   onCreated: (type: InterventionType) => void;
 }) {
@@ -93,18 +115,50 @@ function NewInterventionModal({
   const [code, setCode] = React.useState("");
   const [label, setLabel] = React.useState(initialLabel);
   const [specialty, setSpecialty] = React.useState("");
+  const [firmId, setFirmId] = React.useState<number | null>(null);
   const [candidates, setCandidates] = React.useState<SimilarInterventionTypeCandidate[] | null>(null);
   const [checkingSimilar, setCheckingSimilar] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [existingType, setExistingType] = React.useState<InterventionType | null>(null);
+  const firmName = firms?.find((f) => f.id === firmId)?.name ?? null;
 
   const createMutation = useMutation({
     mutationFn: createInterventionType,
-    onSuccess: (created) => { toast.success("Intervention ajoutée au référentiel global"); onCreated(created); },
+    onSuccess: (created) => {
+      toast.success(firmName ? `Intervention ajoutée au référentiel et rattachée à ${firmName}` : "Intervention ajoutée au référentiel global");
+      onCreated(created);
+    },
+    onError: (e) => { setExistingType(existingTypeFromError(e)); setError(extractError(e)); },
+  });
+
+  // Réutiliser une intervention existante : jamais de doublon ; la firme choisie y est rattachée.
+  const useExistingMutation = useMutation({
+    mutationFn: async (type: InterventionType) => {
+      if (firms && firmId != null) {
+        try {
+          await linkInterventionTypeFirm(type.id, firmId);
+        } catch (e) {
+          if ((e as any)?.response?.status !== 409) throw e;
+        }
+      }
+      return type;
+    },
+    onSuccess: (type) => { if (firms && firmName) toast.success(`« ${type.label} » est rattachée à ${firmName}`); onCreated(type); },
     onError: (e) => setError(extractError(e)),
   });
 
+  const createBody = () => ({
+    code: code.trim().toUpperCase(),
+    label: label.trim(),
+    specialty: specialty.trim() || undefined,
+    ...(firms ? { firmId } : {}),
+  });
+  const useExisting = (type: InterventionType) => (firms ? useExistingMutation.mutate(type) : onCreated(type));
+  const busy = createMutation.isPending || useExistingMutation.isPending;
+
   async function handleSave() {
     setError(null);
+    setExistingType(null);
     if (!code.trim() || !label.trim()) { setError("Indiquez un code et un libellé."); return; }
     setCheckingSimilar(true);
     try {
@@ -113,7 +167,7 @@ function NewInterventionModal({
     } finally {
       setCheckingSimilar(false);
     }
-    createMutation.mutate({ code: code.trim().toUpperCase(), label: label.trim(), specialty: specialty.trim() || undefined });
+    createMutation.mutate(createBody());
   }
 
   return (
@@ -145,6 +199,25 @@ function NewInterventionModal({
           <label className={styles.fieldLabel} htmlFor="ni-specialty">Spécialité <span className={styles.fieldHint}>(optionnel)</span></label>
           <input id="ni-specialty" className={styles.fieldInput} value={specialty} onChange={(e) => setSpecialty(e.target.value)} placeholder="Indicatif uniquement" />
         </div>
+        {firms && (
+          <div className={styles.field}>
+            <label className={styles.fieldLabel} htmlFor="ni-firm">Firme associée</label>
+            <select
+              id="ni-firm"
+              className={styles.fieldInput}
+              value={firmId ?? ""}
+              onChange={(e) => { setFirmId(e.target.value === "" ? null : Number(e.target.value)); setExistingType(null); }}
+            >
+              <option value="">Aucune firme</option>
+              {firms.filter((f) => f.active !== false).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+            <span className={styles.fieldHint}>
+              {firmId == null
+                ? "L'intervention est créée seule, sans prestation ni tarif ; elle apparaît dans « Interventions sans firme »."
+                : "La prestation est créée chez cette firme ; son forfait se configure ensuite depuis la firme."}
+            </span>
+          </div>
+        )}
 
         {candidates && candidates.length > 0 && (
           <div style={{ background: "var(--pr-amber-50)", border: "1px solid var(--pr-amber-200)", borderRadius: 12, padding: "13px 14px" }}>
@@ -158,22 +231,27 @@ function NewInterventionModal({
                     <div style={{ fontSize: 13.5, fontWeight: 700 }}>{c.type.label}</div>
                     <div className={styles.refRowCode}>{c.type.code}</div>
                   </div>
-                  <Btn small onClick={() => onCreated(c.type)}>Utiliser ce type</Btn>
+                  <Btn small disabled={busy} onClick={() => useExisting(c.type)}>Utiliser ce type</Btn>
                 </div>
               ))}
             </Stack>
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <Btn small variant="secondary" disabled={createMutation.isPending} onClick={() => createMutation.mutate({ code: code.trim().toUpperCase(), label: label.trim(), specialty: specialty.trim() || undefined })}>
+              <Btn small variant="secondary" disabled={busy} onClick={() => createMutation.mutate(createBody())}>
                 {createMutation.isPending ? <CircularProgress size={14} /> : "Créer quand même"}
               </Btn>
             </div>
           </div>
         )}
         {error && <div className={styles.warningLine}><WarningIcon size={14} /> {error}</div>}
+        {existingType && (
+          <Btn small variant="secondary" disabled={busy} onClick={() => useExisting(existingType)} data-testid="use-existing-intervention">
+            Utiliser l'intervention existante « {existingType.label} »{firms && firmName ? ` et la rattacher à ${firmName}` : ""}
+          </Btn>
+        )}
       </div>
       {!candidates && (
         <div style={{ marginTop: 20 }}>
-          <Btn fullWidth disabled={createMutation.isPending || checkingSimilar} onClick={handleSave}>
+          <Btn fullWidth disabled={busy || checkingSimilar} onClick={handleSave}>
             {createMutation.isPending || checkingSimilar ? <CircularProgress size={16} /> : "Ajouter au référentiel"}
           </Btn>
         </div>
@@ -359,7 +437,7 @@ function NewMaterialModal({
         </div>
         <Switch label="Implant" checked={isImplant} onChange={setIsImplant} />
         <p className={styles.fieldHint} style={{ margin: 0, fontSize: 12.5 }}>
-          Le tarif se configure ensuite, depuis « Modifier » sur la ligne du matériel — « Tarif à définir » tant qu'aucun tarif n'est encore posé.
+          Le tarif se configure ensuite, depuis « Modifier » sur la ligne du matériel — « Tarif non configuré » tant qu'aucun tarif n'est encore posé.
         </p>
         {error && <div className={styles.warningLine}><WarningIcon size={14} /> {error}</div>}
       </div>
@@ -463,7 +541,7 @@ function ChoiceOptionCard({
             ))}
           </TextField>
           <Typography variant="caption" color={activeVersion ? "text.secondary" : "warning.main"} fontWeight={activeVersion ? 400 : 600}>
-            {activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : "Tarif à définir"}
+            {activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : PRICING_NOT_CONFIGURED_LABEL}
           </Typography>
         </Stack>
         <Stack direction="row" spacing={0.5} alignItems="center">
@@ -744,6 +822,7 @@ function MaterialEditDialog({
     qc.invalidateQueries({ queryKey: ["pricing-rules", firmId] });
     qc.invalidateQueries({ queryKey: ["material-items-firm", firmId] });
     qc.invalidateQueries({ queryKey: ["material-items"] });
+    qc.invalidateQueries({ queryKey: ["material-billing-regularisation"] });
   };
 
   const identificationMutation = useMutation({
@@ -784,6 +863,13 @@ function MaterialEditDialog({
     onSuccess: () => { toast.success("Matériel marqué non facturable"); invalidate(); },
     onError: (e) => toast.error(extractError(e)),
   });
+  // D-142 — une décision « non facturable » prise par erreur se défait explicitement : le
+  // matériel redevient « non décidé » (UNSPECIFIED), jamais facturable par déduction.
+  const undecidedMutation = useMutation({
+    mutationFn: () => updateMaterialItem(material!.id, { billingStatus: "UNSPECIFIED" }),
+    onSuccess: () => { toast.success("Matériel remis à « non décidé »"); invalidate(); },
+    onError: (e) => toast.error(extractError(e)),
+  });
 
   if (!material) return null;
 
@@ -820,6 +906,13 @@ function MaterialEditDialog({
 
           <Box>
             <Typography variant="overline" color="text.secondary">Tarification</Typography>
+            {rules.length === 0 && material.billingStatus === "UNSPECIFIED" && (
+              <Alert severity="warning" sx={{ mt: 1 }} data-testid="material-undecided">
+                Aucune décision de facturation : ce matériel bloque le calcul des missions qui l'utilisent.
+                Définissez un tarif s'il est facturé, ou marquez-le non facturable s'il ne l'est jamais
+                (par exemple compris dans le forfait).
+              </Alert>
+            )}
             <Box sx={{ mt: 1 }}>
               <RateVersionManager
                 versions={rules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo }))}
@@ -829,6 +922,14 @@ function MaterialEditDialog({
                 onCancelFuture={(id) => cancelMutation.mutate(id)}
                 isSaving={isSaving}
               />
+              {!hasActiveRate && material.billingStatus === "NOT_BILLABLE" && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }} data-testid="material-not-billable">
+                  {MATERIAL_NOT_BILLABLE_LABEL} — ce matériel n'est jamais facturé (décision explicite, distincte d'un tarif manquant).
+                  <MuiButton size="small" color="inherit" sx={{ ml: 1 }} onClick={() => undecidedMutation.mutate()} disabled={undecidedMutation.isPending}>
+                    Revenir à « non décidé »
+                  </MuiButton>
+                </Typography>
+              )}
               {!hasActiveRate && material.billingStatus !== "NOT_BILLABLE" && (
                 <MuiButton
                   size="small" color="inherit" sx={{ mt: 1 }}
@@ -954,14 +1055,39 @@ function SuggestedMaterialsDialog({
   );
 }
 
-// Refonte UX (§5) — trois états jamais confondus : montant défini, "Tarif à définir"
-// (feeApplicable=true sans PricingRule active), "Pas de forfait" (feeApplicable=false,
+// D-142 — paramètre d'URL de la vue « Matériel à régulariser ».
+const REGULARISATION_VIEW_PARAM = "a-regulariser";
+
+// D-141 — matériel `billingStatus = NOT_BILLABLE` : décision explicite, jamais un tarif manquant.
+const MATERIAL_NOT_BILLABLE_LABEL = "Non facturable";
+
+// Refonte UX (§5) — états jamais confondus : montant défini, "Tarif non configuré"
+// (feeApplicable=true sans PricingRule active), "Conflit tarifaire" (plusieurs règles
+// actives, signalé par le backend — D-138), "Pas de forfait" (feeApplicable=false,
 // décision volontaire). Tous les montants sont HTVA.
 function forfaitSummary(offering: FirmServiceOffering, forfait: PricingRule | null): string {
   if (!offering.feeApplicable) return "Pas de forfait";
   if (offering.choiceGroupConfig?.active) return "Selon un choix obligatoire";
+  if (hasPricingConflict(offering.pricingConflictRuleIds)) return PRICING_CONFLICT_LABEL;
   if (forfait) return `${Number(forfait.unitPrice).toFixed(2)} € HTVA`;
-  return "Tarif à définir";
+  return PRICING_NOT_CONFIGURED_LABEL;
+}
+
+// D-141 — un tarif manquant ne ressemble jamais à un tarif configuré ; « Pas de forfait » est
+// une décision neutre. Le libellé vient de forfaitSummary (états fournis par le backend).
+function forfaitToneClass(summary: string): string {
+  if (summary === PRICING_CONFLICT_LABEL) return styles.pricingConflict;
+  if (summary === PRICING_NOT_CONFIGURED_LABEL) return styles.pricingMissing;
+  if (summary === "Pas de forfait") return styles.pricingNoFee;
+  return "";
+}
+
+// D-141 — la période de la règle en vigueur est affichée : un tarif qui ne commence qu'à une
+// date donnée ne couvre pas les prestations antérieures (le moteur les bloque).
+function forfaitPeriodLabel(offering: FirmServiceOffering, forfait: PricingRule | null): string {
+  if (!offering.feeApplicable || !forfait || (!forfait.validFrom && !forfait.validTo)) return "forfait";
+  const fmt = (d: string) => d.slice(0, 10).split("-").reverse().join("/");
+  return `forfait${forfait.validFrom ? ` dès le ${fmt(forfait.validFrom)}` : ""}${forfait.validTo ? ` jusqu'au ${fmt(forfait.validTo)} (exclu)` : ""}`;
 }
 
 function representativeSummary(offering: FirmServiceOffering): string {
@@ -1121,8 +1247,11 @@ function ReferentielTableView({
             {rows.map((t) => (
               <div key={t.id} className={styles.refRow} onClick={() => onOpenDetail(t)}>
                 <span className={styles.refRowCode}>{t.code}</span>
-                <span className={styles.refRowName}>{t.label}</span>
-                <span className={styles.refRowFirms}>{t.firmsCount ?? 0}</span>
+                <span className={styles.refRowName}>
+                  {t.label}
+                  {t.withoutFirm && <> <Tag>Sans firme</Tag></>}
+                </span>
+                <span className={styles.refRowFirms}>{t.activeFirmsCount ?? t.firmsCount ?? 0}</span>
                 <StatusPill active={t.active} activeLabel="Actif" inactiveLabel="Inactif" />
                 <ChevronRightIcon size={16} className={styles.prestaCardChevron} />
               </div>
@@ -1143,20 +1272,58 @@ function ReferentielTableView({
   );
 }
 
-// ── Référentiel — détail d'une intervention (firmes utilisatrices) ─────────
+// ── Référentiel — détail d'une intervention (firmes associées) ──────────────
+// D-183 — rattacher une firme crée la prestation firme × type (ou réactive celle retirée),
+// sans jamais dupliquer l'intervention ; retirer désactive la prestation (tarifs, encodages et
+// facturation historiques conservés), l'intervention globale reste. Sans rattachement actif,
+// elle revient dans « Interventions sans firme » (calculé par le serveur).
 function ReferentielDetailView({
-  intervention, onBack, onEdit, onOpenFirm,
+  intervention, firms, onBack, onEdit, onOpenFirm,
 }: {
   intervention: InterventionType;
+  firms: FirmDTO[];
   onBack: () => void;
   onEdit: () => void;
   onOpenFirm: (firmId: number, offeringId: number) => void;
 }) {
+  const toast = useToast();
+  const qc = useQueryClient();
   const offeringsQuery = useQuery({
     queryKey: ["intervention-type-offerings", intervention.id],
     queryFn: () => getInterventionTypeOfferings(intervention.id),
   });
   const offerings = offeringsQuery.data ?? [];
+  const activeOfferings = offerings.filter((o) => o.active);
+  const [firmToLink, setFirmToLink] = React.useState<number | null>(null);
+  const [unlinkTarget, setUnlinkTarget] = React.useState<InterventionTypeOfferingRow | null>(null);
+  const linkableFirms = firms.filter((f) => f.active !== false && !activeOfferings.some((o) => o.firm.id === f.id));
+
+  const refresh = (firmId: number) => {
+    qc.invalidateQueries({ queryKey: ["intervention-types"] });
+    qc.invalidateQueries({ queryKey: ["intervention-type-offerings", intervention.id] });
+    qc.invalidateQueries({ queryKey: ["service-offerings", firmId] });
+  };
+  const linkMutation = useMutation({
+    mutationFn: (firmId: number) => linkInterventionTypeFirm(intervention.id, firmId),
+    onSuccess: (res) => {
+      const name = firms.find((f) => f.id === res.firmId)?.name ?? "la firme";
+      toast.success(res.reactivated ? `Rattachement à ${name} rétabli` : `« ${intervention.label} » est rattachée à ${name}`);
+      setFirmToLink(null);
+      refresh(res.firmId);
+    },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const unlinkMutation = useMutation({
+    mutationFn: (row: InterventionTypeOfferingRow) => unlinkInterventionTypeFirm(intervention.id, row.offeringId),
+    onSuccess: (res) => {
+      toast.success(res.interventionType.withoutFirm
+        ? "Rattachement retiré — l'intervention apparaît désormais dans « Interventions sans firme »."
+        : "Rattachement retiré");
+      setUnlinkTarget(null);
+      refresh(res.firmId);
+    },
+    onError: (e) => toast.error(extractError(e)),
+  });
 
   return (
     <div>
@@ -1166,6 +1333,7 @@ function ReferentielDetailView({
           <div className={styles.refDetailMeta}>
             <span className={styles.refRowCode}>{intervention.code}</span>
             <StatusPill active={intervention.active} activeLabel="Actif" inactiveLabel="Inactif" />
+            {intervention.withoutFirm && <Tag>Sans firme</Tag>}
           </div>
           <h2 className={styles.refDetailTitle}>{intervention.label}</h2>
         </div>
@@ -1174,7 +1342,28 @@ function ReferentielDetailView({
         </div>
       </div>
 
-      <h3 className={styles.refUsageTitle}>Utilisée par {offerings.length} firme{offerings.length !== 1 ? "s" : ""}</h3>
+      <h3 className={styles.refUsageTitle}>
+        Firmes associées · {activeOfferings.length} active{activeOfferings.length > 1 ? "s" : ""}
+      </h3>
+      {intervention.active ? (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }} data-testid="firm-link-form">
+          <select
+            aria-label="Firme à rattacher"
+            className={styles.fieldInput}
+            style={{ maxWidth: 280 }}
+            value={firmToLink ?? ""}
+            onChange={(e) => setFirmToLink(e.target.value === "" ? null : Number(e.target.value))}
+          >
+            <option value="">Choisir une firme…</option>
+            {linkableFirms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          <Btn small disabled={firmToLink == null || linkMutation.isPending} onClick={() => firmToLink != null && linkMutation.mutate(firmToLink)}>
+            {linkMutation.isPending ? <CircularProgress size={14} /> : "Rattacher"}
+          </Btn>
+        </div>
+      ) : (
+        <div className={styles.refUsageMeta} style={{ marginBottom: 12 }}>Intervention inactive : réactivez-la pour la rattacher à une firme.</div>
+      )}
       {offeringsQuery.isLoading ? (
         <div style={{ display: "flex", justifyContent: "center", padding: 24 }}><CircularProgress size={20} /></div>
       ) : (
@@ -1184,15 +1373,75 @@ function ReferentielDetailView({
               <FirmAvatar name={row.firm.name} logoPath={row.firm.logoPath} size="sm" />
               <div className={styles.refUsageBody}>
                 <div className={styles.refUsageName}>{row.firm.name}</div>
-                <div className={styles.refUsageMeta}>
-                  {row.feeApplicable ? (row.forfait ? `${Number(row.forfait.amount).toFixed(2)} ${row.forfait.currency} HTVA` : "Tarif à définir") : "Pas de forfait"}
-                  {!row.active && " · inactive"}
+                <div
+                  className={[styles.refUsageMeta, row.feeApplicable && hasPricingConflict(row.pricingConflictRuleIds) ? styles.pricingConflict : ""].filter(Boolean).join(" ")}
+                  title={row.feeApplicable && hasPricingConflict(row.pricingConflictRuleIds) ? pricingConflictTooltip(row.pricingConflictRuleIds) : undefined}
+                >
+                  {formatOfferingForfait(row)}
+                  {!row.active && " · rattachement retiré"}
                 </div>
               </div>
+              {row.active ? (
+                <Btn small variant="secondary" disabled={unlinkMutation.isPending} onClick={() => setUnlinkTarget(row)} aria-label={`Retirer le rattachement à ${row.firm.name}`}>Retirer</Btn>
+              ) : intervention.active && row.firm && firms.some((f) => f.id === row.firm.id && f.active !== false) ? (
+                <Btn small variant="secondary" disabled={linkMutation.isPending} onClick={() => linkMutation.mutate(row.firm.id)}>Rattacher à nouveau</Btn>
+              ) : null}
               <button type="button" className={styles.refUsageLink} onClick={() => onOpenFirm(row.firm.id, row.offeringId)}>Ouvrir chez cette firme →</button>
             </div>
           ))}
-          {offerings.length === 0 && <div className={[styles.emptyState, styles.emptyStateBoxed].join(" ")}>Aucune firme ne configure encore cette intervention.</div>}
+          {offerings.length === 0 && <div className={[styles.emptyState, styles.emptyStateBoxed].join(" ")}>Aucune firme associée : cette intervention fait partie des « Interventions sans firme ».</div>}
+        </div>
+      )}
+
+      <Dialog open={unlinkTarget !== null} onClose={unlinkMutation.isPending ? undefined : () => setUnlinkTarget(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Retirer le rattachement à {unlinkTarget?.firm.name} ?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            La prestation « {intervention.label} » de {unlinkTarget?.firm.name} est désactivée, jamais supprimée : ses tarifs, les encodages et la facturation déjà enregistrés restent intacts. L'intervention reste dans le référentiel
+            {activeOfferings.length === 1 ? " et apparaîtra dans « Interventions sans firme »." : "."}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <MuiButton onClick={() => setUnlinkTarget(null)} disabled={unlinkMutation.isPending}>Annuler</MuiButton>
+          <MuiButton color="error" variant="contained" disabled={unlinkMutation.isPending} onClick={() => unlinkTarget && unlinkMutation.mutate(unlinkTarget)}>
+            {unlinkMutation.isPending ? <CircularProgress size={16} /> : "Retirer le rattachement"}
+          </MuiButton>
+        </DialogActions>
+      </Dialog>
+    </div>
+  );
+}
+
+// ── Firmes — catégorie « Interventions sans firme » (D-183) ──────────────────
+function WithoutFirmCategoryView({
+  types, isLoading, onOpen,
+}: {
+  types: InterventionType[];
+  isLoading: boolean;
+  onOpen: (t: InterventionType) => void;
+}) {
+  const rows = [...types].sort((a, b) => a.label.localeCompare(b.label, "fr"));
+  return (
+    <div data-testid="without-firm-category">
+      <h2 className={styles.firmHeaderName}>Interventions sans firme</h2>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
+        Interventions actives rattachées à aucune firme : aucune prestation, aucun tarif. Elles se choisissent « Aucune firme » à l'encodage. Ouvrez-en une pour la rattacher à une firme.
+      </Typography>
+      {isLoading ? (
+        <div style={{ display: "flex", justifyContent: "center", padding: 24 }}><CircularProgress size={20} /></div>
+      ) : rows.length === 0 ? (
+        <div className={[styles.emptyState, styles.emptyStateBoxed].join(" ")}>Toutes les interventions actives sont rattachées à au moins une firme.</div>
+      ) : (
+        <div className={styles.refTable}>
+          {rows.map((t) => (
+            <div key={t.id} className={styles.refRow} onClick={() => onOpen(t)} role="button" aria-label={`Ouvrir ${t.label}`}>
+              <span className={styles.refRowCode}>{t.code}</span>
+              <span className={styles.refRowName}>{t.label}</span>
+              <span className={styles.refRowFirms}>{t.specialty ?? ""}</span>
+              <span />
+              <ChevronRightIcon size={16} className={styles.prestaCardChevron} />
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1204,7 +1453,19 @@ export default function PrestationsPage() {
   const toast = useToast();
   const qc = useQueryClient();
 
-  const [view, setView] = React.useState<"firms" | "referentiel">("firms");
+  // D-142 — « ?vue=a-regulariser » ouvre (et garde après actualisation) la vue de régularisation.
+  const [view, setViewState] = React.useState<"firms" | "referentiel" | "regularisation">(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("vue") === REGULARISATION_VIEW_PARAM ? "regularisation" : "firms");
+  const setView = React.useCallback((next: "firms" | "referentiel" | "regularisation") => {
+    setViewState(next);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (next === "regularisation") url.searchParams.set("vue", REGULARISATION_VIEW_PARAM);
+      else url.searchParams.delete("vue");
+      window.history.replaceState(window.history.state, "", url.toString());
+    }
+  }, []);
+  const [regularisationTargetId, setRegularisationTargetId] = React.useState<number | null>(null);
   const [referentielDetailId, setReferentielDetailId] = React.useState<number | null>(null);
   const [refQuery, setRefQuery] = React.useState("");
   const [newInterventionOpen, setNewInterventionOpen] = React.useState(false);
@@ -1233,6 +1494,9 @@ export default function PrestationsPage() {
 
   const interventionTypesQuery = useQuery({ queryKey: ["intervention-types"], queryFn: () => getInterventionTypes() });
   const allInterventionTypes = interventionTypesQuery.data ?? [];
+  // D-183 — « Interventions sans firme » : calculé par le serveur (`withoutFirm`), jamais déduit ici.
+  const interventionsWithoutFirm = allInterventionTypes.filter((t) => t.withoutFirm === true);
+  const [noFirmCategoryOpen, setNoFirmCategoryOpen] = React.useState(false);
   const referentielDetailType: InterventionType | null =
     allInterventionTypes.find((t) => t.id === referentielDetailId) ?? null;
 
@@ -1241,6 +1505,19 @@ export default function PrestationsPage() {
     queryFn: () => getFirmPricingRules(selectedFirmId as number),
     enabled: !!selectedFirmId,
   });
+
+  // D-142 — décisions de facturation et missions bloquées, décidées par le backend (moteur).
+  const regularisationQuery = useQuery({
+    queryKey: ["material-billing-regularisation"],
+    queryFn: getMaterialBillingRegularisation,
+  });
+  const regularisationTarget = regularisationQuery.data?.items.find((i) => i.id === regularisationTargetId) ?? null;
+  const regularisationRulesQuery = useQuery({
+    queryKey: ["pricing-rules", regularisationTarget?.firm.id ?? null],
+    queryFn: () => getFirmPricingRules(regularisationTarget!.firm.id),
+    enabled: !!regularisationTarget,
+  });
+  const regularisationRules = (regularisationRulesQuery.data ?? []).filter((r) => r.ruleType === "MATERIAL_FEE" && r.materialItem?.id === regularisationTargetId);
 
   const offeringsQuery = useQuery({
     queryKey: ["service-offerings", selectedFirmId],
@@ -1281,13 +1558,14 @@ export default function PrestationsPage() {
 
   function goToFirm(firmId: number) {
     setSelectedFirmId(firmId);
+    setNoFirmCategoryOpen(false);
     setTab("offerings");
     setView("firms");
     setReferentielDetailId(null);
   }
 
   return (
-    <Box sx={{ p: 3 }} className={styles.root}>
+    <Box sx={{ p: { xs: 0, md: 3 } }} className={styles.root}>
       <PageHeader
         icon={CategoryIcon}
         title="Prestations"
@@ -1316,6 +1594,20 @@ export default function PrestationsPage() {
           <span className={styles.topNavDestTitle}><BookIcon size={17} /> Référentiel</span>
           <span className={styles.topNavDestSub}>Bibliothèque clinique globale, commune à toutes les firmes</span>
         </button>
+        <button
+          type="button"
+          className={[styles.topNavDest, view === "regularisation" ? styles.topNavDestActive : ""].filter(Boolean).join(" ")}
+          onClick={() => setView("regularisation")}
+          data-testid="nav-regularisation"
+        >
+          <span className={styles.topNavDestTitle}>
+            <WarningIcon size={16} /> Matériel à régulariser
+            {regularisationQuery.data && (
+              <span className={[styles.tabCount, regularisationQuery.data.summary.toConfigureCount > 0 ? styles.regularisationCount : ""].filter(Boolean).join(" ")} data-testid="regularisation-count">{regularisationQuery.data.summary.toConfigureCount}</span>
+            )}
+          </span>
+          <span className={styles.topNavDestSub}>Décisions de facturation manquantes, toutes firmes</span>
+        </button>
       </div>
 
       {/* Bandeau de contexte permanent — le logo/nom de firme disparaît entièrement
@@ -1335,11 +1627,32 @@ export default function PrestationsPage() {
         </div>
       ) : null}
 
-      {view === "referentiel" ? (
+      {view === "regularisation" ? (
+        <div className={styles.referentielContent}>
+          <MaterialRegularisationView
+            data={regularisationQuery.data}
+            isLoading={regularisationQuery.isLoading}
+            isError={regularisationQuery.isError}
+            onConfigure={(item) => setRegularisationTargetId(item.id)}
+          />
+          <MaterialEditDialog
+            open={regularisationTarget !== null}
+            onClose={() => setRegularisationTargetId(null)}
+            firmId={regularisationTarget?.firm.id ?? 0}
+            material={regularisationTarget ? {
+              id: regularisationTarget.id, firm: regularisationTarget.firm, label: regularisationTarget.label,
+              referenceCode: regularisationTarget.referenceCode, unit: regularisationTarget.unit,
+              isImplant: regularisationTarget.isImplant, billingStatus: regularisationTarget.billingStatus,
+            } : null}
+            rules={regularisationRules}
+          />
+        </div>
+      ) : view === "referentiel" ? (
         <div className={styles.referentielContent}>
           {referentielDetailType ? (
             <ReferentielDetailView
               intervention={referentielDetailType}
+              firms={firms}
               onBack={() => setReferentielDetailId(null)}
               onEdit={() => setEditInterventionTarget(referentielDetailType)}
               onOpenFirm={(firmId, offeringId) => {
@@ -1380,10 +1693,31 @@ export default function PrestationsPage() {
               ))}
               {filteredFirms.length === 0 && <div className={styles.emptyState}>Aucune firme trouvée.</div>}
             </div>
+            {/* D-183 — catégorie calculée par le serveur (intervention active sans rattachement
+                effectif) ; ce n'est pas une firme et rien n'est créé pour elle. */}
+            <div className={styles.sidebarHead}>CATALOGUE</div>
+            <div className={styles.sidebarList}>
+              <button
+                type="button"
+                className={[styles.sidebarRow, noFirmCategoryOpen ? styles.sidebarRowActive : ""].filter(Boolean).join(" ")}
+                onClick={() => { setNoFirmCategoryOpen(true); setSelectedFirmId(null); }}
+                data-testid="category-without-firm"
+              >
+                <BookIcon size={17} />
+                <span className={styles.sidebarName}>Interventions sans firme</span>
+                <span className={styles.tabCount}>{interventionsWithoutFirm.length}</span>
+              </button>
+            </div>
           </aside>
 
           <div className={styles.content}>
-            {selectedFirmId === null || !selectedFirm ? (
+            {noFirmCategoryOpen ? (
+              <WithoutFirmCategoryView
+                types={interventionsWithoutFirm}
+                isLoading={interventionTypesQuery.isLoading}
+                onOpen={(t) => { setView("referentiel"); setReferentielDetailId(t.id); setNoFirmCategoryOpen(false); }}
+              />
+            ) : selectedFirmId === null || !selectedFirm ? (
               <div className={styles.emptyState} style={{ paddingTop: 80 }}>
                 <Typography variant="h6" fontWeight={700} color="text.primary" gutterBottom>
                   Sélectionnez une firme pour commencer
@@ -1441,8 +1775,13 @@ export default function PrestationsPage() {
                                 </div>
                               </div>
                               <div className={styles.prestaCardForfait}>
-                                <div className={styles.prestaCardForfaitValue}>{forfaitSummary(o, forfait)}</div>
-                                <div className={styles.prestaCardForfaitLabel}>forfait</div>
+                                <div
+                                  className={[styles.prestaCardForfaitValue, forfaitToneClass(forfaitSummary(o, forfait))].filter(Boolean).join(" ")}
+                                  title={forfaitSummary(o, forfait) === PRICING_CONFLICT_LABEL && o.pricingConflictRuleIds ? pricingConflictTooltip(o.pricingConflictRuleIds) : undefined}
+                                >
+                                  {forfaitSummary(o, forfait)}
+                                </div>
+                                <div className={styles.prestaCardForfaitLabel}>{forfaitPeriodLabel(o, forfait)}</div>
                               </div>
                               <ChevronRightIcon size={16} className={styles.prestaCardChevron} />
                             </div>
@@ -1471,12 +1810,21 @@ export default function PrestationsPage() {
                         {materials.map((m) => {
                           const itemRules = materialRulesFor(m.id);
                           const activeVersion = getActiveVersion(itemRules.map((r) => ({ id: r.id, amount: r.unitPrice, currency: r.currency, validFrom: r.validFrom, validTo: r.validTo })));
+                          const conflictIds = hasPricingConflict(m.pricingConflictRuleIds) ? m.pricingConflictRuleIds : null;
                           return (
                             <div key={m.id} className={styles.materialRow}>
                               <span className={styles.materialRowName}>{m.label}</span>
                               <span className={styles.materialRowRef}>{m.referenceCode || "—"}</span>
-                              <span className={[styles.materialRowPrice, activeVersion ? "" : styles.materialRowPriceMuted].filter(Boolean).join(" ")}>
-                                {activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA` : "Tarif à définir"}
+                              <span
+                                className={[styles.materialRowPrice, conflictIds ? styles.pricingConflict : activeVersion ? "" : m.billingStatus === "NOT_BILLABLE" ? styles.materialRowPriceMuted : styles.pricingMissing].filter(Boolean).join(" ")}
+                                title={conflictIds ? pricingConflictTooltip(conflictIds) : undefined}
+                              >
+                                {/* D-141 — « Non facturable » est une décision explicite (jamais facturé),
+                                    distincte d'un tarif manquant qui bloque le calcul. */}
+                                {conflictIds
+                                  ? PRICING_CONFLICT_LABEL
+                                  : activeVersion ? `${Number(activeVersion.amount).toFixed(2)} ${activeVersion.currency} HTVA`
+                                    : m.billingStatus === "NOT_BILLABLE" ? MATERIAL_NOT_BILLABLE_LABEL : PRICING_NOT_CONFIGURED_LABEL}
                               </span>
                               <Tooltip title="Modifier le matériel">
                                 <button type="button" aria-label={`Modifier ${m.label}`} className={[styles.btn, styles.btnOutline, styles.btnSm].join(" ")} onClick={() => setMaterialEditTargetId(m.id)}>
@@ -1502,8 +1850,14 @@ export default function PrestationsPage() {
 
       {newInterventionOpen && (
         <NewInterventionModal
+          firms={firms}
           onClose={() => setNewInterventionOpen(false)}
-          onCreated={() => { setNewInterventionOpen(false); qc.invalidateQueries({ queryKey: ["intervention-types"] }); }}
+          onCreated={() => {
+            setNewInterventionOpen(false);
+            qc.invalidateQueries({ queryKey: ["intervention-types"] });
+            qc.invalidateQueries({ queryKey: ["intervention-type-offerings"] });
+            qc.invalidateQueries({ queryKey: ["service-offerings"] });
+          }}
         />
       )}
       {editInterventionTarget && (

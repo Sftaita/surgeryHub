@@ -44,7 +44,7 @@ final class MissionHoursReminderService
             ]);
             $this->em->flush();
 
-            $this->bus->dispatch(new MissionHoursReminderMessage((int) $mission->getId(), (int) $instrumentist->getId()));
+            $this->bus->dispatch(new MissionHoursReminderMessage((int) $mission->getId(), (int) $instrumentist->getId(), bin2hex(random_bytes(8))));
         });
     }
 }

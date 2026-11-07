@@ -18,6 +18,7 @@ use App\Entity\PricingRule;
 use App\Entity\User;
 use App\Enum\AuditEventType;
 use App\Enum\FinancialCalculationStatus;
+use App\Enum\FinancialLineType;
 use App\Enum\InstrumentistRateType;
 use App\Enum\MissionStatus;
 use App\Enum\MissionType;
@@ -27,6 +28,7 @@ use App\Exception\FinancialCalculationIneligibleException;
 use App\Service\FinancialCalculationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use App\Tests\Support\DeclaresActualHours;
 
 /**
  * EPIC Exécution & Valorisation, Lot 3 (D-073) — §28 du lot : domaine/calcul, tarifs
@@ -35,6 +37,8 @@ use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
  */
 final class FinancialCalculationServiceTest extends KernelTestCase
 {
+    use DeclaresActualHours;
+
     private EntityManagerInterface $em;
     private FinancialCalculationService $service;
     private array $created = [
@@ -169,6 +173,7 @@ final class FinancialCalculationServiceTest extends KernelTestCase
             $m->setInstrumentist($instrumentist);
         }
         $this->em->persist($m); $this->em->flush();
+        $this->declareActualHours($m); // D-143 — heures réelles déclarées, jamais le seul planifié
         $this->created['missions'][] = $m->getId();
         return $m;
     }
@@ -203,8 +208,10 @@ final class FinancialCalculationServiceTest extends KernelTestCase
 
     private function addExecutionWithDuration(Mission $mission, int $minutes): MissionExecution
     {
-        $e = new MissionExecution();
+        // D-143 — réutilise l'exécution déclarée par la fixture (une seule par mission).
+        $e = $mission->getExecution() ?? new MissionExecution();
         $e->setMission($mission);
+        $e->setActualStartAt(null)->setActualEndAt(null);
         $e->setActualDurationMinutes($minutes);
         $this->em->persist($e); $this->em->flush();
         $this->created['executions'][] = $e->getId();
@@ -214,10 +221,12 @@ final class FinancialCalculationServiceTest extends KernelTestCase
 
     private function addExecutionWithActualStart(Mission $mission, \DateTimeImmutable $actualStartAt): MissionExecution
     {
-        $e = new MissionExecution();
+        // D-143 — réutilise l'exécution déclarée par la fixture (une seule par mission).
+        $e = $mission->getExecution() ?? new MissionExecution();
         $e->setMission($mission);
         $e->setActualStartAt($actualStartAt);
         $e->setActualEndAt($actualStartAt->modify('+1 hour'));
+        $e->setActualDurationMinutes(60);
         $this->em->persist($e); $this->em->flush();
         $this->created['executions'][] = $e->getId();
         $mission->setExecution($e);
@@ -881,5 +890,70 @@ final class FinancialCalculationServiceTest extends KernelTestCase
 
         $this->service->lock($calc, $actor);
         self::assertTrue($this->service->hasLockedCalculation($mission));
+    }
+
+    // ── D-143 — jamais de rémunération sur les seuls horaires planifiés ──────────
+
+    /**
+     * Situation 2 — début et fin réels : durée = fin − début. D-146 bis — une pause
+     * historique encore présente en base (D-143) n'est plus déduite.
+     */
+    public function test_actual_start_and_end_are_paid_without_any_break_deduction(): void
+    {
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->hourlyRate($instrumentist, '40.00', new \DateTimeImmutable('2020-01-01'));
+        $mission = $this->makeMission(MissionType::BLOCK, new \DateTimeImmutable('2026-06-01 08:00:00'), new \DateTimeImmutable('2026-06-01 18:00:00'), $instrumentist);
+        $e = $this->addExecutionWithActualStart($mission, new \DateTimeImmutable('2026-06-01 08:00:00'));
+        $e->setActualEndAt(new \DateTimeImmutable('2026-06-01 15:30:00'));
+        $e->setBreakMinutes(30);
+        $e->setActualDurationMinutes(450);
+        $this->em->flush();
+
+        $line = $this->trackCalculation($this->service->calculate($mission, $this->makeUser('ROLE_MANAGER')))->getLines()->first();
+
+        self::assertSame(450, $line->getDurationMinutes(), '7h30, aucune pause déduite, jamais les 10 h planifiées');
+        self::assertSame('300.00', $line->getTotalAmount());
+    }
+
+    /** Situation 1 — mission historique avec durée réelle déclarée (avant D-143) : compatible. */
+    public function test_historical_declared_duration_remains_payable(): void
+    {
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->hourlyRate($instrumentist, '40.00', new \DateTimeImmutable('2020-01-01'));
+        $mission = $this->makeMission(MissionType::BLOCK, new \DateTimeImmutable('2026-06-01 08:00:00'), new \DateTimeImmutable('2026-06-01 18:00:00'), $instrumentist);
+        $this->addExecutionWithDuration($mission, 360);
+
+        $line = $this->trackCalculation($this->service->calculate($mission, $this->makeUser('ROLE_MANAGER')))->getLines()->first();
+
+        self::assertSame(360, $line->getDurationMinutes());
+        self::assertNull($mission->getExecution()->getActualStartAt(), 'aucun début/fin fabriqué à partir de la durée');
+    }
+
+    /** Situation 3 — aucune déclaration horaire : calcul bloqué, rien n'est persisté. */
+    /**
+     * D-171 — l'absence d'heures réelles ne bloque plus le calcul (facturation firme
+     * indépendante) mais la prestation horaire n'est JAMAIS valorisée sur le planifié : aucune
+     * ligne instrumentiste, calcul marqué « heures instrumentiste en attente ».
+     */
+    public function test_no_declared_hours_never_pays_planned_hours_and_leaves_the_instrumentist_line_pending(): void
+    {
+        $instrumentist = $this->makeUser('ROLE_INSTRUMENTIST');
+        $this->hourlyRate($instrumentist, '40.00', new \DateTimeImmutable('2020-01-01'));
+        $mission = $this->makeMission(MissionType::BLOCK, new \DateTimeImmutable('2026-06-01 08:00:00'), new \DateTimeImmutable('2026-06-01 18:00:00'), $instrumentist);
+        // La fixture déclare des heures par défaut : on les retire pour ce cas précis.
+        $this->em->remove($mission->getExecution());
+        $mission->setExecution(null);
+        $this->em->flush();
+
+        $evaluation = $this->service->evaluate($mission);
+        self::assertTrue($evaluation->succeeds(), 'même verdict en lecture seule (worklist, suivi) : plus bloquant');
+        self::assertTrue($evaluation->instrumentistHoursPending);
+
+        $calculation = $this->service->calculate($mission, $this->makeUser('ROLE_MANAGER'));
+        $this->created['calculations'][] = $calculation->getId();
+        self::assertTrue($calculation->isInstrumentistHoursPending());
+        foreach ($calculation->getLines() as $line) {
+            self::assertNotSame(FinancialLineType::INSTRUMENTIST_HOURLY, $line->getLineType(), 'jamais les heures planifiées');
+        }
     }
 }

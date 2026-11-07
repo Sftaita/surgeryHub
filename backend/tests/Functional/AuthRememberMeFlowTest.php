@@ -124,7 +124,8 @@ final class AuthRememberMeFlowTest extends WebTestCase
         self::assertSame($data['refresh_token'], $token->getRefreshToken());
         self::assertFalse($token->isRememberMe());
 
-        $expected = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_DEFAULT.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expected = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_DEFAULT);
         self::assertEqualsWithDelta($expected->getTimestamp(), $token->getValid()->getTimestamp(), 10);
     }
 
@@ -159,12 +160,13 @@ final class AuthRememberMeFlowTest extends WebTestCase
         self::assertSame($data['refresh_token'], $token->getRefreshToken());
         self::assertTrue($token->isRememberMe());
 
-        $expected = (new \DateTimeImmutable())->modify('+'.AuthenticationSuccessListener::TTL_REMEMBER_ME.' seconds');
+        // Durée écoulée, pas heure murale : modify('+N seconds') gagne 1 h au changement d'heure (D-157).
+        $expected = (new \DateTimeImmutable())->setTimestamp(time() + AuthenticationSuccessListener::TTL_REMEMBER_ME);
         self::assertEqualsWithDelta($expected->getTimestamp(), $token->getValid()->getTimestamp(), 10);
     }
 
     #[WithoutErrorHandler]
-    public function testRefreshDoesNotCreateAnotherRefreshTokenAndLogoutInvalidatesIt(): void
+    public function testRefreshRotatesWithinTheSameSessionAndLogoutInvalidatesIt(): void
     {
         $client = static::createClient();
         $this->em = static::getContainer()->get(EntityManagerInterface::class);
@@ -186,7 +188,7 @@ final class AuthRememberMeFlowTest extends WebTestCase
 
         self::assertCount(1, $this->findRefreshTokens());
 
-        // 2) Refresh : ne doit créer aucun second refresh token, ni en base ni dans la réponse.
+        // 2) Refresh : D-157 — rotation dans la MÊME session (famille), jamais une session orpheline.
         $client->request(
             'POST',
             '/api/auth/refresh',
@@ -198,38 +200,42 @@ final class AuthRememberMeFlowTest extends WebTestCase
         self::assertSame(Response::HTTP_OK, $refreshResponse->getStatusCode(), (string) $refreshResponse->getContent());
 
         $refreshData = json_decode((string) $refreshResponse->getContent(), true);
-        self::assertSame($refreshToken, $refreshData['refresh_token'], 'Le refresh token ne doit pas être rotaté en V1.');
+        $rotated = $refreshData['refresh_token'];
+        self::assertNotSame($refreshToken, $rotated, 'D-157 : le refresh token est rotaté à chaque refresh.');
 
         $tokensAfterRefresh = $this->findRefreshTokens();
-        self::assertCount(1, $tokensAfterRefresh, 'Un refresh ne doit créer aucun refresh token orphelin en base.');
-        self::assertSame($refreshToken, $tokensAfterRefresh[0]->getRefreshToken());
+        self::assertCount(2, $tokensAfterRefresh, 'Une génération tournée + sa remplaçante, rien d\'autre.');
+        self::assertSame($tokensAfterRefresh[0]->getFamilyId(), $tokensAfterRefresh[1]->getFamilyId(), 'Même session (famille).');
+        self::assertNotNull($tokensAfterRefresh[0]->getFamilyId());
 
-        // 3) Logout : doit invalider/supprimer le refresh token en base.
+        // 3) Logout (avec le token courant) : toute la session est supprimée en base.
         $client->request(
             'POST',
             '/api/auth/logout',
             server: ['CONTENT_TYPE' => 'application/json'],
-            content: json_encode(['refresh_token' => $refreshToken])
+            content: json_encode(['refresh_token' => $rotated])
         );
 
         $logoutResponse = $client->getResponse();
         self::assertSame(Response::HTTP_OK, $logoutResponse->getStatusCode(), (string) $logoutResponse->getContent());
 
-        self::assertCount(0, $this->findRefreshTokens(), 'Le refresh token doit être supprimé de la base après logout.');
+        self::assertCount(0, $this->findRefreshTokens(), 'Toutes les générations de la session doivent être supprimées après logout.');
 
-        // 4) Refresh après logout avec le même token : doit échouer en 401.
-        $client->request(
-            'POST',
-            '/api/auth/refresh',
-            server: ['CONTENT_TYPE' => 'application/json'],
-            content: json_encode(['refresh_token' => $refreshToken])
-        );
+        // 4) Refresh après logout, avec l'ancien comme avec le nouveau token : 401.
+        foreach ([$refreshToken, $rotated] as $presented) {
+            $client->request(
+                'POST',
+                '/api/auth/refresh',
+                server: ['CONTENT_TYPE' => 'application/json'],
+                content: json_encode(['refresh_token' => $presented])
+            );
 
-        self::assertSame(
-            Response::HTTP_UNAUTHORIZED,
-            $client->getResponse()->getStatusCode(),
-            (string) $client->getResponse()->getContent()
-        );
+            self::assertSame(
+                Response::HTTP_UNAUTHORIZED,
+                $client->getResponse()->getStatusCode(),
+                (string) $client->getResponse()->getContent()
+            );
+        }
     }
 
     /**

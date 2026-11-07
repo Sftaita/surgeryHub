@@ -59,6 +59,24 @@ class ReleasedOperatingRoomSlotRepository extends ServiceEntityRepository
     }
 
     /**
+     * D-161 — un créneau précis, s'il est visible par ce chirurgien selon exactement les mêmes
+     * filtres que sa liste (`GET /api/me/available-rooms`) ; null sinon.
+     *
+     * @param list<int> $siteIds affiliations du chirurgien
+     */
+    public function findVisibleToSurgeon(int $id, array $siteIds, int $surgeonId): ?ReleasedOperatingRoomSlot
+    {
+        $qb = $this->createQueryBuilder('s')
+            ->andWhere('s.id = :id')->setParameter('id', $id);
+        $this->applyFilters($qb, 's', $siteIds, null, null, null, false, visibleToSurgeonId: $surgeonId);
+
+        /** @var ReleasedOperatingRoomSlot|null $slot */
+        $slot = $qb->getQuery()->getOneOrNullResult();
+
+        return $slot;
+    }
+
+    /**
      * Compteur seul — même filtres que `findForList()`, sans charger les lignes. Utilisé par
      * l'endpoint léger `GET /api/me/available-rooms/count` (badge CTA planning chirurgien).
      *

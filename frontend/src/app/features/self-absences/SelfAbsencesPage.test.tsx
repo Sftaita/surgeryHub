@@ -172,6 +172,38 @@ describe("SelfAbsencesPage — création", () => {
     await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Absence enregistrée"));
   });
 
+  it("D-158 — après création, rafraîchit le planning opérationnel, le planning chirurgien, les salles libérées et les alertes", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    fetchMyAbsencesMock.mockResolvedValue([]);
+    createMyAbsenceMock.mockResolvedValue({
+      id: 11, dateStart: "2026-08-20", dateEnd: "2026-08-20", reason: null, createdAt: "2026-08-06T00:00:00Z",
+      editable: true, missionsImpactedCount: 1,
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderPage();
+
+    await screen.findByText("Aucune absence prévue");
+    await user.click(screen.getByText("+ Ajouter"));
+    await screen.findByText("Nouvelle absence");
+    const dateInput = screen.getByLabelText("Date");
+    await user.clear(dateInput);
+    await user.type(dateInput, "2026-08-20");
+    await user.click(screen.getByRole("button", { name: "Créer l'absence" }));
+
+    await waitFor(() => expect(createMyAbsenceMock).toHaveBeenCalled());
+    const keys = () => invalidateSpy.mock.calls.map(([filters]) => JSON.stringify(filters?.queryKey));
+    await waitFor(() => expect(keys()).toEqual(expect.arrayContaining([
+      JSON.stringify(["self-absences"]),
+      JSON.stringify(["missions"]),
+      JSON.stringify(["planning-schedule"]),
+      JSON.stringify(["planning-v2", "modification-missions"]),
+      JSON.stringify(["surgeon-planning"]),
+      JSON.stringify(["available-rooms"]),
+      JSON.stringify(["planning-v2", "alerts"]),
+    ])));
+    invalidateSpy.mockRestore();
+  });
+
   it("crée une absence période et affiche le toast avec le nombre de missions concernées", async () => {
     fetchMyAbsencesMock.mockResolvedValue([]);
     createMyAbsenceMock.mockResolvedValue({

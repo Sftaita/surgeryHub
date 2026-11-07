@@ -14,7 +14,7 @@ export const missionEncoding: HelpTopic = {
     {
       heading: "Encoder les horaires",
       paragraphs: [
-        "Les heures prestées se règlent par pas de 15 minutes (début, fin, pause éventuelle) — pas de saisie libre au clavier, pour éviter les erreurs de frappe sur un horaire qui sert ensuite au calcul financier.",
+        "Les heures prestées se règlent par pas de 15 minutes (début et fin) — pas de saisie libre au clavier, pour éviter les erreurs de frappe sur un horaire qui sert ensuite au calcul financier.",
         "Si la mission se termine après minuit, cochez l'option « jour suivant » plutôt que de saisir une heure de fin antérieure à l'heure de début.",
       ],
     },

@@ -2,6 +2,10 @@
 
 namespace App\Service;
 
+use App\Service\Prestation\MultiRoomConfirmationService;
+use App\Service\Prestation\PrestationGrouping;
+
+use App\Activity\Recorder\PlanningActivityRecorder;
 use App\Entity\Hospital;
 use App\Entity\Mission;
 use App\Entity\PlanningOccurrenceException;
@@ -9,7 +13,9 @@ use App\Entity\PlanningVersion;
 use App\Entity\SiteGroup;
 use App\Entity\SurgeonSchedulePost;
 use App\Entity\User;
+use App\Enum\EligibilityReason;
 use App\Enum\MissionStatus;
+use App\Enum\MissionType;
 use App\Enum\OccurrenceExceptionSource;
 use App\Enum\OccurrenceExceptionType;
 use App\Enum\PlanningVersionScopeSource;
@@ -34,7 +40,24 @@ class PlanningGeneratorServiceV2
         private readonly EntityManagerInterface $em,
         private readonly PlanningConflictDetectionService $conflictDetection,
         private readonly MissionEligibilityService $eligibilityService,
+        private readonly PlanningActivityRecorder $activity,
+        private readonly ?MultiRoomConfirmationService $multiRoom = null,
     ) {}
+
+    /**
+     * D-156 — what the last preview() did for occurrences matched WITHOUT a stable link (by the
+     * times): one entry per such claim, with the other missions that were exactly as close
+     * (`ambiguousWith`, empty when the choice was clear). Read by app:mission:link-schedule-posts.
+     *
+     * @var list<array{postId: int, occurrenceDate: string, missionId: int, ambiguousWith: list<int>}>
+     */
+    private array $unlinkedClaims = [];
+
+    /** @return list<array{postId: int, occurrenceDate: string, missionId: int, ambiguousWith: list<int>}> */
+    public function lastUnlinkedClaims(): array
+    {
+        return $this->unlinkedClaims;
+    }
 
     /**
      * Preview: returns array of preview lines WITHOUT persisting anything.
@@ -73,8 +96,13 @@ class PlanningGeneratorServiceV2
         $postIds              = array_map(static fn (SurgeonSchedulePost $p) => $p->getId(), $allPosts);
         [$exceptionsByOriginal, $exceptionsByTargetDate] = $this->loadOccurrenceExceptions($postIds);
         // (+1 query already spent above, inside resolveSiteIds, only when siteGroupId was given)
+        // Query 6 (D-152): active incompatible surgeon–instrumentist pairs of these posts' surgeons
+        $blockedPairs = $this->eligibilityService->activeIncompatiblePairs(
+            array_map(static fn (SurgeonSchedulePost $p) => (int) $p->getSurgeon()->getId(), $allPosts),
+        );
 
         $claimedMissionIds  = [];
+        $this->unlinkedClaims = [];
         $previewAssignments = []; // [instId => [[dateStr, startMins, endMins], ...]]
         $lines              = [];
 
@@ -91,7 +119,7 @@ class PlanningGeneratorServiceV2
                     $this->emitOccurrenceLine(
                         $post, $current, $dayStr, $post->getInstrumentist(), null, null,
                         $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
-                        $previewAssignments, $missionsByInstrumentist, $lines,
+                        $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
                     );
                     continue;
                 }
@@ -122,7 +150,7 @@ class PlanningGeneratorServiceV2
                         $post, $current, $dayStr, $post->getInstrumentist(),
                         $exception->getOverrideStartTime(), $exception->getOverrideEndTime(),
                         $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
-                        $previewAssignments, $missionsByInstrumentist, $lines,
+                        $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
                     );
                     continue;
                 }
@@ -131,7 +159,7 @@ class PlanningGeneratorServiceV2
                 $this->emitOccurrenceLine(
                     $post, $current, $dayStr, $exception->getOverrideInstrumentist(), null, null,
                     $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
-                    $previewAssignments, $missionsByInstrumentist, $lines,
+                    $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
                 );
             }
 
@@ -143,14 +171,25 @@ class PlanningGeneratorServiceV2
                     $post, $current, $dayStr, $post->getInstrumentist(),
                     $exception->getOverrideStartTime(), $exception->getOverrideEndTime(),
                     $shiftConfigs, $absencesByUser, $existingMissionsPool, $claimedMissionIds,
-                    $previewAssignments, $missionsByInstrumentist, $lines,
+                    $previewAssignments, $missionsByInstrumentist, $lines, $blockedPairs,
+                    $exception->getOccurrenceDate()->format('Y-m-d'),
                 );
             }
 
             $current = $current->modify('+1 day');
         }
 
-        return $this->resolveFreedInstrumentists($lines);
+        $lines = $this->resolveFreedInstrumentists($lines, $blockedPairs);
+        // D-156 — multi-room groups proposed by the posts: to confirm (or reorganise) before
+        // deploy. A fresh preview has no draft, hence no confirmation yet; reopen() re-annotates
+        // against the draft's own confirmations (MultiRoomConfirmationService).
+        PrestationGrouping::annotatePreviewLines($lines);
+        foreach ($lines as &$line) {
+            $line['multiRoomConfirmation'] = $line['multiRoomGroupKey'] !== null ? 'REQUIRED' : null;
+        }
+        unset($line);
+
+        return $lines;
     }
 
     /**
@@ -174,8 +213,13 @@ class PlanningGeneratorServiceV2
         array &$previewAssignments,
         array $missionsByInstrumentist,
         array &$lines,
+        array $blockedPairs = [],
+        ?string $occurrenceDate = null,
     ): void {
         $site = $post->getSite();
+        // D-156 — identity of this occurrence: its post and ORIGINAL date (a MOVED occurrence
+        // keeps the date it was moved from), carried by the line and stored on the mission.
+        $occurrenceDate ??= $dayStr;
 
         if ($overrideStartTime !== null && $overrideEndTime !== null) {
             $startTime = $overrideStartTime;
@@ -201,6 +245,7 @@ class PlanningGeneratorServiceV2
             $lines[] = $this->buildLine(
                 $current, $post, $site, $surgeonName, $startTime, $endTime,
                 $effectiveInstrumentist, 'SKIPPED', null,
+                occurrenceDate: $occurrenceDate,
             );
             return;
         }
@@ -211,7 +256,8 @@ class PlanningGeneratorServiceV2
 
         $existingMission = $this->claimMission(
             $existingMissionsPool, $claimedMissionIds,
-            $surgeon, $site, $current, $startTime, $slotInstrumentist,
+            $surgeon, $site, $current, $startTime, $slotInstrumentist, $endTime,
+            $post, $occurrenceDate,
         );
 
         // D-125 — a pre-existing Mission that is already published/operational (created
@@ -224,19 +270,34 @@ class PlanningGeneratorServiceV2
         // slot wanting the same person is still reported as CONFLICT by hasConflictFast().
         if ($existingMission !== null && self::isOperational($existingMission)) {
             $existingInst = $existingMission->getInstrumentist();
+            // D-152 — a published mission still affected to an incompatible pair (its open
+            // SURGEON_INCOMPATIBILITY alert is treated in the Alertes tab) is never shown "OK".
+            $existingBlocked = $existingInst !== null
+                && isset($blockedPairs[$surgeon->getId() . '-' . $existingInst->getId()]);
             $lines[] = $this->buildLine(
                 $current, $post, $site, $surgeonName,
                 $existingMission->getStartAt() ?? $startTime, $existingMission->getEndAt() ?? $endTime,
-                $existingInst, $existingInst !== null ? 'COVERED' : 'UNCOVERED', $existingMission->getId(),
+                $existingInst, $existingBlocked ? 'CONFLICT' : ($existingInst !== null ? 'COVERED' : 'UNCOVERED'), $existingMission->getId(),
                 null, $existingMission->getStatus(),
+                $existingBlocked ? EligibilityReason::SURGEON_INCOMPATIBILITY->value : null,
+                $occurrenceDate,
             );
             return;
         }
 
         $status                       = 'UNCOVERED';
         $existingMissionInstrumentist = null;
+        // D-152 — the post's (or override's) instrumentist is incompatible with its surgeon: the
+        // line is a CONFLICT tagged SURGEON_INCOMPATIBILITY, never "OK". The instrumentist stays
+        // on the line so the post is identifiable and the manager can correct it; generate()
+        // never persists the pair (guardInstrumentist() → mission without instrumentist,
+        // reported in rejectedAssignments) and the slot is never reserved for her below.
+        $blocked = $slotInstrumentist !== null
+            && isset($blockedPairs[$surgeon->getId() . '-' . $slotInstrumentist->getId()]);
 
-        if ($existingMission !== null) {
+        if ($blocked) {
+            $status = 'CONFLICT';
+        } elseif ($existingMission !== null) {
             $existingMissionInstrumentist = $existingMission->getInstrumentist();
 
             if ($existingMissionInstrumentist === null && $slotInstrumentist === null) {
@@ -251,9 +312,14 @@ class PlanningGeneratorServiceV2
             $slotStartMins = $this->hhmm2mins($startTime->format('H:i'));
             $slotEndMins   = $this->hhmm2mins($endTime->format('H:i'));
 
+            // D-156 — two BLOC slots of the same surgeon on the same site, same day, with the
+            // same instrumentist are one multi-room prestation, never a CONFLICT (same rule
+            // as PrestationGrouping::isMultiRoomSlot(), for slots not yet missions).
+            $isBlock = $post->getType() === MissionType::BLOCK;
             $intraConflict = false;
-            foreach ($previewAssignments[$instId] ?? [] as [$aDate, $aStart, $aEnd]) {
-                if ($aDate === $dayStr && $slotStartMins < $aEnd && $slotEndMins > $aStart) {
+            foreach ($previewAssignments[$instId] ?? [] as [$aDate, $aStart, $aEnd, $aSurgeonId, $aSiteId, $aBlock]) {
+                if ($aDate === $dayStr && $slotStartMins < $aEnd && $slotEndMins > $aStart
+                    && !($isBlock && $aBlock && $aSurgeonId === $surgeon->getId() && $aSiteId === $site->getId())) {
                     $intraConflict = true;
                     break;
                 }
@@ -264,13 +330,13 @@ class PlanningGeneratorServiceV2
             } else {
                 $startAt = $current->setTime((int) $startTime->format('H'), (int) $startTime->format('i'));
                 $endAt   = $current->setTime((int) $endTime->format('H'), (int) $endTime->format('i'));
-                $hasConflict = $this->hasConflictFast($instId, $startAt, $endAt, $missionsByInstrumentist);
+                $hasConflict = $this->hasConflictFast($slotInstrumentist, $startAt, $endAt, $missionsByInstrumentist, $surgeon, $site, $post->getType());
 
                 if ($hasConflict) {
                     $status = 'CONFLICT';
                 } else {
                     $status = 'COVERED';
-                    $previewAssignments[$instId][] = [$dayStr, $slotStartMins, $slotEndMins];
+                    $previewAssignments[$instId][] = [$dayStr, $slotStartMins, $slotEndMins, $surgeon->getId(), $site->getId(), $isBlock];
                 }
             }
         } else {
@@ -282,6 +348,8 @@ class PlanningGeneratorServiceV2
             $slotInstrumentist, $status, $existingMission?->getId(),
             $status === 'MODIFIED' ? $existingMissionInstrumentist : null,
             $existingMission?->getStatus(),
+            $blocked ? EligibilityReason::SURGEON_INCOMPATIBILITY->value : null,
+            $occurrenceDate,
         );
     }
 
@@ -439,8 +507,16 @@ class PlanningGeneratorServiceV2
         $updated  = 0;
         $skipped  = 0;
         $rejected = [];
+        // D-156 — multi-room confirmations decided in the editor: groups confirmed there
+        // (multiRoomConfirmedKey) and missions the manager staffed himself (never asked to
+        // confirm a decision he just took). Recorded once the missions exist.
+        $confirmedKeys    = [];
+        $explicitMissions = [];
 
         foreach ($lines as $line) {
+            if (is_string($line['multiRoomConfirmedKey'] ?? null) && $line['status'] !== 'SKIPPED') {
+                $confirmedKeys[$line['multiRoomConfirmedKey']] = true;
+            }
             if ($line['status'] === 'SKIPPED') {
                 $skipped++;
                 continue;
@@ -454,11 +530,15 @@ class PlanningGeneratorServiceV2
                     continue;
                 }
                 $mission->setPlanningVersion($version);
+                $this->adoptOccurrenceLink($mission, $line);
                 $newInstrumentist = ($line['instrumentistId'] ?? null) !== null
                     ? $this->em->find(User::class, $line['instrumentistId'])
                     : null;
                 $newInstrumentist = $this->guardInstrumentist($mission, $newInstrumentist, $rejected);
                 $mission->setInstrumentist($newInstrumentist);
+                if ($newInstrumentist !== null && $this->isExplicitAssignment($line)) {
+                    $explicitMissions[] = $mission;
+                }
                 $updated++;
                 continue;
             }
@@ -476,6 +556,7 @@ class PlanningGeneratorServiceV2
                     $newInstrumentist = $this->guardInstrumentist($mission, $newInstrumentist, $rejected);
                     $mission->setInstrumentist($newInstrumentist);
                     $mission->setPlanningVersion($version);
+                    $this->adoptOccurrenceLink($mission, $line);
                     $updated++;
                 }
                 continue;
@@ -485,6 +566,7 @@ class PlanningGeneratorServiceV2
                 $mission = $this->em->find(Mission::class, $line['existingMissionId']);
                 if ($mission !== null && $mission->getStatus() === MissionStatus::DRAFT) {
                     $mission->setPlanningVersion($version);
+                    $this->adoptOccurrenceLink($mission, $line);
 
                     if (($line['freedFrom'] ?? false) && $line['instrumentistId'] !== null && $mission->getInstrumentist() === null) {
                         $freed = $this->em->find(User::class, $line['instrumentistId']);
@@ -504,10 +586,38 @@ class PlanningGeneratorServiceV2
             if ($mission === null) { $skipped++; continue; }
 
             $this->em->persist($mission);
+            if ($mission->getInstrumentist() !== null && $this->isExplicitAssignment($line)) {
+                $explicitMissions[] = $mission;
+            }
             $created++;
         }
 
-        $this->em->flush();
+        $result = [
+            'versionId'           => null,
+            'created'             => $created,
+            'updated'             => $updated,
+            'skipped'             => $skipped,
+            'rejectedAssignments' => $rejected,
+        ];
+
+        // H1 (D-126) — the version, its missions and its PLANNING_GENERATED journal entry
+        // commit together: a generated version never exists without its trace (nor the
+        // reverse). Plain connection-level transaction (not wrapInTransaction()) so the
+        // existing flush-based behaviour and its tests stay byte-for-byte the same.
+        $connection = $this->em->getConnection();
+        $connection->beginTransaction();
+        try {
+            $this->em->flush();
+            $this->multiRoom?->recordFromSave($version, $confirmedKeys, $explicitMissions, $generatedBy);
+            $result['versionId'] = $version->getId();
+            $this->activity->generated($version, array_values($lines), $result, $overrideLines !== null, $generatedBy);
+            $connection->commit();
+        } catch (\Throwable $e) {
+            if ($connection->isTransactionActive()) {
+                $connection->rollBack();
+            }
+            throw $e;
+        }
 
         // D-091 — surface cross-site conflicts as PlanningAlert rows right after
         // generation, so the manager sees them in the Alertes tab before ever attempting
@@ -517,13 +627,7 @@ class PlanningGeneratorServiceV2
         // discipline the rest of this generator already follows.
         $this->conflictDetection->syncAlertsForVersion($version);
 
-        return [
-            'versionId'           => $version->getId(),
-            'created'             => $created,
-            'updated'             => $updated,
-            'skipped'             => $skipped,
-            'rejectedAssignments' => $rejected,
-        ];
+        return $result;
     }
 
     /**
@@ -572,6 +676,28 @@ class PlanningGeneratorServiceV2
      * (caller counts as skipped) when the post/surgeon/site referenced by the line can no
      * longer be resolved — never throws, matching generate()'s existing defensive style.
      */
+    /**
+     * D-156 — the line's instrumentist is the manager's own choice in the editor, not the
+     * one its recurring post proposes (an ad-hoc line, postId <= 0, always is).
+     *
+     * @param array<string, mixed> $line
+     */
+    public function isExplicitAssignment(array $line): bool
+    {
+        $instrumentistId = $line['instrumentistId'] ?? null;
+        // A "freed" instrumentist is proposed by the generator itself (second pass), not chosen.
+        if ($instrumentistId === null || ($line['freedFrom'] ?? false) === true) {
+            return false;
+        }
+        $postId = (int) ($line['postId'] ?? 0);
+        if ($postId <= 0) {
+            return true;
+        }
+        $post = $this->em->find(SurgeonSchedulePost::class, $postId);
+
+        return $post === null || $post->getInstrumentist()?->getId() !== (int) $instrumentistId;
+    }
+
     public function createMissionFromLine(array $line, PlanningVersion $version, User $actor, array &$rejected): ?Mission
     {
         $post = $this->em->find(SurgeonSchedulePost::class, $line['postId']);
@@ -606,9 +732,55 @@ class PlanningGeneratorServiceV2
         $mission->setSchedulePrecision(SchedulePrecision::EXACT);
         $mission->setCreatedBy($actor);
         $mission->setPlanningVersion($version);
+        $mission->linkToScheduleOccurrence($post, self::occurrenceDateOf($line));
         $mission->setInstrumentist($this->guardInstrumentist($mission, $instrumentist, $rejected));
 
         return $mission;
+    }
+
+    /**
+     * D-156 — a DRAFT mission backed by a post line without a stable link yet (generated before
+     * the link existed, or a manual mission adopted by the post) gets the line's occurrence:
+     * the association the manager has just worked on becomes its identity, so a later reopen
+     * can never move this line onto another room. Never a published mission (R-01), never a
+     * mission of another surgeon/site, never an occurrence another live mission already holds.
+     *
+     * @param array<string, mixed> $line
+     */
+    public function adoptOccurrenceLink(Mission $mission, array $line): void
+    {
+        $postId = (int) ($line['postId'] ?? 0);
+        if ($postId <= 0 || $mission->getStatus() !== MissionStatus::DRAFT || $mission->getSchedulePost() !== null) {
+            return;
+        }
+        $post = $this->em->find(SurgeonSchedulePost::class, $postId);
+        if ($post === null
+            || $post->getSurgeon()?->getId() !== $mission->getSurgeon()?->getId()
+            || $post->getSite()?->getId() !== $mission->getSite()?->getId()) {
+            return;
+        }
+        $date = self::occurrenceDateOf($line);
+        $taken = (int) $this->em->createQuery(sprintf(
+            'SELECT COUNT(m.id) FROM %s m WHERE m.schedulePost = :post AND m.scheduleOccurrenceDate = :date AND m.status <> :cancelled AND m.id <> :id',
+            Mission::class,
+        ))
+            ->setParameter('post', $post)
+            ->setParameter('date', $date, \Doctrine\DBAL\Types\Types::DATE_IMMUTABLE)
+            ->setParameter('cancelled', MissionStatus::CANCELLED)
+            ->setParameter('id', $mission->getId())
+            ->getSingleScalarResult();
+        if ($taken === 0) {
+            $mission->linkToScheduleOccurrence($post, $date);
+        }
+    }
+
+    /** @param array<string, mixed> $line */
+    private static function occurrenceDateOf(array $line): \DateTimeImmutable
+    {
+        $raw = is_string($line['occurrenceDate'] ?? null) ? $line['occurrenceDate'] : (string) $line['date'];
+        $date = \DateTimeImmutable::createFromFormat('!Y-m-d', $raw);
+
+        return $date !== false ? $date : new \DateTimeImmutable((string) $line['date']);
     }
 
     // ── Recurrence expansion (in-memory, no DB hits) ────────────────────────
@@ -928,13 +1100,15 @@ class PlanningGeneratorServiceV2
         return $index;
     }
 
-    private function hasConflictFast(int $instrumentistId, \DateTimeImmutable $slotStart, \DateTimeImmutable $slotEnd, array $missionsByInstrumentist): bool
+    private function hasConflictFast(User $instrumentist, \DateTimeImmutable $slotStart, \DateTimeImmutable $slotEnd, array $missionsByInstrumentist, User $surgeon, Hospital $site, MissionType $type): bool
     {
-        foreach ($missionsByInstrumentist[$instrumentistId] ?? [] as $mission) {
+        foreach ($missionsByInstrumentist[$instrumentist->getId()] ?? [] as $mission) {
             if ($mission->getStatus() === MissionStatus::REJECTED) {
                 continue;
             }
-            if ($mission->getStartAt() < $slotEnd && $mission->getEndAt() > $slotStart) {
+            if ($mission->getStartAt() < $slotEnd && $mission->getEndAt() > $slotStart
+                // D-156 — legitimate multi-room overlap: same prestation, not a conflict.
+                && !PrestationGrouping::isMultiRoomSlot($mission, $instrumentist, $surgeon, $site, $type, $slotStart, $slotEnd)) {
                 return true;
             }
         }
@@ -980,6 +1154,12 @@ class PlanningGeneratorServiceV2
      * Same multi-room claim priority as V1 (D-035): exact instrumentist match first,
      * then any unclaimed mission within ±30 minutes of the post's start time.
      *
+     * D-156 (recette 2026-10-19) — among those, the mission whose start AND end are closest
+     * to the post's slot comes first: two rooms of the same surgeon starting at the same time
+     * (Journée 07:45–18:00 and Matin 07:45–13:00, same instrumentist) used to be claimed in
+     * pool order, so a reopened draft showed the Journée line on the Matin mission — and an
+     * edit of that line changed the other room.
+     *
      * @param array<string, Mission[]> $pool
      * @param array<int, true>         $claimedIds
      */
@@ -991,6 +1171,9 @@ class PlanningGeneratorServiceV2
         \DateTimeImmutable $day,
         \DateTimeImmutable $slotStart,
         ?User $slotInstrumentist,
+        ?\DateTimeImmutable $slotEnd = null,
+        ?SurgeonSchedulePost $post = null,
+        ?string $occurrenceDate = null,
     ): ?Mission {
         if ($surgeon === null || $site === null) {
             return null;
@@ -1002,6 +1185,26 @@ class PlanningGeneratorServiceV2
             return null;
         }
 
+        // D-156 — the occurrence's OWN mission first, by its stable link (post + occurrence
+        // date), never by the times: two rooms of the same surgeon, site and identical times
+        // are never swapped. A live mission is preferred to a cancelled one of the same
+        // occurrence (a cancelled mission keeps its link, its successor carries it too).
+        if ($post !== null && $occurrenceDate !== null) {
+            $occurrenceKey = $post->getId() . '_' . $occurrenceDate;
+            $own = array_values(array_filter($candidates, static fn (Mission $m) => !isset($claimedIds[$m->getId()]) && $m->scheduleOccurrenceKey() === $occurrenceKey));
+            usort($own, static fn (Mission $a, Mission $b) => [(int) ($a->getStatus() === MissionStatus::CANCELLED), $a->getId()]
+                <=> [(int) ($b->getStatus() === MissionStatus::CANCELLED), $b->getId()]);
+            if ($own !== []) {
+                $claimedIds[$own[0]->getId()] = true;
+
+                return $own[0];
+            }
+        }
+        // A mission linked to another occurrence is never claimed by this one. Only missions
+        // without a link (manual, surgeon request, room takeover, generated before the link
+        // existed) fall back to the historical matching by times below.
+        $candidates = array_filter($candidates, static fn (Mission $m) => $m->scheduleOccurrenceKey() === null);
+
         $slotStartMins = $this->hhmm2mins($slotStart->format('H:i'));
         $slotInstId    = $slotInstrumentist?->getId();
 
@@ -1009,6 +1212,33 @@ class PlanningGeneratorServiceV2
             $mMins = (int) $m->getStartAt()->format('H') * 60 + (int) $m->getStartAt()->format('i');
             return abs($mMins - $slotStartMins) <= 30;
         });
+        if ($slotEnd !== null) {
+            $slotEndMins = $this->hhmm2mins($slotEnd->format('H:i'));
+            $distance = static fn (Mission $m): int => abs(((int) $m->getStartAt()->format('H') * 60 + (int) $m->getStartAt()->format('i')) - $slotStartMins)
+                + abs(((int) $m->getEndAt()->format('H') * 60 + (int) $m->getEndAt()->format('i')) - $slotEndMins);
+            // Closest slot first; the same instrumentist only breaks ties (identical times).
+            $rank = static fn (Mission $m): array => [$distance($m), (int) ($m->getInstrumentist()?->getId() !== $slotInstId)];
+            uasort($nearby, static fn (Mission $a, Mission $b) => $rank($a) <=> $rank($b));
+            $free = array_values(array_filter($nearby, static fn (Mission $m) => !isset($claimedIds[$m->getId()])));
+            if ($free === []) {
+                return null;
+            }
+            $claimed = $free[0];
+            $claimedIds[$claimed->getId()] = true;
+            if ($post !== null && $occurrenceDate !== null) {
+                $this->unlinkedClaims[] = [
+                    'postId'         => (int) $post->getId(),
+                    'occurrenceDate' => $occurrenceDate,
+                    'missionId'      => (int) $claimed->getId(),
+                    'ambiguousWith'  => array_values(array_map(
+                        static fn (Mission $m) => (int) $m->getId(),
+                        array_filter(array_slice($free, 1), static fn (Mission $m) => $rank($m) === $rank($claimed)),
+                    )),
+                ];
+            }
+
+            return $claimed;
+        }
 
         foreach ($nearby as $mission) {
             if (isset($claimedIds[$mission->getId()])) {
@@ -1033,7 +1263,8 @@ class PlanningGeneratorServiceV2
 
     // ── Second pass: freed-instrumentist auto-assignment (D-034, unchanged conceptually) ──
 
-    private function resolveFreedInstrumentists(array $lines): array
+    /** @param array<string, true> $blockedPairs D-152 — never suggest a freed instrumentist incompatible with the line's surgeon */
+    private function resolveFreedInstrumentists(array $lines, array $blockedPairs = []): array
     {
         $freedByDate = [];
         foreach ($lines as $line) {
@@ -1045,7 +1276,7 @@ class PlanningGeneratorServiceV2
             }
         }
         foreach ($lines as $line) {
-            if ($line['status'] !== 'SKIPPED' && $line['instrumentistId'] !== null) {
+            if ($line['status'] !== 'SKIPPED' && $line['instrumentistId'] !== null && ($line['blockedReason'] ?? null) === null) {
                 unset($freedByDate[$line['date']][$line['instrumentistId']]);
             }
         }
@@ -1077,12 +1308,16 @@ class PlanningGeneratorServiceV2
             $lineEnd   = $this->hhmm2mins($line['endTime']);
 
             foreach ($available as $instId => [$freedName, $freedPhotoPath]) {
+                if (isset($blockedPairs[$line['surgeonId'] . '-' . $instId])) {
+                    continue;
+                }
                 $hasOverlap = false;
                 foreach ($lines as $other) {
                     if (
                         $other['date'] === $date
                         && $other['instrumentistId'] === $instId
                         && $other['status'] !== 'SKIPPED'
+                        && ($other['blockedReason'] ?? null) === null
                         && $this->hhmm2mins($other['startTime']) < $lineEnd
                         && $this->hhmm2mins($other['endTime']) > $lineStart
                     ) {
@@ -1125,7 +1360,7 @@ class PlanningGeneratorServiceV2
      *   status: string, existingMissionId: int|null,
      *   existingInstrumentistId: int|null, existingInstrumentistName: string|null,
      *   freedFrom: bool, surgeonPhotoPath: string|null, instrumentistPhotoPath: string|null,
-     *   existingMissionStatus: string|null
+     *   existingMissionStatus: string|null, blockedReason: string|null
      * }
      */
     private function buildLine(
@@ -1140,10 +1375,15 @@ class PlanningGeneratorServiceV2
         ?int $existingMissionId,
         ?User $existingInstrumentist = null,
         ?MissionStatus $existingMissionStatus = null,
+        ?string $blockedReason = null,
+        ?string $occurrenceDate = null,
     ): array {
         return [
             'date'                      => $day->format('Y-m-d'),
             'postId'                    => $post->getId(),
+            // D-156 — the post occurrence this line stands for (original date of a MOVED one):
+            // with postId, the stable identity createMissionFromLine() stores on the mission.
+            'occurrenceDate'            => $occurrenceDate ?? $day->format('Y-m-d'),
             'surgeonId'                 => $post->getSurgeon()->getId(),
             'surgeonName'               => $surgeonName,
             'missionType'               => $post->getType()->value,
@@ -1163,6 +1403,9 @@ class PlanningGeneratorServiceV2
             // D-125 — lets the editor show (and lock) a line that mirrors a Mission which
             // already exists; anything but DRAFT is never modified by generate() (R-01).
             'existingMissionStatus'     => $existingMissionStatus?->value,
+            // D-152 — SURGEON_INCOMPATIBILITY when the line's instrumentist is incompatible with
+            // the surgeon (status CONFLICT): shown as « Bloqué — instrumentiste incompatible ».
+            'blockedReason'             => $blockedReason,
         ];
     }
 }

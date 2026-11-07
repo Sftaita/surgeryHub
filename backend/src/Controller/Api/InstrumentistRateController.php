@@ -7,6 +7,7 @@ use App\Entity\User;
 use App\Enum\InstrumentistRateType;
 use App\Security\Voter\BillingVoter;
 use App\Service\InstrumentistRateService;
+use App\Service\InstrumentistRateStalenessService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -27,6 +28,7 @@ final class InstrumentistRateController extends AbstractController
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly InstrumentistRateService $rateService,
+        private readonly InstrumentistRateStalenessService $staleness,
     ) {}
 
     #[Route('', name: 'api_instrumentist_rates_list', methods: ['GET'])]
@@ -125,7 +127,48 @@ final class InstrumentistRateController extends AbstractController
 
         $newRate = $this->rateService->replaceCurrentRateFrom($rate, (string) $amount, $currency, $effectiveFrom, $actor);
 
-        return $this->json($this->serializeRate($newRate), 201);
+        // D-172 — date d'effet passée : calculs non verrouillés qui portent encore l'ancien tarif.
+        $stale = $newRate->getValidFrom() < new \DateTimeImmutable('today')
+            ? $this->staleness->calculationsInWindow($newRate->getInstrumentist(), $newRate->getRateType(), $newRate->getValidFrom(), $newRate->getValidTo(), false)
+            : [];
+
+        return $this->json($this->serializeRate($newRate) + ['staleCalculations' => $stale], 201);
+    }
+
+    /**
+     * D-172 — date de prise d'effet d'un tarif, rétroactive comprise. `dryRun: true` renvoie
+     * l'impact (période concernée, calculs verrouillés qui bloquent, calculs à recalculer)
+     * sans rien écrire.
+     */
+    #[Route('/{id}/effective-date', name: 'api_instrumentist_rates_effective_date', methods: ['POST'])]
+    public function changeEffectiveDate(int $userId, int $id, Request $request, #[CurrentUser] User $actor): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(BillingVoter::MANAGE);
+        $instrumentist = $this->getInstrumentistOr404($userId);
+        $rate = $this->getRateOr404($id);
+        if ($rate->getInstrumentist()?->getId() !== $instrumentist->getId()) {
+            throw $this->createNotFoundException('Tarif introuvable.');
+        }
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $validFrom = $this->parseDate($data['validFrom'] ?? null);
+        if ($validFrom === null) {
+            return $this->json(['error' => ['status' => 422, 'code' => 'VALIDATION_FAILED', 'message' => 'validFrom est requis.']], 422);
+        }
+        $dryRun = ($data['dryRun'] ?? false) === true;
+
+        $result = $this->rateService->changeEffectiveDate($rate, $validFrom, $actor, $dryRun);
+
+        return $this->json([
+            'dryRun' => $dryRun,
+            'rate' => $this->serializeRate($result['rate']),
+            'previousRate' => $result['previousRate'] !== null ? $this->serializeRate($result['previousRate']) : null,
+            'oldValidFrom' => $result['oldValidFrom'],
+            'newValidFrom' => $result['newValidFrom'],
+            'period' => ['from' => $result['periodFrom'], 'to' => $result['periodTo']],
+            'lockedCalculations' => $result['lockedCalculations'],
+            'staleCalculations' => $result['staleCalculations'],
+        ]);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────

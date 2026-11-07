@@ -21,14 +21,20 @@ use Doctrine\ORM\EntityManagerInterface;
  */
 final class RequiredChoiceGroupResolver
 {
-    public function __construct(private readonly EntityManagerInterface $em) {}
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly ?ReadScopeCache $readCache = null,
+    ) {}
 
     public function resolve(Firm $firm, InterventionType $interventionType): RequiredChoicePolicy
     {
-        $offering = $this->em->getRepository(FirmServiceOffering::class)->findOneBy([
+        $find = fn () => $this->em->getRepository(FirmServiceOffering::class)->findOneBy([
             'firm' => $firm,
             'interventionType' => $interventionType,
         ]);
+        // D-142 — même clé que l'autre lecteur de FirmServiceOffering : une requête par couple.
+        $key = $firm->getId() !== null && $interventionType->getId() !== null ? sprintf('firm_service_offering:%d:%d', $firm->getId(), $interventionType->getId()) : null;
+        $offering = $this->readCache !== null ? $this->readCache->remember($key, $find) : $find();
 
         if ($offering === null) {
             return RequiredChoicePolicy::none();

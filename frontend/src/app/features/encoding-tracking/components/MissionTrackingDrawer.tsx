@@ -1,15 +1,28 @@
 import * as React from "react";
-import { Box, CircularProgress, Tooltip } from "@mui/material";
+import { Box, CircularProgress, Dialog, DialogContent, DialogTitle, Tooltip } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { MissionLocksIndicator } from "../../missions/components/MissionEncodingBadge";
+import { buildOperativeActivity, OperativeActivityBody } from "../../missions/components/OperativeActivityCard";
+import { hoursCorrectionHint, realHoursOf } from "../../missions/utils/realHours";
 import { useNavigate } from "react-router-dom";
 import { fetchMissionById, getMissionExecution, remindMissionHours } from "../../missions/api/missions.api";
 import { fetchMissionAudit } from "../../planning-v2/api/planningV2.api";
-import { fetchMissionEncoding, remindMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
+import { ENCODING_CHANGED_BEFORE_VALIDATION, isEncodingConcurrentModification, fetchMissionEncoding, newActionBatchId, rejectMissionEncoding, remindMissionEncoding, reopenMissionEncoding, validateMissionEncoding } from "../../encoding/api/encoding.api";
+import { encodingIncompleteText } from "../../encoding/api/encodingIncomplete";
 import { EncodingContentPanel } from "./EncodingContentPanel";
+import type { EncodingAnomalyMarks, EncodingFocusTarget } from "./EncodingContentPanel";
+import { FinancialAnomaliesCard } from "./FinancialAnomaliesCard";
+import { EncodingCorrectionDialog } from "./EncodingCorrectionDialog";
+import { referenceNotice } from "../../prestations/components/PrestationDecisionNotice";
+import type { EncodingCorrectionKind } from "./EncodingCorrectionDialog";
 import { useToast } from "../../../ui/toast/useToast";
 import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
-import type { EncodingTrackingItem } from "../api/encodingTracking.api";
-import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, formatMinutes } from "../encodingStateMeta";
+import { getMissionEncodingHistory, getMissionFinancialAnomalies } from "../api/encodingTracking.api";
+import type { EncodingHistoryChange, EncodingHistoryItem, EncodingTrackingItem } from "../api/encodingTracking.api";
+import EditServiceHoursDialog from "../../missions/components/EditServiceHoursDialog";
+import InterventionsSection from "../../encoding/components/InterventionsSection";
+import CompleteAndValidateEncodingDialog from "../../encoding/components/CompleteAndValidateEncodingDialog";
+import { EFFECTIVE_SOURCE_LABEL, HOURS_COMPARISON_TONE, NO_HOURS_WITHOUT_INSTRUMENTIST, formatMinutes } from "../encodingStateMeta";
 
 const GRAY_950 = "#0B1320";
 const GRAY_800 = "#2A3643";
@@ -43,6 +56,8 @@ const STATE_TONE: Record<string, { bg: string; fg: string }> = {
   VALIDATED: { bg: GREEN_100, fg: GREEN_800 },
   LOCKED: { bg: GREEN_100, fg: GREEN_800 },
   NOT_APPLICABLE: { bg: GRAY_100, fg: GRAY_500 },
+  CANCELLED: { bg: "#FDECEC", fg: "#B42318" },
+  NOT_DECLARED: { bg: AMBER_100, fg: AMBER_700 },
 };
 
 function initials(name: string): string {
@@ -50,12 +65,47 @@ function initials(name: string): string {
 }
 
 function extractErrorMessage(err: any): string {
-  return err?.response?.data?.message ?? err?.response?.data?.detail ?? err?.message ?? String(err);
+  return err?.response?.data?.error?.message ?? err?.response?.data?.message ?? err?.response?.data?.detail ?? err?.message ?? String(err);
+}
+
+const SUBMITTER_ROLE_LABEL: Record<"INSTRUMENTIST" | "SURGEON" | "MANAGER", string> = {
+  INSTRUMENTIST: "instrumentiste",
+  SURGEON: "chirurgien",
+  MANAGER: "manager",
+};
+
+const STAGE_LABEL: Record<string, string> = { D1: "J+1", D2: "J+2", D4: "J+4" };
+const CHANNEL_LABEL: Record<string, string> = { PUSH: "push", EMAIL: "e-mail" };
+
+/** D-143 — "J+1 15/07 (push) · J+2 16/07 (e-mail) · J+4 18/07 (push + e-mail, managers alertés)". */
+function automaticRemindersLabel(reminders: { stage: string; sentAt: string | null; channels: string[]; managersNotified: number | null }[] | undefined): string | null {
+  if (!reminders || reminders.length === 0) return null;
+  return reminders.map((r) => {
+    const channels = r.channels.filter((c) => c !== "IN_APP").map((c) => CHANNEL_LABEL[c] ?? c).join(" + ") || "centre de notifications";
+    const managers = r.managersNotified ? ", managers alertés" : "";
+    return `${STAGE_LABEL[r.stage] ?? r.stage} ${r.sentAt ? new Date(r.sentAt).toLocaleDateString("fr-BE", { day: "2-digit", month: "2-digit" }) : ""} (${channels}${managers})`;
+  }).join(" · ");
 }
 
 function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("fr-BE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+const HISTORY_CATEGORY_LABEL: Record<EncodingHistoryItem["category"], string> = {
+  HOURS: "Heures",
+  INTERVENTION: "Intervention",
+  MATERIAL: "Matériel",
+  WORKFLOW: "Encodage",
+};
+
+/** D-153 — valeur avant/après telle que servie par le journal (jamais recalculée ici). */
+function formatChangeValue(change: EncodingHistoryChange, value: EncodingHistoryChange["from"]): string {
+  if (change.redacted) return "(masqué)";
+  if (value === null || value === "") return "—";
+  if (typeof value === "boolean") return value ? "oui" : "non";
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)) return formatDateTime(value);
+  return String(value);
 }
 
 interface StepInfo { label: string; done: boolean; when: string; }
@@ -91,7 +141,10 @@ interface Props {
  *
  * D-118 §22.6 avait choisi que ce module observe sans agir ; élargi ici (D-120) au strict
  * nécessaire de la maquette : Valider (réutilise POST .../encoding/validate) et Relancer
- * (POST .../encoding/remind, D-120). Rejeter/Rouvrir restent sur la fiche mission complète.
+ * (POST .../encoding/remind, D-120). D-148 : « Renvoyer en correction » (POST .../encoding/reject)
+ * et « Rouvrir l'encodage » (POST .../encoding/reopen), proposés seulement si allowedActions les
+ * contient ; un refus (clôture, verrou financier) est expliqué par le backend
+ * (encodingCorrectionBlockedReason), jamais déduit ici.
  */
 export function MissionTrackingDrawer({ item, onClose }: Props) {
   const toast = useToast();
@@ -123,6 +176,32 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
     queryFn: () => fetchMissionAudit(missionId!),
     enabled: open,
   });
+  // D-138 — explication de l'anomalie FINANCE, servie par le backend (même état que la liste).
+  const isFinancialAnomaly = item?.financial.state === "ANOMALY";
+  // D-153 — historique des corrections (heures, interventions, matériel, étapes) : lecture
+  // du journal d'activité, servie aux managers seulement (MissionVoter::VIEW_ENCODING_HISTORY).
+  const historyQuery = useQuery({
+    queryKey: ["mission-encoding-history", missionId],
+    queryFn: () => getMissionEncodingHistory(missionId!),
+    enabled: open,
+  });
+  const financialQuery = useQuery({
+    queryKey: ["encoding-tracking-financial-anomalies", missionId],
+    queryFn: () => getMissionFinancialAnomalies(missionId!),
+    enabled: open && isFinancialAnomaly,
+  });
+
+  // Le détail est plus récent que la liste (ex. calcul relancé ailleurs) : la liste est
+  // rechargée plutôt que de laisser le tiroir et la ligne se contredire.
+  const detailState = financialQuery.data?.state;
+  React.useEffect(() => {
+    if (detailState && item && detailState !== item.financial.state) {
+      void queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false });
+    }
+  }, [detailState, item?.financial.state]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [focus, setFocus] = React.useState<EncodingFocusTarget | null>(null);
+  React.useEffect(() => { setFocus(null); }, [missionId]);
 
   // En parallèle, jamais en série : chaque refetch attendu l'un après l'autre retardait
   // d'autant la mise à jour du tiroir (et de la liste qui fournit `item`).
@@ -131,46 +210,162 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       queryClient.invalidateQueries({ queryKey: ["mission", missionId] }),
       queryClient.invalidateQueries({ queryKey: ["missionEncoding", missionId] }),
       queryClient.invalidateQueries({ queryKey: ["mission-audit", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["mission-execution", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["mission-encoding-history", missionId] }),
       queryClient.invalidateQueries({ queryKey: ["missions"], exact: false }),
       queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false }),
+      queryClient.invalidateQueries({ queryKey: ["encoding-tracking-financial-anomalies", missionId] }),
+    ]);
+  }
+
+  // Après une relance de calcul : FINANCE change dans la liste, le tiroir, la fiche mission
+  // et la worklist « Facturation firmes » — tout est relu depuis le backend.
+  function refreshAfterCalculation() {
+    return Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["encoding-tracking"], exact: false }),
+      queryClient.invalidateQueries({ queryKey: ["encoding-tracking-financial-anomalies", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["mission-financial-calculations", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["mission-audit", missionId] }),
+      queryClient.invalidateQueries({ queryKey: ["firm-billing-worklist"], exact: false }),
     ]);
   }
 
   const validateMutation = useMutation({
-    mutationFn: async () => validateMissionEncoding(missionId!),
-    onSuccess: async () => { toast.success("Encodage validé."); await refreshAfterAction(); },
-    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
+    mutationFn: async () => validateMissionEncoding(missionId!, missionQuery.data?.encodingRevision ?? null),
+    onSuccess: async () => {
+      toast.success(item?.prestation ? `Prestation validée (${item.prestation.missionIds.length} missions).` : "Encodage validé.");
+      await refreshAfterAction();
+    },
+    onError: async (err: any) => {
+      // D-171 — révision obsolète : jamais validée ; la mission est relue avant toute nouvelle tentative.
+      if (isEncodingConcurrentModification(err)) {
+        toast.warning(ENCODING_CHANGED_BEFORE_VALIDATION);
+        await refreshAfterAction();
+        return;
+      }
+      toast.error(err?.response?.status === 403 ? "Accès interdit." : encodingIncompleteText(err) ?? extractErrorMessage(err));
+    },
   });
 
   const remindMutation = useMutation({
-    mutationFn: async () => remindMissionEncoding(missionId!),
-    onSuccess: async () => { toast.success("Relance envoyée à l'instrumentiste."); await refreshAfterAction(); },
-    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
+    // H5a — the batch id is fixed at click time: a retry of this mutation reuses it.
+    mutationFn: async (batchId: string) => remindMissionEncoding(missionId!, batchId),
+    onSuccess: async (updated) => {
+      // D-143 — retour explicite des canaux réellement utilisés (décidés par le serveur).
+      const channel = updated?.lastManualReminderChannel;
+      toast.success(
+        channel === "push+email"
+          ? "Relance envoyée à l'instrumentiste par notification push et par e-mail."
+          : channel === "push"
+            ? "Relance envoyée à l'instrumentiste par notification push."
+            : channel === "email"
+              ? "Relance envoyée à l'instrumentiste par e-mail."
+              : "Relance envoyée à l'instrumentiste.",
+      );
+      await refreshAfterAction();
+    },
+    // D-166 — refus du backend (ex. instrumentiste retirée depuis l'ouverture du tiroir) : la
+    // mission est relue pour que le bouton suive les droits réels (allowedActions), jamais
+    // un état gardé côté écran.
+    onError: (err: any) => {
+      toast.error(err?.response?.status === 403 ? "Relance impossible pour cette mission (aucune instrumentiste affectée ou statut modifié entre-temps)." : extractErrorMessage(err));
+      void refreshAfterAction();
+    },
   });
+
+  // D-148 — la fenêtre reste ouverte jusqu'à la confirmation serveur ; un seul envoi à la fois.
+  const [correctionKind, setCorrectionKind] = React.useState<EncodingCorrectionKind | null>(null);
+  const correctionInFlight = React.useRef(false);
+  const correctionMutation = useMutation({
+    mutationFn: async ({ kind, reason }: { kind: EncodingCorrectionKind; reason: string }) =>
+      kind === "RETURN" ? rejectMissionEncoding(missionId!, reason) : reopenMissionEncoding(missionId!, reason),
+    onSuccess: async (_data, { kind }) => {
+      setCorrectionKind(null);
+      toast.success(item?.prestation
+        ? (kind === "RETURN" ? "Prestation renvoyée en correction à l'instrumentiste." : "Prestation rouverte : l'instrumentiste peut la corriger.")
+        : (kind === "RETURN" ? "Encodage renvoyé en correction à l'instrumentiste." : "Encodage rouvert : l'instrumentiste peut le corriger."));
+      await refreshAfterAction();
+    },
+    onSettled: () => { correctionInFlight.current = false; },
+  });
+  React.useEffect(() => { setCorrectionKind(null); }, [missionId]);
+  function openCorrection(kind: EncodingCorrectionKind) {
+    correctionMutation.reset();
+    setCorrectionKind(kind);
+  }
+  function confirmCorrection(reason: string) {
+    if (correctionKind === null || correctionInFlight.current) return;
+    correctionInFlight.current = true;
+    correctionMutation.mutate({ kind: correctionKind, reason });
+  }
+  const correctionError = correctionMutation.isError
+    ? (correctionMutation.error as any)?.response?.status === 403
+      ? "Action non autorisée pour cette mission (son statut a peut-être changé)."
+      : extractErrorMessage(correctionMutation.error)
+    : null;
 
   const remindHoursMutation = useMutation({
     mutationFn: async () => remindMissionHours(missionId!),
     onSuccess: async () => { toast.success("Rappel des heures envoyé à l'instrumentiste."); await refreshAfterAction(); },
-    onError: (err: any) => toast.error(err?.response?.status === 403 ? "Accès interdit." : extractErrorMessage(err)),
+    onError: (err: any) => {
+      toast.error(err?.response?.status === 403 ? "Rappel impossible pour cette mission (aucune instrumentiste affectée, heures déjà renseignées ou statut modifié entre-temps)." : extractErrorMessage(err));
+      void refreshAfterAction();
+    },
   });
 
+  // D-153 — corrections directes du manager (heures / interventions & matériel).
+  const [hoursOpen, setHoursOpen] = React.useState(false);
+  const [encodingEditOpen, setEncodingEditOpen] = React.useState(false);
+  // D-171 — « Terminer et valider » (manager).
+  const [completeValidateOpen, setCompleteValidateOpen] = React.useState(false);
+  React.useEffect(() => { setHoursOpen(false); setEncodingEditOpen(false); setCompleteValidateOpen(false); }, [missionId]);
+
   // Le tiroir se superpose à la liste (aucun reflow) : Échap le ferme, comme un tiroir MUI.
+  // D-148 / D-153 — pendant une fenêtre (motif, heures, encodage), Échap ne concerne qu'elle.
+  const modalOpen = correctionKind !== null || hoursOpen || encodingEditOpen || completeValidateOpen;
   React.useEffect(() => {
-    if (!open) return;
+    if (!open || modalOpen) return;
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+  }, [open, onClose, modalOpen]);
 
   if (!open || !item) return null;
 
   const tone = STATE_TONE[item.encodingState] ?? STATE_TONE.NOT_APPLICABLE;
+  // D-141 — le repère « Anomalie » suit ce qui bloque ENCORE selon le backend : une anomalie
+  // auditée `resolved` n'est plus signalée, une anomalie apparue depuis l'échec l'est.
+  const financialAnomalies = isFinancialAnomaly && financialQuery.data?.state === "ANOMALY"
+    ? [...financialQuery.data.anomalies.filter((a) => !a.resolved), ...(financialQuery.data.newAnomalies ?? [])]
+    : [];
+  const anomalyMarks: EncodingAnomalyMarks = {
+    interventionIds: new Set(financialAnomalies.filter((a) => a.materialLineId === null && a.missionInterventionId !== null).map((a) => a.missionInterventionId!)),
+    materialLineIds: new Set(financialAnomalies.filter((a) => a.materialLineId !== null).map((a) => a.materialLineId!)),
+  };
   const allowedActions = missionQuery.data?.allowedActions ?? [];
   const canValidate = allowedActions.includes("validate");
+  // D-171 — le manager termine et valide lui-même un encodage encore ouvert ; sinon, la raison
+  // pour laquelle la validation n'est pas possible est servie par le backend, affichée telle quelle.
+  const canCompleteAndValidate = allowedActions.includes("complete_and_validate");
+  const validationBlockedReason = missionQuery.data?.encodingValidationBlockedReason ?? null;
+  const operativeActivity = missionQuery.data ? buildOperativeActivity(missionQuery.data) : null;
   const canRemind = allowedActions.includes("remind");
   // D-136 — décidé uniquement par le backend (MissionHoursReminderPolicy) : jamais déduit
   // ici de hasRealHours ou de la date.
   const canRemindHours = allowedActions.includes("remind_hours");
+  // D-148 — 'reject' n'est offert qu'en SUBMITTED dans le suivi (DECLARED = autre circuit).
+  const canReturnEncoding = allowedActions.includes("reject") && missionQuery.data?.status === "SUBMITTED";
+  const canReopenEncoding = allowedActions.includes("reopen");
+  const correctionBlockedReason = missionQuery.data?.encodingCorrectionBlockedReason ?? null;
+  // D-153 — accordés uniquement par le backend (MissionEncodingCorrectionPolicy), jamais déduits
+  // ici du statut : une mission validée se rouvre d'abord, une mission clôturée ou verrouillée
+  // financièrement ne se corrige pas.
+  const canEditHours = allowedActions.includes("edit_hours");
+  // D-155 — servi par le backend (liste ou détail de la mission), jamais déduit ici.
+  const withoutInstrumentist = !!(item.executedWithoutInstrumentist ?? missionQuery.data?.executedWithoutInstrumentist);
+  const canEditEncoding = allowedActions.includes("edit_encoding");
+  const financialNotice = missionQuery.data?.encodingCorrectionFinancialNotice ?? null;
+  const history = historyQuery.data ?? [];
   const isValidated = item.encodingState === "VALIDATED" || item.encodingState === "LOCKED";
   const entries = encodingQuery.data?.entries ?? [];
   const refs = item.encoding.materialLineCount;
@@ -179,20 +374,41 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
   const planRange = item.startAt && item.endAt
     ? `${formatDateTime(item.startAt).slice(-5)} → ${formatDateTime(item.endAt).slice(-5)}`
     : "—";
-  const realRange = executionQuery.data?.actualStartAt && executionQuery.data?.actualEndAt
-    ? `${formatDateTime(executionQuery.data.actualStartAt).slice(-5)} → ${formatDateTime(executionQuery.data.actualEndAt).slice(-5)}`
-    : item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : HOURS_COMPARISON_TONE.NO_REAL_HOURS.label;
+  // Heures réellement déclarées (même lecture que le tiroir mission) : jamais complétées par le planifié.
+  const real = executionQuery.data ? realHoursOf(executionQuery.data) : null;
+  const clock = (iso: string) => formatDateTime(iso).slice(-5);
+  const realRange = real?.kind === "TIMES"
+    ? `${clock(real.start!)} → ${clock(real.end!)}`
+    : real?.kind === "PRESENCE_SHARE"
+      ? `Présence commune ${real.start ? clock(real.start) : "—"} → ${real.end ? clock(real.end) : "—"} · part imputée`
+    : real?.kind === "DURATION_ONLY"
+      ? "Durée déclarée · début et fin non renseignés"
+      : real?.kind === "PARTIAL"
+        ? (real.start ? `Début ${clock(real.start)} · fin non renseignée` : `Début non renseigné · fin ${clock(real.end!)}`)
+        : item.hours.hasRealHours ? EFFECTIVE_SOURCE_LABEL[item.hours.effectiveSource] : HOURS_COMPARISON_TONE.NO_REAL_HOURS.label;
+  // Durée réellement déclarée, ou null : le planifié de repli (source PLANNED) n'est jamais une
+  // prestation effectuée — ni total, ni barre « Réel » remplie, ni couleur de comparaison.
+  const realMinutes = real ? real.minutes : item.hours.hasRealHours ? item.hours.effectiveMinutes : null;
+  const realTotal = realMinutes != null ? formatMinutes(realMinutes) : "—";
   const hoursTone = HOURS_COMPARISON_TONE[item.hours.comparison];
-  const realPct = item.hours.plannedMinutes > 0
-    ? Math.min(100, Math.round((item.hours.effectiveMinutes / item.hours.plannedMinutes) * 100))
+  const realTone = realMinutes != null ? hoursTone : HOURS_COMPARISON_TONE.NO_REAL_HOURS;
+  // Une saisie partielle n'est ni « non renseignée » ni comparable : on le dit.
+  const hoursStatusLabel = real?.kind === "PARTIAL" ? "Déclaration incomplète" : hoursTone.label;
+  const realPct = realMinutes != null && item.hours.plannedMinutes > 0
+    ? Math.min(100, Math.round((realMinutes / item.hours.plannedMinutes) * 100))
     : 0;
+  const hoursHint = hoursCorrectionHint(missionQuery.data);
 
+  const automaticHistory = automaticRemindersLabel(missionQuery.data?.automaticReminders);
   const reminderTooltip = [
-    missionQuery.data?.automaticReminderSentAt
-      ? `Relance automatique envoyée le ${formatDateTime(missionQuery.data.automaticReminderSentAt)}`
-      : missionQuery.data?.nextAutomaticReminderAt
-        ? `Prochaine relance automatique : ${formatDateTime(missionQuery.data.nextAutomaticReminderAt)}`
+    automaticHistory
+      ? `Relances automatiques : ${automaticHistory}`
+      : missionQuery.data?.automaticReminderSentAt
+        ? `Relance automatique envoyée le ${formatDateTime(missionQuery.data.automaticReminderSentAt)}`
         : null,
+    missionQuery.data?.nextAutomaticReminderAt
+      ? `Prochaine relance automatique : ${formatDateTime(missionQuery.data.nextAutomaticReminderAt)}`
+      : null,
     missionQuery.data?.lastManualReminderAt
       ? `Dernière relance manuelle le ${formatDateTime(missionQuery.data.lastManualReminderAt)} par ${missionQuery.data.lastManualReminderByName ?? "—"}`
       : null,
@@ -226,6 +442,16 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             <Box sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 10px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: tone.bg, color: tone.fg }}>
               {item.encodingStateLabel}
             </Box>
+            {item.financial.isBlocking && (
+              <Box data-testid="drawer-finance-status" sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: RED_50, color: RED_700 }}>
+                Finance : {item.financial.label.toLowerCase()}
+              </Box>
+            )}
+            {item.encoding.escalatedAt && (
+              <Box data-testid="drawer-escalated" sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: RED_50, color: RED_700 }}>
+                alerte J+4 · {formatDateTime(item.encoding.escalatedAt)}
+              </Box>
+            )}
             {item.encoding.isStale && (
               <Box sx={{ display: "inline-flex", alignItems: "center", height: 24, padding: "0 8px", borderRadius: "999px", fontSize: 11.5, fontWeight: 800, background: RED_50, color: RED_700 }}>
                 en retard
@@ -248,7 +474,15 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
       </Box>
 
       <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center", gap: "14px", padding: "13px 20px 14px", background: "#fff", borderBottom: "1px solid", borderColor: GRAY_150 }}>
-        <Person name={item.instrumentist?.name ?? "—"} photoPath={item.instrumentist?.photoPath} role="Instrumentiste" green />
+        {/* D-155 — activité exécutée sans instrumentiste : jamais présentée comme « — ». */}
+        <Person
+          name={item.executedWithoutInstrumentist ? "Sans instrumentiste" : item.instrumentist?.name ?? "—"}
+          photoPath={item.instrumentist?.photoPath}
+          role={item.executedWithoutInstrumentist
+            ? `Activité déclarée${item.executedWithoutInstrumentist.declaredByName ? ` par ${item.executedWithoutInstrumentist.declaredByName}` : ""}`
+            : "Instrumentiste"}
+          green
+        />
         <Person name={item.surgeon?.name ?? "—"} photoPath={item.surgeon?.photoPath} role="Chirurgien" />
       </Box>
 
@@ -256,11 +490,47 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           contenu (jamais d'ascenseur imbriqué sur un écran bas) ; sur un écran haut, elle
           remplit l'espace restant. */}
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: "14px" }}>
+        {isFinancialAnomaly && (
+          <FinancialAnomaliesCard
+            missionId={item.missionId}
+            data={financialQuery.data}
+            isLoading={financialQuery.isLoading}
+            isError={financialQuery.isError}
+            onRetryLoad={() => void financialQuery.refetch()}
+            entries={entries}
+            onLocate={(target) => setFocus((prev) => ({ ...target, nonce: (prev?.nonce ?? 0) + 1 }))}
+            onRecalculated={refreshAfterCalculation}
+          />
+        )}
+
+        {financialNotice && (
+          <Box data-testid="drawer-financial-notice" sx={{ padding: "10px 12px", borderRadius: "12px", background: AMBER_50, border: "1px solid", borderColor: AMBER_100, fontSize: 12.5, fontWeight: 600, color: AMBER_700 }}>
+            {financialNotice}
+          </Box>
+        )}
+
+        {withoutInstrumentist ? (
+          // D-155 — aucune heure d'instrumentiste n'existe ni ne se saisit : ni « non renseignées »,
+          // ni barres planifié / réel, ni rappel ou correction des heures.
+          // D-172 — à la place des heures : état réel de l'encodage, auteur, validation (backend).
+          <Card>
+            <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
+              <Eyebrow>ACTIVITÉ OPÉRATOIRE</Eyebrow>
+            </Box>
+            {operativeActivity ? (
+              <OperativeActivityBody activity={operativeActivity} financeText={item.financial.label} />
+            ) : (
+              <Box data-testid="drawer-hours-without-instrumentist" sx={{ fontSize: 13, fontWeight: 600, color: GRAY_700 }}>
+                {NO_HOURS_WITHOUT_INSTRUMENTIST}
+              </Box>
+            )}
+          </Card>
+        ) : (
         <Card>
           <Box sx={{ display: "flex", alignItems: "center", gap: "10px", minHeight: 28 }}>
             <Eyebrow>HEURES</Eyebrow>
             <Box data-testid="drawer-hours-status" data-hours-comparison={item.hours.comparison} sx={{ fontSize: 11.5, fontWeight: 800, color: hoursTone.fg }}>
-              {hoursTone.label}
+              {hoursStatusLabel}
             </Box>
             {canRemindHours && (
               <Tooltip title={hoursReminderTooltip} describeChild>
@@ -280,12 +550,35 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
                 </Box>
               </Tooltip>
             )}
+            {canEditHours && missionQuery.data && (
+              <Box
+                component="button"
+                type="button"
+                data-testid="drawer-edit-hours"
+                onClick={() => setHoursOpen(true)}
+                sx={{
+                  ml: canRemindHours ? 0 : "auto", display: "flex", alignItems: "center", gap: "6px", height: 28, padding: "0 10px", borderRadius: "8px",
+                  border: "1px solid", borderColor: GRAY_200, background: "#fff", color: GRAY_700, font: "inherit",
+                  fontSize: 12, fontWeight: 800, cursor: "pointer", "&:hover": { background: GRAY_75 },
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                Corriger les heures
+              </Box>
+            )}
           </Box>
           <Box sx={{ display: "flex", flexDirection: "column", gap: "7px" }}>
             <Bar label="Planifié" text={planRange} total={formatMinutes(item.hours.plannedMinutes)} pct={100} color={GRAY_400} plan />
-            <Bar label="Réel" text={realRange} total={item.hours.hasRealHours ? formatMinutes(item.hours.effectiveMinutes) : "—"} totalColor={hoursTone.fg} pct={realPct} color={hoursTone.bar} />
+            <Bar label="Réel" text={realRange} total={realTotal} totalColor={realTone.fg} pct={realPct} color={realTone.bar} />
           </Box>
+          {real?.note && (
+            <Box data-testid="drawer-hours-note" sx={{ fontSize: 12, fontWeight: 600, lineHeight: 1.45, color: GRAY_600 }}>
+              {real.note}
+              {hoursHint && ` ${hoursHint}`}
+            </Box>
+          )}
         </Card>
+        )}
 
         <Card sx={{ flexDirection: "row", alignItems: "center", gap: "10px", padding: "13px 16px 14px" }}>
           {steps.map((s) => (
@@ -305,6 +598,21 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
                 Lecture seule
               </Box>
             )}
+            {canEditEncoding && encodingQuery.isSuccess && (
+              <Box
+                component="button"
+                type="button"
+                data-testid="drawer-edit-encoding"
+                onClick={() => setEncodingEditOpen(true)}
+                sx={{
+                  display: "flex", alignItems: "center", gap: "6px", height: 26, padding: "0 10px", borderRadius: "8px",
+                  border: "1px solid", borderColor: GRAY_200, background: "#fff", color: GRAY_700, font: "inherit",
+                  fontSize: 12, fontWeight: 800, cursor: "pointer", "&:hover": { background: GRAY_75 },
+                }}
+              >
+                Corriger l'encodage
+              </Box>
+            )}
             <Box sx={{ ml: "auto", fontSize: 12, fontWeight: 700, color: GRAY_500, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
               {item.encoding.interventionCount === 0
                 ? "rien d'encodé"
@@ -320,7 +628,7 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
                 Impossible de charger le détail de l'encodage.
               </Box>
             )}
-            {!encodingQuery.isLoading && entries.length > 0 && <EncodingContentPanel entries={entries} />}
+            {!encodingQuery.isLoading && entries.length > 0 && <EncodingContentPanel entries={entries} anomalyMarks={anomalyMarks} focus={focus} />}
             {isValidated && encodingQuery.isSuccess && entries.length === 0 && (
               <Box sx={{ padding: "14px", borderRadius: "12px", background: GRAY_75, fontSize: 12.5, fontWeight: 600, color: GRAY_600 }}>
                 Aucune intervention encodée.
@@ -333,13 +641,41 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
             )}
           </Box>
         </Card>
+
+        {history.length > 0 && (
+          <Card>
+            <Eyebrow>HISTORIQUE DES CORRECTIONS</Eyebrow>
+            <Box component="ul" data-testid="drawer-encoding-history" sx={{ m: 0, p: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "10px" }}>
+              {history.map((h) => (
+                <Box component="li" key={h.id} sx={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                  <Box sx={{ display: "flex", alignItems: "baseline", gap: "8px", fontSize: 11, color: GRAY_500 }}>
+                    <Box component="span" sx={{ fontWeight: 800, color: GRAY_600 }}>{HISTORY_CATEGORY_LABEL[h.category]}</Box>
+                    <Box component="span">{formatDateTime(h.occurredAt)}</Box>
+                    <Box component="span">· {h.actorName ?? "Système"}</Box>
+                  </Box>
+                  <Box sx={{ fontSize: 12.5, color: GRAY_800 }}>{h.summary}</Box>
+                  {h.changes.map((c, i) => (
+                    <Box key={i} sx={{ fontSize: 11.5, color: GRAY_600, fontVariantNumeric: "tabular-nums" }}>
+                      {c.field} : {formatChangeValue(c, c.from)} → {formatChangeValue(c, c.to)}
+                    </Box>
+                  ))}
+                </Box>
+              ))}
+            </Box>
+          </Card>
+        )}
       </Box>
 
-      <Box sx={{ flexShrink: 0, background: "#fff", borderTop: "1px solid", borderColor: GRAY_150, padding: "13px 20px", display: "flex", alignItems: "center", gap: "10px" }}>
+      <Box sx={{ flexShrink: 0, background: "#fff", borderTop: "1px solid", borderColor: GRAY_150, padding: "13px 20px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Box sx={{ fontSize: 12.5, fontWeight: 800, color: GRAY_950 }}>
             {canValidate ? "Prêt à valider" : isValidated ? "Validé" : "Encodage en cours"}
           </Box>
+          {item.submittedBy && (
+            <Box data-testid="drawer-submitted-by" sx={{ mt: "2px", fontSize: 11.5, color: GRAY_500 }}>
+              Soumis par {item.submittedBy.name}{item.submittedBy.role ? ` (${SUBMITTER_ROLE_LABEL[item.submittedBy.role]})` : ""}
+            </Box>
+          )}
           <Box sx={{ mt: "2px", fontSize: 11.5, color: GRAY_500 }}>
             <Box
               component="button"
@@ -352,12 +688,61 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           </Box>
         </Box>
 
+        {automaticHistory && (
+          <Box data-testid="drawer-reminder-history" sx={{ flexBasis: "100%", order: -1, fontSize: 11.5, color: GRAY_500 }}>
+            Relances automatiques : {automaticHistory}
+          </Box>
+        )}
+        {correctionBlockedReason && (
+          <Box data-testid="drawer-correction-blocked" sx={{ flexBasis: "100%", order: -1, padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
+            {correctionBlockedReason}
+          </Box>
+        )}
+        {!canValidate && !isValidated && validationBlockedReason && (
+          <Box data-testid="drawer-validation-blocked" sx={{ flexBasis: "100%", order: -1, padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
+            {validationBlockedReason}
+          </Box>
+        )}
+        {/* D-172 — verrous réels (encodage, calcul, document, clôture) et leur raison, servis par le backend. */}
+        {(missionQuery.data?.encoding?.locks.length ?? 0) > 0 && (
+          <Box data-testid="drawer-encoding-locks" sx={{ flexBasis: "100%", order: -1, display: "flex", flexDirection: "column", gap: "4px", padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
+            {missionQuery.data!.encoding!.locks.map((lock) => (
+              <Box key={lock.level} sx={{ display: "flex", gap: "6px", alignItems: "flex-start" }}>
+                <MissionLocksIndicator locks={[lock]} />
+                <span><strong>{lock.label}</strong> — {lock.reason}</span>
+              </Box>
+            ))}
+          </Box>
+        )}
+        {/* D-171 — reprise manager et heures restées à déclarer : servies par le backend, jamais déduites. */}
+        {missionQuery.data?.lastEncodingTakeover && (
+          <Box data-testid="drawer-encoding-taken-over" sx={{ flexBasis: "100%", order: -1, padding: "8px 10px", borderRadius: "9px", background: GRAY_75, fontSize: 12, fontWeight: 600, color: GRAY_600 }}>
+            Encodage repris par {missionQuery.data.lastEncodingTakeover.byName ?? "un manager"} le {formatDateTime(missionQuery.data.lastEncodingTakeover.at)}.
+            {missionQuery.data.hoursPendingAfterValidation ? " Heures prestées encore à déclarer (jamais inventées)." : ""}
+          </Box>
+        )}
+        {(canReturnEncoding || canReopenEncoding) && (
+          <Box
+            component="button"
+            type="button"
+            onClick={() => openCorrection(canReturnEncoding ? "RETURN" : "REOPEN")}
+            sx={{
+              display: "flex", alignItems: "center", gap: "6px", height: 40, padding: "0 14px", borderRadius: "11px",
+              border: "1px solid", borderColor: AMBER_100, background: AMBER_50, color: AMBER_700, font: "inherit",
+              fontSize: 13, fontWeight: 700, cursor: "pointer",
+              "&:hover": { background: AMBER_100 },
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" /></svg>
+            {canReturnEncoding ? "Renvoyer en correction" : "Rouvrir l'encodage"}
+          </Box>
+        )}
         {canRemind && (
           <Tooltip title={reminderTooltip} describeChild>
             <Box
               component="button"
               type="button"
-              onClick={() => remindMutation.mutate()}
+              onClick={() => remindMutation.mutate(newActionBatchId())}
               disabled={remindMutation.isPending}
               sx={{
                 display: "flex", alignItems: "center", gap: "6px", height: 40, padding: "0 14px", borderRadius: "11px",
@@ -373,6 +758,22 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           </Tooltip>
         )}
 
+        {canCompleteAndValidate && !canValidate ? (
+          <Box
+            component="button"
+            type="button"
+            data-testid="drawer-complete-and-validate"
+            onClick={() => setCompleteValidateOpen(true)}
+            sx={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", height: 40, padding: "0 18px",
+              border: 0, borderRadius: "11px", font: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer",
+              background: GREEN_600, color: "#fff", "&:hover": { background: GREEN_700 },
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m5 13 4 4L19 7" /></svg>
+            Terminer et valider
+          </Box>
+        ) : (
         <Box
           component="button"
           type="button"
@@ -387,9 +788,83 @@ export function MissionTrackingDrawer({ item, onClose }: Props) {
           }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="m5 13 4 4L19 7" /></svg>
-          {item.encodingState === "VALIDATED" || item.encodingState === "LOCKED" ? "Encodage validé" : "Valider l'encodage"}
+          {item.encodingState === "VALIDATED" || item.encodingState === "LOCKED"
+            ? "Encodage validé"
+            : item.prestation ? `Valider la prestation (${item.prestation.missionIds.length} missions)` : "Valider l'encodage"}
         </Box>
+        )}
       </Box>
+
+      <CompleteAndValidateEncodingDialog
+        open={completeValidateOpen}
+        missionId={item.missionId}
+        revision={missionQuery.data?.encodingRevision ?? null}
+        takeover={missionQuery.data?.encodingTakeover ?? null}
+        prestation={item.prestation ?? null}
+        onClose={() => setCompleteValidateOpen(false)}
+        onDone={async () => {
+          setCompleteValidateOpen(false);
+          toast.success("Encodage terminé et validé.");
+          await refreshAfterAction();
+        }}
+        onConflict={async () => {
+          toast.warning(ENCODING_CHANGED_BEFORE_VALIDATION);
+          await refreshAfterAction();
+        }}
+      />
+
+      <EncodingCorrectionDialog
+        kind={correctionKind}
+        missionLabel={`#${item.missionId} · ${item.startAt ? new Date(item.startAt).toLocaleDateString("fr-BE") : "—"} · ${item.site?.name ?? "—"}`}
+        recipient={withoutInstrumentist
+          ? { role: "SURGEON", name: item.surgeon?.name ?? "—" }
+          : { role: "INSTRUMENTIST", name: item.instrumentist?.name ?? "—" }}
+        statusLabel={item.encodingStateLabel}
+        pending={correctionMutation.isPending}
+        error={correctionError}
+        onConfirm={confirmCorrection}
+        onCancel={() => setCorrectionKind(null)}
+        prestation={item.prestation ?? null}
+      />
+
+      {canEditHours && hoursOpen && missionQuery.data && (
+        <EditServiceHoursDialog
+          open={hoursOpen}
+          onClose={() => setHoursOpen(false)}
+          mission={missionQuery.data}
+          hoursSource="MANAGER"
+          title="Corriger les heures"
+          onSaved={() => void refreshAfterAction()}
+        />
+      )}
+
+      {encodingEditOpen && encodingQuery.data && (
+        <Dialog open onClose={() => { setEncodingEditOpen(false); void refreshAfterAction(); }} maxWidth="md" fullWidth>
+          <DialogTitle>Corriger l'encodage — mission #{item.missionId}</DialogTitle>
+          <DialogContent dividers>
+            {financialNotice && (
+              <Box sx={{ mb: 1.5, padding: "10px 12px", borderRadius: "12px", background: AMBER_50, fontSize: 12.5, fontWeight: 600, color: AMBER_700 }}>
+                {financialNotice}
+              </Box>
+            )}
+            <InterventionsSection
+              missionId={item.missionId}
+              canEdit={canEditEncoding}
+              entries={encodingQuery.data.entries ?? []}
+              legacyInterventions={encodingQuery.data.interventions ?? []}
+              catalog={encodingQuery.data.catalog}
+              surgeonId={encodingQuery.data.mission.surgeonId}
+              onSaved={() => void refreshAfterAction()}
+              canSubmit={false}
+              onValidate={() => undefined}
+              progress={encodingQuery.data.progress}
+              managerCorrection
+              allowAdd={encodingQuery.data.prestation?.acceptsNewContent ?? true}
+              addNotice={referenceNotice(encodingQuery.data.prestation)}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
     </Box>
   );
 }
@@ -433,7 +908,7 @@ function Bar({ label, text, total, totalColor, pct, color, plan }: { label: stri
     <Box sx={{ display: "flex", alignItems: "center", gap: "10px" }}>
       <Box sx={{ width: 56, flexShrink: 0, fontSize: 11.5, fontWeight: 700, color: GRAY_500 }}>{label}</Box>
       <Box sx={{ flex: 1, height: 22, borderRadius: "7px", background: plan ? GRAY_100 : GRAY_75, position: "relative", overflow: "hidden" }}>
-        {!plan && <Box sx={{ position: "absolute", inset: "0 auto 0 0", width: `${pct}%`, borderRadius: "7px", background: color }} />}
+        {!plan && <Box data-testid="drawer-real-bar-fill" sx={{ position: "absolute", inset: "0 auto 0 0", width: `${pct}%`, borderRadius: "7px", background: color }} />}
         <Box sx={{ position: "absolute", left: 9, top: 3, fontSize: 11.5, fontWeight: 700, color: GRAY_700, fontVariantNumeric: "tabular-nums" }}>{text}</Box>
       </Box>
       <Box sx={{ width: 50, flexShrink: 0, textAlign: "right", fontSize: 12.5, fontWeight: 800, color: totalColor ?? GRAY_950, fontVariantNumeric: "tabular-nums" }}>{total}</Box>

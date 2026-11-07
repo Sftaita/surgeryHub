@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Dto\ProposedSlot;
 use App\Dto\Request\Response\DeployResponse;
 use App\Dto\Request\Response\DraftReopenResponse;
 use App\Dto\Request\Response\DraftUpdateResponse;
@@ -18,6 +19,7 @@ use App\Entity\User;
 use App\Enum\EligibilityEnforcementPolicy;
 use App\Enum\PlanningVersionStatus;
 use App\Exception\PlanningDraftAlreadyExistsException;
+use App\Exception\MultiRoomConfirmationRequiredException;
 use App\Exception\PlanningDraftConflictException;
 use App\Security\Voter\PlanningVoter;
 use App\Service\MissionConflictWaiverService;
@@ -164,6 +166,13 @@ class PlanningV2GenerationController extends AbstractController
                 'message'   => $e->getMessage(),
                 'conflicts' => $e->getConflicts(),
             ], 409);
+        } catch (MultiRoomConfirmationRequiredException $e) {
+            // D-156 — multi-room assignments proposed by the posts, still to confirm or reorganise.
+            return $this->json([
+                'code'    => 'MULTI_ROOM_CONFIRMATION_REQUIRED',
+                'message' => $e->getMessage(),
+                'groups'  => $e->getGroups(),
+            ], 409);
         }
 
         return $this->json(new DeployResponse(
@@ -252,12 +261,44 @@ class PlanningV2GenerationController extends AbstractController
     {
         $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
 
-        $siteId = $request->query->get('siteId') !== null ? (int) $request->query->get('siteId') : null;
-        $date   = $request->query->get('date');
-        $start  = $request->query->get('startTime');
-        $end    = $request->query->get('endTime');
+        return $this->rosterResponse($request->query->all(), []);
+    }
 
-        if ($date === null || $start === null || $end === null) {
+    /**
+     * D-165 — same roster, evaluated against the editor's unsaved lines of that day
+     * (`proposals`, see MissionEligibilityService::evaluateRoster()): a conflict reflects the
+     * schedules being composed, and says whether it is with a saved mission (PERSISTED) or a
+     * proposed line (PROPOSED). POST only because the proposals are a list; nothing is written.
+     */
+    #[Route('/api/planning/v2/eligible-instrumentists', name: 'api_planning_v2_eligible_instrumentists_proposed', methods: ['POST'])]
+    public function eligibleInstrumentistsForProposedSlot(Request $request): JsonResponse
+    {
+        $this->denyAccessUnlessGranted(PlanningVoter::PLANNING_MANAGE);
+
+        $data = json_decode($request->getContent() ?: '{}', true);
+        if (!is_array($data)) {
+            throw new BadRequestHttpException('Corps JSON invalide.');
+        }
+        $proposals = $data['proposals'] ?? [];
+        if (!is_array($proposals) || count($proposals) > 200) {
+            throw new BadRequestHttpException('proposals doit être une liste (200 lignes au plus).');
+        }
+
+        return $this->rosterResponse($data, $proposals);
+    }
+
+    /**
+     * @param array<string, mixed>             $params    siteId, date, startTime, endTime, excludeMissionId, surgeonId, policy
+     * @param array<int, array<string, mixed>> $proposals
+     */
+    private function rosterResponse(array $params, array $proposals): JsonResponse
+    {
+        $siteId = isset($params['siteId']) && $params['siteId'] !== '' ? (int) $params['siteId'] : null;
+        $date   = $params['date'] ?? null;
+        $start  = $params['startTime'] ?? null;
+        $end    = $params['endTime'] ?? null;
+
+        if (!is_string($date) || !is_string($start) || !is_string($end)) {
             throw new BadRequestHttpException('date, startTime et endTime sont requis.');
         }
 
@@ -266,6 +307,60 @@ class PlanningV2GenerationController extends AbstractController
             throw new BadRequestHttpException('Site introuvable.');
         }
 
+        [$startAt, $endAt] = $this->parseSlot($date, $start, $end);
+
+        $excludeMissionId = isset($params['excludeMissionId']) && $params['excludeMissionId'] !== ''
+            ? (int) $params['excludeMissionId']
+            : null;
+
+        $policy = EligibilityEnforcementPolicy::tryFrom((string) ($params['policy'] ?? ''))
+            ?? EligibilityEnforcementPolicy::STRICT_ASSIGNMENT;
+
+        // D-152 — the slot's surgeon, so his incompatible instrumentists are flagged: ?surgeonId
+        // (a new line), otherwise the surgeon of the mission being edited (?excludeMissionId).
+        $surgeon = null;
+        if (isset($params['surgeonId']) && $params['surgeonId'] !== '') {
+            $surgeon = $this->em->find(\App\Entity\User::class, (int) $params['surgeonId']);
+        } elseif ($excludeMissionId !== null) {
+            $surgeon = $this->em->find(\App\Entity\Mission::class, $excludeMissionId)?->getSurgeon();
+        }
+
+        $proposedSlots = [];
+        foreach ($proposals as $p) {
+            if (!is_array($p) || !is_string($p['startTime'] ?? null) || !is_string($p['endTime'] ?? null)) {
+                throw new BadRequestHttpException('Chaque proposition doit porter startTime et endTime.');
+            }
+            [$pStart, $pEnd] = $this->parseSlot(is_string($p['date'] ?? null) ? $p['date'] : $date, $p['startTime'], $p['endTime']);
+            $proposedSlots[] = new ProposedSlot(
+                isset($p['missionId']) ? (int) $p['missionId'] : null,
+                isset($p['instrumentistId']) ? (int) $p['instrumentistId'] : null,
+                $pStart,
+                $pEnd,
+                isset($p['surgeonId']) ? (int) $p['surgeonId'] : null,
+                isset($p['siteId']) ? (int) $p['siteId'] : null,
+                (bool) ($p['cancelled'] ?? false),
+                \App\Enum\MissionType::tryFrom((string) ($p['missionType'] ?? '')),
+            );
+        }
+
+        // D-156 — the slot's mission type (a new line), so a simultaneous BLOC room of the same
+        // surgeon and site is not reported as a conflict; the edited mission's own type otherwise.
+        $slotType = \App\Enum\MissionType::tryFrom((string) ($params['missionType'] ?? ''));
+        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId, $surgeon, $proposedSlots, $slotType);
+        $candidates = array_map(
+            fn ($result) => $this->eligibilityService->serializeCandidate($result, $policy),
+            $results,
+        );
+
+        return $this->json([
+            'policy'     => $policy->value,
+            'candidates' => $candidates,
+        ]);
+    }
+
+    /** @return array{0: \DateTimeImmutable, 1: \DateTimeImmutable} business-time [start, end) */
+    private function parseSlot(string $date, string $start, string $end): array
+    {
         $businessTz = new \DateTimeZone(BusinessDateTimeImmutableType::BUSINESS_TIMEZONE);
         try {
             $startAt = new \DateTimeImmutable("{$date}T{$start}:00", $businessTz);
@@ -277,23 +372,7 @@ class PlanningV2GenerationController extends AbstractController
             throw new BadRequestHttpException('endTime doit être après startTime.');
         }
 
-        $excludeMissionId = $request->query->get('excludeMissionId') !== null
-            ? (int) $request->query->get('excludeMissionId')
-            : null;
-
-        $policy = EligibilityEnforcementPolicy::tryFrom((string) $request->query->get('policy', ''))
-            ?? EligibilityEnforcementPolicy::STRICT_ASSIGNMENT;
-
-        $results    = $this->eligibilityService->evaluateRoster($site, $startAt, $endAt, $excludeMissionId);
-        $candidates = array_map(
-            fn ($result) => $this->eligibilityService->serializeCandidate($result, $policy),
-            $results,
-        );
-
-        return $this->json([
-            'policy'     => $policy->value,
-            'candidates' => $candidates,
-        ]);
+        return [$startAt, $endAt];
     }
 
     // ── Private ───────────────────────────────────────────────────────────────

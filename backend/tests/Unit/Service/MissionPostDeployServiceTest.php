@@ -2,6 +2,9 @@
 
 namespace App\Tests\Unit\Service;
 
+use Symfony\Component\Clock\NativeClock;
+use Symfony\Component\Clock\MockClock;
+use Symfony\Component\Clock\Clock;
 use App\Dto\EligibilityResult;
 use App\Entity\Mission;
 use App\Entity\User;
@@ -94,6 +97,43 @@ final class MissionPostDeployServiceTest extends TestCase
         }
         $this->setId($m, self::$nextId++);
         return $m;
+    }
+
+    // ── restoreAfterCancellation() — H3 (D-129) ───────────────────────────────
+
+    public function test_restore_as_open_solicits_the_pool_through_the_single_entry_point(): void
+    {
+        $mission = $this->makeMission(MissionStatus::CANCELLED);
+        $actor   = $this->makeActor();
+        $sent    = [];
+        $this->bus = $this->createMock(MessageBusInterface::class);
+        $this->bus->method('dispatch')->willReturnCallback(function (object $m) use (&$sent) { $sent[] = $m; return new Envelope($m); });
+        $service = new MissionPostDeployService($this->em, $this->bus, $this->audit, $this->eligibilityService);
+
+        $service->restoreAfterCancellation($mission, $actor, null, causedByAbsenceId: 42);
+
+        self::assertSame(MissionStatus::OPEN, $mission->getStatus());
+        $pool = array_values(array_filter($sent, static fn ($m) => $m instanceof \App\Message\OpenMissionPoolMessage));
+        self::assertCount(1, $pool, 'even with notify=false: a real opening always reaches the pool');
+        $episode = $pool[0]->toEpisodes()[0];
+        self::assertSame($mission->getId(), $episode->missionId);
+        self::assertSame(\App\Enum\OpenEpisodeCause::RESTORED_AFTER_ABSENCE, $episode->cause);
+    }
+
+    public function test_restore_as_assigned_never_solicits_the_pool(): void
+    {
+        $mission = $this->makeMission(MissionStatus::CANCELLED);
+        $instr   = $this->makeInstrumentist();
+        $this->em->method('find')->willReturn($instr);
+        $sent    = [];
+        $this->bus = $this->createMock(MessageBusInterface::class);
+        $this->bus->method('dispatch')->willReturnCallback(function (object $m) use (&$sent) { $sent[] = $m; return new Envelope($m); });
+        $service = new MissionPostDeployService($this->em, $this->bus, $this->audit, $this->eligibilityService);
+
+        $service->restoreAfterCancellation($mission, $this->makeActor(), $instr->getId(), causedByAbsenceId: 42);
+
+        self::assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
+        self::assertSame([], array_filter($sent, static fn ($m) => $m instanceof \App\Message\OpenMissionPoolMessage));
     }
 
     // ── release() ─────────────────────────────────────────────────────────────
@@ -436,10 +476,14 @@ final class MissionPostDeployServiceTest extends TestCase
         $mission = $this->makeMission(MissionStatus::OPEN);
         $actor   = $this->makeActor();
 
-        $this->expectException(ConflictHttpException::class);
-        $this->expectExceptionMessage('Mission must be ASSIGNED to reassign');
-
-        $this->service->reassign($mission, $actor, 99);
+        // D-181 — explicit, coded refusal (still a 409 ConflictHttpException).
+        try {
+            $this->service->reassign($mission, $actor, 99);
+            $this->fail('Expected a conflict');
+        } catch (\App\Exception\MissionReassignmentException $e) {
+            $this->assertInstanceOf(ConflictHttpException::class, $e);
+            $this->assertSame(\App\Service\MissionReassignmentPolicy::NOT_REASSIGNABLE, $e->getErrorCode());
+        }
     }
 
     /** D-101 — reassign() must never place an ineligible instrumentist on a mission. */
@@ -904,7 +948,8 @@ final class MissionPostDeployServiceTest extends TestCase
     {
         $mission = $this->makeMission(MissionStatus::OPEN);
         $mission->setStartAt(new \DateTimeImmutable('2026-09-15 08:00:00'));
-        $mission->setEndAt(new \DateTimeImmutable('2026-09-15 09:00:00'));
+        // D-165 — end after the new 10:00 start (an end before the start is now refused).
+        $mission->setEndAt(new \DateTimeImmutable('2026-09-15 12:00:00'));
         $actor = $this->makeActor();
 
         $this->em->method('flush');
@@ -971,6 +1016,91 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->service->updateSchedule($mission, $actor, new \DateTimeImmutable(), null, null, null);
     }
 
+    // ── updateSchedule() — D-165 : mission En cours, fin avant début ─────────────
+
+    /** Cas réel 23/10/2026 : Schiepers démarré à 07:45, termine à 14:00 au lieu de 18:00. */
+    public function test_update_schedule_shortens_an_in_progress_mission_keeping_status_and_instrumentist(): void
+    {
+        Clock::set(new MockClock('2026-10-23 10:00:00', 'Europe/Brussels'));
+        try {
+            $francoise = $this->makeInstrumentist('Françoise', 'Detrembleur');
+            $mission   = $this->makeMission(MissionStatus::IN_PROGRESS, $francoise);
+            $mission->setStartAt(new \DateTimeImmutable('2026-10-23 07:45:00', new \DateTimeZone('Europe/Brussels')));
+            $mission->setEndAt(new \DateTimeImmutable('2026-10-23 18:00:00', new \DateTimeZone('Europe/Brussels')));
+            $this->em->method('flush');
+            $this->audit->expects($this->once())->method('record')
+                ->with($mission, $this->anything(), AuditEventType::MISSION_TIME_CHANGED_POST_DEPLOY, $this->callback(
+                    fn (array $p) => str_starts_with($p['fromEndAt'], '2026-10-23T18:00') && str_starts_with($p['toEndAt'], '2026-10-23T14:00'),
+                ));
+
+            $this->service->updateSchedule($mission, $this->makeActor(), null,
+                new \DateTimeImmutable('2026-10-23 14:00:00', new \DateTimeZone('Europe/Brussels')), null, null, notify: false);
+
+            $this->assertSame('14:00', $mission->getEndAt()->format('H:i'));
+            $this->assertSame(MissionStatus::IN_PROGRESS, $mission->getStatus());
+            $this->assertSame($francoise, $mission->getInstrumentist());
+        } finally {
+            Clock::set(new NativeClock());
+        }
+    }
+
+    /** @return iterable<string, array{0: ?string, 1: ?string, 2: bool, 3: bool, 4: string}> */
+    public static function inProgressRefusals(): iterable
+    {
+        yield 'date change'           => ['2026-10-24 07:45:00', '2026-10-24 14:00:00', false, false, 'sa date'];
+        yield 'start moved after now' => ['2026-10-23 11:00:00', null, false, false, 'son début ne peut pas être reporté'];
+        yield 'site change'           => [null, '2026-10-23 14:00:00', true, false, 'son site'];
+        yield 'type change'           => [null, '2026-10-23 14:00:00', false, true, 'son type'];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('inProgressRefusals')]
+    public function test_update_schedule_refuses_anything_but_same_day_times_on_an_in_progress_mission(?string $start, ?string $end, bool $otherSite, bool $otherType, string $expected): void
+    {
+        Clock::set(new MockClock('2026-10-23 10:00:00', 'Europe/Brussels'));
+        try {
+            $tz      = new \DateTimeZone('Europe/Brussels');
+            $mission = $this->makeMission(MissionStatus::IN_PROGRESS, $this->makeInstrumentist());
+            $mission->setStartAt(new \DateTimeImmutable('2026-10-23 07:45:00', $tz));
+            $mission->setEndAt(new \DateTimeImmutable('2026-10-23 18:00:00', $tz));
+            $site = new \App\Entity\Hospital();
+            $this->setId($site, 801);
+            $mission->setSite($site);
+            $mission->setType(\App\Enum\MissionType::BLOCK);
+            $other = new \App\Entity\Hospital();
+            $this->setId($other, 802);
+            $this->em->expects($this->never())->method('flush');
+
+            try {
+                $this->service->updateSchedule($mission, $this->makeActor(),
+                    $start !== null ? new \DateTimeImmutable($start, $tz) : null,
+                    $end !== null ? new \DateTimeImmutable($end, $tz) : null,
+                    $otherSite ? $other : null,
+                    $otherType ? \App\Enum\MissionType::CONSULTATION : null,
+                    notify: false);
+                $this->fail('Expected a 409');
+            } catch (ConflictHttpException $e) {
+                $this->assertStringContainsString('en cours', $e->getMessage());
+                $this->assertStringContainsString($expected, $e->getMessage());
+            }
+            $this->assertSame('18:00', $mission->getEndAt()->format('H:i'), 'nothing staged');
+        } finally {
+            Clock::set(new NativeClock());
+        }
+    }
+
+    public function test_update_schedule_refuses_an_end_before_or_at_the_start(): void
+    {
+        $mission = $this->makeMission(MissionStatus::ASSIGNED, $this->makeInstrumentist());
+        $mission->setStartAt(new \DateTimeImmutable('2026-10-23 07:45:00'));
+        $mission->setEndAt(new \DateTimeImmutable('2026-10-23 18:00:00'));
+        $this->em->expects($this->never())->method('flush');
+
+        $this->expectException(ConflictHttpException::class);
+        $this->expectExceptionMessage("l'heure de fin (07:45) doit être après l'heure de début (07:45)");
+
+        $this->service->updateSchedule($mission, $this->makeActor(), null, new \DateTimeImmutable('2026-10-23 07:45:00'), null, null);
+    }
+
     // ── createPostDeploy() ────────────────────────────────────────────────────
 
     public function test_create_post_deploy_with_instrumentist_is_assigned(): void
@@ -985,8 +1115,13 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->setId($version, 700);
 
         // Mimic Doctrine assigning the auto-increment PK on persist (unit test, no real EM).
-        $this->em->expects($this->once())->method('persist')
-            ->willReturnCallback(fn (object $m) => $this->setId($m, self::$nextId++));
+        // D-150 — two persists: the instrumentist's affectation, then the Mission itself.
+        $persisted = [];
+        $this->em->expects($this->exactly(2))->method('persist')
+            ->willReturnCallback(function (object $m) use (&$persisted): void {
+                $persisted[] = $m;
+                $this->setId($m, self::$nextId++);
+            });
         $this->em->method('flush');
 
         $mission = $this->service->createPostDeploy(
@@ -999,6 +1134,11 @@ final class MissionPostDeployServiceTest extends TestCase
         $this->assertSame(MissionStatus::ASSIGNED, $mission->getStatus());
         $this->assertSame($instrumentist, $mission->getInstrumentist());
         $this->assertSame($version, $mission->getPlanningVersion());
+
+        $assignments = array_values(array_filter($persisted, static fn (object $o) => $o instanceof \App\Entity\MissionAssignment));
+        $this->assertCount(1, $assignments);
+        $this->assertSame($mission, $assignments[0]->getMission());
+        $this->assertSame(\App\Enum\MissionAssignmentSource::POST_DEPLOY_ADDITION, $assignments[0]->getSource());
     }
 
     /** D-101 — an "ajout post-deploy" mission must never be created ASSIGNED to an ineligible candidate. */

@@ -3,6 +3,7 @@
 namespace App\Tests\Integration;
 
 use App\Entity\AuditEvent;
+use App\Entity\Firm;
 use App\Entity\Hospital;
 use App\Entity\InterventionType;
 use App\Entity\InterventionTypeRequest;
@@ -33,8 +34,26 @@ final class MissionInterventionDraftServiceResolveConcurrencyTest extends Kernel
 
     private EntityManagerInterface $em;
     private array $created = [
-        'interventions' => [], 'drafts' => [], 'requests' => [], 'missions' => [], 'types' => [], 'sites' => [], 'users' => [],
+        'interventions' => [], 'drafts' => [], 'requests' => [], 'missions' => [], 'types' => [], 'sites' => [], 'users' => [], 'firms' => [],
     ];
+
+    /**
+     * D-146 bis — la firme est obligatoire à la résolution : une firme de test, créée une
+     * fois par test, rechargée dans l'EntityManager du « worker » concerné.
+     */
+    private function firmIn(EntityManagerInterface $em): Firm
+    {
+        if ($this->created['firms'] === []) {
+            $firm = new Firm();
+            $firm->setName('RCONC-Firm-' . bin2hex(random_bytes(4)));
+            $firm->setActive(true);
+            $this->em->persist($firm);
+            $this->em->flush();
+            $this->created['firms'][] = $firm->getId();
+        }
+
+        return $em->find(Firm::class, $this->created['firms'][0]);
+    }
 
     protected function setUp(): void
     {
@@ -60,6 +79,7 @@ final class MissionInterventionDraftServiceResolveConcurrencyTest extends Kernel
             foreach ($this->created['missions'] as $id) { $e = $this->em->find(Mission::class, $id); if ($e) $this->em->remove($e); }
             $this->em->flush();
             foreach ($this->created['types'] as $id) { $e = $this->em->find(InterventionType::class, $id); if ($e) $this->em->remove($e); }
+            foreach ($this->created['firms'] as $id) { $e = $this->em->find(Firm::class, $id); if ($e) $this->em->remove($e); }
             foreach ($this->created['sites'] as $id) { $e = $this->em->find(Hospital::class, $id); if ($e) $this->em->remove($e); }
             $this->em->flush();
             foreach ($this->created['users'] as $id) { $e = $this->em->find(User::class, $id); if ($e) $this->em->remove($e); }
@@ -78,7 +98,7 @@ final class MissionInterventionDraftServiceResolveConcurrencyTest extends Kernel
 
     private function serviceFor(EntityManagerInterface $em): MissionInterventionDraftService
     {
-        return new MissionInterventionDraftService($em, new MissionEntryOrderAllocator($em), new AuditService($em));
+        return \App\Tests\Support\CatalogueRequestServiceFactory::draftService($em);
     }
 
     private function setLockTimeout(EntityManagerInterface $em, int $seconds): void
@@ -185,7 +205,7 @@ final class MissionInterventionDraftServiceResolveConcurrencyTest extends Kernel
 
         $blocked = false;
         try {
-            $this->serviceFor($emA)->resolve($draftA, $typeA, null, $managerA);
+            $this->serviceFor($emA)->resolve($draftA, $typeA, $this->firmIn($emA), $managerA);
         } catch (\Throwable $e) {
             $blocked = $this->isLockTimeoutError($e);
         }
@@ -199,7 +219,7 @@ final class MissionInterventionDraftServiceResolveConcurrencyTest extends Kernel
         $draftA2 = $emA2->find(MissionInterventionDraft::class, $draftId);
         $typeA2 = $emA2->find(InterventionType::class, $type->getId());
         $managerA2 = $emA2->find(User::class, $managerId);
-        $intervention = $this->serviceFor($emA2)->resolve($draftA2, $typeA2, null, $managerA2);
+        $intervention = $this->serviceFor($emA2)->resolve($draftA2, $typeA2, $this->firmIn($emA2), $managerA2);
         $this->created['interventions'][] = $intervention->getId();
 
         $all = $this->em->getRepository(MissionIntervention::class)->findBy(['mission' => $draft->getMission()->getId()]);
@@ -223,7 +243,7 @@ final class MissionInterventionDraftServiceResolveConcurrencyTest extends Kernel
         $draftA = $emA->find(MissionInterventionDraft::class, $draftId);
         $typeA = $emA->find(InterventionType::class, $type->getId());
         $managerA = $emA->find(User::class, $managerId);
-        $first = $this->serviceFor($emA)->resolve($draftA, $typeA, null, $managerA);
+        $first = $this->serviceFor($emA)->resolve($draftA, $typeA, $this->firmIn($emA), $managerA);
         $this->created['interventions'][] = $first->getId();
 
         $emB = $this->freshEntityManager();
@@ -231,6 +251,6 @@ final class MissionInterventionDraftServiceResolveConcurrencyTest extends Kernel
         $typeB = $emB->find(InterventionType::class, $type->getId());
         $managerB = $emB->find(User::class, $managerId);
         $this->expectException(DraftAlreadyResolvedException::class);
-        $this->serviceFor($emB)->resolve($draftB, $typeB, null, $managerB);
+        $this->serviceFor($emB)->resolve($draftB, $typeB, $this->firmIn($emB), $managerB);
     }
 }

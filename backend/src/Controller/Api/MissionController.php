@@ -9,19 +9,26 @@ use App\Dto\Request\MissionPatchRequest;
 use App\Dto\Request\MissionPublishRequest;
 use App\Dto\Request\MissionSubmitRequest;
 use App\Entity\AuditEvent;
+use App\Exception\MissionCreatedNotDispatchedException;
 use App\Entity\Mission;
 use App\Entity\User;
 use App\Entity\Hospital;
 use App\Enum\EligibilityEnforcementPolicy;
+use App\Enum\MissionAssignmentRefusalScope;
 use App\Enum\MissionDispatchMode;
 use App\Security\Voter\MissionVoter;
+use App\Service\MissionCancellationPolicy;
 use App\Service\MissionDispatchService;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionEncodingService;
 use App\Service\MissionMapper;
 use App\Service\MissionPostDeployService;
+use App\Service\MissionReassignmentService;
 use App\Service\MissionService;
+use App\Service\RoomTakeoverPriorityService;
+use App\Service\Prestation\MissionListAnnotator;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -48,6 +55,9 @@ class MissionController extends AbstractController
         private readonly MissionPostDeployService  $missionPostDeployService,
         private readonly MissionEligibilityService $eligibilityService,
         private readonly MissionDispatchService    $dispatchService,
+        private readonly RoomTakeoverPriorityService $priorities,
+        private readonly MissionListAnnotator      $listAnnotator,
+        private readonly MissionReassignmentService $reassignments,
     ) {}
 
     #[Route(name: 'api_missions_create', methods: ['POST'])]
@@ -58,7 +68,31 @@ class MissionController extends AbstractController
         /** @var MissionCreateRequest $dto */
         $dto = $this->deserializeAndValidate($request->getContent(), MissionCreateRequest::class);
 
+        // D-156 lot 1 — create + dispatch in ONE request. The dispatch is validated first on
+        // the transient slot (same rules as the real dispatch, MissionDispatchService), so an
+        // ineligible choice is refused with nothing created — same sequencing as accepting a
+        // SurgeonMissionRequest. Residual window (eligibility changing between the check and
+        // the dispatch): the mission exists as DRAFT and a 409 MISSION_CREATED_NOT_DISPATCHED
+        // carries its id, so the client opens it instead of creating a duplicate.
+        if ($dto->dispatchMode !== null) {
+            $slot = (new Mission())
+                ->setSite($this->em->find(Hospital::class, (int) $dto->siteId) ?? throw new NotFoundHttpException('Site not found'))
+                ->setSurgeon($this->em->find(User::class, (int) $dto->surgeonUserId) ?? throw new NotFoundHttpException('Surgeon not found'))
+                ->setType($dto->type)
+                ->setStartAt($dto->startAt)
+                ->setEndAt($dto->endAt);
+            $this->dispatchService->assertDispatchable($slot, $dto->dispatchMode, $dto->dispatchInstrumentistId);
+        }
+
         $mission = $this->missionService->create($dto, $user);
+
+        if ($dto->dispatchMode !== null) {
+            try {
+                $this->dispatchService->dispatch($mission, $user, $dto->dispatchMode, $dto->dispatchInstrumentistId);
+            } catch (\Throwable $e) {
+                throw new MissionCreatedNotDispatchedException((int) $mission->getId(), $e->getMessage(), $e);
+            }
+        }
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_CREATED);
     }
@@ -127,9 +161,9 @@ class MissionController extends AbstractController
         $dto = $this->deserializeAndValidate($request->getContent(), MissionPublishRequest::class);
 
         // D-125 — POOL and TARGETED both go through MissionDispatchService (audit + the right
-        // notification per mode). POOL keeps the pre-existing MissionPublishedMessage pipeline
-        // (Point 8 / D-081: async site-instrumentist push + surgeon notification); TARGETED is a
-        // nominative request, never broadcast to the pool anymore.
+        // notification per mode). POOL → MissionPublishedMessage (async): eligible pool through
+        // OpenMissionPoolNotifier (H3, D-129) + surgeon notification; TARGETED is a nominative
+        // request, never broadcast to the pool anymore.
         $this->dispatchService->dispatch(
             $mission,
             $user,
@@ -173,6 +207,26 @@ class MissionController extends AbstractController
         $reason = isset($data['reason']) ? (string) $data['reason'] : null;
 
         $this->dispatchService->declineOffer($mission, $user, $reason);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user));
+    }
+
+    /**
+     * D-177 — Cas D: a manager lifts the exclusive priority of a room take-over (imminent
+     * mission, urgency) and opens the eligible pool at once. Justification required (422),
+     * audited as ROOM_TAKEOVER_PRIORITY_ENDED (LIFTED_BY_MANAGER). 409 when no priority is
+     * pending any more (answered, expired, lifted concurrently).
+     */
+    #[Route(path: '/{id}/lift-priority', name: 'api_missions_lift_priority', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function liftPriority(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::LIFT_PRIORITY, $mission);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $justification = isset($data['justification']) ? (string) $data['justification'] : null;
+
+        $this->priorities->liftByManager($mission, $user, $justification);
 
         return $this->json($this->mapper->toDetailDto($mission, $user));
     }
@@ -228,7 +282,7 @@ class MissionController extends AbstractController
         $data = json_decode($request->getContent(), true) ?? [];
         $instrumentistId = $data['instrumentistId'] ?? null;
 
-        $mission = $this->missionService->assignInstrumentistDraft($mission, $instrumentistId);
+        $mission = $this->missionService->assignInstrumentistDraft($mission, $instrumentistId, $this->getUser() instanceof User ? $this->getUser() : null);
 
         return $this->json($this->mapper->toDetailDto($mission, $currentUser));
     }
@@ -296,14 +350,22 @@ class MissionController extends AbstractController
             ->setParameter('mission', $mission)
             ->getResult();
 
-        $items = array_map(static function (AuditEvent $ae): array {
+        // D-181 — the manager's internal comment on a reassignment stays among managers (the
+        // mission's surgeon also reads this history).
+        $seesInternalComments = $this->isGranted(MissionVoter::REASSIGN, $mission);
+
+        $items = array_map(static function (AuditEvent $ae) use ($seesInternalComments): array {
             $actor = $ae->getActor();
+            $payload = $ae->getPayload();
+            if (!$seesInternalComments && is_array($payload)) {
+                unset($payload['internalComment']);
+            }
             return [
                 'eventType'  => $ae->getEventType()->value,
                 'occurredAt' => $ae->getCreatedAt()?->format(\DateTimeInterface::ATOM),
                 'actorId'    => $actor?->getId(),
                 'actorName'  => trim(($actor?->getFirstname() ?? '') . ' ' . ($actor?->getLastname() ?? '')),
-                'payload'    => $ae->getPayload(),
+                'payload'    => $payload,
             ];
         }, $events);
 
@@ -332,7 +394,65 @@ class MissionController extends AbstractController
         $data   = json_decode($request->getContent(), true) ?? [];
         $reason = isset($data['reason']) && is_string($data['reason']) ? $data['reason'] : null;
 
-        $this->missionPostDeployService->cancel($mission, $user, $reason);
+        // D-182 — a manager's cancellation: the programme did not take place (also once
+        // started or encoded; a duplicate goes through /cancel-as-replaced instead).
+        $this->missionPostDeployService->cancelByManager(
+            $mission, $user,
+            MissionCancellationPolicy::REASON_PROGRAM_CANCELLED,
+            $reason,
+            internalComment: isset($data['internalComment']) && is_string($data['internalComment']) ? $data['internalComment'] : null,
+            correctionConfirmed: $this->cancellationCorrectionConfirmed($mission, $data),
+        );
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /**
+     * D-182 — a submitted / validated mission is cancelled after the explicit correction of its
+     * encoding (MissionCancellationPolicy::correction()), confirmed by the manager: also
+     * authorised as that correction itself would be (MissionVoter::ENCODING_REJECT / _REOPEN).
+     *
+     * @param array<string,mixed> $data
+     */
+    private function cancellationCorrectionConfirmed(Mission $mission, array $data): bool
+    {
+        $confirmed = ($data['correctionConfirmed'] ?? false) === true;
+        $correction = MissionCancellationPolicy::correction($mission);
+        if ($confirmed && $correction !== null) {
+            $this->denyAccessUnlessGranted($correction['action'] === MissionCancellationPolicy::CORRECTION_REJECT
+                ? MissionVoter::ENCODING_REJECT
+                : MissionVoter::ENCODING_REOPEN, $mission);
+        }
+
+        return $confirmed;
+    }
+
+    /**
+     * D-155 — the activity of this started, uncovered OPEN mission really took place without
+     * an instrumentist: OPEN → ENCODING_IN_PROGRESS, out of the pool, encodable without hours.
+     */
+    #[Route(path: '/{id}/declare-executed-without-instrumentist', name: 'api_missions_declare_executed_without_instrumentist', methods: ['POST'])]
+    public function declareExecutedWithoutInstrumentist(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::DECLARE_EXECUTED_WITHOUT_INSTRUMENTIST, $mission);
+
+        $this->missionPostDeployService->declareExecutedWithoutInstrumentist($mission, $user);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /** D-155 — a manager cancels an erroneous declaration (reason required, before submission). */
+    #[Route(path: '/{id}/cancel-executed-without-instrumentist', name: 'api_missions_cancel_executed_without_instrumentist', methods: ['POST'])]
+    public function cancelExecutedWithoutInstrumentist(int $id, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::CANCEL_EXECUTED_WITHOUT_INSTRUMENTIST, $mission);
+
+        $data = json_decode($request->getContent(), true) ?? [];
+        $reason = isset($data['reason']) && is_string($data['reason']) ? $data['reason'] : '';
+
+        $this->missionPostDeployService->cancelExecutedWithoutInstrumentistDeclaration($mission, $user, $reason);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
@@ -353,7 +473,20 @@ class MissionController extends AbstractController
             );
         }
 
-        $this->missionPostDeployService->reassign($mission, $user, (int) $instrumentistId);
+        // D-156 — correction contrôlée : une mission qui porte déjà des interventions / du
+        // matériel n'est réaffectée qu'après confirmation explicite et motivée (409 sinon).
+        // D-181 — même opération que la réaffectation multiple (une seule mission) : mission
+        // commencée, relais, contrôle de concurrence et e-mails aux trois personnes concernées.
+        $this->reassignments->reassign($user, [[
+            'missionId'               => $mission->getId(),
+            'instrumentistId'         => (int) $instrumentistId,
+            'mode'                    => $data['mode'] ?? null,
+            'relayAt'                 => $data['relayAt'] ?? null,
+            'expectedInstrumentistId' => $data['expectedInstrumentistId'] ?? null,
+            'confirmEncodingData'     => (bool) ($data['confirmEncodingData'] ?? false),
+            'encodingDataReason'      => $data['encodingDataReason'] ?? null,
+        ]], isset($data['comment']) ? (string) $data['comment'] : null, fn (Mission $m) => $this->isGranted(MissionVoter::REASSIGN, $m), throwOnFailure: true);
+        $this->em->refresh($mission);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }
@@ -388,13 +521,16 @@ class MissionController extends AbstractController
 
         $result = $this->missionService->list($dto, $user);
 
-        $items = array_map(fn (Mission $m) => $this->mapper->toListDto($m, $user), $result['items']);
+        // D-156 — prestation + vrais conflits, calculés pour toute la page en deux requêtes.
+        $items = $this->mapper->toListDtos($result['items'], $user, $this->listAnnotator->annotate($result['items']));
 
         return $this->json([
             'items' => $items,
             'total' => $result['total'],
             'page' => $result['page'],
             'limit' => $result['limit'],
+            // D-172 — nombre de missions annulées masquées (null : aucun masquage demandé).
+            'cancelledExcluded' => $result['cancelledExcluded'] ?? null,
         ]);
     }
 
@@ -402,7 +538,52 @@ class MissionController extends AbstractController
     public function getOne(int $id, #[CurrentUser] User $user): JsonResponse
     {
         $mission = $this->missionService->getOr404($id);
-        $this->denyAccessUnlessGranted(MissionVoter::VIEW, $mission);
+
+        // D-151 — an instrumentist whose affectation ended keeps a minimal view of it.
+        if (!$this->isGranted(MissionVoter::VIEW, $mission)) {
+            $this->denyAccessUnlessGranted(MissionVoter::VIEW_FORMER_ASSIGNMENT, $mission);
+
+            return $this->json($this->mapper->toFormerAssigneeDetailDto($mission), JsonResponse::HTTP_OK);
+        }
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /**
+     * D-151 — the mission's surgeon refuses the instrumentist who accepted it, within the
+     * refusal window. {assignmentId} is the affectation he was shown: if the mission has been
+     * given to someone else since, 409 ASSIGNMENT_SUPERSEDED. Body: {"scope": "PUNCTUAL"}
+     * (default). All business conditions are decided server-side, under the mission lock.
+     */
+    #[Route(path: '/{id}/assignments/{assignmentId}/refuse', name: 'api_missions_refuse_assignment', methods: ['POST'], requirements: ['id' => '\d+', 'assignmentId' => '\d+'])]
+    public function refuseAssignment(int $id, int $assignmentId, Request $request, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::REFUSE_ASSIGNMENT, $mission);
+
+        $body  = json_decode($request->getContent() ?: '{}', true);
+        $scope = MissionAssignmentRefusalScope::tryFrom(is_array($body) ? (string) ($body['scope'] ?? 'PUNCTUAL') : '');
+        if ($scope === null) {
+            throw new UnprocessableEntityHttpException('scope must be PUNCTUAL');
+        }
+
+        $this->missionPostDeployService->refuseAssignment($mission, $user, $assignmentId, $scope);
+
+        return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
+    }
+
+    /**
+     * D-151 — the mission's surgeon asks the managers to intervene on its current affectation
+     * (refusal window over, mission imminent, affectation not refusable). Idempotent per
+     * affectation: a second request answers 200 without notifying again.
+     */
+    #[Route(path: '/{id}/assignment-review-request', name: 'api_missions_request_assignment_review', methods: ['POST'], requirements: ['id' => '\d+'])]
+    public function requestAssignmentReview(int $id, #[CurrentUser] User $user): JsonResponse
+    {
+        $mission = $this->missionService->getOr404($id);
+        $this->denyAccessUnlessGranted(MissionVoter::REQUEST_ASSIGNMENT_REVIEW, $mission);
+
+        $this->missionPostDeployService->requestAssignmentReview($mission, $user);
 
         return $this->json($this->mapper->toDetailDto($mission, $user), JsonResponse::HTTP_OK);
     }

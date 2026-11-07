@@ -3,7 +3,7 @@ import type { EncodingFinancialState, EncodingState, EffectiveDurationSource, Ho
 import type { StatusBadgeConfig } from "../../ui/StatusBadge";
 
 /**
- * Suivi des encodages (D-118) — mapping PUREMENT présentationnel des 7 EncodingState et
+ * Suivi des encodages (D-118) — mapping PUREMENT présentationnel des 8 EncodingState et
  * des 6 EncodingFinancialState backend.
  *
  * Ce fichier ne doit JAMAIS contenir de logique de dérivation (aucune comparaison de
@@ -20,6 +20,9 @@ export const ENCODING_STATE_CONFIG: Record<EncodingState, StatusBadgeConfig> = {
   VALIDATED: { label: "Validé", color: "success" },
   LOCKED: { label: "Verrouillé", color: "success", variant: "outlined" },
   NOT_APPLICABLE: { label: "Sans objet", color: "default", variant: "outlined" },
+  NOT_DECLARED: { label: "Aucun encodage", color: "warning", variant: "outlined" },
+  // D-184 — badge explicite, distinct de « Sans objet ».
+  CANCELLED: { label: "Annulée", color: "error", variant: "outlined" },
 };
 
 export const FINANCIAL_STATE_CONFIG: Record<EncodingFinancialState, StatusBadgeConfig> = {
@@ -33,8 +36,10 @@ export const FINANCIAL_STATE_CONFIG: Record<EncodingFinancialState, StatusBadgeC
 
 export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
   PLANNED: "Planifié",
-  ACTUAL_TIMES: "Heures réelles",
-  ACTUAL_EXPLICIT: "Heures explicites",
+  ACTUAL_TIMES: "Début et fin déclarés",
+  ACTUAL_EXPLICIT: "Durée déclarée (sans début ni fin)",
+  // D-156 — part imputée de la présence commune d'une prestation multi-salles.
+  PRESENCE_SHARE: "Imputation financière de la présence commune",
 };
 
 /**
@@ -42,7 +47,7 @@ export const EFFECTIVE_SOURCE_LABEL: Record<EffectiveDurationSource, string> = {
  * backend. NO_REAL_HOURS reste neutre : le planifié de repli n'est jamais présenté comme conforme.
  */
 export const HOURS_COMPARISON_TONE: Record<HoursComparison, { fg: string; bar: string; label: string }> = {
-  NO_REAL_HOURS: { fg: "#727E8C", bar: "#DDE2E8", label: "Heures réelles non renseignées" },
+  NO_REAL_HOURS: { fg: "#727E8C", bar: "#DDE2E8", label: "Heures prestées non renseignées" },
   WITHIN_PLAN: { fg: "#1F6B4F", bar: "#42A882", label: "Dans le temps planifié" },
   OVER_PLAN: { fg: "#B7791F", bar: "#F0A91B", label: "Dépasse le temps planifié" },
 };
@@ -53,7 +58,7 @@ export const MISSION_TYPE_LABEL: Record<MissionType, string> = {
 };
 
 export const ENCODING_STATE_ORDER: EncodingState[] = [
-  "UPCOMING", "TO_ENCODE", "IN_PROGRESS", "SUBMITTED", "VALIDATED", "LOCKED", "NOT_APPLICABLE",
+  "UPCOMING", "TO_ENCODE", "IN_PROGRESS", "SUBMITTED", "VALIDATED", "LOCKED", "NOT_DECLARED", "NOT_APPLICABLE", "CANCELLED",
 ];
 
 export function formatMinutes(minutes: number): string {
@@ -65,3 +70,6 @@ export function formatMinutes(minutes: number): string {
 }
 
 export const chipColorForFinancial = (state: EncodingFinancialState): ChipProps["color"] => FINANCIAL_STATE_CONFIG[state].color;
+
+/** D-155 — activité réalisée sans instrumentiste (servi par le backend) : aucune heure n'existe ni n'est attendue. */
+export const NO_HOURS_WITHOUT_INSTRUMENTIST = "Activité réalisée sans instrumentiste — aucune prestation horaire attendue";

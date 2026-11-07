@@ -318,7 +318,7 @@ describe("PushProvider — auto-resouscription silencieuse (permission déjà ac
     await waitFor(() => expect(apiPostMock).toHaveBeenCalled());
     expect(pushManager.subscribe).not.toHaveBeenCalled();
     expect(apiPostMock).toHaveBeenCalledWith(
-      "/api/push/subscribe",
+      "/api/push/sync",
       expect.objectContaining({ endpoint: "https://push.example/existing" }),
     );
   });
@@ -377,7 +377,7 @@ describe("PushProvider — changement de compte dans le même onglet (D-081)", (
     });
     await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1));
     expect(apiPostMock).toHaveBeenCalledWith(
-      "/api/push/subscribe",
+      "/api/push/sync",
       expect.objectContaining({ endpoint: "https://push.example/shared-device" }),
     );
     expect(screen.getByTestId("status").textContent).toBe("subscribed");
@@ -494,7 +494,7 @@ describe("PushProvider — subscribe()", () => {
     });
 
     expect(screen.getByTestId("status").textContent).toBe("subscribed");
-    expect(apiPostMock).toHaveBeenCalledWith("/api/push/subscribe", expect.objectContaining({
+    expect(apiPostMock).toHaveBeenCalledWith("/api/push/sync", expect.objectContaining({
       endpoint: expect.any(String),
       keys: { p256dh: "p256dh-key", auth: "auth-key" },
     }));
@@ -578,5 +578,33 @@ describe("PushProvider — disponible dans n'importe quel shell (mobile ou deskt
     const statuses = screen.getAllByTestId("status");
     expect(statuses).toHaveLength(2);
     expect(statuses[0].textContent).toBe(statuses[1].textContent);
+  });
+});
+
+describe("PushProvider — réconciliation D-175 (retour au premier plan, état de l'appareil)", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("6. retours au premier plan répétés juste après l'ouverture : aucune synchronisation supplémentaire (au plus une par 6 h)", async () => {
+    installBrowserStubs({ permission: "granted", existingSubscription: makeSubscription("https://push.example/pwa") });
+    renderProvider();
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1));
+
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    }
+    expect(apiPostMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("expose l'état de l'appareil rendu par le serveur (Mon profil)", async () => {
+    apiPostMock.mockResolvedValueOnce({
+      data: { state: "OK", reason: null, autoRenew: false, deviceToken: null, device: { id: 28, suspected: true, unacknowledged: 3, otherDevices: 0 } },
+    });
+    installBrowserStubs({ permission: "granted", existingSubscription: makeSubscription("https://push.example/health") });
+    renderProvider();
+
+    await waitFor(() => expect((window as any).__push.health?.device?.suspected).toBe(true));
+    expect((window as any).__push.health.state).toBe("OK");
   });
 });

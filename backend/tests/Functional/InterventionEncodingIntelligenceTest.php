@@ -55,7 +55,7 @@ final class InterventionEncodingIntelligenceTest extends WebTestCase
             $this->em->flush();
             foreach ($this->createdIds['missions'] as $id) {
                 $e = $this->em->find(Mission::class, $id);
-                if ($e !== null) { $this->em->remove($e); }
+                if ($e !== null) { foreach ($this->em->getRepository(\App\Entity\MissionAssignment::class)->findBy(['mission' => $e]) as $a) { $this->em->remove($a); } $this->em->remove($e); } // D-150 — affectation history first
             }
             $this->em->flush();
             foreach ($this->createdIds['offerings'] as $id) {
@@ -365,10 +365,17 @@ final class InterventionEncodingIntelligenceTest extends WebTestCase
         [$client, $mission, $token] = $this->bootMissionScenario();
         $type = $this->makeType();
 
-        $created = $this->request($client, 'POST', "/api/missions/{$mission->getId()}/interventions", $token, [
-            'interventionTypeId' => $type->getId(), 'orderIndex' => 0,
-        ]);
-        self::assertSame(Response::HTTP_CREATED, $created->getStatusCode());
+        // D-146 bis — une intervention sans firme ne peut plus être CRÉÉE (firme obligatoire) ;
+        // elle n'existe plus que comme donnée historique, insérée ici directement pour
+        // vérifier que sa lecture reste correcte (aucune suggestion, cohérence calculée).
+        $legacy = (new MissionIntervention())
+            ->setMission($this->em->find(Mission::class, $mission->getId()))
+            ->setInterventionType($this->em->find(InterventionType::class, $type->getId()))
+            ->setCode($type->getCode())
+            ->setLabel($type->getLabel())
+            ->setOrderIndex(0);
+        $this->em->persist($legacy);
+        $this->em->flush();
 
         $encoding = $this->request($client, 'GET', "/api/missions/{$mission->getId()}/encoding", $token);
         $itv = json_decode($encoding->getContent(), true)['interventions'][0];

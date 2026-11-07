@@ -18,6 +18,8 @@ use Symfony\Component\Serializer\Attribute\Groups;
 // EPIC Pilotage financier, Lot 7 (D-077) — période d'activité filtrée par statut
 // (overview/pipeline "missions VALIDATED sans calcul").
 #[ORM\Index(columns: ['start_at', 'status'], name: 'idx_mission_start_status')]
+// D-156 — stable post occurrence of a generated mission (PlanningGeneratorServiceV2::claimMission()).
+#[ORM\Index(columns: ['schedule_post_id', 'schedule_occurrence_date'], name: 'idx_mission_schedule_occurrence')]
 class Mission
 {
     use TimestampableTrait;
@@ -103,6 +105,29 @@ class Mission
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     private ?\DateTimeImmutable $encodingReminderSentAt = null;
 
+    /**
+     * D-155 — activité réellement exécutée sans instrumentiste : un FAIT posé sur la mission
+     * (jamais un statut), par le chirurgien de la mission ou un manager, quand une mission
+     * OPEN commencée n'a été couverte par personne. Ouvre l'encodage interventions / matériel
+     * sans heures ; le calcul ne porte que sur la firme. Effacé seulement par l'annulation
+     * auditée de la déclaration (manager).
+     */
+    #[ORM\Column(name: 'executed_without_instrumentist_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $executedWithoutInstrumentistAt = null;
+
+    #[ORM\ManyToOne(targetEntity: User::class)]
+    #[ORM\JoinColumn(name: 'executed_without_instrumentist_by_id', nullable: true, onDelete: 'SET NULL')]
+    private ?User $executedWithoutInstrumentistBy = null;
+
+    /**
+     * D-171 — reprise manager : interventions et matériel validés alors que les heures prestées de
+     * l'instrumentiste manquaient. Un FAIT (jamais une heure créée ni validée) : tant que ces heures
+     * manquent, elles restent déclarables malgré le verrou de l'encodage
+     * (MissionEncodingCorrectionPolicy::hoursPendingAfterValidation()).
+     */
+    #[ORM\Column(name: 'encoding_validated_without_hours_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $encodingValidatedWithoutHoursAt = null;
+
     // ✅ Lot B1 — mission_declared fields (modèle uniquement)
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
@@ -133,6 +158,51 @@ class Mission
     #[ORM\Column(type: 'boolean', nullable: true)]
     #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
     private ?bool $submittedWithoutMaterial = null;
+
+    /**
+     * D-156 — libellé de salle FACULTATIF (« Salle 3 », « Bloc B »), posé par le manager.
+     * Purement descriptif : n'intervient dans aucune règle (regroupement, conflit,
+     * facturation), jamais exigé, jamais produit par la génération du planning. Sert à
+     * distinguer deux missions simultanées d'une même prestation.
+     */
+    #[ORM\Column(length: 60, nullable: true)]
+    #[Groups(['mission:read', 'mission:read_manager', 'export:read'])]
+    private ?string $roomLabel = null;
+
+    /**
+     * D-156 — the recurring post occurrence this mission was generated for: the post and the
+     * date of its occurrence (the ORIGINAL date for a MOVED occurrence). A stable identity,
+     * never derived from the times: PlanningGeneratorServiceV2 matches a post's occurrence
+     * to THIS mission first, so two rooms of the same surgeon, site and identical times are
+     * never swapped in the editor. Null for a mission not generated from a post (manual,
+     * surgeon request, room takeover) or generated before the link existed
+     * (app:mission:link-schedule-posts). Never a business rule beyond that matching.
+     */
+    #[ORM\ManyToOne(targetEntity: SurgeonSchedulePost::class)]
+    #[ORM\JoinColumn(name: 'schedule_post_id', nullable: true, onDelete: 'SET NULL')]
+    private ?SurgeonSchedulePost $schedulePost = null;
+
+    #[ORM\Column(type: 'date_immutable', nullable: true)]
+    private ?\DateTimeImmutable $scheduleOccurrenceDate = null;
+
+    /**
+     * D-181 — relay ("relais") of a started mission: the mission this one continues, from its
+     * start, with another instrumentist (MissionPostDeployService::relay()). The original keeps
+     * its instrumentist and everything she encoded; its planned end becomes this mission's
+     * start, so the slot is never counted twice. Never set by the planning generator.
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'relay_of_mission_id', nullable: true, onDelete: 'SET NULL')]
+    private ?Mission $relayOf = null;
+
+    /**
+     * D-182 — this CANCELLED mission was a duplicate: the existing mission kept in its place
+     * for the same programme (MissionReplacementService). Traceability only — the kept mission
+     * is never changed by the link.
+     */
+    #[ORM\ManyToOne(targetEntity: self::class)]
+    #[ORM\JoinColumn(name: 'replaced_by_mission_id', nullable: true, onDelete: 'SET NULL')]
+    private ?Mission $replacedBy = null;
 
     #[ORM\ManyToOne(inversedBy: 'missions')]
     #[ORM\JoinColumn(nullable: true)]
@@ -265,6 +335,34 @@ class Mission
     public function getDeclaredComment(): ?string { return $this->declaredComment; }
     public function setDeclaredComment(?string $declaredComment): static { $this->declaredComment = $declaredComment; return $this; }
 
+    public function getRoomLabel(): ?string { return $this->roomLabel; }
+    public function setRoomLabel(?string $roomLabel): static { $this->roomLabel = $roomLabel; return $this; }
+
+    public function getRelayOf(): ?Mission { return $this->relayOf; }
+    public function setRelayOf(?Mission $relayOf): static { $this->relayOf = $relayOf; return $this; }
+
+    public function getReplacedBy(): ?Mission { return $this->replacedBy; }
+    public function setReplacedBy(?Mission $replacedBy): static { $this->replacedBy = $replacedBy; return $this; }
+
+    public function getSchedulePost(): ?SurgeonSchedulePost { return $this->schedulePost; }
+    public function getScheduleOccurrenceDate(): ?\DateTimeImmutable { return $this->scheduleOccurrenceDate; }
+
+    /** D-156 — "Y-m-d" of the linked post occurrence, null when the mission has no link. */
+    public function scheduleOccurrenceKey(): ?string
+    {
+        return $this->schedulePost !== null && $this->scheduleOccurrenceDate !== null
+            ? $this->schedulePost->getId() . '_' . $this->scheduleOccurrenceDate->format('Y-m-d')
+            : null;
+    }
+
+    public function linkToScheduleOccurrence(SurgeonSchedulePost $post, \DateTimeImmutable $occurrenceDate): static
+    {
+        $this->schedulePost = $post;
+        $this->scheduleOccurrenceDate = $occurrenceDate->setTime(0, 0);
+
+        return $this;
+    }
+
     public function getNoMaterialComment(): ?string { return $this->noMaterialComment; }
     public function setNoMaterialComment(?string $noMaterialComment): static { $this->noMaterialComment = $noMaterialComment; return $this; }
 
@@ -277,6 +375,34 @@ class Mission
     public function isEncodingLocked(): bool
     {
         return $this->encodingLockedAt !== null || $this->invoiceGeneratedAt !== null;
+    }
+
+    public function getExecutedWithoutInstrumentistAt(): ?\DateTimeImmutable { return $this->executedWithoutInstrumentistAt; }
+    public function getExecutedWithoutInstrumentistBy(): ?User { return $this->executedWithoutInstrumentistBy; }
+
+    /** D-155 — pose (ou efface, $at = null) le fait « activité exécutée sans instrumentiste ». */
+    public function setExecutedWithoutInstrumentist(?\DateTimeImmutable $at, ?User $by): static
+    {
+        $this->executedWithoutInstrumentistAt = $at;
+        $this->executedWithoutInstrumentistBy = $at !== null ? $by : null;
+        return $this;
+    }
+
+    public function isExecutedWithoutInstrumentist(): bool
+    {
+        return $this->executedWithoutInstrumentistAt !== null;
+    }
+
+    public function getEncodingValidatedWithoutHoursAt(): ?\DateTimeImmutable { return $this->encodingValidatedWithoutHoursAt; }
+    public function setEncodingValidatedWithoutHoursAt(?\DateTimeImmutable $at): static { $this->encodingValidatedWithoutHoursAt = $at; return $this; }
+
+    /**
+     * D-155 — y a-t-il une activité à encoder et à valoriser : une instrumentiste affectée, ou
+     * une activité déclarée exécutée sans instrumentiste (calcul firme uniquement).
+     */
+    public function hasEncodableActivity(): bool
+    {
+        return $this->instrumentist !== null || $this->isExecutedWithoutInstrumentist();
     }
 
     /** @return Collection<int, MissionIntervention> */

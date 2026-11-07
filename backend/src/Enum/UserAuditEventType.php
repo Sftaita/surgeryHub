@@ -16,4 +16,8 @@ enum UserAuditEventType: string
     case ABSENCES_REQUEST_SENT       = 'ABSENCES_REQUEST_SENT';
     case ABSENCES_CONFIRMATION_SENT  = 'ABSENCES_CONFIRMATION_SENT';
     case USER_EMAIL_CHANGED          = 'USER_EMAIL_CHANGED';
+    // D-140 — association technique avec MedVue (jamais le code d'association).
+    case MEDVUE_LINKED               = 'MEDVUE_LINKED';
+    case MEDVUE_UNLINKED             = 'MEDVUE_UNLINKED';
+    case MEDVUE_LINK_FAILED          = 'MEDVUE_LINK_FAILED';
 }

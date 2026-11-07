@@ -57,6 +57,35 @@ Exemple : `v2026.06.24-prod`.
   ce qui tourne actuellement sur le serveur.** C'est la seule source de
   vérité sur la version de prod — pas la mémoire de qui a déployé quoi.
 
+### Version visible dans l'application (D-162)
+
+La version qui tourne est aussi affichée en bas de « Mon profil », dans les trois espaces
+(manager, chirurgien, instrumentiste). Elle est lue par `GET /api/version` et ne s'écrit
+jamais à la main. Elle repose sur deux sources, chacune alimentée par cette procédure :
+
+- **Le commit exécuté** : `backend/REVISION` (et `frontend/src/app/features/app-version/buildRevision.ts`)
+  contient `$Format:%H$`. `git archive` (§4.3) le remplace par le SHA exact du commit archivé
+  (attribut `export-subst`, `.gitattributes`). L'image construite connaît donc son commit sans
+  aucune étape manuelle. Dans un clone de travail, la valeur reste littérale : l'application
+  affiche « développement ».
+- **Le registre des versions officielles** : `var/release/releases.json`, sur le volume
+  persistant `surgicalhub_var` (il survit aux rebuilds et aux rollbacks). Une ligne n'y est
+  ajoutée **qu'après** les tests de santé et la création du tag (§7), par
+  `app:release:mark <tag> --commit=<sha>`.
+
+Une version n'est donc affichée comme officielle (`SurgicalHub · vYYYY.MM.DD-prod · <sha>`)
+que si le commit exécuté figure dans le registre :
+
+| Situation | Affichage |
+|---|---|
+| Déploiement en cours, tag pas encore créé | « version en cours de validation · `<sha>` » — jamais un tag |
+| Tag créé et enregistré | `SurgicalHub · vYYYY.MM.DD-prod · <sha>`, sans redéployer |
+| Rollback | La version restaurée (son tag, si elle a été enregistrée), jamais celle abandonnée |
+| Métadonnées illisibles | Jamais un tag supposé (« en cours de validation », ou « version indisponible » si l'API ne répond pas) |
+
+Ce mécanisme ne remplace pas le tag Git : le dernier tag `*-prod` reste la source de vérité.
+Le registre n'en est que le reflet dans le serveur, vérifié à chaque déploiement (§5 et §7).
+
 ### Tableau de référence (à tenir à jour dans `docs/production.md`)
 
 Chaque déploiement ajoute une ligne en haut de la table "Historique des
@@ -129,6 +158,67 @@ Décision             : <déployer HEAD complet / s'arrêter et demander validat
 niveau de migration plus avancé que ce que les commits manquants laissent
 supposer — c'est le signal exact de l'incident du 2026-06-24.
 
+### 2.4 Rapport des développements non déployés (D-169) — obligatoire
+
+Une release ne doit pas faire oublier un correctif déjà développé (cas de D-157 : testé le
+2026-10-20, resté en PR pendant que cinq autres versions étaient déployées). Avant toute mise en
+production, produire et **afficher** :
+
+```bash
+deploy/deploy.sh pending <SHA>     # = node deploy/work-inventory/inventory.mjs --fetch --server --release <SHA>
+```
+
+Le rapport est calculé (Git, PR GitHub, serveur en lecture seule), puis croisé avec le registre des
+décisions humaines `docs/work-registry.json`. Il liste, dans cet ordre :
+
+1. les **correctifs P0/P1 absents de la production**, avec « ABSENT DE LA RELEASE PRÉVUE » s'ils ne
+   sont pas dans `<SHA>`, et « OUBLIÉ » s'ils sont prêts depuis plus de `staleDays` jours ;
+2. les **travaux non suivis** (branche, PR, worktree, stash, commit de main, script ou ligne de
+   crontab sans entrée de registre) ;
+3. le code fusionné non déployé, en séparant l'applicatif de ce qui est hors archive (docs, scripts
+   serveur), et les migrations fusionnées non déployées ;
+4. les PR ouvertes, les branches non intégrées (conflits, migrations, jamais poussées), les
+   modifications locales absentes de Git ;
+5. le serveur : release active, migrations non appliquées, scripts versionnés non installés ou
+   différents, scripts hors dépôt modifiés, crontab différente de la référence versionnée ;
+6. les opérations hors code en attente (installation, reprise de données, configuration, validation) ;
+   une opération n'est close que marquée `fait` avec `confirmedAt` et `evidence` (preuve de
+   l'exécution réelle), sinon elle reste affichée ;
+7. les incohérences du registre et ce qui est nouveau depuis le dernier audit ;
+8. les branches qui modifient les mêmes fichiers que la release (risque de conflit).
+
+**Le rapport signale, il ne décide pas** : ses constats ne bloquent pas le déploiement et il ne
+fusionne rien. Le périmètre de la release reste une décision explicite, consignée dans le rapport
+§2.3 (« Décision »). Tout correctif P0/P1 absent de la release y est mentionné avec la raison de son
+exclusion.
+
+**Jamais d'échec silencieux** :
+
+- `deploy/deploy.sh prepare` affiche le résumé et **s'arrête si le contrôle n'a pas pu s'exécuter**
+  (node absent, inventaire interrompu : code 3). `WORK_INVENTORY=off` passe outre explicitement et
+  l'affiche ; à consigner dans le rapport de déploiement.
+- Toute vérification impossible ou partielle est listée en tête, sous « ⚠ Non vérifié », jamais
+  supposée conforme : fetch en échec (refs peut-être périmées), liste des PR, serveur injoignable,
+  et **chaque section du serveur séparément** (release, REVISION, Docker, registre des versions,
+  migrations, conteneurs, empreintes, dossiers surveillés, crontab). Une section en échec ou à la
+  sortie non reconnue rend la vérification « incomplète » et n'est pas comparée (pas de faux écart).
+  `--fail-on unverified` fait échouer le rapport dans ce cas.
+- **Données sensibles** : le rapport, le JSON et l'instantané masquent les secrets reconnus
+  (`*PASS*=`, `*TOKEN*=`, `--password`, `mysql -p…`, identifiants dans une URL, jetons `Bearer`/GitHub,
+  clés privées) et les adresses e-mail. Le dépôt est public : le registre ne nomme aucune personne
+  (identifiants techniques seulement) et ne contient aucun secret.
+
+Le registre est mis à jour dans la PR qui fait évoluer un chantier (statut, prochaine action,
+opérations), et `deploy/production/server-reference/` dans la PR de toute installation ou
+modification serveur. Le même rapport (sans le serveur) tourne chaque jour et sur chaque PR
+(`.github/workflows/work-inventory.yml`).
+
+**Instantané (« nouveau depuis le dernier audit »)** : il n'est comparé qu'à un audit du même
+contexte (dépôt, ref principale, avec ou sans serveur, source des PR) ; absent, illisible ou d'un
+autre contexte, la section l'écrit « Non vérifié ». Un audit incomplet n'écrase pas l'instantané.
+En CI, seul l'audit quotidien de `main` l'enregistre (cache `work-inventory-main-*`, quotidien pour
+rester sous l'éviction de 7 jours) ; une PR le lit sans l'écrire.
+
 ---
 
 ## 3. Règle de sécurité — pas de déploiement partiel
@@ -193,44 +283,96 @@ présentes que dans `down()`, jamais dans `up()`, sauf si le ticket l'exige
 explicitement et que c'est documenté. **Ne jamais exécuter une migration non
 relue.**
 
-### 4.3 Construction de l'archive — depuis `git archive`, jamais depuis le disque
+**La prévisualisation est strictement non exécutante** (incident du 2026-11-01,
+`docs/production.md` § « Historique des incidents ») : relire le SQL uniquement par
+`--dry-run` (`deploy/deploy.sh migrations <SHA>`) ou dans le fichier de migration.
+**Jamais `--write-sql` sans `--dry-run`** : cette option exécute la migration. La
+migration réelle (`deploy/deploy.sh migrate <SHA>`) est une étape distincte, lancée
+seulement après l'autorisation explicite de la migration relue.
+
+### 4.3 Archive, transfert, release, build, activation — `deploy/deploy.sh` (D-163)
+
+Depuis D-163, le déploiement passe **exclusivement** par `deploy/deploy.sh` (commandes
+détaillées : `docs/production.md` §1-6). Le script rend mécanique ce que cette procédure exige,
+et chaque étape s'arrête avant toute modification du serveur dès qu'un contrôle échoue.
+
+| Exigence | Mécanisme |
+|---|---|
+| Ce qui est déployé = un commit validé | SHA complet, fusionné sur `origin/main` ; `git archive` de ce commit, jamais le disque |
+| Rien d'oublié (incident de `docker/`, figé depuis le 2026-08-02) | Périmètre dérivé du compose versionné (`deploy/production/docker-compose.yml`) et des `COPY` de ses Dockerfiles (`deploy.sh paths`) |
+| Jamais une autre archive (incident du 2026-10-21) | Nom = `surgicalhub-<SHA>.tar.gz` ; SHA-256 calculée localement, vérifiée sur le serveur avant tout renommage ou extraction ; `backend/REVISION` = SHA |
+| Aucun secret | Refus de `.env.local`, `.env.prod`, `*.pem`, `*.key`, `var/`, `vendor/`, `node_modules/` ; `.env` reste hors de l'archive |
+| Fichiers supprimés de Git | Chaque release est un arbre neuf (`releases/<SHA>/`) : rien de périmé n'est construit, rien n'est supprimé sur place ; `stage` liste les fichiers retirés |
+| Pas de déploiement partiel | Une release contient tout le périmètre ; le build part de cette release, jamais de `src/` |
+| Échec de build | Images `:<SHA>` uniquement ; rien n'est activé tant que le build n'est pas vérifié |
+| Rollback complet | `deploy.sh rollback <SHA>` : release, compose et images restaurés ensemble |
+
+**Contrôle après extraction** : `releases/<SHA>/backend/REVISION` = SHA, vérifié par `stage`.
+L'ancienne vérification manuelle de `src/backend/REVISION` (D-162) n'a plus lieu d'être.
+
+> Avant D-163 : `git archive … -- backend frontend docker-compose.yml`, extrait sur place dans
+> `src/`. Ce mode n'incluait pas `docker/` et laissait sur place les fichiers supprimés de Git :
+> 4 tests retirés de Git étaient encore copiés dans l'image le 2026-10-22. Il ne doit plus être
+> utilisé.
+
+### 4.4 Compatibilité des données avant toute bascule — rollback compris (D-187)
+
+**Problème.** Un rollback ne remet que le code : la base garde tout ce que la version plus
+récente a écrit. Une release ne sait lire que les valeurs d'énumération qu'elle connaît
+(`#[ORM\Column(enumType: …)]`) ; une valeur plus récente fait échouer l'hydratation Doctrine
+(`ValueError`) et l'écran qui relit la ligne tombe en 500. Cas réel : après D-186, `ad45ef6`
+(`v2026.11.06-prod`) ne connaît pas `audit_event.event_type = FINANCIAL_STATISTICS_EXPORTED` ; le
+journal d'activité (`AuditJournalService::search`, derniers événements, sans filtre) ne
+s'afficherait plus après un rollback du code seul.
+
+**Contrôle automatique.** `deploy.sh activate` et `deploy.sh rollback` (y compris `legacy`)
+exécutent `deploy/rollback/enum-compat.php` **dans l'image de la release cible**, avec le mapping
+Doctrine de cette release, en lecture seule (transaction `READ ONLY`, `SELECT` uniquement, cache
+jetable), **avant toute sauvegarde, tout retag et tout redémarrage** :
+
+| Résultat | Effet |
+|---|---|
+| `compatible` | la bascule continue |
+| `INCOMPATIBLE` (code 3) | bascule refusée, valeurs listées (`table.colonne = VALEUR (n lignes) : inconnue de …`), rien n'est modifié |
+| contrôle impossible (autre code, script absent) | bascule refusée (jamais d'échec silencieux) |
+
+Le script vient toujours du dépôt qui déploie (envoyé dans `incoming/`), jamais de la release
+active ni de la cible, qui peut lui être antérieure. Contrôle seul, sans bascule :
+`deploy/deploy.sh compat <SHA>` (la release doit être préparée et ses images construites).
+
+**Interdit pour rendre une bascule possible** : supprimer, réécrire ou « traduire » les lignes
+signalées (audit, historique). Les événements d'audit sont la trace des actions ; ils restent
+intacts.
+
+**Release corrective compatible (seule issue).** Construire la cible + **uniquement** ce qu'il
+faut pour lire les valeurs signalées (le ou les cas d'énumération, et leur libellé), sans aucune
+autre modification ni migration :
 
 ```bash
-# Depuis la racine du repo, sur le commit HEAD exact validé en §2
-git archive --format=tar.gz -o surgicalhub_deploy.tar.gz HEAD -- backend frontend docker-compose.yml
-scp surgicalhub_deploy.tar.gz surgicalhub-prod:/tmp/
+git switch -c rollback/<cible-court>-compat <SHA cible>
+# reprendre, depuis la version qui a introduit les valeurs, les seuls cas d'énumération manquants
+git commit … && git push -u origin rollback/<cible-court>-compat
+SHA_COMPAT=$(git rev-parse HEAD)
+export DEPLOY_MAIN_REF=origin/rollback/<cible-court>-compat   # commit validé hors de main (comme rollback/d177)
+deploy/deploy.sh prepare "$SHA_COMPAT" && deploy/deploy.sh upload "$SHA_COMPAT" && deploy/deploy.sh stage "$SHA_COMPAT"
+deploy/deploy.sh build "$SHA_COMPAT" && deploy/deploy.sh compat "$SHA_COMPAT"   # doit afficher « compatible »
+deploy/deploy.sh activate "$SHA_COMPAT"                                          # sauvegardes, bascule, contrôle refait
 ```
 
-**Toujours `git archive`, jamais `tar` sur le répertoire de travail.**
-`git archive` ne contient que le contenu exactement committé sur le commit
-ciblé — aucune modification non commitée, aucun fichier non suivi, aucun
-chantier en cours ne peut s'y glisser. C'est ce qui garantit que "ce qui est
-déployé" == "ce qui est dans `git log`" == "ce qui sera tagué" (§1).
+Cette branche n'est **jamais fusionnée dans `main`** (elle contient un ancien code). Sa release est
+une release comme les autres (arbre neuf `releases/<SHA>/`, images `:<SHA>`, rollback possible) ;
+elle reste `PENDING_VALIDATION` sauf tag explicite. Elle se prépare à l'avance : on ne découvre
+pas l'incompatibilité au milieu d'un incident.
 
-### 4.4 Extraction
+**Préparée pour D-186** : branche `rollback/ad45ef6-compat` (`ad45ef6` + `case
+FINANCIAL_STATISTICS_EXPORTED` et son libellé du miroir d'activité, 4 lignes reprises de `2d2d37e`).
+Testée sur base jetable (schéma de `ad45ef6`, 8 événements `FINANCIAL_STATISTICS_EXPORTED`) :
+`ad45ef6` → contrôle `INCOMPATIBLE`, journal en erreur ; `rollback/ad45ef6-compat` → `compatible`,
+journal lisible, 10 événements intacts (empreinte identique).
 
-```bash
-ssh surgicalhub-prod "tar xzf /tmp/surgicalhub_deploy.tar.gz -C /opt/stack/apps/surgicalhub/src/ && rm /tmp/surgicalhub_deploy.tar.gz"
-```
-
-### 4.5 Build, restart, migration réelle, cache
-
-```bash
-# Build (en tâche de fond, ~5-10 min)
-ssh surgicalhub-prod "cd /opt/stack/apps/surgicalhub && nohup bash -c 'docker compose build --no-cache > /tmp/build.log 2>&1; echo BUILD_EXIT=\$? >> /tmp/build.log' &"
-# attendre BUILD_EXIT=0 dans /tmp/build.log avant de continuer
-
-ssh surgicalhub-prod "cd /opt/stack/apps/surgicalhub && docker compose up -d"
-
-ssh surgicalhub-prod "docker exec surgicalhub-php php bin/console doctrine:migrations:migrate --no-interaction --env=prod"
-
-ssh surgicalhub-prod "docker exec surgicalhub-php php bin/console cache:clear --env=prod && docker restart surgicalhub-php"
-
-# Si le worker doit reprendre une nouvelle version du code des handlers Messenger :
-ssh surgicalhub-prod "docker restart surgicalhub-worker"
-```
-
----
+**Limite** : le contrôle couvre les colonnes d'énumération (cause des 500 de lecture). Il ne
+remplace ni la vérification du schéma (migrations, §4.2 et `docs/production.md` § Rollback B), ni
+la relecture des fonctionnalités dont la cible n'a pas le code.
 
 ## 5. Tests santé obligatoires
 
@@ -247,6 +389,9 @@ Toujours, sans exception :
 | Logs PHP | `docker logs surgicalhub-php --tail 30` → pas de `CRITICAL`/`exception` lié au déploiement |
 | Logs worker | `docker logs surgicalhub-worker --tail 15` → consumer actif |
 | Migrations | `doctrine:migrations:status` → `Already at latest version` |
+| Version exécutée (D-162) | `docker exec surgicalhub-php php bin/console app:release:show` → `Commit exécuté` = SHA du commit déployé, `Statut` = `PENDING_VALIDATION` (le tag n'existe pas encore) |
+| Release active (D-163) | `deploy/deploy.sh status` → release active = SHA déployé |
+| Cache frontend (D-163) | `curl -sI https://surgicalhub.be/` → `Cache-Control: no-cache` ; un asset `/assets/<nom>.js` → `immutable` ; `/assets/inexistant.js` → 404 |
 
 **Si une fonctionnalité majeure a été modifiée par ce déploiement**, ajouter
 un test réel ciblé sur cette fonctionnalité (pas seulement les checks
@@ -277,6 +422,18 @@ génériques ci-dessus) :
 - **Toujours nettoyer** les comptes/données de test créés à la fin
   (utilisateurs, refresh tokens associés, ressources métier créées) et
   vérifier que le nettoyage a réussi (requête de confirmation vide).
+  Un compte de test qui ne peut pas être supprimé (missions, audit) est
+  **désactivé** (`active = 0`) : un compte manager/admin actif reçoit toutes
+  les notifications « tous les managers » (D-149 — incident du compte
+  `…+testmgr1782332852@gmail.com`, resté actif de juin à octobre 2026).
+  Contrôle final obligatoire, résultat attendu vide :
+
+  ```sql
+  SELECT id, email, roles, created_at FROM user
+  WHERE active = 1 AND (email LIKE '%@surgicalhub.internal'
+        OR email LIKE '%+test%' OR email LIKE '%deploy%test%' OR email LIKE '%smoke%')
+    AND email <> 'system@surgicalhub.internal';
+  ```
 - Pour une action non réversible et indépendante des emails (ex: création de
   compte via `POST /api/admin/users`, qui ne peut pas être supprimée — aucun
   endpoint `DELETE` n'existe), **ne pas l'exécuter en chemin de succès** :
@@ -348,6 +505,28 @@ git push origin v2026.06.24-prod
 - Mettre à jour la table "Historique des versions déployées" dans
   `docs/production.md` avec une nouvelle ligne (jamais réécrire une ligne
   existante).
+
+### 7.1 Enregistrer la version officielle sur le serveur (D-162) — obligatoire
+
+Juste après avoir poussé le tag, et seulement alors :
+
+```bash
+deploy/deploy.sh mark <SHA> vYYYY.MM.DD-prod   # D-163 : refuse si le tag n'est pas sur origin ou ne pointe pas sur SHA,
+                                              # ou si SHA n'est pas la release active ; puis app:release:show
+```
+
+La commande refuse un tag mal formé, un SHA différent du code exécuté, et un tag déjà
+enregistré pour un autre commit. Elle est idempotente. Aucun redémarrage n'est nécessaire.
+
+**Contrôle de cohérence obligatoire.** Ces trois valeurs doivent être identiques :
+1. le commit pointé par le tag Git ;
+2. le `Commit exécuté` de `app:release:show` (`Statut` = `OFFICIAL`, `Version officielle` = le tag) ;
+3. la version affichée en bas de « Mon profil » (`SurgicalHub · vYYYY.MM.DD-prod · <sha>`),
+   lue avec un compte de test via l'API publique (`GET /api/version`).
+
+Tout écart est une anomalie à signaler (§8). Après un **rollback**, `app:release:show` doit
+afficher le commit et le tag de la version restaurée. Un rollback vers une version antérieure
+à D-162 restaure aussi l'ancien frontend, sans affichage de version.
 
 ---
 

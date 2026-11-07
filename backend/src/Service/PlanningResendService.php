@@ -3,19 +3,25 @@
 namespace App\Service;
 
 use App\Entity\Mission;
-use App\Entity\NotificationEvent;
+use App\Entity\NotificationDispatch;
 use App\Entity\PlanningVersion;
 use App\Entity\User;
+use App\Enum\MissionCommunicationSource;
 use App\Enum\MissionStatus;
+use App\Enum\NotificationEmailPolicy;
 use App\Enum\NotificationType;
+use App\Enum\OutboundNotificationChannel;
+use App\Enum\OutboundNotificationStatus;
 use App\Enum\PlanningVersionStatus;
-use App\Enum\PublicationChannel;
-use App\Message\SendBillingEmailMessage;
+use App\Notification\DocumentStore;
+use App\Notification\PlanningDocumentIdentity;
+use App\Notification\EmailContent;
+use App\Notification\MissionCommunicationSpec;
+use App\Notification\NotificationDispatcher;
+use App\Notification\NotificationIntent;
 use Doctrine\ORM\EntityManagerInterface;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
-use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
  * Manual "Renvoyer le planning par e-mail" action (D-090, anomalie fonctionnelle 1) —
@@ -31,21 +37,27 @@ use Symfony\Component\Messenger\MessageBusInterface;
  * information, resent". The one deliberate content difference: no "missions disponibles"
  * section (that's specific to the deploy-time claim-pool nudge, not a plain resend) and no
  * global manager PDF attachment for surgeons (manager-only content, irrelevant to a resend).
+ *
+ * H5a — through NotificationDispatcher (PLANNING_RESENT_MANUAL): the email is MANDATORY (an
+ * explicit one-off manager action never depends on the person's preferences), the in-app
+ * item follows her preferences, the PDF is stored once (GeneratedDocument) and attached by
+ * reference. Formerly an untraced SendBillingEmailMessage plus a NotificationEvent marked
+ * "SENT" the moment the email was merely queued. The missions it presents become
+ * communicated (mission_communication, source RESEND) only once a channel really reached
+ * her — never if every channel failed.
  */
 class PlanningResendService
 {
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly PdfService $pdfService,
-        private readonly MessageBusInterface $bus,
-        #[Autowire('%env(string:MAILER_FROM_ADDRESS)%')]
-        private readonly string $fromAddress,
-        #[Autowire('%env(string:MAILER_FROM_NAME)%')]
-        private readonly string $fromName,
+        private readonly NotificationDispatcher $dispatcher,
+        private readonly DocumentStore $documents,
     ) {}
 
     /**
-     * @return array{missionCount: int, email: string}
+     * @return array{missionCount: int, email: string, status: string}
+     * @throws \RuntimeException      the email could not be handed to the queue (its FAILED delivery is recorded)
      * @throws NotFoundHttpException   version or user not found, or user has no role-appropriate missions in it
      * @throws ConflictHttpException   the version is not the currently published (ACTIVE) one
      */
@@ -83,7 +95,7 @@ class PlanningResendService
         $name     = self::displayName($target);
 
         if ($isInstrumentist) {
-            $pdf = $this->pdfService->generateFromTemplate('pdf/planning_instrumentist.html.twig', [
+            $render = fn () => $this->pdfService->generateFromTemplate('pdf/planning_instrumentist.html.twig', [
                 'instrumentist' => $target,
                 'missions'      => $missions,
                 'periodFrom'    => $fromDate,
@@ -99,7 +111,7 @@ class PlanningResendService
                 'availableMissionsUrl' => null,
             ];
         } else {
-            $pdf = $this->pdfService->generateFromTemplate('pdf/planning_surgeon.html.twig', [
+            $render = fn () => $this->pdfService->generateFromTemplate('pdf/planning_surgeon.html.twig', [
                 'surgeon'    => $target,
                 'missions'   => $missions,
                 'periodFrom' => $fromDate,
@@ -125,51 +137,55 @@ class PlanningResendService
             $toDate->format('Y-m-d'),
         );
 
-        $emailStatus = 'SENT';
-        $emailError  = null;
-        try {
-            $this->bus->dispatch(new SendBillingEmailMessage(
-                to: $target->getEmail(),
-                cc: [],
-                subject: $subject,
-                fromAddress: $this->fromAddress,
-                fromName: $this->fromName,
-                htmlTemplate: $htmlTemplate,
-                context: $context,
-                attachmentBase64: base64_encode($pdf),
-                attachmentFilename: $filename,
-            ));
-        } catch (\Throwable $e) {
-            $emailStatus = 'FAILED';
-            $emailError  = $e->getMessage();
-        }
+        // H5b (D-132) — a resend sends the document ALREADY communicated when what it shows is
+        // unchanged (same bytes, same sha256 as the publication / last recap) — never a fresh
+        // rendering presented as the original; a planning that changed is a new document.
+        $role = $isInstrumentist ? PlanningDocumentIdentity::ROLE_INSTRUMENTIST : PlanningDocumentIdentity::ROLE_SURGEON;
+        $identity = PlanningDocumentIdentity::personal($role, $target, $fromDate, $toDate, $missions);
+        $document = $this->documents->storeOnce($isInstrumentist ? 'PLANNING_INSTRUMENTIST' : 'PLANNING_SURGEON',
+            $identity['sourceKey'], $identity['fingerprint'], $filename, $render);
 
-        // Historique des notifications (D-090 exigence explicite) — un seul NotificationEvent,
-        // pour ce destinataire uniquement, jamais pour personne d'autre. Statut et éventuelle
-        // erreur d'envoi enregistrés, cohérent avec le reste du modèle NotificationEvent.
-        $event = (new NotificationEvent())
-            ->setUser($target)
-            ->setEventType(NotificationType::PLANNING_RESENT_MANUAL->value)
-            ->setChannel(PublicationChannel::EMAIL)
-            ->setSentAt(new \DateTimeImmutable())
-            ->setPayload([
+        $dispatch = $this->dispatcher->dispatch(new NotificationIntent(
+            recipient: $target,
+            type: NotificationType::PLANNING_RESENT_MANUAL,
+            inAppPayload: [
                 'planningVersionId' => $version->getId(),
                 'periodFrom'        => $fromDate->format('Y-m-d'),
                 'periodTo'          => $toDate->format('Y-m-d'),
                 'missionCount'      => count($missions),
                 'actorId'           => $actor->getId(),
                 'actorName'         => self::displayName($actor),
-                'status'            => $emailStatus,
-                'error'             => $emailError,
-            ]);
-        $this->em->persist($event);
-        $this->em->flush();
+            ],
+            email: new EmailContent($subject, $htmlTemplate, $context, attachments: [$document]),
+            subjectType: 'PlanningVersion',
+            subjectId: $version->getId(),
+            emailPolicy: NotificationEmailPolicy::MANDATORY,
+            communicates: new MissionCommunicationSpec(
+                MissionCommunicationSource::RESEND,
+                $isInstrumentist ? MissionCommunicationSpec::ROLE_INSTRUMENTIST : MissionCommunicationSpec::ROLE_SURGEON,
+                array_values(array_map(static fn (Mission $m) => (int) $m->getId(), $missions)),
+            ),
+        ));
 
-        if ($emailStatus === 'FAILED') {
-            throw new \RuntimeException('L\'envoi de l\'email a échoué : ' . $emailError);
+        $status = self::emailStatus($dispatch);
+        if (!in_array($status, [OutboundNotificationStatus::QUEUED->value, OutboundNotificationStatus::SENT->value], true)) {
+            // Controlled wording only — never a transport/stack detail in the API response.
+            throw new \RuntimeException('L\'email n\'a pas pu être mis en file d\'envoi. Consultez l\'historique des envois.');
         }
 
-        return ['missionCount' => count($missions), 'email' => $target->getEmail()];
+        // "QUEUED": handed to the queue — the history shows SENT once the relay accepted it.
+        return ['missionCount' => count($missions), 'email' => $target->getEmail(), 'status' => $status];
+    }
+
+    private static function emailStatus(NotificationDispatch $dispatch): ?string
+    {
+        foreach ($dispatch->getDeliveries() as $delivery) {
+            if ($delivery->getChannel() === OutboundNotificationChannel::EMAIL) {
+                return $delivery->getStatus()->value;
+            }
+        }
+
+        return null;
     }
 
     /** @param MissionStatus[] $statuses @return Mission[] */

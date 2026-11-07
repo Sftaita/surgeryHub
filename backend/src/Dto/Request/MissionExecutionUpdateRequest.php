@@ -22,6 +22,12 @@ class MissionExecutionUpdateRequest
     #[Assert\PositiveOrZero]
     public ?int $actualDurationMinutes = null;
 
+    /**
+     * D-146 bis — plus utilisé : aucune pause n'est saisie ni déduite (heures prestées =
+     * fin − début). Toléré en entrée pour un client resté sur l'ancienne version, ignoré.
+     */
+    public mixed $breakMinutes = null;
+
     #[Assert\Choice(callback: [HoursSource::class, 'cases'])]
     public ?HoursSource $hoursSource = null;
 }

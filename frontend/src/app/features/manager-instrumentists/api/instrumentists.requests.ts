@@ -12,11 +12,6 @@ export type CreateInstrumentistRequest = {
   siteIds: number[];
 };
 
-export type UpdateInstrumentistRatesRequest = {
-  hourlyRate?: number;
-  consultationFee?: number;
-};
-
 export type AddSiteMembershipRequest = {
   siteId: number;
 };

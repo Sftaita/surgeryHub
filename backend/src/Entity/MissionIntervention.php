@@ -42,6 +42,15 @@ class MissionIntervention implements MaterialAttachmentTarget
     #[Groups(['mission:read', 'mission:read_manager'])]
     private ?int $id = null;
 
+    /**
+     * D-154 — version optimiste (Doctrine, incrémentée à chaque modification) : renvoyée
+     * par le client en If-Match (EncodingVersionGuard) pour qu'une modification concurrente
+     * (instrumentiste, chirurgien, manager) ne soit jamais écrasée en silence.
+     */
+    #[ORM\Version]
+    #[ORM\Column(type: 'integer', options: ['default' => 1])]
+    private int $version = 1;
+
     #[ORM\ManyToOne(inversedBy: 'interventions')]
     #[ORM\JoinColumn(nullable: false)]
     #[Groups(['mission:read', 'mission:read_manager'])]
@@ -100,6 +109,27 @@ class MissionIntervention implements MaterialAttachmentTarget
     private ?ChoiceOption $selectedChoiceOption = null;
 
     /**
+     * D-178 — auteur de l'encodage de cette intervention (création directe, ou auteur du
+     * draft converti par le manager). Sert uniquement aux raccourcis « firmes récemment
+     * utilisées » (EncodingSuggestionService) — jamais une règle métier ni une autorisation.
+     * `null` pour les lignes antérieures à D-178 (aucun auteur reconstruit).
+     */
+    #[ORM\ManyToOne]
+    #[ORM\JoinColumn(name: 'created_by_id', nullable: true, onDelete: 'SET NULL')]
+    private ?User $createdBy = null;
+
+    /**
+     * D-178 — « Aucune firme » choisi explicitement, sur un type alors autorisé sans firme
+     * (InterventionType::$allowedWithoutFirm). Seule une intervention marquée ainsi est
+     * légitimement sans firme (complétude, calcul financier) ; une firme manquante sans ce
+     * marqueur reste une donnée manquante (D-146 bis). Exclusif de $primaryFirm. Jamais
+     * reconstruit pour l'historique : les lignes antérieures restent à false.
+     */
+    #[ORM\Column(options: ['default' => false])]
+    #[Groups(['mission:read', 'mission:read_manager'])]
+    private bool $withoutFirm = false;
+
+    /**
      * @var Collection<int, MaterialLine>
      */
     #[ORM\OneToMany(mappedBy: 'missionIntervention', targetEntity: MaterialLine::class)]
@@ -119,6 +149,11 @@ class MissionIntervention implements MaterialAttachmentTarget
     public function getId(): int
     {
         return $this->id ?? throw new \LogicException('MissionIntervention::getId() called before the entity was persisted.');
+    }
+
+    public function getVersion(): int
+    {
+        return $this->version;
     }
 
     /** Voir docblock de getId() — même raisonnement, mission_id est NOT NULL en base. */
@@ -208,6 +243,28 @@ class MissionIntervention implements MaterialAttachmentTarget
     public function setSelectedChoiceOption(?ChoiceOption $selectedChoiceOption): static
     {
         $this->selectedChoiceOption = $selectedChoiceOption;
+        return $this;
+    }
+
+    public function isWithoutFirm(): bool
+    {
+        return $this->withoutFirm;
+    }
+
+    public function setWithoutFirm(bool $withoutFirm): static
+    {
+        $this->withoutFirm = $withoutFirm;
+        return $this;
+    }
+
+    public function getCreatedBy(): ?User
+    {
+        return $this->createdBy;
+    }
+
+    public function setCreatedBy(?User $createdBy): static
+    {
+        $this->createdBy = $createdBy;
         return $this;
     }
 

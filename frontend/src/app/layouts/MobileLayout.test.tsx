@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Routes, Route, RouterProvider, createMemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route, RouterProvider, createMemoryRouter, useOutletContext } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useMediaQuery } from "@mui/material";
 
-import { MobileLayout } from "./MobileLayout";
+import { MobileLayout, type MobileLayoutOutletContext } from "./MobileLayout";
 import { useAuth } from "../auth/AuthContext";
 
 const { mockNavigate } = vi.hoisted(() => ({ mockNavigate: vi.fn() }));
@@ -81,6 +81,16 @@ function mockDesktop(isDesktop: boolean) {
   (useMediaQuery as unknown as Mock).mockReturnValue(isDesktop);
 }
 
+// D-179 — un écran à bandeau propre reçoit la rangée cloche/avatar du shell par le contexte d'Outlet.
+function HoursProbe() {
+  const ctx = useOutletContext<MobileLayoutOutletContext>();
+  return (
+    <div data-testid="hours-probe" data-desktop={String(ctx.isDesktop)}>
+      Hours content{ctx.brandTopRow}
+    </div>
+  );
+}
+
 function renderLayout(initialPath = "/app/i/today") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const result = render(
@@ -91,6 +101,7 @@ function renderLayout(initialPath = "/app/i/today") {
             <Route path="today" element={<div>Today content</div>} />
             <Route path="planning" element={<div>Planning content</div>} />
             <Route path="offers" element={<div>Offers content</div>} />
+            <Route path="hours" element={<HoursProbe />} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -141,9 +152,10 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       expect(within(aside).getByText("Instrumentiste")).toBeInTheDocument();
       expect(within(aside).getByRole("button", { name: "Se déconnecter" })).toBeInTheDocument();
 
-      // Exactement 5 boutons dans la sidebar : 4 onglets (Aujourd'hui/Planning/Offres/
-      // Absences, Lot 3 D-097) + 1 déconnexion — rien d'autre.
-      expect(within(aside).getAllByRole("button")).toHaveLength(5);
+      // Exactement 6 boutons dans la sidebar : 5 onglets (Aujourd'hui/Planning/Offres/
+      // Mes heures D-179/Absences, Lot 3 D-097) + 1 déconnexion — rien d'autre.
+      expect(within(aside).getByRole("button", { name: "Mes heures" })).toBeInTheDocument();
+      expect(within(aside).getAllByRole("button")).toHaveLength(6);
 
       // Cliquer sur le nom/avatar (texte statique, plus un bouton) n'ouvre aucun menu.
       await userEvent.click(within(aside).getByText("Sophie Collette"));
@@ -201,7 +213,8 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       expect(within(nav).getByRole("button", { name: "Planning" })).toBeInTheDocument();
       expect(within(nav).getByRole("button", { name: "Offres" })).toBeInTheDocument();
       expect(within(nav).getByRole("button", { name: "Absences" })).toBeInTheDocument();
-      expect(within(nav).getAllByRole("button")).toHaveLength(4);
+      // D-179 — « Heures » en 4ᵉ position, juste après Offres.
+      expect(within(nav).getAllByRole("button").map((b) => b.textContent)).toEqual(["Aujourd'hui", "Planning", "Offres", "Heures", "Absences"]);
 
       expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
     });
@@ -263,6 +276,34 @@ describe("MobileLayout — nav instrumentiste (alignement handoff-instrumentiste
       await queryClient.refetchQueries({ queryKey: ["missions", "offers", "unread-count"] }).catch(() => {});
 
       expect(within(nav).getByText("4")).toBeInTheDocument();
+    });
+  });
+
+  describe("Mes heures (D-179) — bandeau propre à l'écran", () => {
+    it.each([false, true])("sur /app/i/hours, la BrandBand du shell n'est pas rendue mais sa rangée cloche/avatar est fournie à l'écran (desktop=%s)", async (desktop) => {
+      mockDesktop(desktop);
+      renderLayout("/app/i/hours");
+
+      const probe = await screen.findByTestId("hours-probe");
+      expect(probe).toHaveAttribute("data-desktop", String(desktop));
+      expect(screen.queryByText(/Bonjour/)).not.toBeInTheDocument();
+      // Une seule cloche et un seul bouton Compte : ceux du shell, rendus DANS l'écran.
+      expect(within(probe).getByRole("button", { name: "Notifications" })).toBeInTheDocument();
+      expect(within(probe).getByRole("button", { name: "Compte" })).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Compte" })).toHaveLength(1);
+
+      await userEvent.click(within(probe).getByRole("button", { name: "Notifications" }));
+      expect(mockNavigate).toHaveBeenCalledWith("/app/i/notifications");
+      await userEvent.click(within(probe).getByRole("button", { name: "Compte" }));
+      expect(await screen.findByText("Mon profil")).toBeInTheDocument();
+    });
+
+    it("l'onglet Heures est actif sur /app/i/hours et navigue vers cette route", async () => {
+      mockDesktop(false);
+      renderLayout("/app/i/today");
+      const nav = await screen.findByRole("navigation", { name: "Navigation instrumentiste" });
+      await userEvent.click(within(nav).getByRole("button", { name: "Heures" }));
+      expect(mockNavigate).toHaveBeenCalledWith("/app/i/hours");
     });
   });
 

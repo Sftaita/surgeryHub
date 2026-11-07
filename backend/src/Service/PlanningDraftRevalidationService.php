@@ -67,6 +67,8 @@ class PlanningDraftRevalidationService
         private readonly MissionPostDeployService $postDeploy,
         private readonly PlanningConflictDetectionService $conflictDetection,
         private readonly MissionConflictWaiverService $conflictWaiver,
+        // D-152 — optional only so plain unit tests can build the service; always autowired.
+        private readonly ?MissionEligibilityService $eligibility = null,
     ) {}
 
     /**
@@ -143,6 +145,29 @@ class PlanningDraftRevalidationService
                 continue;
             }
 
+            // D-152 — a DRAFT prepared before an incompatibility was created would otherwise be
+            // published as an incompatible affectation: the deploy is blocked until the
+            // manager changes the line (never silently unassigned).
+            if ($surgeon !== null && $instrumentist !== null && $this->eligibility?->isIncompatible($surgeon, $instrumentist)) {
+                $blockingConflicts[] = [
+                    'type'              => 'INCOMPATIBILITY',
+                    'missionId'         => $mission->getId(),
+                    'date'              => $start->format('Y-m-d'),
+                    'siteId'            => $mission->getSite()?->getId(),
+                    'siteName'          => $mission->getSite()?->getName(),
+                    'surgeonId'         => $surgeon->getId(),
+                    'surgeonName'       => self::displayName($surgeon),
+                    'instrumentistId'   => $instrumentist->getId(),
+                    'instrumentistName' => self::displayName($instrumentist),
+                    'reason'            => sprintf(
+                        'Instrumentiste %s incompatible avec %s — déploiement bloqué : changez l\'instrumentiste de cette ligne.',
+                        self::displayName($instrumentist),
+                        self::displayName($surgeon),
+                    ),
+                ];
+                continue;
+            }
+
             // D-091 — cross-site conflict, checked for both people. Runs only for missions
             // that reached here unneutralized (surgeon present and not absent). Real-time,
             // per-mission queries are acceptable here: this loop is bounded by one
@@ -158,6 +183,9 @@ class PlanningDraftRevalidationService
                 $other = $this->conflictDetection->findConflict(
                     $person, $start, $end, $mission->getId(),
                     $role === 'SURGEON' ? $mission->getSite() : null,
+                    // D-156 — same instrumentist, same surgeon, same site, same day, BLOC:
+                    // a legitimate multi-room prestation, never a conflict (no waiver needed).
+                    $role === 'INSTRUMENTIST' ? $mission : null,
                 );
                 if ($other === null) {
                     continue;

@@ -1,0 +1,99 @@
+# SurgicalHub — Docker Compose de PRODUCTION (D-163). Versionné : c'est ce fichier, jamais une
+# copie modifiée à la main sur le serveur, qui décrit la production.
+#
+# Installé par deploy/deploy.sh dans /opt/stack/apps/surgicalhub/docker-compose.yml à
+# l'activation d'une release (jamais édité sur place). Tous les chemins relatifs sont donc
+# relatifs à /opt/stack/apps/surgicalhub :
+#   .env                 secrets de production — JAMAIS dans le dépôt ni dans l'archive
+#   current/             lien vers releases/<sha> : l'arbre exact du commit déployé
+#   releases/<sha>/      une release par commit (extraite d'une archive git archive vérifiée)
+#
+# Variables d'interpolation (shell > .env) :
+#   IMAGE_TAG                  `local` dans .env = images en service ; deploy.sh construit sous
+#                              le SHA du commit, puis retague `<sha>` → `local` à l'activation.
+#   SURGICALHUB_RELEASE_DIR    contexte de build ; deploy.sh pointe la release à construire,
+#                              défaut `./current` (release active).
+#
+# Identique à la configuration en service le 2026-10-22 (projet `surgicalhub`, mêmes noms de
+# conteneurs, de réseaux et de volumes) ; seul le contexte de build change : ./src → release.
+name: surgicalhub
+
+services:
+  php:
+    build:
+      context: ${SURGICALHUB_RELEASE_DIR:-./current}
+      dockerfile: docker/php/Dockerfile.prod
+    image: surgicalhub-php:${IMAGE_TAG:-local}
+    container_name: surgicalhub-php
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - backend
+    volumes:
+      - app_uploads:/var/www/backend/public/uploads
+      - app_var:/var/www/backend/var
+
+  nginx:
+    build:
+      context: ${SURGICALHUB_RELEASE_DIR:-./current}
+      dockerfile: docker/nginx/Dockerfile.prod
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+        VITE_SENTRY_DSN: ${SENTRY_DSN}
+    image: surgicalhub-nginx:${IMAGE_TAG:-local}
+    container_name: surgicalhub-nginx
+    restart: unless-stopped
+    networks:
+      - proxy
+      - backend
+    volumes:
+      - app_uploads:/var/www/backend/public/uploads:ro
+    depends_on:
+      - php
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+
+      # Front (web)
+      - "traefik.http.routers.surgicalhub-web.rule=Host(`surgicalhub.be`) || Host(`www.surgicalhub.be`)"
+      - "traefik.http.routers.surgicalhub-web.entrypoints=websecure"
+      - "traefik.http.routers.surgicalhub-web.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.surgicalhub-web.middlewares=secure-headers@file,compress@file"
+      - "traefik.http.routers.surgicalhub-web.service=surgicalhub-nginx"
+
+      # API
+      - "traefik.http.routers.surgicalhub-api.rule=Host(`api.surgicalhub.be`)"
+      - "traefik.http.routers.surgicalhub-api.entrypoints=websecure"
+      - "traefik.http.routers.surgicalhub-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.surgicalhub-api.middlewares=secure-headers@file,compress@file"
+      - "traefik.http.routers.surgicalhub-api.service=surgicalhub-nginx"
+
+      - "traefik.http.services.surgicalhub-nginx.loadbalancer.server.port=80"
+
+  worker:
+    image: surgicalhub-php:${IMAGE_TAG:-local}
+    container_name: surgicalhub-worker
+    restart: unless-stopped
+    env_file: .env
+    command: ["php", "-d", "memory_limit=512M", "bin/console", "messenger:consume", "async", "--time-limit=3600", "--memory-limit=256M", "-vv"]
+    networks:
+      - backend
+    volumes:
+      - app_uploads:/var/www/backend/public/uploads
+      - app_var:/var/www/backend/var
+    depends_on:
+      - php
+
+networks:
+  proxy:
+    name: proxy
+    external: true
+  backend:
+    name: backend
+    external: true
+
+volumes:
+  app_uploads:
+    name: surgicalhub_uploads
+  app_var:
+    name: surgicalhub_var

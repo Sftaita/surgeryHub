@@ -27,6 +27,8 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  */
 final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
 {
+    use \App\Tests\Support\PurgesNotificationTraces;
+
     private const PASSWORD = 'BackfillTest123!';
 
     private EntityManagerInterface $em;
@@ -74,6 +76,8 @@ final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
                 if ($e !== null) { $this->em->remove($e); }
             }
             $this->em->flush();
+            $this->purgeNotificationTraces($this->em, $this->createdIds['users']);
+            $this->em->clear(); // the purged OutboundNotification rows may still be managed
             foreach ($this->createdIds['users'] as $id) {
                 $e = $this->em->find(User::class, $id);
                 if ($e !== null) { $this->em->remove($e); }
@@ -393,7 +397,7 @@ final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
         }
         self::assertNotNull($item);
         self::assertTrue($item['selectable']);
-        self::assertSame('WILL_SEND', $item['sites'][0]['roomRelease']['status']);
+        self::assertSame('RETIRED', $item['sites'][0]['roomRelease']['status'], 'D-161 — room release email retired, never retroactive');
         self::assertSame('WILL_SEND_NOW', $item['sites'][0]['blockManagement']['status']);
 
         // Preview n'a rien créé.
@@ -405,7 +409,7 @@ final class AbsenceCommunicationBackfillControllerTest extends WebTestCase
         self::assertSame('PROCESSED', $result['results'][0]['status']);
 
         $comms = $this->em->createQueryBuilder()->select('c')->from(SurgeonAbsenceCommunication::class, 'c')->where('c.absence = :a')->setParameter('a', $absence)->getQuery()->getResult();
-        self::assertCount(2, $comms, 'une ROOM_RELEASE + une BLOCK_MANAGEMENT_ABSENCE');
+        self::assertCount(1, $comms, 'une BLOCK_MANAGEMENT_ABSENCE (D-161 : plus de ROOM_RELEASE)');
     }
 
     // ── §13 : absence supprimée entre preview et execute ─────────────────────

@@ -40,7 +40,7 @@ beforeEach(() => {
 
 /**
  * Point 10 (audit tarification) — même traitement que PrestationsPage : le tarif actif
- * ressort clairement (en vert), "Tarif à définir" sinon, jamais de badge "Non facturable"
+ * ressort clairement (en vert), "Tarif non configuré" sinon, jamais de badge "Non facturable"
  * déduit de la simple absence de tarif. Cette page n'avait aucun test jusqu'ici.
  */
 describe("CataloguePage — tarification visible (Point 10)", () => {
@@ -58,7 +58,7 @@ describe("CataloguePage — tarification visible (Point 10)", () => {
     expect(price.closest("button")).toBeNull();
   });
 
-  it("affiche « Tarif à définir » quand currentPrice est null, jamais un statut inventé", async () => {
+  it("affiche « Tarif non configuré » quand currentPrice est null, jamais un statut inventé", async () => {
     getMaterialItemsMock.mockResolvedValue({
       items: [
         { id: 2, firm: { id: 10, name: "Smith & Nephew" }, label: "Q-FIX", referenceCode: "", unit: "pièce", isImplant: false, billingStatus: "UNSPECIFIED", currentPrice: null, currentCurrency: null },
@@ -68,8 +68,26 @@ describe("CataloguePage — tarification visible (Point 10)", () => {
     renderPage();
 
     await screen.findByText("Q-FIX");
-    expect(screen.getByText("Tarif à définir")).toBeInTheDocument();
+    expect(screen.getByText("Tarif non configuré")).toBeInTheDocument();
     expect(screen.queryByText("Non facturable")).not.toBeInTheDocument();
+  });
+
+  it("D-138 — un conflit de règles s'affiche « Conflit tarifaire », jamais « Tarif non configuré »", async () => {
+    getMaterialItemsMock.mockResolvedValue({
+      items: [
+        { id: 4, firm: { id: 10, name: "Arthrex" }, label: "SwiveLock C Anchor", referenceCode: "SW", unit: "pièce", isImplant: true, billingStatus: "BILLABLE", currentPrice: null, currentCurrency: null, pricingConflictRuleIds: [71, 72] },
+        { id: 5, firm: { id: 10, name: "Arthrex" }, label: "FiberWire", referenceCode: "FW", unit: "pièce", isImplant: false, billingStatus: "BILLABLE", currentPrice: null, currentCurrency: null, pricingConflictRuleIds: null },
+      ],
+      total: 2, page: 1, limit: 50,
+    });
+    renderPage();
+
+    const conflictRow = (await screen.findByText("SwiveLock C Anchor")).closest("tr") as HTMLElement;
+    expect(within(conflictRow).getByText("Conflit tarifaire")).toBeInTheDocument();
+    expect(within(conflictRow).queryByText("Tarif non configuré")).not.toBeInTheDocument();
+    const missingRow = screen.getByText("FiberWire").closest("tr") as HTMLElement;
+    expect(within(missingRow).getByText("Tarif non configuré")).toBeInTheDocument();
+    expect(within(missingRow).queryByText("Conflit tarifaire")).not.toBeInTheDocument();
   });
 
   it("le tarif n'est pas affiché du tout pour un rôle qui n'a pas currentPrice dans la réponse (RBAC serveur)", async () => {
@@ -82,7 +100,7 @@ describe("CataloguePage — tarification visible (Point 10)", () => {
     renderPage();
 
     await screen.findByText("FastFix");
-    expect(screen.getByText("Tarif à définir")).toBeInTheDocument();
+    expect(screen.getByText("Tarif non configuré")).toBeInTheDocument();
   });
 
   it("le crayon Modifier ouvre l'édition et permet de corriger la référence", async () => {
