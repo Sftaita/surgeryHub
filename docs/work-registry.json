@@ -1109,7 +1109,7 @@
       "kind": "fix",
       "priority": "P2",
       "userImpact": "Exploitation : un rollback de D-186 cassait le journal d'activité ; plusieurs gros exports simultanés pouvaient saturer la RAM du VPS.",
-      "status": "teste",
+      "status": "pr-ouverte",
       "statusSince": "2026-11-07",
       "refs": {
         "branches": [
@@ -1119,6 +1119,9 @@
         "decision": "D-187",
         "worktrees": [
           "SurgicalHub-stats-finance"
+        ],
+        "prs": [
+          83
         ]
       },
       "nextAction": "Revue puis fusion ; déploiement uniquement sur accord explicite. La branche rollback/ad45ef6-compat n'est jamais fusionnée dans main.",
