@@ -15,6 +15,12 @@ namespace App\Dto;
  * Mission.surgeon (FK vivante, via financialCalculationLine.financialCalculation.mission),
  * jamais reconstruite artificiellement — voir §21 du lot pour la même tolérance
  * appliquée aux libellés d'intervention "si disponibles".
+ *
+ * D-186 — `netBalance` = generatedFirmRevenue − generatedInstrumentistCompensation (signé,
+ * couche « Calculé » uniquement). Les montants de recettes/dépenses restent des
+ * magnitudes positives ; le signe d'affichage est porté par la convention, jamais par
+ * la donnée. `averageMissionValue` (recettes + dépenses / mission) n'est conservé que
+ * pour compatibilité API — il n'est plus affiché.
  */
 final readonly class SurgeonStatisticsDto
 {
@@ -26,6 +32,7 @@ final readonly class SurgeonStatisticsDto
         public int $executedMissionCount,
         public string $generatedFirmRevenue,
         public string $generatedInstrumentistCompensation,
+        public string $netBalance,
         public string $averageMissionValue,
     ) {}
 }

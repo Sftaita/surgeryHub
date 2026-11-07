@@ -7,7 +7,7 @@ import { getAbsenceCommunicationDetail, extractErrorV2 } from "../api/planningV2
 import type { AbsenceCommunicationDeliveryV2, AbsenceCommunicationGlobalStatusV2, AbsenceCommunicationTypeV2 } from "../api/planningV2.types";
 import { planningV2Colors, planningV2Radii, alertSeverityTokens } from "../theme/tokens";
 
-const DRAWER_WIDTH = 480;
+const DRAWER_WIDTH = { xs: "100%", sm: 480 } as const;
 
 const TYPE_LABELS: Record<AbsenceCommunicationTypeV2, string> = {
   ROOM_RELEASE: "Libération de salle",

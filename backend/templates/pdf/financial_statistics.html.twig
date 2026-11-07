@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  @page { margin: 22px 26px 30px 26px; }
+  html { margin: 22px 26px 30px 26px; }
+  body { font-family: DejaVu Sans, sans-serif; font-size: 8.5px; color: #1a1a1a; }
+  .header { display: table; width: 100%; margin-bottom: 12px; border-bottom: 2px solid #1565C0; padding-bottom: 9px; }
+  .header-left { display: table-cell; vertical-align: top; }
+  .header-right { display: table-cell; text-align: right; vertical-align: top; color: #666; }
+  .logo { font-size: 15px; font-weight: bold; color: #1565C0; letter-spacing: 1px; }
+  .title { font-size: 13px; font-weight: bold; margin-top: 2px; }
+  .meta { margin-bottom: 10px; line-height: 1.6; }
+  .meta span { display: inline-block; margin-right: 18px; }
+  .meta b { color: #555; }
+  h2 { font-size: 10px; margin: 12px 0 6px; color: #1565C0; }
+  h3 { font-size: 8.5px; margin: 8px 0 4px; color: #555; text-transform: uppercase; letter-spacing: 0.4px; }
+  .cards { display: table; width: 100%; border-spacing: 6px 0; margin: 0 -6px 8px; }
+  .card { display: table-cell; border: 1px solid #dfe3eb; border-radius: 4px; padding: 6px 9px; width: 33%; }
+  .card-label { color: #666; font-size: 7.5px; }
+  .card-value { font-size: 12px; font-weight: bold; margin-top: 2px; }
+  table.data { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  table.data.next { page-break-before: always; margin-top: 0; }
+  table.data thead th { background: #1565C0; color: #fff; padding: 5px 6px; font-size: 7.5px; font-weight: bold; }
+  table.data td { padding: 4px 6px; border-bottom: 1px solid #e6e9f0; word-wrap: break-word; }
+  table.data td.right { white-space: nowrap; }
+  table.data tr { page-break-inside: avoid; }
+  table.data tr.alt { background: #f6f8fc; }
+  table.data tfoot td { font-weight: bold; background: #eef2f8; border-top: 2px solid #1565C0; }
+  .left { text-align: left; } .right { text-align: right; }
+  .pos { color: #2e7d32; } .neg { color: #c62828; } .zero, .muted { color: #888; }
+  .note { margin-top: 8px; color: #555; font-size: 7.5px; }
+  .footer { margin-top: 16px; font-size: 7px; color: #999; text-align: center; }
+</style>
+</head>
+<body>
+<div>
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">SURGICALHUB</div>
+      <div class="title">Statistiques financières — {{ viewTitle }}</div>
+    </div>
+    <div class="header-right">Généré le {{ generatedAt }}</div>
+  </div>
+
+  <div class="meta">
+    <span><b>Période :</b> {{ period }}</span>
+    {% for f in filters %}<span><b>{{ f.label }} :</b> {{ f.value }}</span>{% endfor %}
+  </div>
+
+  {% if activity is defined %}
+    <h2>Activité</h2>
+    <div class="cards">
+      {% for a in activity %}<div class="card"><div class="card-label">{{ a.label }}</div><div class="card-value">{{ a.value }}</div></div>{% endfor %}
+    </div>
+    {% for block in currencyBlocks %}
+      <h2>Devise : {{ block.currency }}</h2>
+      {% for layer in block.layers %}
+        <h3>{{ layer.title }}</h3>
+        <div class="cards">
+          {% for c in layer.cards %}<div class="card"><div class="card-label">{{ c.label }}</div><div class="card-value {{ c.class }}">{{ c.text }}</div></div>{% endfor %}
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="note">Aucune donnée financière sur cette période et ces filtres.</p>
+    {% endfor %}
+  {% else %}
+    {% for s in summaries %}
+      {% if s.cards|length > 0 %}
+        {% if summaries|length > 1 %}<h3>Devise : {{ s.currency }}</h3>{% endif %}
+        <div class="cards">
+          {% for c in s.cards %}<div class="card"><div class="card-label">{{ c.label }}</div><div class="card-value {{ c.class }}">{{ c.text }}</div></div>{% endfor %}
+        </div>
+      {% endif %}
+    {% endfor %}
+
+    {# D-186 — un tableau par page PDF, en-tête répété ; ligne(s) TOTAL GÉNÉRAL sous le dernier. #}
+    {% set pageList = pages|length > 0 ? pages : [[]] %}
+    {% for pageRows in pageList %}
+      {% set isLast = loop.last %}
+      <table class="data{{ loop.first ? '' : ' next' }}">
+        <thead>
+          <tr>{% for col in columns %}<th class="{{ col.align }}">{{ col.label }}</th>{% endfor %}</tr>
+        </thead>
+        <tbody>
+          {% for row in pageRows %}
+            <tr{{ row.alt ? ' class="alt"' : '' }}>{% for cell in row.cells %}<td class="{{ columns[loop.index0].align }} {{ cell.class }}">{{ cell.text }}</td>{% endfor %}</tr>
+          {% else %}
+            <tr><td colspan="{{ columns|length }}" class="muted">Aucune donnée sur cette période et ces filtres</td></tr>
+          {% endfor %}
+        </tbody>
+        {% if isLast and totalRows|length > 0 %}
+        <tfoot>
+          {% for row in totalRows %}
+            <tr>{% for cell in row.cells %}<td class="{{ columns[loop.index0].align }} {{ cell.class }}">{{ cell.text }}</td>{% endfor %}</tr>
+          {% endfor %}
+        </tfoot>
+        {% endif %}
+      </table>
+    {% endfor %}
+    <p class="note">{{ rowCount }} ligne(s) exportée(s) — toutes les lignes correspondant aux filtres, dans l'ordre du tri choisi.</p>
+    {% if note is defined and note %}<p class="note">{{ note }}</p>{% endif %}
+  {% endif %}
+
+  <div class="footer">
+    Recettes en positif (+), dépenses en négatif (−), solde net = recettes − dépenses. Les couches Calculé, Facturé / Décompté et
+    Encaissé / Décaissé ne sont jamais mélangées ; aucune devise n'est additionnée à une autre. Document interne — ni facture, ni décompte.
+  </div>
+</div>
+</body>
+</html>

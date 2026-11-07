@@ -58,6 +58,7 @@ export function SurgeonsTable({ onOpenSurgeon }: SurgeonsTableProps) {
         field: "displayName",
         headerName: "Nom",
         flex: 1.6,
+        minWidth: 220,
         sortable: false,
         valueGetter: (_value, row) => buildDisplayName(row),
         renderCell: ({ row }) => {
@@ -85,6 +86,7 @@ export function SurgeonsTable({ onOpenSurgeon }: SurgeonsTableProps) {
         field: "actions",
         headerName: "Actions",
         flex: 0.7,
+        minWidth: 100,
         sortable: false,
         filterable: false,
         renderCell: ({ row }) => (

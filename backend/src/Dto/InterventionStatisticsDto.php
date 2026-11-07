@@ -7,6 +7,13 @@ namespace App\Dto;
  * `interventionCodeSnapshot`/`interventionNameSnapshot` proviennent de
  * FinancialCalculationLine.snapshot (interventionCodeSnapshot/interventionLabelSnapshot,
  * §15 du lot) — jamais du InterventionType actuel.
+ *
+ * D-186 — recettes uniquement : `totalRevenue` = interventionRevenue + materialRevenue ;
+ * `interventionCount` = interventions valorisées de ce type ; `averageRevenuePerIntervention`
+ * = totalRevenue / interventionCount. La rémunération instrumentiste appartient à la mission,
+ * jamais à une intervention : seul `averageAssociatedMissionCost` (coût instrumentiste total
+ * moyen des missions comportant ce type, indicateur contextuel, null si aucune) est exposé.
+ * interventionTypeId=null sans intervention = matériel non rattaché à une intervention.
  */
 final readonly class InterventionStatisticsDto
 {
@@ -16,10 +23,12 @@ final readonly class InterventionStatisticsDto
         public string $interventionNameSnapshot,
         public string $currency,
         public int $missionCount,
+        public int $interventionCount,
         public string $interventionRevenue,
         public string $materialRevenue,
-        public string $instrumentistCompensation,
-        public string $averageMissionValue,
+        public string $totalRevenue,
+        public string $averageRevenuePerIntervention,
+        public ?string $averageAssociatedMissionCost,
         public int $averageDurationMinutes,
     ) {}
 }

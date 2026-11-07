@@ -151,3 +151,19 @@ describe("EncodingTrackingTable — prestation multi-salles", () => {
     expect(screen.queryByText("19h planifiées")).not.toBeInTheDocument();
   });
 });
+
+describe("EncodingTrackingTable — missions annulées affichées sur demande (D-184)", () => {
+  it("affiche le badge « Annulée » sans compter la mission dans le sous-total du jour", () => {
+    const cancelled = { ...item(3, "2026-09-10T15:30:00+02:00", "Ole Salve"), encodingState: "CANCELLED" as const, encodingStateLabel: "Annulée", missionStatus: "CANCELLED" };
+    renderTable([
+      item(1, "2026-09-10T08:00:00+02:00", "Ole Salve"),
+      item(2, "2026-09-10T13:00:00+02:00", "Ole Salve"),
+      cancelled,
+    ]);
+
+    expect(screen.getByText("Annulée")).toBeInTheDocument();
+    expect(screen.queryByText("Sans objet")).toBeNull();
+    expect(screen.getByText(/2 missions · 1 annulée \(non comptée\)/)).toBeInTheDocument();
+    expect(screen.getByText("8h planifiées")).toBeInTheDocument();
+  });
+});

@@ -315,6 +315,65 @@ L'ancienne vérification manuelle de `src/backend/REVISION` (D-162) n'a plus lie
 > 4 tests retirés de Git étaient encore copiés dans l'image le 2026-10-22. Il ne doit plus être
 > utilisé.
 
+### 4.4 Compatibilité des données avant toute bascule — rollback compris (D-187)
+
+**Problème.** Un rollback ne remet que le code : la base garde tout ce que la version plus
+récente a écrit. Une release ne sait lire que les valeurs d'énumération qu'elle connaît
+(`#[ORM\Column(enumType: …)]`) ; une valeur plus récente fait échouer l'hydratation Doctrine
+(`ValueError`) et l'écran qui relit la ligne tombe en 500. Cas réel : après D-186, `ad45ef6`
+(`v2026.11.06-prod`) ne connaît pas `audit_event.event_type = FINANCIAL_STATISTICS_EXPORTED` ; le
+journal d'activité (`AuditJournalService::search`, derniers événements, sans filtre) ne
+s'afficherait plus après un rollback du code seul.
+
+**Contrôle automatique.** `deploy.sh activate` et `deploy.sh rollback` (y compris `legacy`)
+exécutent `deploy/rollback/enum-compat.php` **dans l'image de la release cible**, avec le mapping
+Doctrine de cette release, en lecture seule (transaction `READ ONLY`, `SELECT` uniquement, cache
+jetable), **avant toute sauvegarde, tout retag et tout redémarrage** :
+
+| Résultat | Effet |
+|---|---|
+| `compatible` | la bascule continue |
+| `INCOMPATIBLE` (code 3) | bascule refusée, valeurs listées (`table.colonne = VALEUR (n lignes) : inconnue de …`), rien n'est modifié |
+| contrôle impossible (autre code, script absent) | bascule refusée (jamais d'échec silencieux) |
+
+Le script vient toujours du dépôt qui déploie (envoyé dans `incoming/`), jamais de la release
+active ni de la cible, qui peut lui être antérieure. Contrôle seul, sans bascule :
+`deploy/deploy.sh compat <SHA>` (la release doit être préparée et ses images construites).
+
+**Interdit pour rendre une bascule possible** : supprimer, réécrire ou « traduire » les lignes
+signalées (audit, historique). Les événements d'audit sont la trace des actions ; ils restent
+intacts.
+
+**Release corrective compatible (seule issue).** Construire la cible + **uniquement** ce qu'il
+faut pour lire les valeurs signalées (le ou les cas d'énumération, et leur libellé), sans aucune
+autre modification ni migration :
+
+```bash
+git switch -c rollback/<cible-court>-compat <SHA cible>
+# reprendre, depuis la version qui a introduit les valeurs, les seuls cas d'énumération manquants
+git commit … && git push -u origin rollback/<cible-court>-compat
+SHA_COMPAT=$(git rev-parse HEAD)
+export DEPLOY_MAIN_REF=origin/rollback/<cible-court>-compat   # commit validé hors de main (comme rollback/d177)
+deploy/deploy.sh prepare "$SHA_COMPAT" && deploy/deploy.sh upload "$SHA_COMPAT" && deploy/deploy.sh stage "$SHA_COMPAT"
+deploy/deploy.sh build "$SHA_COMPAT" && deploy/deploy.sh compat "$SHA_COMPAT"   # doit afficher « compatible »
+deploy/deploy.sh activate "$SHA_COMPAT"                                          # sauvegardes, bascule, contrôle refait
+```
+
+Cette branche n'est **jamais fusionnée dans `main`** (elle contient un ancien code). Sa release est
+une release comme les autres (arbre neuf `releases/<SHA>/`, images `:<SHA>`, rollback possible) ;
+elle reste `PENDING_VALIDATION` sauf tag explicite. Elle se prépare à l'avance : on ne découvre
+pas l'incompatibilité au milieu d'un incident.
+
+**Préparée pour D-186** : branche `rollback/ad45ef6-compat` (`ad45ef6` + `case
+FINANCIAL_STATISTICS_EXPORTED` et son libellé du miroir d'activité, 4 lignes reprises de `2d2d37e`).
+Testée sur base jetable (schéma de `ad45ef6`, 8 événements `FINANCIAL_STATISTICS_EXPORTED`) :
+`ad45ef6` → contrôle `INCOMPATIBLE`, journal en erreur ; `rollback/ad45ef6-compat` → `compatible`,
+journal lisible, 10 événements intacts (empreinte identique).
+
+**Limite** : le contrôle couvre les colonnes d'énumération (cause des 500 de lecture). Il ne
+remplace ni la vérification du schéma (migrations, §4.2 et `docs/production.md` § Rollback B), ni
+la relecture des fonctionnalités dont la cible n'a pas le code.
+
 ## 5. Tests santé obligatoires
 
 Toujours, sans exception :

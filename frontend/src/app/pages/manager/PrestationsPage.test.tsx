@@ -675,7 +675,7 @@ describe("PrestationsPage", () => {
     await user.click(within(offeringDialog).getByRole("button", { name: "Voir dans le référentiel →" }));
 
     expect(await screen.findByText("RÉFÉRENTIEL GLOBAL")).toBeInTheDocument();
-    expect(await screen.findByText("Utilisée par 2 firmes")).toBeInTheDocument();
+    expect(await screen.findByText("Firmes associées · 2 actives")).toBeInTheDocument();
     expect(screen.getByText("ConMed")).toBeInTheDocument();
 
     const conmedRow = screen.getByText("ConMed").parentElement!.parentElement!;

@@ -63,29 +63,9 @@ final class MyHoursService
         $to = $from->modify('first day of next month');
         $now = new \DateTimeImmutable('now', $tz);
 
-        /** @var Mission[] $missions */
-        $missions = $this->em->createQuery(
-            // ml/mi : chargés d'emblée car EncodingStateResolver::factsFromMission() les lit
-            // (sinon 2 requêtes paresseuses par mission). Jamais exposés dans la réponse.
-            'SELECT m, e, s, su, ml, mi FROM App\Entity\Mission m
-             JOIN m.site s
-             LEFT JOIN m.execution e
-             LEFT JOIN m.surgeon su
-             LEFT JOIN m.materialLines ml
-             LEFT JOIN m.interventions mi
-             WHERE m.instrumentist = :me AND m.status IN (:statuses)
-               AND m.startAt >= :from AND m.startAt < :to
-             ORDER BY m.startAt DESC, m.id DESC'
-        )
-            ->setParameter('me', $instrumentist)
-            ->setParameter('statuses', self::STATUSES)
-            ->setParameter('from', $from)
-            ->setParameter('to', $to)
-            ->getResult();
-
         $rows = [];
-        foreach ($missions as $mission) {
-            $row = $this->row($mission, $now, $tz, $withEstimate);
+        foreach ($this->loadMissions($instrumentist, $from, $to) as $mission) {
+            $row = $this->prestationRow($mission, $now, $tz, $withEstimate);
             if ($row !== null) {
                 $rows[] = $row;
             }
@@ -98,8 +78,8 @@ final class MyHoursService
             'month' => $from->format('Y-m'),
             'siteId' => $siteId,
             'sites' => $sites,
-            'summary' => $this->summary($scoped),
-            'estimate' => $withEstimate ? $this->estimate($scoped) : null,
+            'summary' => $this->summarize($scoped),
+            'estimate' => $withEstimate ? $this->estimateOf($scoped) : null,
             'items' => array_map(static function (array $r) use ($withEstimate): array {
                 if (!$withEstimate) {
                     unset($r['estimate']);
@@ -109,8 +89,47 @@ final class MyHoursService
         ];
     }
 
-    /** @return array<string, mixed>|null */
-    private function row(Mission $mission, \DateTimeImmutable $now, \DateTimeZone $tz, bool $withEstimate): ?array
+    /**
+     * Missions candidates (statuts STATUSES) d'une instrumentiste — ou de toutes quand
+     * $instrumentist est null (vue manager, D-180) — dont le startAt planifié tombe dans
+     * [$from ; $to[. Une seule requête ; le statut affiché reste tranché par prestationRow().
+     *
+     * @return Mission[]
+     */
+    public function loadMissions(?User $instrumentist, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    {
+        $query = $this->em->createQuery(
+            // ml/mi : chargés d'emblée car EncodingStateResolver::factsFromMission() les lit
+            // (sinon 2 requêtes paresseuses par mission). Jamais exposés dans la réponse.
+            'SELECT m, e, s, su, ml, mi, i FROM App\Entity\Mission m
+             JOIN m.site s
+             JOIN m.instrumentist i
+             LEFT JOIN m.execution e
+             LEFT JOIN m.surgeon su
+             LEFT JOIN m.materialLines ml
+             LEFT JOIN m.interventions mi
+             WHERE m.status IN (:statuses)
+               AND m.startAt >= :from AND m.startAt < :to'
+            . ($instrumentist !== null ? ' AND m.instrumentist = :me' : '')
+            . ' ORDER BY m.startAt DESC, m.id DESC'
+        )
+            ->setParameter('statuses', self::STATUSES)
+            ->setParameter('from', $from)
+            ->setParameter('to', $to);
+        if ($instrumentist !== null) {
+            $query->setParameter('me', $instrumentist);
+        }
+
+        return $query->getResult();
+    }
+
+    /**
+     * Ligne de prestation (périmètre, statut, durée, estimation) — source unique partagée
+     * avec la vue manager (D-180). null = hors périmètre (ni soumise ni validée).
+     *
+     * @return array<string, mixed>|null
+     */
+    public function prestationRow(Mission $mission, \DateTimeImmutable $now, \DateTimeZone $tz, bool $withEstimate): ?array
     {
         $state = $this->encodingStateResolver->resolveForMission($mission, $now);
         $status = match ($state) {
@@ -198,7 +217,7 @@ final class MyHoursService
      * @param list<array<string, mixed>> $rows
      * @return array{count: int, encodedMinutes: int, validatedMinutes: int, pendingMinutes: int, validatedPct: int, missingHoursCount: int}
      */
-    private function summary(array $rows): array
+    public function summarize(array $rows): array
     {
         $encoded = 0;
         $validated = 0;
@@ -231,7 +250,7 @@ final class MyHoursService
      * @param list<array<string, mixed>> $rows
      * @return array<string, mixed>|null
      */
-    private function estimate(array $rows): ?array
+    public function estimateOf(array $rows): ?array
     {
         $encodedCents = 0;
         $validatedCents = 0;
@@ -243,11 +262,7 @@ final class MyHoursService
         foreach ($rows as $r) {
             $e = $r['estimate'];
             if ($e === null) {
-                // Heures absentes : déjà signalées par missingHoursCount, pas une absence de tarif.
-                // D-156 — part imputée nulle d'une présence commune : rien à valoriser ici, la
-                // présence est payée sur les autres missions de la prestation.
-                $zeroShare = $r['durationSource'] === EffectiveDurationSource::PRESENCE_SHARE->value && $r['minutes'] === 0;
-                if (!$zeroShare && ($r['minutes'] !== null || $r['missionType'] === 'CONSULTATION')) {
+                if ($this->isUnrated($r)) {
                     $unrated++;
                 }
                 continue;
@@ -300,5 +315,23 @@ final class MyHoursService
                 'amount' => $money($l['amountCents']),
             ], $lines),
         ];
+    }
+
+    /**
+     * Prestation non valorisée faute de tarif (« tarif manquant »), à distinguer d'une
+     * prestation sans heures, déjà signalée par missingHoursCount.
+     *
+     * @param array<string, mixed> $r ligne construite avec l'estimation
+     */
+    public function isUnrated(array $r): bool
+    {
+        if ($r['estimate'] !== null) {
+            return false;
+        }
+        // D-156 — part imputée nulle d'une présence commune : rien à valoriser ici, la
+        // présence est payée sur les autres missions de la prestation.
+        $zeroShare = $r['durationSource'] === EffectiveDurationSource::PRESENCE_SHARE->value && $r['minutes'] === 0;
+
+        return !$zeroShare && ($r['minutes'] !== null || $r['missionType'] === 'CONSULTATION');
     }
 }

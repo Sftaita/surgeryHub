@@ -38,6 +38,7 @@ final class InterventionRequirementsService
         private readonly RepresentativePolicyResolver $representativePolicyResolver,
         private readonly RequiredChoiceGroupResolver $choiceGroupResolver,
         private readonly ChoiceMaterialExclusivityService $exclusivityService,
+        private readonly InterventionTypeFirmLinkService $firmLinks,
     ) {}
 
     /** D-146 bis — chaque intervention est réalisée avec une firme (jamais « aucune firme »). */
@@ -51,8 +52,9 @@ final class InterventionRequirementsService
     /**
      * D-178 — réponse à « Avec quelle firme cette intervention a-t-elle été réalisée ? » pour
      * un NOUVEL encodage (création, correction de la firme ou du type, résolution d'une
-     * demande) : une firme, OU « Aucune firme » explicitement choisi sur un type que le
-     * catalogue autorise ACTUELLEMENT sans firme (InterventionType::$allowedWithoutFirm).
+     * demande) : une firme, OU « Aucune firme » explicitement choisi sur un type ACTUELLEMENT
+     * sélectionnable sans firme — sans rattachement effectif à une firme (D-183) ou autorisé
+     * sans firme par le manager (D-178), voir InterventionTypeFirmLinkService.
      * Jamais les deux, jamais une firme simplement absente (D-146 bis inchangé).
      */
     public function assertFirmChoice(?Firm $firm, bool $withoutFirm, ?InterventionType $type): void
@@ -65,9 +67,9 @@ final class InterventionRequirementsService
         if ($firm !== null) {
             throw new UnprocessableEntityHttpException('Choisissez une firme OU « Aucune firme », pas les deux.');
         }
-        if ($type === null || !$type->isAllowedWithoutFirm()) {
+        if ($type === null || !$this->firmLinks->isSelectableWithoutFirm($type)) {
             throw new UnprocessableEntityHttpException(sprintf(
-                '« %s » ne peut pas être encodée sans firme. Choisissez la firme avec laquelle elle a été réalisée, ou demandez au manager d\'autoriser ce type sans firme.',
+                '« %s » est rattachée à une ou plusieurs firmes et ne peut pas être encodée sans firme. Choisissez la firme avec laquelle elle a été réalisée, ou demandez au manager d\'autoriser ce type sans firme.',
                 $type?->getLabel() ?? 'Cette intervention',
             ));
         }

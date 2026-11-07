@@ -99,7 +99,7 @@ export function MissionsDayList({ missions, onOpen, selectedId = null }: { missi
               direction="row"
               spacing={1}
               alignItems="center"
-              sx={{ position: "sticky", top: 0, zIndex: 1, bgcolor: "background.default", py: 0.75 }}
+              sx={{ position: "sticky", top: "var(--app-header-height, 0px)", zIndex: 1, bgcolor: "background.default", py: 0.75 }}
             >
               <Typography variant="subtitle1" fontWeight={700}>{formatDayLabel(group.key)}</Typography>
               {relative && <Chip size="small" label={relative} color="primary" />}

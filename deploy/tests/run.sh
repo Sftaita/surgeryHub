@@ -143,6 +143,30 @@ check "A toujours en service" bash -c "[ \"\$(readlink '$T/server/current')\" = 
 echo "== B activé puis rollback vers A (code + configuration + images)"
 bash "$D" build "$B" >/dev/null && bash "$D" activate "$B" >/dev/null
 check "B en service, configuration B" bash -c "[ \"\$(readlink '$T/server/current')\" = 'releases/$B' ] && grep -q 'modification B' '$T/server/current/docker/nginx/prod.conf'"
+
+echo "== D-187 : compatibilité des données contrôlée avant toute bascule (rollback / activate)"
+BK_COUNT=$(ls -d "$T/server/deploy-backups"/*/ | wc -l)
+: > "$STUB_LOG"
+refused "rollback vers une release qui ne sait pas lire la base : refusé" env STUB_COMPAT=incompatible bash "$D" rollback "$A"
+check "… message explicite avec la valeur inconnue et la marche à suivre" bash -c "grep -q 'REFUSÉE' '$T/out' && grep -q 'FINANCIAL_STATISTICS_EXPORTED' '$T/out' && grep -q 'release corrective compatible' '$T/out'"
+check "… contrôle exécuté dans l'image CIBLE avec le script envoyé" grep -q "compat image=$A checker=1" "$STUB_LOG"
+check "… rien n'a bougé : B en service, aucune sauvegarde, aucun retag ni redémarrage" bash -c "[ \"\$(readlink '$T/server/current')\" = 'releases/$B' ] && [ \"\$(cat '$STUB_STATE/images/surgicalhub-php_local')\" = '$B' ] && [ \$(ls -d '$T/server/deploy-backups'/*/ | wc -l) -eq $BK_COUNT ] && ! grep -qE 'docker (tag|restart)|compose .* up' '$STUB_LOG'"
+refused "contrôle impossible (panne) : rollback refusé, jamais d'échec silencieux" env STUB_COMPAT=error bash "$D" rollback "$A"
+check "… motif affiché" grep -q 'contrôle de compatibilité des données impossible' "$T/out"
+check "… B toujours en service" bash -c "[ \"\$(readlink '$T/server/current')\" = 'releases/$B' ]"
+check "le script de contrôle vient du dépôt déployant" cmp -s "$R/deploy/rollback/enum-compat.php" "$T/server/incoming/enum-compat.php"
+rm -f "$T/server/incoming/enum-compat.php"
+refused "script de contrôle absent sur le serveur : bascule refusée" bash "$R/deploy/remote.sh" rollback "$A"
+check "deploy.sh compat : lecture seule, compatible" bash -c "bash '$D' compat '$A' > '$T/compat.out' 2>&1 && grep -q 'données compatibles' '$T/compat.out'"
+refused "deploy.sh compat : incompatible signalé" env STUB_COMPAT=incompatible bash "$D" compat "$A"
+refused "rollback legacy contrôlé lui aussi" env STUB_COMPAT=incompatible bash "$D" rollback legacy
+check "… B toujours en service" bash -c "[ \"\$(readlink '$T/server/current')\" = 'releases/$B' ] && [ -e '$T/server/current' ]"
+: > "$STUB_LOG"
+check "rollback A" bash "$D" rollback "$A"
+check "… après contrôle compatible dans l'image A" grep -q "compat image=$A" "$STUB_LOG"
+refused "activate vers une release incompatible : refusé avant toute sauvegarde" env STUB_COMPAT=incompatible bash "$D" activate "$B"
+check "… A toujours en service, aucune sauvegarde de plus" bash -c "[ \"\$(readlink '$T/server/current')\" = 'releases/$A' ] && [ \$(ls -d '$T/server/deploy-backups'/*/ | wc -l) -eq $BK_COUNT ]"
+bash "$D" activate "$B" >/dev/null
 : > "$STUB_LOG"
 check "rollback A" bash "$D" rollback "$A"
 check "release, compose et images de A restaurés" bash -c "[ \"\$(readlink '$T/server/current')\" = 'releases/$A' ] && cmp -s '$T/server/docker-compose.yml' '$T/server/releases/$A/deploy/production/docker-compose.yml' && [ \"\$(cat '$STUB_STATE/images/surgicalhub-php_local')\" = '$A' ] && ! grep -q 'modification B' '$T/server/current/docker/nginx/prod.conf'"

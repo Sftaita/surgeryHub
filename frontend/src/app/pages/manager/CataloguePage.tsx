@@ -118,6 +118,8 @@ export default function CataloguePage() {
         direction="row"
         justifyContent="space-between"
         alignItems="center"
+        flexWrap="wrap"
+        gap={1.5}
       >
         <Stack direction="row" alignItems="center" spacing={0.5}>
           <Typography variant="h6">Catalogue matériel</Typography>

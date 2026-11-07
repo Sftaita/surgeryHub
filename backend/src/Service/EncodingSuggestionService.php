@@ -25,7 +25,10 @@ class EncodingSuggestionService
 
     private const EXCLUDED_MISSION_STATUSES = [MissionStatus::CANCELLED, MissionStatus::REJECTED];
 
-    public function __construct(private readonly EntityManagerInterface $em) {}
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+        private readonly InterventionTypeFirmLinkService $firmLinks,
+    ) {}
 
     /**
      * Les deux dernières firmes distinctes des interventions encodées par `$user`, de la plus
@@ -100,24 +103,24 @@ class EncodingSuggestionService
     /**
      * D-178 — pendant de recentInterventionTypesFor() pour « Aucune firme » : les deux derniers
      * types encodés sans firme (marqueur explicite) sur les missions du chirurgien `$surgeon`,
-     * limités aux types ACTUELLEMENT actifs et autorisés sans firme — même liste que la
-     * sélection complète sous « Aucune firme ». Une firme simplement absente (historique) ne
+     * limités aux types ACTUELLEMENT sélectionnables sans firme (D-183 : sans rattachement
+     * effectif, ou autorisés par le manager) — même liste que la sélection complète sous
+     * « Aucune firme ». Une firme simplement absente (historique) ne
      * compte jamais.
      *
      * @return list<array{id: int, code: string, label: string}>
      */
     public function recentInterventionTypesWithoutFirmFor(User $surgeon): array
     {
-        $rows = $this->em->createQueryBuilder()
+        $qb = $this->em->createQueryBuilder()
             ->select('it.id AS id', 'it.code AS code', 'it.label AS label', 'MAX(mi.createdAt) AS HIDDEN lastUsedAt', 'MAX(mi.id) AS HIDDEN lastId')
             ->from(MissionIntervention::class, 'mi')
             ->innerJoin('mi.interventionType', 'it')
             ->innerJoin('mi.mission', 'm')
             ->andWhere('mi.withoutFirm = true')
             ->andWhere('mi.primaryFirm IS NULL')
-            ->andWhere('m.surgeon = :surgeon')
-            ->andWhere('it.active = true')
-            ->andWhere('it.allowedWithoutFirm = true')
+            ->andWhere('m.surgeon = :surgeon');
+        $rows = $this->firmLinks->andWhereSelectableWithoutFirm($qb, 'it')
             ->andWhere('m.status NOT IN (:excluded)')
             ->setParameter('surgeon', $surgeon)
             ->setParameter('excluded', array_map(static fn (MissionStatus $s) => $s->value, self::EXCLUDED_MISSION_STATUSES))

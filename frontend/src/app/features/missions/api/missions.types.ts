@@ -92,7 +92,7 @@ export type PaginatedResponse<T> = {
  * (EncodingStateResolver côté backend, jamais recalculé ici).
  */
 export type MissionEncodingState =
-  | "UPCOMING" | "TO_ENCODE" | "IN_PROGRESS" | "SUBMITTED" | "VALIDATED" | "LOCKED" | "NOT_APPLICABLE" | "NOT_DECLARED";
+  | "UPCOMING" | "TO_ENCODE" | "IN_PROGRESS" | "SUBMITTED" | "VALIDATED" | "LOCKED" | "NOT_APPLICABLE" | "NOT_DECLARED" | "CANCELLED";
 
 /** D-172 — un verrou réel confirmé par le backend, par niveau (jamais déduit d'un statut). */
 export type MissionLock = {

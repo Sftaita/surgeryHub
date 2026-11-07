@@ -1731,7 +1731,7 @@ export function GeneratePlanningTab() {
 
       {/* Preview / Modification editor — same two-pane layout, same filters/selection/list for both modes */}
       {(preview || (isModification && modificationMissionsQuery.data)) && !deployed && !modificationApplied && (
-        <Stack direction="row" spacing={2.5} alignItems="flex-start">
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2.5} alignItems={{ xs: "stretch", md: "flex-start" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Stack direction="row" spacing={1.25} sx={{ mb: 1.75, flexWrap: "wrap" }} useFlexGap>
             {FILTER_CHIPS.map((chip) => {

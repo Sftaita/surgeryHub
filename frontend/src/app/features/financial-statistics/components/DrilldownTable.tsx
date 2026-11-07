@@ -13,6 +13,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { DrilldownItem } from "../api/financialStatistics.api";
+import { Amount } from "./FinancialAmount";
 
 interface Props {
   rows: DrilldownItem[];
@@ -27,6 +28,7 @@ interface Props {
  * EPIC Pilotage financier, Lot 7 (D-077) — §18 du lot : forme minimale partagée par
  * missions/calculations/documents (id/date/beneficiary/currency/amount/status/
  * sourceType/sourceId). Le manager passe d'un chiffre agrégé à sa liste source.
+ * D-186 — montant coloré selon `flow` (serveur) : facture firme = recette, décompte = dépense.
  */
 export default function DrilldownTable({ rows, total, page, limit, isLoading, onPageChange }: Props) {
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -40,33 +42,39 @@ export default function DrilldownTable({ rows, total, page, limit, isLoading, on
       {isLoading ? (
         <Box sx={{ p: 4, textAlign: "center" }}><CircularProgress size={24} /></Box>
       ) : (
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Date</TableCell>
-              <TableCell>Bénéficiaire</TableCell>
-              <TableCell>Type</TableCell>
-              <TableCell>Statut</TableCell>
-              <TableCell align="right">Montant</TableCell>
-              <TableCell align="right">ID source</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.length === 0 && (
-              <TableRow><TableCell colSpan={6} align="center" sx={{ py: 4, color: "text.secondary" }}>Aucune donnée</TableCell></TableRow>
-            )}
-            {rows.map((row) => (
-              <TableRow key={`${row.sourceType}-${row.sourceId}`} hover>
-                <TableCell>{new Date(row.date).toLocaleString("fr-BE")}</TableCell>
-                <TableCell>{row.beneficiary}</TableCell>
-                <TableCell><Chip size="small" label={row.sourceType} variant="outlined" /></TableCell>
-                <TableCell>{row.status}</TableCell>
-                <TableCell align="right">{row.amount !== null ? `${Number(row.amount).toFixed(2)} ${row.currency ?? ""}` : "—"}</TableCell>
-                <TableCell align="right">#{row.sourceId}</TableCell>
+        <Box sx={{ overflowX: "auto" }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Date</TableCell>
+                <TableCell>Bénéficiaire</TableCell>
+                <TableCell>Type</TableCell>
+                <TableCell>Statut</TableCell>
+                <TableCell align="right">Montant</TableCell>
+                <TableCell align="right">ID source</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {rows.length === 0 && (
+                <TableRow><TableCell colSpan={6} align="center" sx={{ py: 4, color: "text.secondary" }}>Aucune donnée</TableCell></TableRow>
+              )}
+              {rows.map((row) => (
+                <TableRow key={`${row.sourceType}-${row.sourceId}`} hover>
+                  <TableCell>{new Date(row.date).toLocaleString("fr-BE")}</TableCell>
+                  <TableCell>{row.beneficiary}</TableCell>
+                  <TableCell><Chip size="small" label={row.sourceType} variant="outlined" /></TableCell>
+                  <TableCell>{row.status}</TableCell>
+                  <TableCell align="right">
+                    {row.amount === null ? "—"
+                      : row.flow !== null ? <Amount amount={row.amount} kind={row.flow === "REVENUE" ? "revenue" : "expense"} currency={row.currency ?? ""} />
+                      : `${Number(row.amount).toFixed(2)} ${row.currency ?? ""}`}
+                  </TableCell>
+                  <TableCell align="right">#{row.sourceId}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
       )}
 
       {totalPages > 1 && (

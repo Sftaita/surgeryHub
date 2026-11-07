@@ -117,30 +117,32 @@ export default function CorrectionDetailPage({ resource }: Props) {
         <Box sx={{ px: 2, py: 1.5, bgcolor: "grey.50" }}>
           <Typography variant="subtitle2" fontWeight={700}>Lignes correctives ({c.lines.length})</Typography>
         </Box>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Description</TableCell>
-              <TableCell>Motif</TableCell>
-              <TableCell>Ligne d'origine</TableCell>
-              <TableCell align="right">Qté</TableCell>
-              <TableCell align="right">Montant unitaire</TableCell>
-              <TableCell align="right">Total</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {c.lines.map((line) => (
-              <TableRow key={line.id}>
-                <TableCell>{line.descriptionSnapshot}</TableCell>
-                <TableCell>{line.reasonCode ? CORRECTION_REASON_LABELS[line.reasonCode] : "—"}</TableCell>
-                <TableCell>{line.originalDocumentLineId ? `#${line.originalDocumentLineId}` : "Ligne oubliée"}</TableCell>
-                <TableCell align="right">{line.quantity}</TableCell>
-                <TableCell align="right">{Number(line.unitPrice ?? line.rateSnapshot ?? 0).toFixed(2)} {line.currency}</TableCell>
-                <TableCell align="right"><strong>{Number(line.totalAmount).toFixed(2)} {line.currency}</strong></TableCell>
+        <Box sx={{ overflowX: "auto" }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Description</TableCell>
+                <TableCell>Motif</TableCell>
+                <TableCell>Ligne d'origine</TableCell>
+                <TableCell align="right">Qté</TableCell>
+                <TableCell align="right">Montant unitaire</TableCell>
+                <TableCell align="right">Total</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {c.lines.map((line) => (
+                <TableRow key={line.id}>
+                  <TableCell>{line.descriptionSnapshot}</TableCell>
+                  <TableCell>{line.reasonCode ? CORRECTION_REASON_LABELS[line.reasonCode] : "—"}</TableCell>
+                  <TableCell>{line.originalDocumentLineId ? `#${line.originalDocumentLineId}` : "Ligne oubliée"}</TableCell>
+                  <TableCell align="right">{line.quantity}</TableCell>
+                  <TableCell align="right">{Number(line.unitPrice ?? line.rateSnapshot ?? 0).toFixed(2)} {line.currency}</TableCell>
+                  <TableCell align="right"><strong>{Number(line.totalAmount).toFixed(2)} {line.currency}</strong></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
       </Paper>
 
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>

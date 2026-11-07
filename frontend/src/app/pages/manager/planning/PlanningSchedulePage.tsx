@@ -441,7 +441,7 @@ export default function PlanningSchedulePage() {
       {/* Filters */}
       <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
         <Stack spacing={2}>
-          <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="flex-end">
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-end">
             <TextField
               label="Du" type="date" size="small" value={from}
               onChange={(e) => setFrom(e.target.value)}
@@ -481,7 +481,7 @@ export default function PlanningSchedulePage() {
           </Stack>
 
           {/* Status filter */}
-          <Stack direction="row" alignItems="center" spacing={1}>
+          <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
             <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
               Statut :
             </Typography>

@@ -87,7 +87,7 @@ final class InterventionTypeRequestManagerController extends AbstractController
      * Résout une demande en la liant à un InterventionType (existant ou tout juste créé
      * par le manager via POST /api/intervention-types) : crée la MissionIntervention
      * réelle, repointe tout le matériel déjà déclaré par l'instrumentiste sur le draft,
-     * transitionne la demande et le draft. Body: { interventionTypeId: int, firmId?: int }
+     * transitionne la demande et le draft. Body: { interventionTypeId: int, firmId?: int, withoutFirm?: bool (D-183) }
      */
     #[Route('/{id}/resolve', name: 'api_intervention_type_requests_resolve', methods: ['POST'], requirements: ['id' => '\d+'])]
     public function resolve(int $id, Request $request, #[CurrentUser] User $user): JsonResponse

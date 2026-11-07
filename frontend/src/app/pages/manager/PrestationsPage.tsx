@@ -56,7 +56,10 @@ import {
   updateInterventionType,
   findSimilarInterventionTypes,
   getInterventionTypeOfferings,
+  linkInterventionTypeFirm,
+  unlinkInterventionTypeFirm,
   type InterventionType,
+  type InterventionTypeOfferingRow,
   type SimilarInterventionTypeCandidate,
 } from "../../features/intervention-types/api/interventionTypes.api";
 import { getFirms, getMaterialItems, createMaterialItem, updateMaterialItem, getMaterialBillingRegularisation } from "../../features/manager-catalogue/api/catalogue.api";
@@ -83,17 +86,28 @@ function extractError(err: unknown): string {
   return e?.response?.data?.error?.message ?? e?.response?.data?.message ?? e?.message ?? String(err);
 }
 
+/** D-183 — intervention existante renvoyée par le serveur quand le code est déjà utilisé (409). */
+function existingTypeFromError(err: unknown): InterventionType | null {
+  const e = (err as any)?.response?.data?.error;
+  return e?.code === "INTERVENTION_TYPE_CODE_EXISTS" && e.existingInterventionType ? (e.existingInterventionType as InterventionType) : null;
+}
+
 // ── Modale : créer une intervention dans le référentiel global ─────────────
 // Formulaire code/libellé/spécialité/statut, détection de doublon approximative
 // AVANT création (jamais un blocage) — utilisé à la fois depuis « Nouvelle
 // intervention » (écran Référentiel) et depuis le flux « Ajouter une
 // prestation » (création inline quand l'intervention n'existe pas encore).
+// D-183 — `firms` fourni (écran Référentiel) : « Firme associée » = « Aucune firme » (par
+// défaut : l'intervention seule, sans prestation ni tarif) ou une firme (rattachement créé
+// par le serveur dans la même opération, ou ajouté à l'intervention existante réutilisée).
 function NewInterventionModal({
   initialLabel = "",
+  firms,
   onClose,
   onCreated,
 }: {
   initialLabel?: string;
+  firms?: FirmDTO[];
   onClose: () => void;
   onCreated: (type: InterventionType) => void;
 }) {
@@ -101,18 +115,50 @@ function NewInterventionModal({
   const [code, setCode] = React.useState("");
   const [label, setLabel] = React.useState(initialLabel);
   const [specialty, setSpecialty] = React.useState("");
+  const [firmId, setFirmId] = React.useState<number | null>(null);
   const [candidates, setCandidates] = React.useState<SimilarInterventionTypeCandidate[] | null>(null);
   const [checkingSimilar, setCheckingSimilar] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [existingType, setExistingType] = React.useState<InterventionType | null>(null);
+  const firmName = firms?.find((f) => f.id === firmId)?.name ?? null;
 
   const createMutation = useMutation({
     mutationFn: createInterventionType,
-    onSuccess: (created) => { toast.success("Intervention ajoutée au référentiel global"); onCreated(created); },
+    onSuccess: (created) => {
+      toast.success(firmName ? `Intervention ajoutée au référentiel et rattachée à ${firmName}` : "Intervention ajoutée au référentiel global");
+      onCreated(created);
+    },
+    onError: (e) => { setExistingType(existingTypeFromError(e)); setError(extractError(e)); },
+  });
+
+  // Réutiliser une intervention existante : jamais de doublon ; la firme choisie y est rattachée.
+  const useExistingMutation = useMutation({
+    mutationFn: async (type: InterventionType) => {
+      if (firms && firmId != null) {
+        try {
+          await linkInterventionTypeFirm(type.id, firmId);
+        } catch (e) {
+          if ((e as any)?.response?.status !== 409) throw e;
+        }
+      }
+      return type;
+    },
+    onSuccess: (type) => { if (firms && firmName) toast.success(`« ${type.label} » est rattachée à ${firmName}`); onCreated(type); },
     onError: (e) => setError(extractError(e)),
   });
 
+  const createBody = () => ({
+    code: code.trim().toUpperCase(),
+    label: label.trim(),
+    specialty: specialty.trim() || undefined,
+    ...(firms ? { firmId } : {}),
+  });
+  const useExisting = (type: InterventionType) => (firms ? useExistingMutation.mutate(type) : onCreated(type));
+  const busy = createMutation.isPending || useExistingMutation.isPending;
+
   async function handleSave() {
     setError(null);
+    setExistingType(null);
     if (!code.trim() || !label.trim()) { setError("Indiquez un code et un libellé."); return; }
     setCheckingSimilar(true);
     try {
@@ -121,7 +167,7 @@ function NewInterventionModal({
     } finally {
       setCheckingSimilar(false);
     }
-    createMutation.mutate({ code: code.trim().toUpperCase(), label: label.trim(), specialty: specialty.trim() || undefined });
+    createMutation.mutate(createBody());
   }
 
   return (
@@ -153,6 +199,25 @@ function NewInterventionModal({
           <label className={styles.fieldLabel} htmlFor="ni-specialty">Spécialité <span className={styles.fieldHint}>(optionnel)</span></label>
           <input id="ni-specialty" className={styles.fieldInput} value={specialty} onChange={(e) => setSpecialty(e.target.value)} placeholder="Indicatif uniquement" />
         </div>
+        {firms && (
+          <div className={styles.field}>
+            <label className={styles.fieldLabel} htmlFor="ni-firm">Firme associée</label>
+            <select
+              id="ni-firm"
+              className={styles.fieldInput}
+              value={firmId ?? ""}
+              onChange={(e) => { setFirmId(e.target.value === "" ? null : Number(e.target.value)); setExistingType(null); }}
+            >
+              <option value="">Aucune firme</option>
+              {firms.filter((f) => f.active !== false).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+            <span className={styles.fieldHint}>
+              {firmId == null
+                ? "L'intervention est créée seule, sans prestation ni tarif ; elle apparaît dans « Interventions sans firme »."
+                : "La prestation est créée chez cette firme ; son forfait se configure ensuite depuis la firme."}
+            </span>
+          </div>
+        )}
 
         {candidates && candidates.length > 0 && (
           <div style={{ background: "var(--pr-amber-50)", border: "1px solid var(--pr-amber-200)", borderRadius: 12, padding: "13px 14px" }}>
@@ -166,22 +231,27 @@ function NewInterventionModal({
                     <div style={{ fontSize: 13.5, fontWeight: 700 }}>{c.type.label}</div>
                     <div className={styles.refRowCode}>{c.type.code}</div>
                   </div>
-                  <Btn small onClick={() => onCreated(c.type)}>Utiliser ce type</Btn>
+                  <Btn small disabled={busy} onClick={() => useExisting(c.type)}>Utiliser ce type</Btn>
                 </div>
               ))}
             </Stack>
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <Btn small variant="secondary" disabled={createMutation.isPending} onClick={() => createMutation.mutate({ code: code.trim().toUpperCase(), label: label.trim(), specialty: specialty.trim() || undefined })}>
+              <Btn small variant="secondary" disabled={busy} onClick={() => createMutation.mutate(createBody())}>
                 {createMutation.isPending ? <CircularProgress size={14} /> : "Créer quand même"}
               </Btn>
             </div>
           </div>
         )}
         {error && <div className={styles.warningLine}><WarningIcon size={14} /> {error}</div>}
+        {existingType && (
+          <Btn small variant="secondary" disabled={busy} onClick={() => useExisting(existingType)} data-testid="use-existing-intervention">
+            Utiliser l'intervention existante « {existingType.label} »{firms && firmName ? ` et la rattacher à ${firmName}` : ""}
+          </Btn>
+        )}
       </div>
       {!candidates && (
         <div style={{ marginTop: 20 }}>
-          <Btn fullWidth disabled={createMutation.isPending || checkingSimilar} onClick={handleSave}>
+          <Btn fullWidth disabled={busy || checkingSimilar} onClick={handleSave}>
             {createMutation.isPending || checkingSimilar ? <CircularProgress size={16} /> : "Ajouter au référentiel"}
           </Btn>
         </div>
@@ -1177,8 +1247,11 @@ function ReferentielTableView({
             {rows.map((t) => (
               <div key={t.id} className={styles.refRow} onClick={() => onOpenDetail(t)}>
                 <span className={styles.refRowCode}>{t.code}</span>
-                <span className={styles.refRowName}>{t.label}</span>
-                <span className={styles.refRowFirms}>{t.firmsCount ?? 0}</span>
+                <span className={styles.refRowName}>
+                  {t.label}
+                  {t.withoutFirm && <> <Tag>Sans firme</Tag></>}
+                </span>
+                <span className={styles.refRowFirms}>{t.activeFirmsCount ?? t.firmsCount ?? 0}</span>
                 <StatusPill active={t.active} activeLabel="Actif" inactiveLabel="Inactif" />
                 <ChevronRightIcon size={16} className={styles.prestaCardChevron} />
               </div>
@@ -1199,20 +1272,58 @@ function ReferentielTableView({
   );
 }
 
-// ── Référentiel — détail d'une intervention (firmes utilisatrices) ─────────
+// ── Référentiel — détail d'une intervention (firmes associées) ──────────────
+// D-183 — rattacher une firme crée la prestation firme × type (ou réactive celle retirée),
+// sans jamais dupliquer l'intervention ; retirer désactive la prestation (tarifs, encodages et
+// facturation historiques conservés), l'intervention globale reste. Sans rattachement actif,
+// elle revient dans « Interventions sans firme » (calculé par le serveur).
 function ReferentielDetailView({
-  intervention, onBack, onEdit, onOpenFirm,
+  intervention, firms, onBack, onEdit, onOpenFirm,
 }: {
   intervention: InterventionType;
+  firms: FirmDTO[];
   onBack: () => void;
   onEdit: () => void;
   onOpenFirm: (firmId: number, offeringId: number) => void;
 }) {
+  const toast = useToast();
+  const qc = useQueryClient();
   const offeringsQuery = useQuery({
     queryKey: ["intervention-type-offerings", intervention.id],
     queryFn: () => getInterventionTypeOfferings(intervention.id),
   });
   const offerings = offeringsQuery.data ?? [];
+  const activeOfferings = offerings.filter((o) => o.active);
+  const [firmToLink, setFirmToLink] = React.useState<number | null>(null);
+  const [unlinkTarget, setUnlinkTarget] = React.useState<InterventionTypeOfferingRow | null>(null);
+  const linkableFirms = firms.filter((f) => f.active !== false && !activeOfferings.some((o) => o.firm.id === f.id));
+
+  const refresh = (firmId: number) => {
+    qc.invalidateQueries({ queryKey: ["intervention-types"] });
+    qc.invalidateQueries({ queryKey: ["intervention-type-offerings", intervention.id] });
+    qc.invalidateQueries({ queryKey: ["service-offerings", firmId] });
+  };
+  const linkMutation = useMutation({
+    mutationFn: (firmId: number) => linkInterventionTypeFirm(intervention.id, firmId),
+    onSuccess: (res) => {
+      const name = firms.find((f) => f.id === res.firmId)?.name ?? "la firme";
+      toast.success(res.reactivated ? `Rattachement à ${name} rétabli` : `« ${intervention.label} » est rattachée à ${name}`);
+      setFirmToLink(null);
+      refresh(res.firmId);
+    },
+    onError: (e) => toast.error(extractError(e)),
+  });
+  const unlinkMutation = useMutation({
+    mutationFn: (row: InterventionTypeOfferingRow) => unlinkInterventionTypeFirm(intervention.id, row.offeringId),
+    onSuccess: (res) => {
+      toast.success(res.interventionType.withoutFirm
+        ? "Rattachement retiré — l'intervention apparaît désormais dans « Interventions sans firme »."
+        : "Rattachement retiré");
+      setUnlinkTarget(null);
+      refresh(res.firmId);
+    },
+    onError: (e) => toast.error(extractError(e)),
+  });
 
   return (
     <div>
@@ -1222,6 +1333,7 @@ function ReferentielDetailView({
           <div className={styles.refDetailMeta}>
             <span className={styles.refRowCode}>{intervention.code}</span>
             <StatusPill active={intervention.active} activeLabel="Actif" inactiveLabel="Inactif" />
+            {intervention.withoutFirm && <Tag>Sans firme</Tag>}
           </div>
           <h2 className={styles.refDetailTitle}>{intervention.label}</h2>
         </div>
@@ -1230,7 +1342,28 @@ function ReferentielDetailView({
         </div>
       </div>
 
-      <h3 className={styles.refUsageTitle}>Utilisée par {offerings.length} firme{offerings.length !== 1 ? "s" : ""}</h3>
+      <h3 className={styles.refUsageTitle}>
+        Firmes associées · {activeOfferings.length} active{activeOfferings.length > 1 ? "s" : ""}
+      </h3>
+      {intervention.active ? (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }} data-testid="firm-link-form">
+          <select
+            aria-label="Firme à rattacher"
+            className={styles.fieldInput}
+            style={{ maxWidth: 280 }}
+            value={firmToLink ?? ""}
+            onChange={(e) => setFirmToLink(e.target.value === "" ? null : Number(e.target.value))}
+          >
+            <option value="">Choisir une firme…</option>
+            {linkableFirms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          <Btn small disabled={firmToLink == null || linkMutation.isPending} onClick={() => firmToLink != null && linkMutation.mutate(firmToLink)}>
+            {linkMutation.isPending ? <CircularProgress size={14} /> : "Rattacher"}
+          </Btn>
+        </div>
+      ) : (
+        <div className={styles.refUsageMeta} style={{ marginBottom: 12 }}>Intervention inactive : réactivez-la pour la rattacher à une firme.</div>
+      )}
       {offeringsQuery.isLoading ? (
         <div style={{ display: "flex", justifyContent: "center", padding: 24 }}><CircularProgress size={20} /></div>
       ) : (
@@ -1245,13 +1378,70 @@ function ReferentielDetailView({
                   title={row.feeApplicable && hasPricingConflict(row.pricingConflictRuleIds) ? pricingConflictTooltip(row.pricingConflictRuleIds) : undefined}
                 >
                   {formatOfferingForfait(row)}
-                  {!row.active && " · inactive"}
+                  {!row.active && " · rattachement retiré"}
                 </div>
               </div>
+              {row.active ? (
+                <Btn small variant="secondary" disabled={unlinkMutation.isPending} onClick={() => setUnlinkTarget(row)} aria-label={`Retirer le rattachement à ${row.firm.name}`}>Retirer</Btn>
+              ) : intervention.active && row.firm && firms.some((f) => f.id === row.firm.id && f.active !== false) ? (
+                <Btn small variant="secondary" disabled={linkMutation.isPending} onClick={() => linkMutation.mutate(row.firm.id)}>Rattacher à nouveau</Btn>
+              ) : null}
               <button type="button" className={styles.refUsageLink} onClick={() => onOpenFirm(row.firm.id, row.offeringId)}>Ouvrir chez cette firme →</button>
             </div>
           ))}
-          {offerings.length === 0 && <div className={[styles.emptyState, styles.emptyStateBoxed].join(" ")}>Aucune firme ne configure encore cette intervention.</div>}
+          {offerings.length === 0 && <div className={[styles.emptyState, styles.emptyStateBoxed].join(" ")}>Aucune firme associée : cette intervention fait partie des « Interventions sans firme ».</div>}
+        </div>
+      )}
+
+      <Dialog open={unlinkTarget !== null} onClose={unlinkMutation.isPending ? undefined : () => setUnlinkTarget(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>Retirer le rattachement à {unlinkTarget?.firm.name} ?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            La prestation « {intervention.label} » de {unlinkTarget?.firm.name} est désactivée, jamais supprimée : ses tarifs, les encodages et la facturation déjà enregistrés restent intacts. L'intervention reste dans le référentiel
+            {activeOfferings.length === 1 ? " et apparaîtra dans « Interventions sans firme »." : "."}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <MuiButton onClick={() => setUnlinkTarget(null)} disabled={unlinkMutation.isPending}>Annuler</MuiButton>
+          <MuiButton color="error" variant="contained" disabled={unlinkMutation.isPending} onClick={() => unlinkTarget && unlinkMutation.mutate(unlinkTarget)}>
+            {unlinkMutation.isPending ? <CircularProgress size={16} /> : "Retirer le rattachement"}
+          </MuiButton>
+        </DialogActions>
+      </Dialog>
+    </div>
+  );
+}
+
+// ── Firmes — catégorie « Interventions sans firme » (D-183) ──────────────────
+function WithoutFirmCategoryView({
+  types, isLoading, onOpen,
+}: {
+  types: InterventionType[];
+  isLoading: boolean;
+  onOpen: (t: InterventionType) => void;
+}) {
+  const rows = [...types].sort((a, b) => a.label.localeCompare(b.label, "fr"));
+  return (
+    <div data-testid="without-firm-category">
+      <h2 className={styles.firmHeaderName}>Interventions sans firme</h2>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
+        Interventions actives rattachées à aucune firme : aucune prestation, aucun tarif. Elles se choisissent « Aucune firme » à l'encodage. Ouvrez-en une pour la rattacher à une firme.
+      </Typography>
+      {isLoading ? (
+        <div style={{ display: "flex", justifyContent: "center", padding: 24 }}><CircularProgress size={20} /></div>
+      ) : rows.length === 0 ? (
+        <div className={[styles.emptyState, styles.emptyStateBoxed].join(" ")}>Toutes les interventions actives sont rattachées à au moins une firme.</div>
+      ) : (
+        <div className={styles.refTable}>
+          {rows.map((t) => (
+            <div key={t.id} className={styles.refRow} onClick={() => onOpen(t)} role="button" aria-label={`Ouvrir ${t.label}`}>
+              <span className={styles.refRowCode}>{t.code}</span>
+              <span className={styles.refRowName}>{t.label}</span>
+              <span className={styles.refRowFirms}>{t.specialty ?? ""}</span>
+              <span />
+              <ChevronRightIcon size={16} className={styles.prestaCardChevron} />
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1304,6 +1494,9 @@ export default function PrestationsPage() {
 
   const interventionTypesQuery = useQuery({ queryKey: ["intervention-types"], queryFn: () => getInterventionTypes() });
   const allInterventionTypes = interventionTypesQuery.data ?? [];
+  // D-183 — « Interventions sans firme » : calculé par le serveur (`withoutFirm`), jamais déduit ici.
+  const interventionsWithoutFirm = allInterventionTypes.filter((t) => t.withoutFirm === true);
+  const [noFirmCategoryOpen, setNoFirmCategoryOpen] = React.useState(false);
   const referentielDetailType: InterventionType | null =
     allInterventionTypes.find((t) => t.id === referentielDetailId) ?? null;
 
@@ -1365,13 +1558,14 @@ export default function PrestationsPage() {
 
   function goToFirm(firmId: number) {
     setSelectedFirmId(firmId);
+    setNoFirmCategoryOpen(false);
     setTab("offerings");
     setView("firms");
     setReferentielDetailId(null);
   }
 
   return (
-    <Box sx={{ p: 3 }} className={styles.root}>
+    <Box sx={{ p: { xs: 0, md: 3 } }} className={styles.root}>
       <PageHeader
         icon={CategoryIcon}
         title="Prestations"
@@ -1458,6 +1652,7 @@ export default function PrestationsPage() {
           {referentielDetailType ? (
             <ReferentielDetailView
               intervention={referentielDetailType}
+              firms={firms}
               onBack={() => setReferentielDetailId(null)}
               onEdit={() => setEditInterventionTarget(referentielDetailType)}
               onOpenFirm={(firmId, offeringId) => {
@@ -1498,10 +1693,31 @@ export default function PrestationsPage() {
               ))}
               {filteredFirms.length === 0 && <div className={styles.emptyState}>Aucune firme trouvée.</div>}
             </div>
+            {/* D-183 — catégorie calculée par le serveur (intervention active sans rattachement
+                effectif) ; ce n'est pas une firme et rien n'est créé pour elle. */}
+            <div className={styles.sidebarHead}>CATALOGUE</div>
+            <div className={styles.sidebarList}>
+              <button
+                type="button"
+                className={[styles.sidebarRow, noFirmCategoryOpen ? styles.sidebarRowActive : ""].filter(Boolean).join(" ")}
+                onClick={() => { setNoFirmCategoryOpen(true); setSelectedFirmId(null); }}
+                data-testid="category-without-firm"
+              >
+                <BookIcon size={17} />
+                <span className={styles.sidebarName}>Interventions sans firme</span>
+                <span className={styles.tabCount}>{interventionsWithoutFirm.length}</span>
+              </button>
+            </div>
           </aside>
 
           <div className={styles.content}>
-            {selectedFirmId === null || !selectedFirm ? (
+            {noFirmCategoryOpen ? (
+              <WithoutFirmCategoryView
+                types={interventionsWithoutFirm}
+                isLoading={interventionTypesQuery.isLoading}
+                onOpen={(t) => { setView("referentiel"); setReferentielDetailId(t.id); setNoFirmCategoryOpen(false); }}
+              />
+            ) : selectedFirmId === null || !selectedFirm ? (
               <div className={styles.emptyState} style={{ paddingTop: 80 }}>
                 <Typography variant="h6" fontWeight={700} color="text.primary" gutterBottom>
                   Sélectionnez une firme pour commencer
@@ -1634,8 +1850,14 @@ export default function PrestationsPage() {
 
       {newInterventionOpen && (
         <NewInterventionModal
+          firms={firms}
           onClose={() => setNewInterventionOpen(false)}
-          onCreated={() => { setNewInterventionOpen(false); qc.invalidateQueries({ queryKey: ["intervention-types"] }); }}
+          onCreated={() => {
+            setNewInterventionOpen(false);
+            qc.invalidateQueries({ queryKey: ["intervention-types"] });
+            qc.invalidateQueries({ queryKey: ["intervention-type-offerings"] });
+            qc.invalidateQueries({ queryKey: ["service-offerings"] });
+          }}
         />
       )}
       {editInterventionTarget && (

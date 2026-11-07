@@ -49,6 +49,7 @@ final class EncodingTrackingController extends AbstractController
         $filter = $this->parser->parseFilter($request);
         $missionType = $this->parser->parseMissionType($request);
         $states = $this->parser->parseEncodingStates($request);
+        $includeCancelled = $this->parser->parseIncludeCancelled($request);
         ['page' => $page, 'limit' => $limit] = $this->parser->parsePagination($request);
 
         // Un instant unique partagé par le résumé et la liste : deux appels à "maintenant"
@@ -56,7 +57,8 @@ final class EncodingTrackingController extends AbstractController
         $now = new \DateTimeImmutable();
 
         $summary = $this->service->summarize($filter, $missionType, $now);
-        $result = $this->service->list($filter, $page, $limit, $states, $missionType, $now);
+        // D-184 — le résumé exclut toujours les annulées ; la liste seulement par défaut.
+        $result = $this->service->list($filter, $page, $limit, $states, $missionType, $now, $includeCancelled);
 
         return $this->json([
             'period' => [
@@ -68,6 +70,8 @@ final class EncodingTrackingController extends AbstractController
             'total' => $result['total'],
             'page' => $result['page'],
             'limit' => $result['limit'],
+            'includeCancelled' => $includeCancelled,
+            'cancelledCount' => $this->service->countCancelled($filter, $missionType),
         ]);
     }
 
