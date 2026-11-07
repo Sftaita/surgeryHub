@@ -121,20 +121,22 @@ final class MissionUrgentReassignmentTest extends TestCase
     }
 
     #[DataProvider('lockedStatuses')]
-    public function test_policy_locked_statuses_are_explained(MissionStatus $status, string $code): void
+    public function test_policy_locked_statuses_are_explained(MissionStatus $status, string $code, string $message): void
     {
         $m = $this->mission($status, $this->user('Ole', 'Salve'));
 
         self::assertSame([], MissionReassignmentPolicy::modes($m, new \DateTimeImmutable('2026-11-03 10:00')));
         self::assertSame($code, MissionReassignmentPolicy::blockedReason($m)['code']);
+        // Formulation neutre, propre à chaque statut.
+        self::assertStringStartsWith($message, MissionReassignmentPolicy::blockedReason($m)['message']);
     }
 
     public static function lockedStatuses(): array
     {
         return [
-            'submitted' => [MissionStatus::SUBMITTED, MissionReassignmentPolicy::ENCODING_SUBMITTED],
-            'validated' => [MissionStatus::VALIDATED, MissionReassignmentPolicy::ENCODING_VALIDATED],
-            'closed'    => [MissionStatus::CLOSED, MissionReassignmentPolicy::MISSION_CLOSED],
+            'submitted' => [MissionStatus::SUBMITTED, MissionReassignmentPolicy::ENCODING_SUBMITTED, "Le changement d'instrumentiste n'est plus autorisé pour une mission soumise."],
+            'validated' => [MissionStatus::VALIDATED, MissionReassignmentPolicy::ENCODING_VALIDATED, "Le changement d'instrumentiste n'est plus autorisé pour une mission validée."],
+            'closed'    => [MissionStatus::CLOSED, MissionReassignmentPolicy::MISSION_CLOSED, 'Cette mission est clôturée'],
         ];
     }
 

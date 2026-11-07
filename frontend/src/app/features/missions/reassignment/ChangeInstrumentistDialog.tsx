@@ -135,7 +135,7 @@ export function ChangeInstrumentistDialog({ missionId, open, onClose }: Props) {
 
             {modes.length === 0 && (
               <Alert severity="info" data-testid="change-instrumentist-blocked">
-                {info?.blockedReason?.message ?? "L'instrumentiste de cette mission ne peut pas être changée."}
+                {info?.blockedReason?.message ?? "Le changement d'instrumentiste n'est pas possible pour cette mission."}
               </Alert>
             )}
 

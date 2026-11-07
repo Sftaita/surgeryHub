@@ -574,13 +574,22 @@ describe("ManagerMissionDrawer — corrections (reassign, edit_hours, edit_encod
     const user = userEvent.setup();
     renderDrawer(baseMission({
       status: "VALIDATED", instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" }, allowedActions: ["view", "reopen"],
-      reassignment: { modes: [], blockedReason: { code: "REASSIGNMENT_ENCODING_VALIDATED", message: "L'encodage de cette mission est validé : rouvrez d'abord l'encodage." }, relayWindow: null },
+      reassignment: { modes: [], blockedReason: { code: "REASSIGNMENT_ENCODING_VALIDATED", message: "Le changement d'instrumentiste n'est plus autorisé pour une mission validée. Si l'affectation est réellement erronée, rouvrez d'abord l'encodage." }, relayWindow: null },
     }));
 
     await user.click(await screen.findByTestId("manager-reassign"));
     expect(await screen.findByTestId("change-instrumentist-blocked")).toHaveTextContent("rouvrez d'abord l'encodage");
     expect(screen.queryByTestId("confirm-reassignment")).toBeNull();
     expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it("D-181 — aucun mode et aucun motif servi : texte neutre par défaut, aucun changement possible", async () => {
+    const user = userEvent.setup();
+    renderDrawer({ ...assigned, reassignment: { modes: [], blockedReason: null, relayWindow: null } } as ReturnType<typeof baseMission>);
+
+    await user.click(await screen.findByTestId("manager-reassign"));
+    expect(await screen.findByTestId("change-instrumentist-blocked")).toHaveTextContent("Le changement d'instrumentiste n'est pas possible pour cette mission.");
+    expect(screen.queryByTestId("confirm-reassignment")).toBeNull();
   });
 
   it("« Corriger les heures » ouvre la saisie manager des heures prestées", async () => {
