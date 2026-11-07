@@ -36,6 +36,11 @@ export type InterventionTypeRequestDTO = {
     code: string;
     label: string;
   } | null;
+  /**
+   * D-183 — résolution effective (servie par le serveur, lue sur l'intervention créée), distincte
+   * de la firme indiquée par l'instrumentiste. null : non résolue, ou résolution sans intervention liée.
+   */
+  resolution?: { withoutFirm: boolean; firm: { id: number; name: string } | null } | null;
   /** Renseignés uniquement pour une demande IGNORED (D-113). */
   ignoreReason: CatalogueRequestIgnoreReason | null;
   ignoreComment: string | null;

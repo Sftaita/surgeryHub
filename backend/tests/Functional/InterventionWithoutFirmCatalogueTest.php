@@ -263,6 +263,29 @@ final class InterventionWithoutFirmCatalogueTest extends WebTestCase
         self::assertTrue($intervention->isWithoutFirm());
         self::assertSame([], $this->requirements()->missingFor($intervention));
         self::assertTrue($this->listed($client, $managerToken, (int) $type->getId())['withoutFirm'], 'immédiatement dans « Interventions sans firme »');
+
+        // Firme demandée conservée, distincte de la résolution effective.
+        $row = $this->requestRow($client, $managerToken, $requestId);
+        self::assertSame($arthrex->getId(), $row['requestedFirm']['id']);
+        self::assertSame(['withoutFirm' => true, 'firm' => null], $row['resolution']);
+
+        // Même demande résolue avec une firme : « associée à » cette firme.
+        $withFirmId = $this->interventionRequest($client, $instr, $mission, ['label' => 'Autre geste', 'requestedFirmId' => $arthrex->getId()]);
+        $this->request($client, 'POST', "/api/intervention-type-requests/{$withFirmId}/resolve", $managerToken = $this->login($client, $manager), [
+            'interventionTypeId' => $type->getId(), 'firmId' => $arthrex->getId(), 'offeringDecision' => 'LEAVE_UNCONFIGURED',
+        ]);
+        self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
+        $row = $this->requestRow($client, $managerToken, $withFirmId);
+        self::assertSame(['withoutFirm' => false, 'firm' => ['id' => $arthrex->getId(), 'name' => $arthrex->getName()]], $row['resolution']);
+        self::assertNull($this->requestRow($client, $managerToken, $this->interventionRequest($client, $instr, $mission, ['label' => 'En attente', 'withoutFirm' => true]), 'PENDING')['resolution']);
+    }
+
+    /** @return array<string, mixed> la demande telle que listée au manager */
+    private function requestRow(KernelBrowser $client, string $token, int $id, string $status = 'RESOLVED'): array
+    {
+        $rows = array_values(array_filter($this->getJson($client, '/api/intervention-type-requests?status=' . $status, $token)['items'], static fn (array $r) => $r['id'] === $id));
+        self::assertCount(1, $rows);
+        return $rows[0];
     }
 
     public function test_a_failed_resolution_leaves_the_request_pending_and_the_existing_intervention_is_reused(): void
