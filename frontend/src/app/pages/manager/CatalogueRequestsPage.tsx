@@ -62,6 +62,7 @@ import {
 import { CatalogueRequestDetailDialog } from "../../features/manager-catalogue/components/CatalogueRequestDetailDialog";
 import {
   IGNORE_REASON_LABELS,
+  resolutionFirmLabel,
   statusColor,
   statusLabel,
   type CatalogueRequestRow,
@@ -512,7 +513,14 @@ export default function CatalogueRequestsPage() {
                       ) : null}
                     </TableCell>
                     <TableCell>
-                      <Typography variant="body2">{requestFirmLabel(row) ?? "—"}</Typography>
+                      <Typography variant="body2">
+                        {!isMaterial && request.status === "RESOLVED" ? "Demandée : " : null}{requestFirmLabel(row) ?? "—"}
+                      </Typography>
+                      {!isMaterial && request.status === "RESOLVED" && resolutionFirmLabel((request as InterventionTypeRequestDTO).resolution) ? (
+                        <Typography variant="caption" display="block" color="text.secondary" data-testid={`resolution-firm-${request.id}`}>
+                          {resolutionFirmLabel((request as InterventionTypeRequestDTO).resolution)}
+                        </Typography>
+                      ) : null}
                       {isMaterial && (request as MaterialRequestDTO).quantity ? (
                         <Typography variant="caption" color="text.secondary">
                           Qté {String(Number((request as MaterialRequestDTO).quantity)).replace(".", ",")}

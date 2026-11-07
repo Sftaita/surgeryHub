@@ -18,6 +18,7 @@ import {
   IGNORE_REASON_LABELS,
   formatRequestDateTime,
   statusColor,
+  resolutionFirmLabel,
   statusLabel,
   type CatalogueRequestRow,
 } from "../catalogueRequestDisplay";
@@ -75,6 +76,12 @@ function TreatmentSection({ row }: { row: CatalogueRequestRow }) {
         <DetailRow term={row.kind === "material" ? "Produit associé" : "Type d'intervention associé"}>
           {resolvedTo ?? <Missing />}
         </DetailRow>
+        {row.kind === "intervention" ? (
+          // D-183 — résolution effective, la firme indiquée par l'instrumentiste restant affichée à part.
+          <DetailRow term="Firme retenue">
+            {resolutionFirmLabel(row.request.resolution) ?? <Missing />}
+          </DetailRow>
+        ) : null}
       </>
     );
   }
