@@ -306,9 +306,8 @@
       "kind": "feature",
       "priority": "P3",
       "userImpact": "Manager : on ne sait pas qui a résolu une demande catalogue ni quand exactement.",
-      "status": "bloque",
-      "statusSince": "2026-10-08",
-      "blockedReason": "130 commits de retard, conflits (decisions.md, MaterialItemRequestService, MissionInterventionDraftService depuis D-146 bis) ; décision de rattrapage historique ouverte.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-11-07",
       "refs": {
         "decision": "D-139",
         "branches": [
@@ -321,9 +320,9 @@
           "SurgicalHub-catalogue-comment"
         ]
       },
-      "validationNeeded": "Décider : reprendre (rebase) ou abandonner.",
-      "nextAction": "Demander à l'utilisateur si D-139 est toujours voulu.",
-      "lastReviewed": "2026-10-24"
+      "validationNeeded": "Tests backend (25 + 17) et frontend (60) verts sur base jetable ; après déploiement, vérifier une demande résolue récente (« Par <manager> le <date> ») et une ancienne (aucun décideur affiché).",
+      "nextAction": "PR #4 reprise sur main (2026-11-07) : backend déjà en production via D-146 bis (v2026.10.12-prod), seuls restent l'affichage « Par X le … » des demandes résolues, les tests de traçabilité et l'ADR. Fusion et déploiement sur accord explicite.",
+      "lastReviewed": "2026-11-07"
     },
     {
       "id": "D-167",
