@@ -39,6 +39,11 @@ export type InterventionTypeRequestDTO = {
   /** Renseignés uniquement pour une demande IGNORED (D-113). */
   ignoreReason: CatalogueRequestIgnoreReason | null;
   ignoreComment: string | null;
+  /**
+   * Décideur et date exacte du traitement, posés par le serveur : IGNORED depuis D-113, RESOLVED
+   * depuis D-146 bis (v2026.10.12-prod, traçabilité D-139).
+   * null sur une demande résolue avant cette version : jamais reconstitué (aucune reprise).
+   */
   decidedBy: { id: number; displayName: string } | null;
   decidedAt: string | null;
 };
