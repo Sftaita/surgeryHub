@@ -306,7 +306,7 @@
       "kind": "feature",
       "priority": "P3",
       "userImpact": "Manager : on ne sait pas qui a résolu une demande catalogue ni quand exactement.",
-      "status": "fusionne",
+      "status": "deploye",
       "statusSince": "2026-11-07",
       "refs": {
         "decision": "D-139",
@@ -323,9 +323,10 @@
           "f82edb7843e9607581cf4e403f8325c5d9950ae6"
         ]
       },
-      "validationNeeded": "Tests backend (25 + 17) et frontend (60) verts sur base jetable ; après déploiement, vérifier une demande résolue récente (« Par <manager> le <date> ») et une ancienne (aucun décideur affiché).",
-      "nextAction": "PR #4 fusionnée (f82edb7, 2026-11-07), NON déployée. Backend déjà en production via D-146 bis (v2026.10.12-prod) ; restent à déployer l'affichage « Par X le … » des demandes résolues, les tests de traçabilité et l'ADR. Aucune migration, aucun nouveau type d'audit. Déploiement sur accord explicite, avec tout main (pas de déploiement partiel).",
-      "lastReviewed": "2026-11-07"
+      "validationNeeded": "Après déploiement : « Par <manager> le <date> » sur une demande résolue récente et aucun décideur sur une ancienne, contrôlés en production via l'API (décideurs réels : 16 demandes d'intervention et 20 demandes matériel, ignorées comprises ; 15 + 24 demandes traitées sans décideur restées null). Lecture à l'écran avec une session manager réelle à confirmer par l'utilisateur.",
+      "nextAction": "Officialisé v2026.11.07-prod-2 (451562a). Rollback : deploy/deploy.sh rollback e24a8f9030f9ab5650b96c37f23881a8f9184523 (compatible).",
+      "lastReviewed": "2026-11-07",
+      "prodEvidence": "v2026.11.07-prod-2 (451562a) : 0 migration (99/99) ; activate 2026-11-07 16:43 UTC ; mark OFFICIAL ; compat 451562a et e24a8f9 compatibles ; recette API/base 135 contrôles sans échec : voir docs/production.md."
     },
     {
       "id": "D-181-LIBELLES-NEUTRES",
@@ -334,7 +335,7 @@
       "kind": "fix",
       "priority": "P3",
       "userImpact": "Manager : messages de blocage accordés au genre de l'instrumentiste (« remplacée », « changée »).",
-      "status": "fusionne",
+      "status": "deploye",
       "statusSince": "2026-11-07",
       "refs": {
         "decision": "D-181",
@@ -348,9 +349,10 @@
           "ec1b40396ef7647c5cf485b871f0511442de16d1"
         ]
       },
-      "validationNeeded": "Tests unitaires 16/16, réaffectation urgente 13/13, tiroir mission 55/55 ; après déploiement, lire le message sur une mission soumise ou validée.",
-      "nextAction": "PR #74 fusionnée (ec1b403, 2026-11-07), NON déployée. D-181 lui-même est déployé depuis v2026.11.04-prod. Déploiement sur accord explicite, avec tout main.",
-      "lastReviewed": "2026-11-07"
+      "validationNeeded": "Messages neutres contrôlés en production via l'API sur les missions #1224 (soumise) et #1244 (validée). Lecture à l'écran avec une session manager réelle à confirmer par l'utilisateur.",
+      "nextAction": "Officialisé v2026.11.07-prod-2 (451562a). Rollback : deploy/deploy.sh rollback e24a8f9030f9ab5650b96c37f23881a8f9184523 (compatible).",
+      "lastReviewed": "2026-11-07",
+      "prodEvidence": "v2026.11.07-prod-2 (451562a) : 0 migration (99/99) ; activate 2026-11-07 16:43 UTC ; mark OFFICIAL ; compat 451562a et e24a8f9 compatibles ; recette API/base 135 contrôles sans échec : voir docs/production.md."
     },
     {
       "id": "D-183-RESOLUTION-DEMANDES",
@@ -359,7 +361,7 @@
       "kind": "feature",
       "priority": "P3",
       "userImpact": "Manager : impossible de voir, sur une demande résolue, quelle firme a réellement été retenue.",
-      "status": "fusionne",
+      "status": "deploye",
       "statusSince": "2026-11-07",
       "refs": {
         "decision": "D-183",
@@ -373,9 +375,10 @@
           "d3d877fb23095d70d6ef30d977cb3996a0f42cab"
         ]
       },
-      "validationNeeded": "Tests backend 8/8 et 16/16, frontend 59/59 ; après déploiement, vérifier une demande résolue sans firme, une associée à une firme et une ancienne (aucune résolution affichée).",
-      "nextAction": "PR #76 fusionnée (d3d877f, 2026-11-07), NON déployée. D-183 lui-même est déployé depuis v2026.11.04-prod-2. Déploiement sur accord explicite, avec tout main.",
-      "lastReviewed": "2026-11-07"
+      "validationNeeded": "Résolution effective = intervention réellement créée et firme demandée conservée, contrôlées en production via l'API sur les 29 demandes résolues. Lecture à l'écran avec une session manager réelle à confirmer par l'utilisateur.",
+      "nextAction": "Officialisé v2026.11.07-prod-2 (451562a). Rollback : deploy/deploy.sh rollback e24a8f9030f9ab5650b96c37f23881a8f9184523 (compatible).",
+      "lastReviewed": "2026-11-07",
+      "prodEvidence": "v2026.11.07-prod-2 (451562a) : 0 migration (99/99) ; activate 2026-11-07 16:43 UTC ; mark OFFICIAL ; compat 451562a et e24a8f9 compatibles ; recette API/base 135 contrôles sans échec : voir docs/production.md."
     },
     {
       "id": "D-167",
