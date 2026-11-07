@@ -12328,6 +12328,41 @@ jour (**#1226**, 7 h 45 pour 5 h) affichait « À calculer ».
 - `effectiveAt` / dates des explications = date de l'échec audité ; `resolved` est évalué à
   la date effective **actuelle** de la mission (mêmes résolveurs que le moteur).
 
+## D-139 — Demandes catalogue : traçabilité de la résolution (manager, date exacte) (2026-10-08, repris le 2026-11-07)
+
+**Constat (2026-10-08).** Une demande résolue (matériel ou type d'intervention) ne disait ni
+qui l'avait résolue ni quand : `decidedBy`/`decidedAt` (D-113) n'étaient posés qu'à l'ignore, et
+la résolution d'une demande matériel n'était tracée par aucun `AuditEvent` (constaté en
+production sur « MPFL », #16 : `decided_by`/`decided_at` NULL).
+
+**Repris par D-146 bis (`v2026.10.12-prod`).** Le backend de cette décision est en production
+depuis D-146 bis : `MaterialItemRequestService::resolve()` et
+`MissionInterventionDraftService::resolve()` posent `decidedBy` (l'acteur) et `decidedAt` dans
+la transaction verrouillée de la résolution ; `AuditEventType::MATERIAL_ITEM_REQUEST_RESOLVED`
+(pendant de `MATERIAL_ITEM_REQUEST_IGNORED`) trace la résolution d'une demande matériel ;
+`docs/api.md` documente les deux champs pour `RESOLVED`. La PR #4 n'y ajoute rien : ses
+modifications de service ont été abandonnées à la reprise (elles auraient doublé l'audit et la
+pose du décideur).
+
+**Apport restant de la PR #4.**
+- Tableau « Demandes » : « Par X le … » pour toute demande traitée (résolue comme ignorée),
+  plus seulement pour les ignorées ; le détail l'affichait déjà.
+- Tests de traçabilité : décideur = manager qui résout, `decidedAt` dans la fenêtre exacte de
+  la requête, payload de `MATERIAL_ITEM_REQUEST_RESOLVED` (demande, élément du catalogue,
+  `MaterialLine` créée), une seconde résolution refusée (409) ne remplace jamais le premier
+  décideur.
+
+**Règle : données réelles uniquement.** « Résolu par » et « résolu le » sont ceux posés par le
+serveur au moment de la résolution. Une demande résolue avant `v2026.10.12-prod` garde
+`decidedBy`/`decidedAt` à `null` et s'affiche sans décideur : rien n'est reconstitué ni déduit,
+ni côté client, ni par migration (une reprise depuis `MISSION_INTERVENTION_DRAFT_RESOLVED`
+serait possible côté interventions, aucune trace n'existe côté matériel ; non faite, à décider
+séparément).
+
+**Compatibilité D-187.** Aucun nouveau cas d'énumération : `MATERIAL_ITEM_REQUEST_RESOLVED` est
+déjà dans toutes les releases depuis `v2026.10.12-prod` ; le contrôle de compatibilité avant
+rollback n'est pas affecté. Aucun événement d'audit historique modifié ; aucune migration.
+
 ## D-140 — Intégration MedVue : liaison des comptes et API machine de lecture des congés (2026-10-10)
 
 ### Contexte

@@ -546,7 +546,9 @@ Ancre fémorale 4.5 fournie par le représentant — à facturer à la firme.";
         $manager = $this->createUser('ROLE_MANAGER');
         $managerToken = $this->login($client, $manager);
         $before = new \DateTimeImmutable('-1 second');
+        // Corps de résolution actuel (D-146 bis) : la firme est obligatoire.
         $response = $this->request($client, 'POST', "/api/intervention-type-requests/{$requestId}/resolve", $managerToken, [
+            'newFirmName' => 'Firme D-139 ' . bin2hex(random_bytes(4)), 'offeringDecision' => 'LEAVE_UNCONFIGURED',
             'interventionTypeId' => $type->getId(),
         ]);
         $after = new \DateTimeImmutable('+1 second');
