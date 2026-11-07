@@ -22,6 +22,7 @@ use App\Service\FinancialCalculationService;
 use App\Service\FinancialStatisticsPdfExporter;
 use App\Service\FinancialStatisticsQueryService;
 use App\Service\FinancialStatisticsRankingService;
+use App\Service\StatisticsExportSlots;
 use App\Service\PdfService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
@@ -390,6 +391,60 @@ final class FinancialStatisticsControllerTest extends WebTestCase
         self::assertSame(31, $error['rowCount']);
         self::assertSame(30, $error['maxRows']);
         self::assertStringContainsString('Affinez la période ou les filtres', $error['message']);
+    }
+
+    /**
+     * D-187 — capacité d'exports simultanés atteinte : refus explicite (429, Retry-After), rien
+     * n'est audité, la consultation et les permissions ne changent pas ; l'emplacement libéré,
+     * l'export repart. L'export « en cours » est tenu par un autre processus (= un autre worker
+     * php-fpm), comme en production.
+     */
+    public function test_export_is_refused_while_all_export_slots_are_busy_and_resumes_once_freed(): void
+    {
+        $client = $this->boot();
+        $client->disableReboot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+        $token = $this->login($client, $manager);
+        $this->makeApprovedMission($manager);
+
+        $dir = sys_get_temp_dir() . '/sh-export-slots-' . bin2hex(random_bytes(4));
+        mkdir($dir, 0775, true);
+        static::getContainer()->set(StatisticsExportSlots::class, new StatisticsExportSlots($dir, 1));
+        $holder = sprintf('$h = fopen(%s, "c"); flock($h, LOCK_EX); echo "held\n"; fflush(STDOUT); sleep(60);', var_export($dir . '/slot-1.lock', true));
+        $proc = proc_open([PHP_BINARY, '-r', $holder], [1 => ['pipe', 'w']], $pipes);
+        self::assertSame("held\n", fgets($pipes[1]));
+        $audited = fn () => count($this->em->getRepository(AuditEvent::class)->findBy(['actor' => $manager->getId(), 'eventType' => \App\Enum\AuditEventType::FINANCIAL_STATISTICS_EXPORTED]));
+
+        try {
+            $client->request('GET', '/api/financial-statistics/export?view=by-surgeon&from=2026-05-01&to=2026-06-01', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+            $response = $client->getResponse();
+            self::assertSame(Response::HTTP_TOO_MANY_REQUESTS, $response->getStatusCode());
+            self::assertSame('30', $response->headers->get('Retry-After'));
+            $error = json_decode((string) $response->getContent(), true)['error'];
+            self::assertSame('STATISTICS_EXPORT_BUSY', $error['code']);
+            self::assertSame(1, $error['capacity']);
+            self::assertStringContainsString('Réessayez dans quelques instants', $error['message']);
+            self::assertSame(0, $audited(), "un export refusé n'est pas audité");
+
+            self::assertSame(Response::HTTP_OK, $this->getJson($client, $token, '/api/financial-statistics/by-surgeon?from=2026-05-01&to=2026-06-01')->getStatusCode(), "la consultation n'est jamais bloquée");
+            $client->request('GET', '/api/financial-statistics/export?view=by-surgeon', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $this->login($client, $instrumentist)]);
+            self::assertSame(Response::HTTP_FORBIDDEN, $client->getResponse()->getStatusCode(), 'les permissions passent avant la capacité');
+        } finally {
+            proc_terminate($proc, 9);
+            fclose($pipes[1]);
+            proc_close($proc);
+        }
+
+        $deadline = microtime(true) + 5;
+        do {
+            $client->request('GET', '/api/financial-statistics/export?view=by-surgeon&from=2026-05-01&to=2026-06-01', server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+        } while ($client->getResponse()->getStatusCode() === Response::HTTP_TOO_MANY_REQUESTS && microtime(true) < $deadline && usleep(100_000) === null);
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode());
+        self::assertSame('application/pdf', $client->getResponse()->headers->get('Content-Type'));
+        self::assertSame(1, $audited(), "l'export réussi est audité une fois");
+        @unlink($dir . '/slot-1.lock');
+        @rmdir($dir);
     }
 
     public function test_by_firm_supports_pagination_parameters(): void
