@@ -1109,7 +1109,7 @@
       "kind": "fix",
       "priority": "P2",
       "userImpact": "Exploitation : un rollback de D-186 cassait le journal d'activité ; plusieurs gros exports simultanés pouvaient saturer la RAM du VPS.",
-      "status": "pr-ouverte",
+      "status": "deploye",
       "statusSince": "2026-11-07",
       "refs": {
         "branches": [
@@ -1122,11 +1122,15 @@
         ],
         "prs": [
           83
+        ],
+        "commits": [
+          "e24a8f9030f9ab5650b96c37f23881a8f9184523"
         ]
       },
-      "nextAction": "Revue puis fusion ; déploiement uniquement sur accord explicite. La branche rollback/ad45ef6-compat n'est jamais fusionnée dans main.",
+      "nextAction": "Officialisé v2026.11.07-prod (e24a8f9). Rollback : deploy/deploy.sh rollback 2d2d37e02092cf0aee12357433cc3e7ec2687de8 (compatible) ; vers ad45ef6 : release corrective rollback/ad45ef6-compat (jamais fusionnée dans main).",
       "lastReviewed": "2026-11-07",
-      "validationNeeded": "Tests backend, frontend et procédure de déploiement verts ; preuve sur base jetable (ad45ef6 refusé, release corrective compatible). Après déploiement : deploy.sh compat ad45ef6… doit afficher INCOMPATIBLE, et rollback/ad45ef6-compat compatible."
+      "validationNeeded": "Contrôles de santé, compatibilité et exports concurrents validés en production le 2026-11-07.",
+      "prodEvidence": "v2026.11.07-prod (e24a8f9) : 0 migration (99/99) ; activate 2026-11-07 08:16 UTC ; mark OFFICIAL ; compat ad45ef6 INCOMPATIBLE (FINANCIAL_STATISTICS_EXPORTED), e24a8f9 et 2d2d37e compatibles ; 3 exports lourds simultanés → 200/200/429 ; voir docs/production.md."
     }
   ]
 }
