@@ -117,7 +117,8 @@ export function Inspector({
   return (
     <Box
       sx={{
-        width: 320, flexShrink: 0, position: "sticky", top: 16, alignSelf: "flex-start",
+        width: { xs: "100%", md: 320 }, flexShrink: 0, position: { xs: "static", md: "sticky" }, top: 16,
+        alignSelf: { xs: "stretch", md: "flex-start" }, boxSizing: "border-box",
         bgcolor: "#fff", border: `1px solid ${planningV2Colors.cardBorder}`, borderRadius: planningV2Radii.cardLg,
         overflow: "hidden", maxHeight: "calc(100vh - 32px)", display: "flex", flexDirection: "column",
       }}

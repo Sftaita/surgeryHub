@@ -57,6 +57,13 @@ enum EncodingState: string
      */
     case NOT_DECLARED = 'NOT_DECLARED';
 
+    /**
+     * D-184 — mission annulée (MissionStatus::CANCELLED). Jamais « Sans objet » : c'est un
+     * fait distinct. Exclue par défaut du suivi des encodages et de tous ses indicateurs ;
+     * visible uniquement sur demande explicite (« Afficher les missions annulées »).
+     */
+    case CANCELLED = 'CANCELLED';
+
     /** Libellé français centralisé — ne jamais réécrire ces libellés côté frontend. */
     public function label(): string
     {
@@ -69,6 +76,7 @@ enum EncodingState: string
             self::LOCKED         => 'Verrouillé',
             self::NOT_APPLICABLE => 'Sans objet',
             self::NOT_DECLARED   => 'Aucun encodage',
+            self::CANCELLED      => 'Annulée',
         };
     }
 
@@ -79,7 +87,7 @@ enum EncodingState: string
      */
     public function isEncodingExpected(): bool
     {
-        return $this !== self::NOT_APPLICABLE && $this !== self::NOT_DECLARED;
+        return $this !== self::NOT_APPLICABLE && $this !== self::NOT_DECLARED && $this !== self::CANCELLED;
     }
 
     /** Nécessite une action du manager (et non de l'instrumentiste). */

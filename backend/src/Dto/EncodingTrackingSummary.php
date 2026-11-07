@@ -63,9 +63,13 @@ final readonly class EncodingTrackingSummary
     ): self {
         $count = static fn (EncodingState $state): int => $countsByState[$state->value] ?? 0;
 
+        // D-184 — une mission annulée n'est jamais comptée dans le suivi actif (la population
+        // l'exclut déjà ; défense supplémentaire si un appelant lui en transmettait une).
         $total = 0;
         foreach (EncodingState::cases() as $state) {
-            $total += $count($state);
+            if ($state !== EncodingState::CANCELLED) {
+                $total += $count($state);
+            }
         }
 
         return new self(

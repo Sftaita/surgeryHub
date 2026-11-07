@@ -138,6 +138,29 @@ cmd_migrate() {
   "$DOCKER" exec "$PROJECT-php" php bin/console doctrine:migrations:status --env=prod
 }
 
+# ── data_compat <sha|rollback-legacy> : la release cible sait-elle lire les données en base ? (D-187)
+# Le code d'une release ne lit que les valeurs d'énumération qu'il connaît : une valeur écrite par
+# une version plus récente (ex. audit FINANCIAL_STATISTICS_EXPORTED, D-186) fait tomber en 500 l'écran
+# qui la relit. deploy/rollback/enum-compat.php (envoyé par deploy.sh dans incoming/) s'exécute dans
+# l'IMAGE CIBLE, avec son propre mapping Doctrine, en lecture seule, sur un cache jetable. Appelé avant
+# toute modification ; tout résultat autre que « compatible » arrête la bascule (fail-closed). Les
+# données ne sont jamais modifiées pour rendre une bascule possible : la sortie est une release
+# corrective compatible (docs/deployment-versioning.md §4.4).
+data_compat() {
+  local tag="$1" checker="$APP_ROOT/incoming/enum-compat.php" out rc=0
+  [ -f "$checker" ] || die "contrôle de compatibilité des données absent ($checker) : bascule refusée."
+  local rel=current; is_sha "$tag" && rel="$tag"   # compose de la release cible (comme le dry-run des migrations)
+  out=$(IMAGE_TAG="$tag" compose "$rel" run --rm --no-deps -T -v /var/www/backend/var/cache \
+      -v "$checker:/tmp/enum-compat.php:ro" php php /tmp/enum-compat.php 2>&1) || rc=$?
+  case "$rc" in
+    0) info "données compatibles avec $tag : $(printf '%s\n' "$out" | grep '^compatible' | tail -1)" ;;
+    3) printf '%s\n' "$out" | grep -E '^(INCOMPATIBLE|  - )' >&2
+       die "bascule vers $tag REFUSÉE : ce code ne sait pas lire des données déjà en base (liste ci-dessus). Rien n'a été modifié. Ne jamais supprimer ni réécrire ces lignes : préparer une release corrective compatible (cible + valeurs manquantes), voir docs/deployment-versioning.md §4.4." ;;
+    *) printf '%s\n' "$out" | tail -5 >&2
+       die "contrôle de compatibilité des données impossible pour $tag (code $rc) : bascule refusée, rien n'a été modifié." ;;
+  esac
+}
+
 backup_before_switch() {
   local stamp; stamp=$(date +%Y%m%d_%H%M%S)
   local dir="$APP_ROOT/deploy-backups/$stamp"
@@ -180,6 +203,7 @@ cmd_activate() {
   [ -f "$APP_ROOT/releases/$sha/.release" ] || die "release $sha non préparée."
   [ "$(image_revision "$PROJECT-php:$sha")" = "$sha" ] || die "image $PROJECT-php:$sha absente ou incohérente (build)."
   [ "$prev" != "$sha" ] || die "$sha est déjà la release active."
+  data_compat "$sha"
   local dir; dir=$(backup_before_switch | tail -1)
   info "sauvegardes : $dir (+ dump MySQL)"
   if [ "$prev" = legacy ]; then
@@ -201,6 +225,7 @@ cmd_rollback() {
     done
     [ -n "$dir" ] && [ -f "$dir/docker-compose.yml" ] || die "aucune sauvegarde de la configuration d'avant D-163."
     "$DOCKER" image inspect "$PROJECT-php:rollback-legacy" >/dev/null 2>&1 || die "images rollback-legacy absentes."
+    data_compat rollback-legacy
     cp "$dir/docker-compose.yml" "$APP_ROOT/docker-compose.yml"
     rm -f "$APP_ROOT/current"
     "$DOCKER" tag "$PROJECT-php:rollback-legacy" "$PROJECT-php:local"
@@ -217,6 +242,7 @@ cmd_rollback() {
   [ "$target" != "$prev" ] || die "$target est déjà la release active."
   [ -f "$APP_ROOT/releases/$target/.release" ] || die "release $target absente de releases/."
   [ "$(image_revision "$PROJECT-php:$target")" = "$target" ] || die "images :$target absentes ou incohérentes."
+  data_compat "$target"
   switch_to "$target"
   info "rollback effectué : $prev → $target. Le registre des versions n'est pas modifié ; /api/version affiche la version restaurée."
 }
@@ -237,6 +263,7 @@ cmd_status() {
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
+  compat) need_sha "${1:-}"; [ -f "$APP_ROOT/releases/$1/.release" ] || die "release $1 absente de releases/."; data_compat "$1" ;;
   verify) cmd_verify "$@" ;;
   stage) cmd_stage "$@" ;;
   diff) cmd_diff "$@" ;;

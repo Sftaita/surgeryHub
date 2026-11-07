@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import useMediaQuery from "@mui/material/useMediaQuery";
 import { fetchMyHours } from "./api/myHours.api";
-import { currentMonth, shiftMonth } from "./format";
+import { currentMonth, shiftMonth } from "../hours-shared/format";
 import { MyHoursView, type SiteFilter } from "./MyHoursView";
 import type { MobileLayoutOutletContext } from "../../layouts/MobileLayout";
 

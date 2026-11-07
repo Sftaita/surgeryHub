@@ -56,6 +56,7 @@ const STATE_TONE: Record<string, { bg: string; fg: string }> = {
   VALIDATED: { bg: GREEN_100, fg: GREEN_800 },
   LOCKED: { bg: GREEN_100, fg: GREEN_800 },
   NOT_APPLICABLE: { bg: GRAY_100, fg: GRAY_500 },
+  CANCELLED: { bg: "#FDECEC", fg: "#B42318" },
   NOT_DECLARED: { bg: AMBER_100, fg: AMBER_700 },
 };
 

@@ -71,7 +71,7 @@ export default function AdminInvitationsPage() {
         <Typography variant="h5" fontWeight={600}>Invitations</Typography>
       </Stack>
 
-      <Stack direction="row" spacing={2} sx={{ mb: 2 }}>
+      <Stack direction="row" spacing={2} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
         <Select
           size="small"
           value={status}

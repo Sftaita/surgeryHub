@@ -4680,7 +4680,8 @@ n'est pas non plus dans `FinancialCalculationLine.snapshot` — lu en direct via
 regroupement `by-intervention` attribue `instrumentistCompensation` (qui n'a aucun lien
 direct à une intervention précise) à l'intervention **primaire** de la mission
 (`order_index` minimal) — un choix explicite documenté plutôt qu'une répartition
-proportionnelle non demandée par le lot.
+proportionnelle non demandée par le lot. **Remplacé par D-186** : la rémunération
+instrumentiste appartient à la mission et n'est plus imputée à aucune intervention.
 
 ### Portée non traitée ici
 
@@ -16750,6 +16751,53 @@ a été fusionnée sur `main` au commit `366627f` ; son déploiement reste soumi
 distinct. La première release D-156 (`1e45953`) a été déployée sans être officialisée ;
 ne pas lui attribuer rétroactivement le tag du complément.
 
+## D-180 — Suivi manager des heures instrumentistes : Top 5, page et tiroir (2026-11-03)
+
+**Contexte.** Le manager n'avait aucune vue des heures encodées et validées par instrumentiste
+ni de leur coût estimé ; « Mes heures » (D-179) ne montre que les siennes à l'instrumentiste.
+Conception figée : `docs/design/Instruction design/handoff-heures-instrumentistes/`
+(révision 3, validée par l'utilisateur le 2026-11-03).
+
+**Décision.**
+1. Deux endpoints en lecture seule (`docs/api.md` § 51), gardés par
+   `InstrumentistHoursVoter::VIEW` (MANAGER, ADMIN actifs). `MyHoursVoter` reste inchangé.
+2. **Aucun moteur parallèle** : `MyHoursService` expose `loadMissions()`, `prestationRow()`,
+   `summarize()`, `estimateOf()` et `isUnrated()` ; `InstrumentistHoursService` les réutilise
+   pour chaque prestation. Le tiroir renvoie `MyHoursService::statement()` tel quel. Une ligne
+   manager = le tiroir = « Mes heures » de la même instrumentiste (mois, site), à la minute et
+   au centime — prouvé par les tests fonctionnels, multi-salles D-156 compris (parts imputées,
+   aucun double comptage).
+3. Liste : instrumentistes actives (même à 0h00) + inactives ayant presté dans le mois et le
+   site. Totaux = périmètre filtré (site + recherche), sans évolution globale. Top 5 = heures
+   validées décroissantes uniquement.
+4. **Convention d'historique observable (option B, sans migration).** Le modèle n'a aucune date
+   d'entrée en activité fiable (`User` sans `createdAt` ; audit `USER_CREATED` seulement depuis
+   le 2026-06-16 ; `instrumentistOnboardingCompletedAt` partiel). La moyenne personnelle porte
+   sur M-6 … M-1 restreints aux mois postérieurs ou égaux au mois de la première prestation
+   connue (périmètre D-179, tous sites) ; mois vides = 0 h ; M exclu ; « — » sans référence.
+   **Limite** : une première prestation connue ne prouve pas la date réelle d'entrée en
+   activité ; elle n'est jamais présentée comme telle.
+5. Pourcentages calculés et arrondis exclusivement par le serveur ; mois en cours comparé à
+   date équivalente et marqué provisoire.
+6. Front : carte Top 5 en tête de « Classements » (Dashboard), page
+   `/app/m/billing/hours` (Facturation → Heures instrumentistes), tiroir individuel ;
+   piste DÉBUT | DURÉE TOTALE | FIN, statut et formats partagés avec « Mes heures »
+   (`features/hours-shared`), sans changement visuel de l'écran instrumentiste.
+
+**Limites.** Comme D-179 : mois d'appartenance = `startAt` planifié ; estimation recalculée à la
+volée, indicative, jamais un calcul approuvé ni un paiement. L'interface manager n'a pas de
+shell mobile : les écrans sont adaptatifs, la navigation mobile manager reste un chantier séparé.
+
+**Interaction avec D-181 / D-182 (vérifiée le 2026-11-04, aucun changement de règle).** Une
+mission est comptée chez l'instrumentiste qu'elle porte aujourd'hui : réaffectée, elle passe
+entièrement à la remplaçante ; un relais laisse sa part à l'instrumentiste d'origine (fin prévue
+ramenée à l'heure du relais) et la suite à la mission de relais, jamais le même créneau deux fois.
+Une mission annulée (même encodée, soumise ou validée puis rouverte) est `CANCELLED`, sans
+instrumentiste : ni heures, ni coût, ni « première prestation connue ». Un doublon annulé
+s'efface au profit de la mission conservée, seule comptée. Preuve :
+`ManagerInstrumentistHoursReassignmentTest` (vrais flux HTTP, tiroir = « Mes heures »).
+
+
 ## D-183 — Interventions sans firme : catalogue indépendant des firmes, rattachements calculés (2026-11-04)
 
 **Constat.** Une intervention (`InterventionType`, catalogue global) existe indépendamment des
@@ -16808,3 +16856,196 @@ tarif existant n'est modifié.
 **Limites.** Le flux « Ajouter une prestation » depuis une firme garde son fonctionnement
 (création de l'intervention puis de la prestation en deux appels). Les 8 interventions
 historiques sans firme (antérieures à D-146 bis) restent `without_firm = false` (D-178).
+
+## D-184 — Suivi des encodages : missions annulées exclues du suivi actif (2026-11-04)
+
+**Constat (production, après D-182).** Une mission annulée depuis le planning passait bien à
+`CANCELLED` mais restait dans Facturation › Suivi des encodages, classée « Sans objet » et comptée :
+le 3 novembre, deux missions annulées gonflaient le total à quatre. Causes : (1) la population du
+suivi (`EncodingTrackingRepository`) ne filtrait aucun statut ; (2) `EncodingStateResolver` rangeait
+`CANCELLED` avec `DRAFT`/`OPEN`/`REJECTED` en `NOT_APPLICABLE` ; (3) une annulation n'invalidait pas
+les requêtes du suivi côté écran (seul le badge l'était, pour les validations).
+
+**Décision.**
+- Le suivi actif exclut par défaut toute mission `CANCELLED` : « Toutes les missions », « À traiter »
+  et « Par instrumentiste » (même endpoint), le total, l'avancement de la période, les compteurs par
+  état, les heures planifiées et prestées, les retards et relances. Filtre propre à ce module :
+  `MissionPopulationClauseBuilder` reste partagé et inchangé pour les statistiques financières, qui
+  excluent déjà l'annulé (D-182).
+- Nouvel état d'encodage `CANCELLED` (« Annulée »), hors encodage attendu, jamais confondu avec
+  `NOT_APPLICABLE`. Les missions réellement « Sans objet » (non annulées) sont inchangées et restent
+  affichées et comptées.
+- « Afficher les missions annulées » (vue « Toutes les missions ») : `includeCancelled=1`, consultation
+  seule, badge « Annulée » ; les indicateurs et le sous-total du jour ne les comptent jamais.
+  `cancelledCount` annonce les annulées masquées.
+- Toute action opérationnelle (annulation comprise) invalide `["encoding-tracking"]`
+  (`OPERATIONAL_PLANNING_QUERY_KEYS`) : liste, indicateurs et badge se mettent à jour sans
+  rechargement.
+- Badge du menu (`pending-validation-count`, missions `SUBMITTED`) : inchangé — une mission annulée
+  n'est jamais `SUBMITTED` (D-182 renvoie d'abord l'encodage en correction).
+- Aucune donnée modifiée : les missions annulées restent en base, avec leurs heures, encodages
+  archivés et audits.
+
+## D-185 — Interface manager / admin utilisable sur téléphone (2026-11-06)
+
+**Constat.** L'interface manager/admin (`DesktopLayout`) n'avait pas de version mobile : sidebar
+permanente de 248 px quelle que soit la largeur, tableaux à colonnes fixes débordant de la page,
+tiroirs de 400 à 560 px, en-têtes et filtres sur une seule ligne. Relevé à la recette D-165
+(390 px), puis noté comme « chantier séparé » en D-120 et D-180 (`UX-MANAGER-MOBILE`).
+
+**Décision.**
+- **Navigation.** Sous 900 px (seuil `md`, `docs/design/components/navigation.md` « Sidebar
+  (desktop ≥ 900px) »), `DesktopLayout` affiche une barre supérieure collante : bouton « Ouvrir
+  le menu », nom de l'application, cloche « Notifications » avec le nombre de non lues (même
+  compteur serveur que la sidebar). Le menu est la même navigation dans un tiroir temporaire
+  (`#manager-nav`), refermé à chaque changement de page ; le menu compte reste en bas du tiroir.
+  À 900 px et au-delà, rien ne change (sidebar permanente de 248 px). Pas de second layout : le
+  shell manager/admin reste unique, distinct du `MobileLayout` instrumentiste/chirurgien.
+- **Superposition.** La barre a un `z-index` de 15 : au-dessus des en-têtes `sticky` des pages,
+  sous les panneaux maison (tiroir du Suivi des encodages, filtres : 20 ; guide iOS : 800) et sous
+  tous les tiroirs/modales MUI. Sa hauteur est publiée dans la variable CSS
+  `--app-header-height` (0 au-delà de 900 px) ; les en-têtes collants l'utilisent comme `top`.
+- **Pages.** Aucun changement de contenu ni de règle métier, uniquement de mise en page :
+  tableaux sans conteneur enveloppés dans un défilement horizontal ; colonnes DataGrid (Missions,
+  Instrumentistes, Chirurgiens) avec largeur minimale ; table du Suivi des encodages défilante
+  dans sa carte (largeur minimale 880 px, colonnes de la maquette D-120 conservées) ; tiroirs à
+  100 % de largeur sur téléphone ; en-têtes et barres de filtres qui passent à la ligne ; marges
+  doublées supprimées sur téléphone ; Planning V2 (liste des chirurgiens au-dessus du détail,
+  inspecteur sous la liste, navigation des paramètres au-dessus, onglets défilants) ; Prestations
+  (liste des firmes au-dessus du contenu, grilles défilantes, barre haute qui passe à la ligne).
+
+**Vérification.** Tests `DesktopLayout` (écran étroit : barre, ouverture/fermeture du menu,
+cloche, menu compte). Recette navigateur réelle sur la branche (base jetable) : les 21 pages
+manager et les 5 pages admin chargées dans un cadre de 390 px, sans aucun débordement
+horizontal ; menu ouvert (17 liens), navigation puis fermeture ; à 1280 et 900 px la sidebar
+de 248 px est inchangée, la bascule a lieu à 899 px.
+
+**Limites.** Les écrans restent conçus pour le bureau : sur téléphone, les tableaux larges se
+consultent en défilant horizontalement, ils ne sont pas convertis en cartes. Aucune migration,
+aucun changement backend.
+
+## D-186 — Statistiques financières : recettes (+), dépenses (−), solde net par couche, totaux serveur et export PDF (2026-11-06)
+
+**Constat.** L'écran « Statistiques financières » additionnait recettes et dépenses : « Valeur
+totale calculée » et « Valeur moy./mission » (vue d'ensemble, par chirurgien, par intervention)
+valaient `CA firme + rémunération instrumentiste`, ce qui n'a pas de sens économique. Aucun onglet ne
+montrait le solde, les dépenses n'étaient pas distinguées des recettes et les totaux n'existaient
+pas (ou portaient sur la seule page affichée). « Par intervention » imputait la rémunération
+instrumentiste d'une mission à son intervention primaire, sans lien métier.
+
+**Convention de signe (vérifiée).** Dans l'API, toutes les lignes `FinancialCalculationLine`
+(firme comme instrumentiste) sont des magnitudes positives ; `generatedContributionMargin` et
+`netCashFlow` sont déjà des soustractions. Les champs de dépense restent donc positifs dans l'API ; le
+signe « − » n'est appliqué qu'à l'affichage (écran et PDF), une seule fois. Les soldes sont calculés
+serveur, signés, en centimes entiers.
+
+**Décision.**
+- Convention d'affichage commune à tous les onglets : recette « + » vert, dépense « − » rouge, solde
+  vert/rouge/neutre (zéro). Pipeline (compteurs) et drill-down missions/calculs (sans montant) ne sont
+  pas concernés ; drill-down documents : `flow` = `REVENUE` (facture firme) / `EXPENSE` (décompte).
+- Un solde par couche, jamais mélangées : Calculé = `generatedContributionMargin` /
+  `generatedNetBalance` / `netBalance` ; Facturé / Décompté = `documentedNetBalance`
+  (`invoicedNetAmount − statementNetAmount`) ; Encaissé / Décaissé = `netCashFlow`. Le « solde net
+  calculé » reste la contribution D-077 : ni charges, ni TVA, ni frais généraux.
+- Champs ajoutés : `overview.currencies[].documentedNetBalance` ; `timeseries.points[].currencies[]`
+  `generatedNetBalance`/`documentedNetBalance`/`netCashFlow` et `timeseries.totals` ;
+  `by-surgeon.items[].netBalance` ; `by-intervention.items[]` voir ci-dessous. Chaque
+  classement renvoie `totals` (par devise) calculés sur **tout** l'ensemble filtré, avant pagination ;
+  `top-materials.totals` couvre tous les matériels, pas le seul top N.
+- **Règle fondamentale (validée par l'utilisateur, 2026-11-06) : la rémunération instrumentiste est
+  liée exclusivement à la mission, jamais à une intervention individuelle.** Elle n'est imputée, ni en
+  tout ni en partie, à aucun type d'intervention, quel que soit le nombre ou le type d'interventions
+  de la mission ; aucune ventilation de remplacement (une première version « Non ventilé » a été
+  abandonnée). Une dépense n'est rattachée à un axe que par un lien métier fiable : chirurgien
+  (`Mission.surgeon`) → recettes, dépenses et solde ; firme → recettes seulement ; instrumentiste →
+  dépenses seulement.
+- « Par intervention » = recettes par type : `interventionCount` (interventions valorisées),
+  `interventionRevenue`, `materialRevenue`, `totalRevenue`, `averageRevenuePerIntervention`
+  (= totalRevenue / interventionCount), `missionCount`, `averageDurationMinutes`. Indicateur
+  contextuel `averageAssociatedMissionCost` (« Coût moyen de mission associée ») : rémunération
+  TOTALE moyenne des missions comportant ce type ; une mission à plusieurs types figure dans chaque
+  groupe avec son coût entier, une mission comportant le même type deux fois n'y compte qu'une fois.
+  Jamais présenté comme un « coût par intervention ». Les totaux de l'onglet lisent les dépenses au
+  niveau mission (`missionInstrumentistCompensation`, une seule fois par mission) et en déduisent
+  `netBalance` ; la somme des coûts moyens n'est jamais un total. Le matériel non rattaché à une
+  intervention garde sa ligne propre (« Matériel non rattaché à une intervention »).
+  `instrumentistCompensation`, `netBalance` et `averageMissionValue` sont **retirés** des lignes
+  `/by-intervention` (ils reposaient sur l'imputation abandonnée).
+- Moyennes : `averageMissionValue` (recettes + dépenses) et `generatedTotalValue` ne sont plus
+  affichés ; ils restent dans l'API pour compatibilité. Les moyennes distinctes et nommées sont
+  gardées (CA moyen / mission par firme, coût moyen / mission par instrumentiste, CA moyen / unité,
+  durée moyenne).
+- Tri par en-tête de colonne ; whitelists `sortBy` élargies (dont `netBalance`).
+- Export : `GET /api/financial-statistics/export?view=…` — PDF A4 paysage généré serveur
+  (`FinancialStatisticsPdfExporter`), mêmes services, filtres et tri que l'écran, toutes les lignes,
+  totaux, période, filtres, devise, date de génération. `BillingVoter::MANAGE`. Audité
+  (`FINANCIAL_STATISTICS_EXPORTED`, `recordGlobal`) : c'est une sortie de données financières.
+- Export exhaustif sans limite arbitraire : lecture page par page (200 groupes) jusqu'au dernier ;
+  chaque page doit annoncer le même total et les mêmes totaux que la première et aucune clé de
+  groupe ne peut revenir, sinon `409 STATISTICS_EXPORT_DATA_CHANGED` (jamais un PDF incohérent).
+  Tri départagé par l'identifiant du groupe puis la devise (écran et export : ni doublon ni trou
+  entre pages à valeurs égales). Totaux = ceux du serveur, jamais recalculés depuis les lignes.
+- Plafond **technique** de 1 000 lignes par PDF (dompdf garde tout le document en mémoire, coût
+  plus que linéaire : ~17 s / ~190 Mo pour 1 000 lignes, ~80 s / ~510 Mo pour 3 000), contrôlé dès
+  la première page : `422 STATISTICS_EXPORT_TOO_LARGE`, message explicite, aucune troncature. Un
+  tableau par page PDF (en-tête répété, « Page X / Y ») : deux fois plus rapide qu'un seul long
+  tableau.
+- Aucune donnée modifiée : ni calculs, ni factures, ni décomptes, ni paiements, ni migrations.
+
+**Limites.** Le chirurgien reste un axe analytique (aucun montant ne lui est versé). Les devises ne
+sont jamais additionnées entre elles : un total par devise.
+
+---
+
+## D-187 — Rollback compatible avec les données déjà écrites ; exports PDF simultanés limités (2026-11-07)
+
+**Constat 1 — rollback de D-186.** `v2026.11.06-prod-2` (`2d2d37e`) audite chaque export PDF
+(`audit_event.event_type = FINANCIAL_STATISTICS_EXPORTED`, 8 lignes en production le 2026-11-06).
+`ad45ef6` (version précédente) mappe `AuditEvent::$eventType` en `enumType: AuditEventType::class` et
+ne connaît pas ce cas : Doctrine lève `ValueError: "FINANCIAL_STATISTICS_EXPORTED" is not a valid
+backing value for enum App\Enum\AuditEventType` dès qu'une de ces lignes est hydratée. Le journal
+d'activité (`AuditJournalService::search`, derniers événements par id décroissant, sans filtre) tombe
+alors en 500 ; les lectures SQL brutes (DBAL) ne sont pas touchées. Reproduit sur base jetable avec le
+code de `ad45ef6`. `deploy.sh rollback` ne contrôlait que la release et ses images, jamais les données.
+
+**Décision 1.**
+- Contrôle générique avant toute bascule (`activate`, `rollback <sha>`, `rollback legacy`) :
+  `deploy/rollback/enum-compat.php` exécuté **dans l'image cible** (`compose run`, cache jetable),
+  avec le mapping Doctrine de la cible : chaque colonne `enumType` (y compris collections json /
+  simple_array) ne doit contenir que des valeurs connues ; lecture seule (`START TRANSACTION READ
+  ONLY`, `SELECT … GROUP BY`). `compatible` → bascule ; `INCOMPATIBLE` (code 3) → refus avec la liste
+  `table.colonne = valeur (n lignes)` ; contrôle impossible → refus (fail-closed). Exécuté avant toute
+  sauvegarde, tout retag et tout redémarrage. `deploy.sh compat <sha>` : contrôle seul.
+- Le script vient toujours du dépôt qui déploie (`incoming/enum-compat.php`), jamais de la release
+  active ni de la cible : il doit fonctionner avec un code qui lui est antérieur, donc il est
+  autonome (aucune classe du dépôt).
+- **Jamais** de suppression ni de réécriture des lignes signalées pour rendre une bascule possible.
+  Issue unique : une **release corrective compatible** = cible + seuls cas d'énumération manquants
+  (et leurs libellés), sur une branche `rollback/<cible>-compat` jamais fusionnée dans `main`, déployée
+  par `deploy.sh` (`DEPLOY_MAIN_REF` = cette branche, précédent `rollback/d177`). Architecture
+  immuable respectée : une nouvelle release, aucune release historique modifiée.
+- Préparée pour D-186 : `rollback/ad45ef6-compat` (`721e28a` = `ad45ef6` + 4 lignes reprises de
+  `2d2d37e`). Base jetable (schéma de `ad45ef6`, 10 événements dont 8 exports) : `ad45ef6` →
+  `INCOMPATIBLE`, journal en `ValueError` ; `721e28a` → `compatible` (71 colonnes), journal lisible,
+  empreinte des 10 événements identique avant/après.
+- Limite : le contrôle couvre les énumérations, pas le schéma (migrations : procédure B de
+  `docs/production.md` § Rollback) ni l'absence de fonctionnalités dans la cible.
+
+**Constat 2 — exports simultanés.** Un export proche du plafond D-186 (1 000 lignes) relève sa
+mémoire à 512 Mo ; php-fpm a 5 processus, aucun conteneur n'a de limite mémoire et le swap du VPS
+était presque plein (1,9 / 2 Go le 2026-11-06). Rien n'empêchait 5 gros exports en même temps.
+
+**Décision 2.**
+- `StatisticsExportSlots` : au plus **2** générations PDF simultanées (≤ ~1 Go dans le pire cas).
+  Chaque export prend un « emplacement » = `var/lock/statistics-export/slot-N.lock` verrouillé par
+  `flock(LOCK_EX | LOCK_NB)` ; tous occupés → `429 STATISTICS_EXPORT_BUSY` immédiat (`Retry-After:
+  30`, message utilisateur explicite), jamais d'attente qui immobiliserait d'autres processus php-fpm.
+- Libération garantie : `finally` (succès ou exception), et le noyau libère le verrou à la fermeture
+  du descripteur — fin de requête (fatal error et dépassement mémoire compris) ou mort du processus.
+  Aucun verrou ne peut rester bloqué ; aucune dépendance ajoutée (ni `symfony/lock`, ni Redis).
+- Posé dans `FinancialStatisticsController::export` autour de la seule génération, après `BillingVoter`
+  et la validation des paramètres, avant l'audit : un refus n'est pas audité, la consultation n'est
+  jamais limitée. Sept vues, plafond de 1 000 lignes, calculs et permissions inchangés.
+- Verrou local au conteneur php (seul à générer des exports) ; avec plusieurs conteneurs php, passer
+  à un verrou partagé (MySQL `GET_LOCK`).
+- Aucun paramètre global modifié (php-fpm, nginx, Traefik, Docker).

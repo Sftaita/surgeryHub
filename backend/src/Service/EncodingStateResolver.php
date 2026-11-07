@@ -44,7 +44,11 @@ final class EncodingStateResolver
     {
         // 1. Hors cycle d'encodage — prioritaire sur tout le reste : une mission annulée
         //    ne doit jamais apparaître comme un encodage en retard, même si l'instrumentiste
-        //    avait commencé à saisir avant l'annulation.
+        //    avait commencé à saisir avant l'annulation. D-184 — et jamais « Sans objet » :
+        //    l'annulation est un état à part entière.
+        if ($facts->status === MissionStatus::CANCELLED) {
+            return EncodingState::CANCELLED;
+        }
         if (in_array($facts->status, self::NON_ENCODABLE_STATUSES, true)) {
             // D-172 — publiée sans instrumentiste et terminée : l'activité n'a jamais été
             // déclarée, ce n'est pas « sans objet » (elle a pu avoir lieu, facturable à une firme).

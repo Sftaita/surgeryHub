@@ -94,50 +94,52 @@ export function AvailableRoomsTab() {
         <Alert severity="info">Aucune salle disponible ne correspond à ces filtres.</Alert>
       ) : (
         <>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Date</TableCell>
-                <TableCell>Établissement</TableCell>
-                <TableCell>Période / horaires</TableCell>
-                <TableCell>Libérée par</TableCell>
-                <TableCell>Statut</TableCell>
-                <TableCell>Publiée le</TableCell>
-                <TableCell />
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {items.map((slot) => (
-                <TableRow key={slot.id} hover>
-                  <TableCell>{new Date(`${slot.occurrenceDate}T00:00:00`).toLocaleDateString("fr-BE")}</TableCell>
-                  <TableCell>{slot.site?.name ?? "—"}</TableCell>
-                  <TableCell>
-                    {slot.startTime && slot.endTime ? `${slot.startTime}–${slot.endTime}` : (PERIOD_LABELS[slot.period] ?? slot.period)}
-                  </TableCell>
-                  <TableCell>{slot.surgeon?.name ?? "—"}</TableCell>
-                  <TableCell>
-                    {slot.status === "CLAIMED" ? (
-                      <>
-                        Reprise par {slot.claimedBy?.name ?? "—"}
-                        {slot.operational && (
-                          <RoomOperationalStatus operational={slot.operational} instrumentistName={slot.takeoverMission?.instrumentist?.name} />
-                        )}
-                      </>
-                    ) : "Disponible"}
-                  </TableCell>
-                  <TableCell>{new Date(slot.createdAt).toLocaleString("fr-BE")}</TableCell>
-                  <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                    {slot.operational?.state === "PRIORITY_PENDING" && slot.takeoverMission && (
-                      <Button size="small" color="warning" onClick={() => setLiftTarget(slot)} data-testid={`lift-priority-${slot.id}`}>
-                        Lever la priorité
-                      </Button>
-                    )}
-                    <Button size="small" onClick={() => setHistorySlotId(slot.id)} data-testid={`room-history-${slot.id}`}>Historique</Button>
-                  </TableCell>
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Date</TableCell>
+                  <TableCell>Établissement</TableCell>
+                  <TableCell>Période / horaires</TableCell>
+                  <TableCell>Libérée par</TableCell>
+                  <TableCell>Statut</TableCell>
+                  <TableCell>Publiée le</TableCell>
+                  <TableCell />
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHead>
+              <TableBody>
+                {items.map((slot) => (
+                  <TableRow key={slot.id} hover>
+                    <TableCell>{new Date(`${slot.occurrenceDate}T00:00:00`).toLocaleDateString("fr-BE")}</TableCell>
+                    <TableCell>{slot.site?.name ?? "—"}</TableCell>
+                    <TableCell>
+                      {slot.startTime && slot.endTime ? `${slot.startTime}–${slot.endTime}` : (PERIOD_LABELS[slot.period] ?? slot.period)}
+                    </TableCell>
+                    <TableCell>{slot.surgeon?.name ?? "—"}</TableCell>
+                    <TableCell>
+                      {slot.status === "CLAIMED" ? (
+                        <>
+                          Reprise par {slot.claimedBy?.name ?? "—"}
+                          {slot.operational && (
+                            <RoomOperationalStatus operational={slot.operational} instrumentistName={slot.takeoverMission?.instrumentist?.name} />
+                          )}
+                        </>
+                      ) : "Disponible"}
+                    </TableCell>
+                    <TableCell>{new Date(slot.createdAt).toLocaleString("fr-BE")}</TableCell>
+                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                      {slot.operational?.state === "PRIORITY_PENDING" && slot.takeoverMission && (
+                        <Button size="small" color="warning" onClick={() => setLiftTarget(slot)} data-testid={`lift-priority-${slot.id}`}>
+                          Lever la priorité
+                        </Button>
+                      )}
+                      <Button size="small" onClick={() => setHistorySlotId(slot.id)} data-testid={`room-history-${slot.id}`}>Historique</Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
           <TablePagination
             component="div"
             count={query.data?.total ?? 0}

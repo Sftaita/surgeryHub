@@ -216,6 +216,12 @@ final class EncodingTrackingControllerTest extends WebTestCase
         return $client->getResponse();
     }
 
+    private function getSummary(KernelBrowser $client, string $token, string $query = ''): Response
+    {
+        $client->request('GET', self::ENDPOINT . '/summary?from=' . self::FROM . '&to=' . self::TO . $query, server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+        return $client->getResponse();
+    }
+
     private function getWithPeriod(KernelBrowser $client, string $token, string $from, string $to, string $query = ''): Response
     {
         $client->request('GET', self::ENDPOINT . '?from=' . $from . '&to=' . $to . $query, server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
@@ -350,7 +356,6 @@ final class EncodingTrackingControllerTest extends WebTestCase
             $submitted->getId()  => EncodingState::SUBMITTED->value,
             $validated->getId()  => EncodingState::VALIDATED->value,
             $locked->getId()     => EncodingState::LOCKED->value,
-            $cancelled->getId()  => EncodingState::NOT_APPLICABLE->value,
         ];
 
         foreach ($expected as $missionId => $expectedState) {
@@ -363,12 +368,110 @@ final class EncodingTrackingControllerTest extends WebTestCase
         // tourne : tout IN_PROGRESS y est donc mécaniquement stale.
         self::assertTrue($this->findItem($payload, $inProgress->getId())['encoding']['isStale']);
 
+        // D-184 — la mission annulée sort du suivi actif : ni dans la liste, ni dans les KPI.
+        self::assertNull($this->findItem($payload, $cancelled->getId()));
         $summary = $payload['summary'];
-        self::assertSame(6, $summary['totalMissions']);
-        self::assertSame(5, $summary['encodingExpected'], 'la mission annulée sort du dénominateur');
+        self::assertSame(5, $summary['totalMissions']);
+        self::assertSame(5, $summary['encodingExpected']);
         self::assertSame(1, $summary['toEncode']);
-        self::assertSame(1, $summary['notApplicable']);
+        self::assertSame(0, $summary['notApplicable'], 'une annulée n\'est jamais « Sans objet »');
         self::assertSame(3, $summary['encoded'], 'soumis + validé + verrouillé');
+
+        // Consultation explicite : « Annulée », jamais « Sans objet ».
+        $withCancelled = $this->json($this->get($client, $token, '&siteId=' . $site->getId() . '&includeCancelled=1'));
+        self::assertSame(EncodingState::CANCELLED->value, $this->findItem($withCancelled, $cancelled->getId())['encodingState']);
+        self::assertSame('Annulée', $this->findItem($withCancelled, $cancelled->getId())['encodingStateLabel']);
+    }
+
+    /**
+     * D-184 — régression du 3 novembre : deux missions validées et deux missions annulées
+     * depuis le planning. Le suivi actif (liste « Toutes les missions », vue large de « À
+     * traiter » / « Par instrumentiste », résumé, heures) ne montre que les deux validées ;
+     * les annulées restent en base et consultables sur demande explicite.
+     */
+    public function test_cancelled_missions_are_excluded_from_the_active_tracking_but_kept(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+        $site = $this->createSite();
+        $token = $this->login($client, $manager);
+
+        $validatedA = $this->makeMission(MissionStatus::VALIDATED, $site, $surgeon, $instrumentist, '2026-03-03 08:00:00');
+        $this->addExecution($validatedA, 240);
+        $validatedB = $this->makeMission(MissionStatus::VALIDATED, $site, $surgeon, $instrumentist, '2026-03-03 13:00:00');
+        $this->addExecution($validatedB, 180);
+        // Annulée après un début d'encodage (heures saisies) : jamais un retard, jamais comptée.
+        $cancelledA = $this->makeMission(MissionStatus::CANCELLED, $site, $surgeon, $instrumentist, '2026-03-03 08:00:00');
+        $this->addExecution($cancelledA, 300);
+        $this->addIntervention($cancelledA);
+        $cancelledB = $this->makeMission(MissionStatus::CANCELLED, $site, $surgeon, $instrumentist, '2026-03-04 08:00:00');
+        $siteFilter = '&siteId=' . $site->getId();
+
+        // « Toutes les missions » (par défaut).
+        $payload = $this->json($this->get($client, $token, $siteFilter));
+        self::assertSame(2, $payload['total']);
+        self::assertEqualsCanonicalizing([$validatedA->getId(), $validatedB->getId()], array_column($payload['items'], 'missionId'));
+        self::assertSame(2, $payload['cancelledCount'], 'annoncées, jamais comptées');
+        self::assertFalse($payload['includeCancelled']);
+        $summary = $payload['summary'];
+        self::assertSame(2, $summary['totalMissions']);
+        self::assertSame(2, $summary['encodingExpected']);
+        self::assertSame(2, $summary['validated']);
+        self::assertSame(0, $summary['notApplicable']);
+        self::assertSame(0, $summary['toEncode'] + $summary['inProgress'] + $summary['staleInProgress'], 'aucun retard, aucune relance');
+        foreach ($payload['items'] as $item) {
+            self::assertNotSame(EncodingState::CANCELLED->value, $item['encodingState']);
+        }
+
+        // « À traiter » (filtre d'états) et la vue large de « Par instrumentiste ».
+        $toTreat = $this->json($this->get($client, $token, $siteFilter . '&encodingState=TO_ENCODE,IN_PROGRESS,SUBMITTED'));
+        self::assertSame([], $toTreat['items']);
+        $byInstrumentist = $this->json($this->get($client, $token, $siteFilter . '&instrumentistId=' . $instrumentist->getId() . '&limit=200'));
+        self::assertSame(2, $byInstrumentist['total']);
+        self::assertSame(2, $byInstrumentist['summary']['totalMissions']);
+
+        // Résumé seul (Statistiques financières) : même définition.
+        $summaryOnly = $this->json($this->getSummary($client, $token, $siteFilter))['summary'];
+        self::assertSame(2, $summaryOnly['totalMissions']);
+
+        // Consultation explicite : les 4, dont 2 « Annulée » ; les indicateurs restent sur 2.
+        $all = $this->json($this->get($client, $token, $siteFilter . '&includeCancelled=1'));
+        self::assertSame(4, $all['total']);
+        self::assertTrue($all['includeCancelled']);
+        self::assertSame(2, $all['summary']['totalMissions']);
+        foreach ([$cancelledA, $cancelledB] as $cancelled) {
+            self::assertSame(EncodingState::CANCELLED->value, $this->findItem($all, $cancelled->getId())['encodingState']);
+        }
+
+        // Historique conservé : rien n'est supprimé ni modifié.
+        $this->em->clear();
+        foreach ([$cancelledA, $cancelledB] as $cancelled) {
+            self::assertSame(MissionStatus::CANCELLED, $this->em->find(Mission::class, $cancelled->getId())->getStatus());
+        }
+        self::assertNotNull($this->em->find(Mission::class, $cancelledA->getId())->getExecution(), 'heures saisies conservées');
+    }
+
+    /** D-184 — une mission réellement « Sans objet » (non annulée) reste visible et comptée. */
+    public function test_a_not_applicable_mission_that_is_not_cancelled_is_still_tracked(): void
+    {
+        $client = $this->boot();
+        $manager = $this->createUser('ROLE_MANAGER');
+        $surgeon = $this->createUser('ROLE_SURGEON');
+        $instrumentist = $this->createUser('ROLE_INSTRUMENTIST');
+        $site = $this->createSite();
+        $token = $this->login($client, $manager);
+
+        $rejected = $this->makeMission(MissionStatus::REJECTED, $site, $surgeon, $instrumentist, '2026-03-05 08:00:00');
+        $this->makeMission(MissionStatus::CANCELLED, $site, $surgeon, $instrumentist, '2026-03-05 13:00:00');
+
+        $payload = $this->json($this->get($client, $token, '&siteId=' . $site->getId()));
+        self::assertSame(1, $payload['total']);
+        self::assertSame(EncodingState::NOT_APPLICABLE->value, $this->findItem($payload, $rejected->getId())['encodingState']);
+        self::assertSame('Sans objet', $this->findItem($payload, $rejected->getId())['encodingStateLabel']);
+        self::assertSame(1, $payload['summary']['totalMissions']);
+        self::assertSame(1, $payload['summary']['notApplicable']);
     }
 
     /**

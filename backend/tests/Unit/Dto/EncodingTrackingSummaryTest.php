@@ -138,7 +138,8 @@ final class EncodingTrackingSummaryTest extends TestCase
 
     /**
      * Garde-fou : si un EncodingState est ajouté à l'enum, il doit être compté dans le
-     * total. Sans ça, un nouvel état disparaîtrait silencieusement des KPI.
+     * total. Sans ça, un nouvel état disparaîtrait silencieusement des KPI. Seule exception
+     * décidée (D-184) : CANCELLED, jamais compté dans le suivi actif.
      */
     public function testEveryEnumCaseContributesToTotal(): void
     {
@@ -148,8 +149,19 @@ final class EncodingTrackingSummaryTest extends TestCase
         }
 
         self::assertSame(
-            count(EncodingState::cases()),
+            count(EncodingState::cases()) - 1,
             $this->summary($counts)->totalMissions,
         );
+    }
+
+    /** D-184 — une mission annulée n'entre dans aucun indicateur (total, attendu, états). */
+    public function testCancelledNeverCountsInAnyIndicator(): void
+    {
+        $summary = $this->summary([EncodingState::CANCELLED->value => 2, EncodingState::VALIDATED->value => 2]);
+
+        self::assertSame(2, $summary->totalMissions);
+        self::assertSame(2, $summary->encodingExpected);
+        self::assertSame(0, $summary->notApplicable);
+        self::assertSame(2, $summary->validated);
     }
 }

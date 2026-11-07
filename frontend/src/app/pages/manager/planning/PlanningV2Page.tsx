@@ -36,8 +36,8 @@ export default function PlanningV2Page() {
 
   return (
     <Stack spacing={2.5}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Stack direction="row" alignItems="center" spacing={1.25}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1.5}>
+        <Stack direction="row" alignItems="center" spacing={1.25} flexWrap="wrap" useFlexGap>
           <Typography variant="h6" fontWeight={700}>Planning</Typography>
           <Chip
             size="small"

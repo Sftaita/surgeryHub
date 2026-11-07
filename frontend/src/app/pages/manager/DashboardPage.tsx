@@ -21,6 +21,7 @@ import {
 import { defaultFilterState, toApiFilter } from "../../features/financial-statistics/components/StatFilterBar";
 import { PageHeader } from "../../ui/PageHeader";
 import { StatCard } from "../../ui/StatCard";
+import { InstrumentistHoursTopCard } from "../../features/instrumentist-hours/InstrumentistHoursTopCard";
 
 function startOfDay(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}T00:00:00`;
@@ -132,7 +133,7 @@ export default function DashboardPage() {
   const mainCurrency = overviewQuery.data?.currencies?.[0];
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box sx={{ p: { xs: 0, md: 3 } }}>
       <PageHeader icon={DashboardIcon} title="Dashboard" subtitle="Vue d'ensemble de l'activité manager." />
 
       <Stack spacing={4}>
@@ -209,7 +210,9 @@ export default function DashboardPage() {
         </Section>
 
         <Section title="Classements">
-          <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 2 }}>
+          <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 2, alignItems: "start" }}>
+            {/* D-180 — Top 5 des instrumentistes : deux colonnes dès 900 px, en tête des classements. */}
+            <InstrumentistHoursTopCard />
             <RankingPreview
               title="Top firmes (CA généré)"
               rows={(topFirmsQuery.data?.items ?? []).map((f) => ({ label: f.firmNameSnapshot, value: `${Number(f.generatedRevenue).toFixed(2)} ${f.currency}` }))}

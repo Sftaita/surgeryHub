@@ -46,6 +46,7 @@ use App\Exception\IncompatibilityException;
 use App\Exception\EncodingConcurrencyException;
 use Doctrine\ORM\OptimisticLockException;
 use App\Exception\ReleasedRoomSlotConflictException;
+use App\Exception\StatisticsExportException;
 use App\Exception\SurgeonMissionRequestAlreadyReviewedException;
 use App\Exception\SurgeonMissionRequestConflictException;
 use App\Exception\EncodingAnomalyReportAlreadyResolvedException;
@@ -89,6 +90,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
         $message = 'Internal server error';
         $violations = [];
         $extra = [];
+        $headers = [];
 
         if ($e instanceof UniqueConstraintViolationException) {
             $status = 409;
@@ -358,6 +360,14 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             $code = $e->getErrorCode();
             $message = $e->getMessage();
             $extra = $e->getExtra();
+        } elseif ($e instanceof StatisticsExportException) {
+            // D-186 — export PDF refusé explicitement (trop volumineux / données modifiées) ;
+            // D-187 — capacité simultanée atteinte (429 + Retry-After).
+            $status = $e->getStatusCode();
+            $code = $e->getErrorCode();
+            $message = $e->getMessage();
+            $extra = $e->getExtra();
+            $headers = $e->getHeaders();
         } elseif ($e instanceof ReleasedRoomSlotConflictException) {
             $status = 409;
             $code = $e->getErrorCode();
@@ -388,6 +398,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             && !$e instanceof EncodingIncompleteException
             && !$e instanceof CatalogueRequestException
             && !$e instanceof IncompatibilityException
+            && !$e instanceof StatisticsExportException
         ) {
             $violations = $this->extractViolationsFromMessage($message);
             if (count($violations) > 0) {
@@ -437,7 +448,7 @@ final class ApiExceptionSubscriber implements EventSubscriberInterface
             ];
         }
 
-        $event->setResponse(new JsonResponse($payload, $status));
+        $event->setResponse(new JsonResponse($payload, $status, $headers));
     }
 
     /**

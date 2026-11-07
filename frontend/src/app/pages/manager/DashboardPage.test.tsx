@@ -46,6 +46,11 @@ vi.mock("../../features/planning-v2/api/planningV2.api", () => ({
   getAlerts: (...args: unknown[]) => getAlertsMock(...args),
 }));
 
+const fetchInstrumentistHoursMock = vi.fn();
+vi.mock("../../features/instrumentist-hours/api/instrumentistHours.api", () => ({
+  fetchInstrumentistHours: (...args: unknown[]) => fetchInstrumentistHoursMock(...args),
+}));
+
 const getOverviewMock = vi.fn();
 const getPipelineMock = vi.fn();
 const getByFirmMock = vi.fn();
@@ -85,6 +90,13 @@ function mockAllResolved(): void {
   getByFirmMock.mockResolvedValue({ items: [{ firmId: 1, firmNameSnapshot: "Smith & Nephew", currency: "EUR", generatedRevenue: "999.00" }], total: 1, page: 1, limit: 5 });
   getBySurgeonMock.mockResolvedValue({ items: [], total: 0, page: 1, limit: 5 });
   getTopMaterialsMock.mockResolvedValue({ items: [], total: 0, page: 1, limit: 5 });
+  fetchInstrumentistHoursMock.mockImplementation(({ month }: { month: string }) => Promise.resolve({
+    month, provisional: false, asOfDay: null, siteId: null, q: null, sort: "validatedMinutes", direction: "desc", sites: [],
+    reference: { previousMonth: month },
+    totals: { instrumentistCount: 0, count: 0, pendingCount: 0, encodedMinutes: 0, validatedMinutes: 0, pendingMinutes: 0, validatedPct: 0,
+      currency: null, encodedAmount: null, validatedAmount: null, unratedInstrumentistCount: 0, unratedCount: 0 },
+    items: [],
+  }));
 }
 
 function renderPage() {
@@ -112,6 +124,7 @@ beforeEach(() => {
   getByFirmMock.mockReset();
   getBySurgeonMock.mockReset();
   getTopMaterialsMock.mockReset();
+  fetchInstrumentistHoursMock.mockReset();
   mockAllResolved();
 });
 

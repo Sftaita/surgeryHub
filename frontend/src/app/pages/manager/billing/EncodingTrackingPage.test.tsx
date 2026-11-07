@@ -465,3 +465,28 @@ describe("EncodingTrackingPage — filtres", () => {
     expect(lastCallFilter.instrumentistId).toBe(9);
   });
 });
+
+describe("EncodingTrackingPage — missions annulées (D-184)", () => {
+  it("exclut les annulées par défaut et les affiche sur demande, avec un badge « Annulée »", async () => {
+    const user = userEvent.setup();
+    const summary = emptySummary({ totalMissions: 2, encodingExpected: 2, validated: 2 });
+    const validated = [1, 2].map((id) => makeItem({ missionId: id, encodingState: "VALIDATED", encodingStateLabel: "Validé" }));
+    const cancelled = makeItem({ missionId: 3, encodingState: "CANCELLED", encodingStateLabel: "Annulée" });
+    getEncodingTrackingSummaryMock.mockResolvedValue({ period: { from: "", to: "" }, summary });
+    getEncodingTrackingMock.mockImplementation(async (filter: { includeCancelled?: boolean }) => (filter.includeCancelled
+      ? { ...makeResponse([...validated, cancelled], summary), total: 3, cancelledCount: 1, includeCancelled: true }
+      : { ...makeResponse(validated, summary), total: 2, cancelledCount: 1, includeCancelled: false }));
+
+    renderPage();
+
+    expect(await screen.findByTestId("cancelled-count")).toHaveTextContent("Annulées exclues (1 masquée)");
+    expect(screen.queryByText("Annulée")).toBeNull();
+    expect(getEncodingTrackingMock).toHaveBeenLastCalledWith(expect.objectContaining({ includeCancelled: false }), expect.anything());
+
+    await user.click(within(screen.getByTestId("show-cancelled-toggle")).getByRole("switch"));
+    expect(await screen.findByText("Annulée")).toBeInTheDocument();
+    expect(screen.queryByText("Sans objet")).toBeNull();
+    expect(getEncodingTrackingMock).toHaveBeenLastCalledWith(expect.objectContaining({ includeCancelled: true }), expect.anything());
+    expect(screen.getByTestId("cancelled-count")).toHaveTextContent("jamais comptées dans les indicateurs");
+  });
+});

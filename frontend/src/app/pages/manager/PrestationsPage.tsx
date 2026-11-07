@@ -1565,7 +1565,7 @@ export default function PrestationsPage() {
   }
 
   return (
-    <Box sx={{ p: 3 }} className={styles.root}>
+    <Box sx={{ p: { xs: 0, md: 3 } }} className={styles.root}>
       <PageHeader
         icon={CategoryIcon}
         title="Prestations"

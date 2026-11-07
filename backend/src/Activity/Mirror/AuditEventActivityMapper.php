@@ -103,6 +103,7 @@ final class AuditEventActivityMapper
         'FINANCIAL_CALCULATION_APPROVED' => 'Calcul financier approuvé',
         'FINANCIAL_CALCULATION_LOCKED' => 'Calcul financier verrouillé',
         'FINANCIAL_CALCULATION_SUPERSEDED' => 'Calcul financier remplacé',
+        'FINANCIAL_STATISTICS_EXPORTED' => 'Statistiques financières exportées en PDF',
         'FINANCIAL_CALCULATION_CANCELLED' => 'Calcul financier annulé',
         'FINANCIAL_CALCULATION_FAILED' => 'Calcul financier en échec',
         'FIRM_INVOICE_CREATED_FROM_CALCULATION' => 'Facture firme créée',

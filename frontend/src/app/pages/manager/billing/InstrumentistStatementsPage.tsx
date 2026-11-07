@@ -73,7 +73,7 @@ export default function InstrumentistStatementsPage() {
 
   return (
     <Stack spacing={3}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center">
+      <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1.5}>
         <Stack direction="row" alignItems="center" spacing={1}>
           <Typography variant="h6" fontWeight={700}>Décomptes Instrumentistes</Typography>
           <IconButton size="small" onClick={() => setTutorialOpen(true)} color="primary" sx={{ opacity: 0.7 }}>
@@ -98,7 +98,7 @@ export default function InstrumentistStatementsPage() {
       )}
 
       {/* ── Filters ── */}
-      <Stack direction="row" spacing={2}>
+      <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
         <Select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as InvoiceStatus | "")} displayEmpty size="small" sx={{ minWidth: 150 }}>
           <MenuItem value="">Tous les statuts</MenuItem>
           {(["GENERATED", "SENT", "PAID"] as InvoiceStatus[]).map((s) => <MenuItem key={s} value={s}>{statusLabel(s)}</MenuItem>)}
@@ -111,43 +111,45 @@ export default function InstrumentistStatementsPage() {
         <CircularProgress size={24} />
       ) : (
         <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow sx={{ bgcolor: "grey.50" }}>
-                <TableCell>Instrumentiste</TableCell>
-                <TableCell>Période</TableCell>
-                <TableCell>Statut</TableCell>
-                <TableCell align="right">Montant</TableCell>
-                <TableCell align="right">Actions</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {(statementsQuery.data ?? []).length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={5} align="center" sx={{ py: 4, color: "text.secondary" }}>Aucun décompte</TableCell>
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow sx={{ bgcolor: "grey.50" }}>
+                  <TableCell>Instrumentiste</TableCell>
+                  <TableCell>Période</TableCell>
+                  <TableCell>Statut</TableCell>
+                  <TableCell align="right">Montant</TableCell>
+                  <TableCell align="right">Actions</TableCell>
                 </TableRow>
-              )}
-              {(statementsQuery.data ?? []).map((stmt: InstrumentistStatement) => (
-                <TableRow key={stmt.id} hover>
-                  <TableCell>{stmt.instrumentist.displayName ?? stmt.instrumentist.email}</TableCell>
-                  <TableCell>{String(stmt.periodMonth).padStart(2, "0")}/{stmt.periodYear}</TableCell>
-                  <TableCell>
-                    <Chip label={statusLabel(stmt.status)} size="small" color={STATUS_COLORS[stmt.status]} />
-                  </TableCell>
-                  <TableCell align="right"><strong>{Number(stmt.totalAmount).toFixed(2)} €</strong></TableCell>
-                  <TableCell align="right">
-                    <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                      <Button size="small" variant="outlined" startIcon={<PictureAsPdfIcon />} href={getStatementPdfUrl(stmt.id)} target="_blank">PDF</Button>
-                      <Button size="small" onClick={() => navigate(`/app/m/billing/statements/${stmt.id}`)}>Détail</Button>
-                      {stmt.status !== "PAID" && (
-                        <Button size="small" color="success" onClick={() => markPaidMutation.mutate(stmt.id)} disabled={markPaidMutation.isPending}>Payé</Button>
-                      )}
-                    </Stack>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHead>
+              <TableBody>
+                {(statementsQuery.data ?? []).length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} align="center" sx={{ py: 4, color: "text.secondary" }}>Aucun décompte</TableCell>
+                  </TableRow>
+                )}
+                {(statementsQuery.data ?? []).map((stmt: InstrumentistStatement) => (
+                  <TableRow key={stmt.id} hover>
+                    <TableCell>{stmt.instrumentist.displayName ?? stmt.instrumentist.email}</TableCell>
+                    <TableCell>{String(stmt.periodMonth).padStart(2, "0")}/{stmt.periodYear}</TableCell>
+                    <TableCell>
+                      <Chip label={statusLabel(stmt.status)} size="small" color={STATUS_COLORS[stmt.status]} />
+                    </TableCell>
+                    <TableCell align="right"><strong>{Number(stmt.totalAmount).toFixed(2)} €</strong></TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                        <Button size="small" variant="outlined" startIcon={<PictureAsPdfIcon />} href={getStatementPdfUrl(stmt.id)} target="_blank">PDF</Button>
+                        <Button size="small" onClick={() => navigate(`/app/m/billing/statements/${stmt.id}`)}>Détail</Button>
+                        {stmt.status !== "PAID" && (
+                          <Button size="small" color="success" onClick={() => markPaidMutation.mutate(stmt.id)} disabled={markPaidMutation.isPending}>Payé</Button>
+                        )}
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
         </Paper>
       )}
 

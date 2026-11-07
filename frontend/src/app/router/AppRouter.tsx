@@ -86,6 +86,7 @@ const FirmInvoiceDetailPage             = React.lazy(() => import("../pages/mana
 const InstrumentistStatementsPage       = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementsPage"));
 const InstrumentistStatementDetailPage  = React.lazy(() => import("../pages/manager/billing/InstrumentistStatementDetailPage"));
 const CorrectionDetailPage              = React.lazy(() => import("../pages/manager/billing/CorrectionDetailPage"));
+const InstrumentistHoursPage            = React.lazy(() => import("../pages/manager/billing/InstrumentistHoursPage"));
 const FinancialStatisticsPage           = React.lazy(() => import("../pages/manager/FinancialStatisticsPage"));
 const AbsencesPage                      = React.lazy(() => import("../pages/manager/planning/AbsencesPage"));
 const PlanningV2Page                    = React.lazy(() => import("../pages/manager/planning/PlanningV2Page"));
@@ -211,6 +212,7 @@ export function AppRouter() {
                 <Route path="m/catalogue/prestations" element={<PrestationsPage />} />
                 <Route path="m/catalogue/requests" element={<CatalogueRequestsPage />} />
                 <Route path="m/billing/encodings" element={<EncodingTrackingPage />} />
+                <Route path="m/billing/hours" element={<InstrumentistHoursPage />} />
                 <Route path="m/billing/config" element={<Navigate to="/app/m/catalogue/prestations" replace />} />
                 <Route path="m/billing/firm-invoices" element={<FirmInvoicesPage />} />
                 <Route path="m/billing/firm-invoices/:id" element={<FirmInvoiceDetailPage />} />

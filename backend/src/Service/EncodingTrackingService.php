@@ -101,10 +101,12 @@ final class EncodingTrackingService
         array $encodingStates = [],
         ?MissionType $missionType = null,
         ?\DateTimeImmutable $now = null,
+        bool $includeCancelled = false,
     ): array {
         $now ??= new \DateTimeImmutable();
 
-        ['ids' => $ids, 'total' => $total] = $this->repository->fetchPageIds($filter, $page, $limit, $missionType);
+        // D-184 — annulées exclues par défaut ; incluses seulement en consultation explicite.
+        ['ids' => $ids, 'total' => $total] = $this->repository->fetchPageIds($filter, $page, $limit, $missionType, $includeCancelled);
 
         if (count($ids) === 0) {
             return ['items' => [], 'total' => $total, 'page' => $page, 'limit' => $limit];
@@ -385,6 +387,12 @@ final class EncodingTrackingService
     }
 
     /** D-121 — voir EncodingTrackingRepository::countPendingEncodingValidation(). */
+    /** D-184 — missions annulées de la période, masquées du suivi actif. */
+    public function countCancelled(FinancialStatisticsFilter $filter, ?MissionType $missionType = null): int
+    {
+        return $this->repository->countCancelledForPeriod($filter, $missionType);
+    }
+
     public function countPendingValidation(): int
     {
         return $this->repository->countPendingEncodingValidation();
