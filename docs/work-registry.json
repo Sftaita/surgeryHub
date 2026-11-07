@@ -1101,6 +1101,32 @@
         }
       ],
       "prodEvidence": "v2026.11.06-prod-2 (2d2d37e) : 0 migration (99/99) ; activate 2026-11-06 17:59 UTC ; mark OFFICIAL ; vue d'ensemble identique avant/après, 7 exports PDF 200, permissions 403/401 : voir docs/production.md."
+    },
+    {
+      "id": "ROLLBACK-COMPAT-EXPORT-SLOTS",
+      "title": "Rollback compatible avec les données déjà écrites ; exports PDF simultanés limités",
+      "description": "Contrôle de compatibilité des données (colonnes enumType) exécuté dans l'image cible avant activate / rollback, refus explicite et fail-closed ; release corrective rollback/ad45ef6-compat pour le retour arrière de D-186 ; au plus 2 exports PDF générés en même temps (flock, 429 STATISTICS_EXPORT_BUSY). Aucune migration, aucune donnée modifiée, aucun paramètre global du VPS.",
+      "kind": "fix",
+      "priority": "P2",
+      "userImpact": "Exploitation : un rollback de D-186 cassait le journal d'activité ; plusieurs gros exports simultanés pouvaient saturer la RAM du VPS.",
+      "status": "pr-ouverte",
+      "statusSince": "2026-11-07",
+      "refs": {
+        "branches": [
+          "feat/rollback-compat-export-slots",
+          "rollback/ad45ef6-compat"
+        ],
+        "decision": "D-187",
+        "worktrees": [
+          "SurgicalHub-stats-finance"
+        ],
+        "prs": [
+          83
+        ]
+      },
+      "nextAction": "Revue puis fusion ; déploiement uniquement sur accord explicite. La branche rollback/ad45ef6-compat n'est jamais fusionnée dans main.",
+      "lastReviewed": "2026-11-07",
+      "validationNeeded": "Tests backend, frontend et procédure de déploiement verts ; preuve sur base jetable (ad45ef6 refusé, release corrective compatible). Après déploiement : deploy.sh compat ad45ef6… doit afficher INCOMPATIBLE, et rollback/ad45ef6-compat compatible."
     }
   ]
 }

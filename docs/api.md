@@ -7683,6 +7683,13 @@ STATISTICS_EXPORT_DATA_CHANGED` si les données changent pendant la lecture page
 totaux ou lignes incohérents entre deux pages) — relancer l'export. Chaque export réussi est audité
 (`FINANCIAL_STATISTICS_EXPORTED` : vue, période, filtres, nombre de lignes).
 
+**Exports simultanés (D-187).** Au plus **2** PDF sont générés en même temps sur le serveur (un
+export proche du plafond relève sa mémoire à 512 Mo). Au-delà : `429 STATISTICS_EXPORT_BUSY`,
+en-tête `Retry-After: 30`, `error.capacity`, `error.retryAfter`, message « Trop d'exports PDF sont
+en cours de génération (2 au maximum en même temps). Réessayez dans quelques instants. ». Le refus
+est immédiat (aucune attente), n'est pas audité et vient après les contrôles d'accès (`403`) et de
+paramètres (`422`). Les lectures `GET /api/financial-statistics/*` ne sont jamais limitées.
+
 ---
 
 ## 40. Notifications push — abonnement navigateur (Lot 1, D-081)

@@ -21,6 +21,7 @@ use App\Service\FinancialStatisticsPdfExporter;
 use App\Service\FinancialStatisticsQueryService;
 use App\Service\FinancialStatisticsRankingService;
 use App\Service\FinancialStatisticsRequestParser;
+use App\Service\StatisticsExportSlots;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -62,6 +63,7 @@ final class FinancialStatisticsController extends AbstractController
         private readonly FinancialStatisticsPdfExporter $pdfExporter,
         private readonly AuditService $audit,
         private readonly EntityManagerInterface $em,
+        private readonly StatisticsExportSlots $exportSlots,
     ) {}
 
     #[Route('/overview', name: 'api_financial_statistics_overview', methods: ['GET'])]
@@ -178,6 +180,8 @@ final class FinancialStatisticsController extends AbstractController
      * D-186 — GET /api/financial-statistics/export?view=<vue>&<filtres>&sortBy&sortDirection[&granularity]
      * PDF A4 paysage de la vue demandée : mêmes services, mêmes filtres, même tri que
      * l'écran, toutes les lignes (aucune pagination). Audité (FINANCIAL_STATISTICS_EXPORTED).
+     * D-187 — génération limitée à StatisticsExportSlots::CAPACITY exports simultanés, après les
+     * contrôles d'accès et de paramètres : au-delà, 429 STATISTICS_EXPORT_BUSY, rien n'est audité.
      */
     #[Route('/export', name: 'api_financial_statistics_export', methods: ['GET'])]
     public function export(Request $request, #[CurrentUser] User $actor): Response
@@ -195,7 +199,7 @@ final class FinancialStatisticsController extends AbstractController
             [$sortBy, $sortDirection] = [$pagination['sortBy'], $pagination['sortDirection']];
         }
 
-        $export = $this->pdfExporter->export($view, $filter, $granularity, $sortBy, $sortDirection);
+        $export = $this->exportSlots->run(fn () => $this->pdfExporter->export($view, $filter, $granularity, $sortBy, $sortDirection));
 
         $this->audit->recordGlobal($actor, AuditEventType::FINANCIAL_STATISTICS_EXPORTED, [
             'view' => $view,
