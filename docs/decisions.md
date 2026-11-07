@@ -16994,3 +16994,58 @@ serveur, signés, en centimes entiers.
 
 **Limites.** Le chirurgien reste un axe analytique (aucun montant ne lui est versé). Les devises ne
 sont jamais additionnées entre elles : un total par devise.
+
+---
+
+## D-187 — Rollback compatible avec les données déjà écrites ; exports PDF simultanés limités (2026-11-07)
+
+**Constat 1 — rollback de D-186.** `v2026.11.06-prod-2` (`2d2d37e`) audite chaque export PDF
+(`audit_event.event_type = FINANCIAL_STATISTICS_EXPORTED`, 8 lignes en production le 2026-11-06).
+`ad45ef6` (version précédente) mappe `AuditEvent::$eventType` en `enumType: AuditEventType::class` et
+ne connaît pas ce cas : Doctrine lève `ValueError: "FINANCIAL_STATISTICS_EXPORTED" is not a valid
+backing value for enum App\Enum\AuditEventType` dès qu'une de ces lignes est hydratée. Le journal
+d'activité (`AuditJournalService::search`, derniers événements par id décroissant, sans filtre) tombe
+alors en 500 ; les lectures SQL brutes (DBAL) ne sont pas touchées. Reproduit sur base jetable avec le
+code de `ad45ef6`. `deploy.sh rollback` ne contrôlait que la release et ses images, jamais les données.
+
+**Décision 1.**
+- Contrôle générique avant toute bascule (`activate`, `rollback <sha>`, `rollback legacy`) :
+  `deploy/rollback/enum-compat.php` exécuté **dans l'image cible** (`compose run`, cache jetable),
+  avec le mapping Doctrine de la cible : chaque colonne `enumType` (y compris collections json /
+  simple_array) ne doit contenir que des valeurs connues ; lecture seule (`START TRANSACTION READ
+  ONLY`, `SELECT … GROUP BY`). `compatible` → bascule ; `INCOMPATIBLE` (code 3) → refus avec la liste
+  `table.colonne = valeur (n lignes)` ; contrôle impossible → refus (fail-closed). Exécuté avant toute
+  sauvegarde, tout retag et tout redémarrage. `deploy.sh compat <sha>` : contrôle seul.
+- Le script vient toujours du dépôt qui déploie (`incoming/enum-compat.php`), jamais de la release
+  active ni de la cible : il doit fonctionner avec un code qui lui est antérieur, donc il est
+  autonome (aucune classe du dépôt).
+- **Jamais** de suppression ni de réécriture des lignes signalées pour rendre une bascule possible.
+  Issue unique : une **release corrective compatible** = cible + seuls cas d'énumération manquants
+  (et leurs libellés), sur une branche `rollback/<cible>-compat` jamais fusionnée dans `main`, déployée
+  par `deploy.sh` (`DEPLOY_MAIN_REF` = cette branche, précédent `rollback/d177`). Architecture
+  immuable respectée : une nouvelle release, aucune release historique modifiée.
+- Préparée pour D-186 : `rollback/ad45ef6-compat` (`721e28a` = `ad45ef6` + 4 lignes reprises de
+  `2d2d37e`). Base jetable (schéma de `ad45ef6`, 10 événements dont 8 exports) : `ad45ef6` →
+  `INCOMPATIBLE`, journal en `ValueError` ; `721e28a` → `compatible` (71 colonnes), journal lisible,
+  empreinte des 10 événements identique avant/après.
+- Limite : le contrôle couvre les énumérations, pas le schéma (migrations : procédure B de
+  `docs/production.md` § Rollback) ni l'absence de fonctionnalités dans la cible.
+
+**Constat 2 — exports simultanés.** Un export proche du plafond D-186 (1 000 lignes) relève sa
+mémoire à 512 Mo ; php-fpm a 5 processus, aucun conteneur n'a de limite mémoire et le swap du VPS
+était presque plein (1,9 / 2 Go le 2026-11-06). Rien n'empêchait 5 gros exports en même temps.
+
+**Décision 2.**
+- `StatisticsExportSlots` : au plus **2** générations PDF simultanées (≤ ~1 Go dans le pire cas).
+  Chaque export prend un « emplacement » = `var/lock/statistics-export/slot-N.lock` verrouillé par
+  `flock(LOCK_EX | LOCK_NB)` ; tous occupés → `429 STATISTICS_EXPORT_BUSY` immédiat (`Retry-After:
+  30`, message utilisateur explicite), jamais d'attente qui immobiliserait d'autres processus php-fpm.
+- Libération garantie : `finally` (succès ou exception), et le noyau libère le verrou à la fermeture
+  du descripteur — fin de requête (fatal error et dépassement mémoire compris) ou mort du processus.
+  Aucun verrou ne peut rester bloqué ; aucune dépendance ajoutée (ni `symfony/lock`, ni Redis).
+- Posé dans `FinancialStatisticsController::export` autour de la seule génération, après `BillingVoter`
+  et la validation des paramètres, avant l'audit : un refus n'est pas audité, la consultation n'est
+  jamais limitée. Sept vues, plafond de 1 000 lignes, calculs et permissions inchangés.
+- Verrou local au conteneur php (seul à générer des exports) ; avec plusieurs conteneurs php, passer
+  à un verrou partagé (MySQL `GET_LOCK`).
+- Aucun paramètre global modifié (php-fpm, nginx, Traefik, Docker).
