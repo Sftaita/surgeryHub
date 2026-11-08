@@ -690,14 +690,14 @@
     {
       "id": "TEST-TIMEZONE",
       "title": "MissionBusinessTimezoneIntegrationTest en échec préexistant",
-      "description": "Échec reproduit à l'identique sans D-167 (relevé le 2026-10-24).",
+      "description": "Échec reproduit à l'identique sans D-167 (relevé le 2026-10-24), puis sur main 451562a pendant la validation de D-188 (2026-11-07, base MySQL temporaire en UTC) : test_naive_construction_without_explicit_timezone_would_have_drifted_regression_guard. Probablement lié au fuseau de la base ou de PHP plutôt qu'au code.",
       "kind": "test",
       "priority": "P3",
       "userImpact": "Aucun ; suite backend rouge.",
       "status": "a-analyser",
       "refs": {},
-      "nextAction": "Diagnostiquer.",
-      "lastReviewed": "2026-10-24"
+      "nextAction": "Diagnostiquer (fuseau MySQL / date.timezone du processus de test) ; ne pas corriger dans un lot fonctionnel.",
+      "lastReviewed": "2026-11-08"
     },
     {
       "id": "TEST-MEMLIMIT",
@@ -1194,8 +1194,8 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Tous les rôles : notifications « Notification » sans contexte, aucun accès direct à l'élément concerné, tout marqué lu à l'ouverture.",
-      "status": "developpe",
-      "statusSince": "2026-11-07",
+      "status": "deploye",
+      "statusSince": "2026-11-08",
       "refs": {
         "branches": [
           "feat/notification-center"
@@ -1203,11 +1203,96 @@
         "decision": "D-188",
         "worktrees": [
           "SurgicalHub-notification-center"
+        ],
+        "prs": [
+          87
+        ],
+        "commits": [
+          "08c099e8c12e09009d6fcfc3cecd0494131fa233",
+          "03a55d2a086dc4d26c891703fa4cde0c533aa706"
         ]
       },
-      "nextAction": "Relecture utilisateur, puis PR. Ne pas déployer sans accord.",
-      "lastReviewed": "2026-11-07",
-      "validationNeeded": "Validation visuelle utilisateur (desktop + mobile) ; tests backend et frontend verts sur base temporaire."
+      "nextAction": "Officialisé v2026.11.08-prod (03a55d2). Recette visuelle utilisateur en production attendue. Suites : NOTIF-ACTION-WINDOW, UX-NOTIF-MOBILE, UX-ENCODING-403, TEST-OVERNIGHT-LABEL, TEST-TIMEZONE, TEST-TIMELIMIT. Rollback : deploy/deploy.sh rollback 451562ae20064264bc357e5699674ac414b07ff3.",
+      "lastReviewed": "2026-11-08",
+      "validationNeeded": "Contrôles techniques et lectures API validés en production les 2026-11-08 (08:2x et 12:14 UTC) ; recette visuelle validée en environnement isolé (données synthétiques, desktop et 390 px) ; recette visuelle en production avec une session réelle attendue de l'utilisateur.",
+      "prodEvidence": "v2026.11.08-prod (03a55d2) : 0 migration (99/99) ; activate 2026-11-08 08:19 UTC ; mark OFFICIAL ; compat 03a55d2 et 451562a compatibles ; empreintes notification_event / préférences / missions identiques avant-après ; 0 5xx ; voir docs/production.md.",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : parcours visuel du centre de notifications avec une session réelle (manager et instrumentiste ou chirurgien), sur desktop et téléphone."
+        }
+      ]
+    },
+    {
+      "id": "NOTIF-ACTION-WINDOW",
+      "title": "Centre de notifications : supprimer la fenêtre de 2 000 notifications actionnables",
+      "description": "« À traiter » et actionRequiredCount (D-188) ne portent que sur les 2 000 notifications de types actionnables les plus récentes du destinataire : au-delà, une ressource restée ouverte (alerte, demande) disparaîtrait de « À traiter » sans signal. Production au 2026-11-08 : 305 au maximum par manager, ~72 par mois, soit ~2 ans de marge. Stratégie proposée : colonnes indexées subject_type / subject_id sur notification_event (migration + reprise de l'historique depuis les payloads), filtre « À traiter » en SQL joint aux tables des ressources, sans fenêtre ni cache.",
+      "kind": "debt",
+      "priority": "P3",
+      "userImpact": "Aucun aujourd'hui ; à terme, éléments à traiter anciens non comptés.",
+      "status": "a-analyser",
+      "statusSince": "2026-11-08",
+      "refs": {
+        "decision": "D-188"
+      },
+      "nextAction": "Concevoir la migration et la reprise ; ne pas modifier le module tant que le lot n'est pas décidé.",
+      "lastReviewed": "2026-11-08"
+    },
+    {
+      "id": "TEST-OVERNIGHT-LABEL",
+      "title": "Tests « Se termine le lendemain » en échec selon l'heure d'exécution",
+      "description": "DeclareMissionPage.test.tsx et SurgeonMissionRequestFormPage.test.tsx (« coche 'Se termine le lendemain' ajoute (+1j) au libellé de fin ») échouent à l'identique sur main 451562a et sur D-188, relevés vers 23 h le 2026-11-07 : dépendance probable à l'horloge réelle.",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; suite frontend rouge selon l'heure.",
+      "status": "a-analyser",
+      "statusSince": "2026-11-08",
+      "refs": {},
+      "nextAction": "Figer l'horloge des deux tests (vi.setSystemTime) et vérifier le calcul du lendemain.",
+      "lastReviewed": "2026-11-08"
+    },
+    {
+      "id": "TEST-TIMELIMIT",
+      "title": "Suite PHPUnit complète interrompue par set_time_limit(120)",
+      "description": "FinancialStatisticsPdfExporter appelle set_time_limit(120) ; dans un processus PHPUnit unique, la limite tue toute la suite 120 s plus tard (« Maximum execution time of 120 seconds exceeded »). Contourné pendant D-188 par un lancement fichier par fichier (316 fichiers).",
+      "kind": "test",
+      "priority": "P3",
+      "userImpact": "Aucun ; suite backend impossible en un seul processus.",
+      "status": "a-analyser",
+      "statusSince": "2026-11-08",
+      "refs": {},
+      "nextAction": "Restaurer la limite après l'export, ou ne pas l'appliquer en environnement de test.",
+      "lastReviewed": "2026-11-08"
+    },
+    {
+      "id": "UX-ENCODING-403",
+      "title": "Page d'encodage : message compréhensible au lieu de « Request failed with status code 403 »",
+      "description": "Quand l'accès à l'encodage est refusé (MissionVoter), la page affiche l'erreur Axios brute. Relevé pendant la recette D-188 (D-188 ne mène plus vers cet écran pour une mission réaffectée).",
+      "kind": "fix",
+      "priority": "P3",
+      "userImpact": "Instrumentiste : message technique incompréhensible.",
+      "status": "a-analyser",
+      "statusSince": "2026-11-08",
+      "refs": {},
+      "nextAction": "Afficher un message métier (« Vous n'avez plus accès à l'encodage de cette mission ») pour 403 / 404.",
+      "lastReviewed": "2026-11-08"
+    },
+    {
+      "id": "UX-NOTIF-MOBILE",
+      "title": "Centre de notifications sur téléphone : badge long et pied de ligne",
+      "description": "Recette visuelle D-188 en 390 px (environnement isolé, données synthétiques) : aucun débordement ni chevauchement, mais un badge long (« Ne vous concerne plus ») réduit le titre à ~100 px (4 lignes) et la ligne date + action se replie quand l'action est longue (« Voir la mission concernée »). Mineur : ABSENCE_OCCURRENCE_CANCELLED côté instrumentiste n'a pas de lien (comportement antérieur), un lien vers son planning serait utile.",
+      "kind": "fix",
+      "priority": "P3",
+      "userImpact": "Lisibilité réduite sur téléphone, sans perte d'information.",
+      "status": "a-analyser",
+      "statusSince": "2026-11-08",
+      "refs": {
+        "decision": "D-188"
+      },
+      "nextAction": "En xs : badge sous le titre et pied de ligne sur une colonne ; lien /app/i/planning pour les créneaux impactés.",
+      "lastReviewed": "2026-11-08"
     }
   ]
 }
