@@ -245,7 +245,7 @@ class SurgeonMissionRequestService
 
         $mission = $request->getCreatedMission();
         if ($dispatchMode !== null && $mission !== null) {
-            $this->dispatchService->dispatch($mission, $manager, $dispatchMode, $instrumentistId);
+            $this->dispatchService->dispatch($mission, $manager, $dispatchMode, $instrumentistId, $request->getId());
         }
 
         $this->bus->dispatch(new SurgeonMissionRequestDecidedMessage(

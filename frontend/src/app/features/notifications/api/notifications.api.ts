@@ -1,9 +1,43 @@
 import { apiClient } from "../../../api/apiClient";
 
+/** Centre de notifications — famille d'icône, choisie par le serveur. */
+export type NotificationCategory =
+  | "mission" | "offer" | "absence" | "planning" | "alert" | "encoding" | "catalogue" | "request" | "room" | "info";
+
+/**
+ * État métier, indépendant de la lecture (`seenAt`) : lu sur la ressource actuelle par le
+ * serveur (NotificationPresenter). Lire une notification ne la « traite » jamais.
+ */
+export type NotificationBusinessState = "INFO" | "ACTION_REQUIRED" | "DONE";
+
+/** Une mission concernée par une notification (impact d'absence), telle que décrite par le serveur. */
+export type NotificationMission = {
+  missionId: number;
+  dateLabel: string | null;
+  timeLabel: string | null;
+  siteName: string | null;
+  surgeonName: string | null;
+  impactLabel: string | null;
+  statusLabel: string;
+  covered: boolean;
+  targetUrl: string;
+};
+
 export type NotificationItem = {
   id: number;
   eventType: string;
   missionId: number | null;
+  /** Titre et phrase rédigés côté serveur — jamais reconstruits ici à partir du payload. */
+  title: string;
+  body: string;
+  category: NotificationCategory;
+  /** Libellé de l'action ouverte par le clic ; null quand la notification ne mène nulle part. */
+  actionLabel: string | null;
+  businessState: NotificationBusinessState;
+  stateLabel: string | null;
+  /** Ancienne notification dont le contexte n'a pas été conservé (affiché tel quel, sans invention). */
+  legacy: boolean;
+  missions: NotificationMission[] | null;
   /**
    * Point 4 (audit UX) — cible de navigation calculée côté serveur
    * (NotificationTargetResolver), jamais reconstruite côté frontend à partir de
@@ -16,13 +50,23 @@ export type NotificationItem = {
   seenAt: string | null;
 };
 
+export type NotificationFilter = "all" | "unread" | "action";
+
 export type NotificationsListResponse = {
   items: NotificationItem[];
+  /** Une page suivante existe (pagination serveur `offset`). */
+  hasMore: boolean;
   unreadCount: number;
+  actionRequiredCount: number;
 };
 
-export async function fetchNotifications(limit = 50): Promise<NotificationsListResponse> {
-  const { data } = await apiClient.get<NotificationsListResponse>("/api/notifications", { params: { limit } });
+export async function fetchNotifications(limit = 50, filter: NotificationFilter = "all", offset = 0): Promise<NotificationsListResponse> {
+  const { data } = await apiClient.get<NotificationsListResponse>("/api/notifications", { params: { limit, filter, offset } });
+  return data;
+}
+
+export async function fetchNotification(id: number): Promise<NotificationItem> {
+  const { data } = await apiClient.get<NotificationItem>(`/api/notifications/${id}`);
   return data;
 }
 

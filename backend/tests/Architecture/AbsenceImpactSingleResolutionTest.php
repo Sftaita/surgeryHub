@@ -56,6 +56,8 @@ final class AbsenceImpactSingleResolutionTest extends TestCase
             'src/Service/DefaultNotificationPreferenceResolver.php',
             'src/Service/NotificationTargetResolver.php',
             'src/Activity/Recorder/NotificationActivityRecorder.php',
+            // D-188 — read-only: words the in-app item already produced by the impact notifier.
+            'src/Notification/NotificationPresenter.php',
         ];
         $offenders = [];
         foreach ($this->sources() as $file => $code) {

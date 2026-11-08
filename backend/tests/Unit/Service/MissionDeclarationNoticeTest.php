@@ -43,7 +43,11 @@ final class MissionDeclarationNoticeTest extends TestCase
             self::assertSame(NotificationType::MISSION_DECLARED, $intent->type);
             self::assertSame($mission, $intent->mission);
             self::assertSame('declaration:MISSION_DECLARED:' . $mission->getId(), $intent->episodeRef);
-            self::assertSame(['missionId' => $mission->getId(), 'siteId' => $mission->getSite()->getId(), 'status' => 'DECLARED'], $intent->inAppPayload);
+            self::assertSame([
+                'missionId' => $mission->getId(), 'siteId' => $mission->getSite()->getId(), 'status' => 'DECLARED',
+                // D-188 — readable snapshot for the notification center (never an email as a name).
+                'missionDate' => null, 'startTime' => null, 'endTime' => null, 'siteName' => 'Delta', 'surgeonName' => null, 'declaredByName' => null,
+            ], $intent->inAppPayload);
             self::assertNull($intent->email, 'no email content: in-app (and push per preferences) only');
         }
     }

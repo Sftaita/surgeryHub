@@ -4,6 +4,7 @@ namespace App\MessageHandler;
 
 use App\Entity\Mission;
 use App\Entity\User;
+use App\Enum\MissionStatus;
 use App\Enum\NotificationEmailPolicy;
 use App\Enum\NotificationType;
 use App\Message\SurgeonMissionRequestDecidedMessage;
@@ -51,6 +52,9 @@ final class SurgeonMissionRequestDecidedMessageHandler
         try {
             $type = $message->accepted ? NotificationType::SURGEON_MISSION_REQUEST_ACCEPTED : NotificationType::SURGEON_MISSION_REQUEST_REJECTED;
             $date = (new \DateTimeImmutable($message->startAt))->format('d/m/Y');
+            // Centre de notifications — dit seulement si c'est vrai au moment de l'envoi.
+            $withoutInstrumentist = $message->accepted && $mission !== null
+                && $mission->getInstrumentist() === null && $mission->getStatus() !== MissionStatus::CANCELLED;
 
             $email = match (true) {
                 $message->accepted && $mission !== null => $this->notificationService->surgeonMissionRequestAcceptedEmail($mission, $surgeon),
@@ -69,13 +73,14 @@ final class SurgeonMissionRequestDecidedMessageHandler
                     'siteName'      => $message->siteName,
                     'startAt'       => $message->startAt,
                     'reviewComment' => $message->reviewComment,
-                ],
+                ] + ($message->accepted ? ['withoutInstrumentist' => $withoutInstrumentist] : []),
                 mission: $mission,
                 email: $email,
                 push: new PushContent(
                     $message->accepted ? 'Demande de mission acceptée' : 'Demande de mission refusée',
                     $message->accepted
                         ? sprintf('Votre demande de mission du %s à %s a été acceptée.', $date, $message->siteName)
+                            . ($withoutInstrumentist ? ' Elle est encore sans instrumentiste.' : '')
                         : sprintf('Votre demande de mission du %s à %s n\'a pas été retenue.', $date, $message->siteName),
                     [
                         'requestId' => $message->requestId,

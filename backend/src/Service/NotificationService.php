@@ -69,7 +69,16 @@ class NotificationService
         $this->dispatcher->dispatch(new NotificationIntent(
             recipient: $user,
             type: $type,
-            inAppPayload: ['missionId' => $mission->getId(), 'siteId' => $mission->getSite()?->getId(), 'status' => $mission->getStatus()->value],
+            inAppPayload: [
+                'missionId' => $mission->getId(), 'siteId' => $mission->getSite()?->getId(), 'status' => $mission->getStatus()->value,
+                // Centre de notifications — instantané lisible (jamais de patient ni de montant).
+                'missionDate'    => $mission->getStartAt()?->format('Y-m-d'),
+                'startTime'      => $mission->getStartAt()?->format('H:i'),
+                'endTime'        => $mission->getEndAt()?->format('H:i'),
+                'siteName'       => $mission->getSite()?->getName(),
+                'surgeonName'    => self::personName($mission->getSurgeon()),
+                'declaredByName' => self::personName($mission->getCreatedBy() ?? $mission->getInstrumentist()),
+            ],
             mission: $mission,
             episodeRef: sprintf('declaration:%s:%d', $type->value, (int) $mission->getId()),
         ));
@@ -458,6 +467,14 @@ class NotificationService
             'message'  => $message,
             'notificationPreferencesUrl' => $this->notificationPreferencesUrl($user),
         ]);
+    }
+
+    /** Centre de notifications — first + last name only, never an email address as a fallback. */
+    private static function personName(?User $user): ?string
+    {
+        $name = trim(($user?->getFirstname() ?? '') . ' ' . ($user?->getLastname() ?? ''));
+
+        return $name !== '' ? $name : null;
     }
 
     private static function timeLabel(Mission $mission): ?string

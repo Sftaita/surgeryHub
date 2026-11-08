@@ -191,7 +191,31 @@ final class MissionPublishedMessageHandlerTest extends TestCase
         $this->handler()->__invoke($this->message($mission->getId()));
 
         $i = $this->intents[0];
-        self::assertSame(['missionId', 'dayLabel', 'siteName'], array_keys($i->inAppPayload));
+        self::assertSame(['missionId', 'dayLabel', 'siteName', 'missionDate', 'startTime', 'endTime'], array_keys($i->inAppPayload));
         self::assertSame(['missionId', 'url'], array_keys($i->push->data));
+    }
+
+    // ── Centre de notifications — pas de doublon chirurgien ──────────────────
+
+    public function test_publication_from_accepting_his_own_request_solicits_the_pool_but_tells_the_surgeon_nothing_more(): void
+    {
+        $mission = $this->makeMission($this->makeSurgeon());
+        $this->em->method('find')->willReturn($mission);
+
+        $this->handler()->__invoke(new MissionPublishedMessage($mission->getId(), actorId: 1, occurredAt: new \DateTimeImmutable(), fromSurgeonRequestId: 42));
+
+        self::assertCount(1, $this->episodes, 'the instrumentist pool is still solicited');
+        self::assertSame([], $this->intents, 'the surgeon is told once, by SURGEON_MISSION_REQUEST_ACCEPTED');
+    }
+
+    public function test_surgeon_payload_carries_the_date_and_hours(): void
+    {
+        $mission = $this->makeMission($this->makeSurgeon());
+        $this->em->method('find')->willReturn($mission);
+
+        $this->handler()->__invoke($this->message($mission->getId()));
+
+        $payload = $this->intents[0]->inAppPayload;
+        self::assertSame(['2026-08-10', '08:00', '10:00'], [$payload['missionDate'], $payload['startTime'], $payload['endTime']]);
     }
 }

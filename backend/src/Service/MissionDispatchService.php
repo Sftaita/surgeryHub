@@ -58,10 +58,14 @@ class MissionDispatchService
         private readonly ?RoomTakeoverPriorityService $priorities = null,
     ) {}
 
-    public function dispatch(Mission $mission, User $actor, MissionDispatchMode $mode, ?int $instrumentistId = null): void
+    /**
+     * $fromSurgeonRequestId — the dispatch is part of accepting that surgeon's own mission
+     * request: he is told once, by the acceptance notice, never again by the publication.
+     */
+    public function dispatch(Mission $mission, User $actor, MissionDispatchMode $mode, ?int $instrumentistId = null, ?int $fromSurgeonRequestId = null): void
     {
         match ($mode) {
-            MissionDispatchMode::POOL     => $this->publishToPool($mission, $actor),
+            MissionDispatchMode::POOL     => $this->publishToPool($mission, $actor, $fromSurgeonRequestId),
             MissionDispatchMode::TARGETED => $this->offerTo($mission, $actor, $this->requireInstrumentist($instrumentistId)),
             MissionDispatchMode::DIRECT   => $this->postDeploy->assignDirectly($mission, $actor, $this->requireInstrumentist($instrumentistId)->getId()),
         };
@@ -93,7 +97,7 @@ class MissionDispatchService
         }
     }
 
-    public function publishToPool(Mission $mission, User $actor): void
+    public function publishToPool(Mission $mission, User $actor, ?int $fromSurgeonRequestId = null): void
     {
         $published = false;
         $this->em->wrapInTransaction(function () use ($mission, $actor, &$published): void {
@@ -129,6 +133,7 @@ class MissionDispatchService
             missionId: $mission->getId(),
             actorId: $actor->getId(),
             occurredAt: new \DateTimeImmutable(),
+            fromSurgeonRequestId: $fromSurgeonRequestId,
         ));
     }
 

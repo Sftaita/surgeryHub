@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent,
   DialogTitle, FormControlLabel, IconButton, InputAdornment, Paper, Stack, ToggleButton, ToggleButtonGroup,
@@ -22,6 +23,7 @@ import {
 } from "../../../features/planning-manager/components/PersonSearchSelect";
 import { AbsenceReminderDialog } from "../../../features/planning-manager/components/AbsenceReminderDialog";
 import { invalidateAfterAbsenceChange } from "../../../features/missions/dispatch/missionDispatch.api";
+import { NotificationMissionsPanel } from "../../../features/notifications/NotificationMissionsPanel";
 
 type AbsenceMode = "period" | "isolatedDays";
 type QuickFilter = "ALL" | PersonRole;
@@ -249,6 +251,26 @@ export default function AbsencesPage() {
 
   const absences = absencesQuery.data ?? [];
 
+  // Centre de notifications — ouverte depuis une notification d'absence :
+  // ?absenceId= met l'absence en évidence, ?notification= affiche ses missions impactées.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusAbsenceId = Number(searchParams.get("absenceId")) || null;
+  const focusNotificationId = Number(searchParams.get("notification")) || null;
+  const focusFound = focusAbsenceId !== null && absences.some((a) => a.id === focusAbsenceId);
+  React.useEffect(() => {
+    // Absence déjà passée : elle n'est que dans l'historique.
+    if (focusAbsenceId !== null && absencesQuery.isSuccess && !focusFound && !showHistory) setShowHistory(true);
+  }, [focusAbsenceId, focusFound, absencesQuery.isSuccess, showHistory]);
+  const focusRowRef = React.useCallback((row: HTMLTableRowElement | null) => {
+    row?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  }, []);
+  const clearFocus = () => setSearchParams((prev) => {
+    const next = new URLSearchParams(prev);
+    next.delete("absenceId");
+    next.delete("notification");
+    return next;
+  }, { replace: true });
+
   const visibleAbsences = React.useMemo(() => {
     const q = search.trim().toLowerCase();
     return absences
@@ -290,6 +312,15 @@ export default function AbsencesPage() {
           </Button>
         </Stack>
       </Stack>
+
+      {focusNotificationId !== null && (
+        <NotificationMissionsPanel notificationId={focusNotificationId} onClose={clearFocus} />
+      )}
+      {focusAbsenceId !== null && absencesQuery.isSuccess && showHistory && !focusFound && (
+        <Typography variant="body2" color="text.secondary">
+          L'absence concernée n'apparaît plus dans la liste : elle a été supprimée depuis la notification.
+        </Typography>
+      )}
 
       {/* Filters */}
       <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap alignItems="center">
@@ -361,7 +392,17 @@ export default function AbsencesPage() {
                     (new Date(abs.dateEnd).getTime() - new Date(abs.dateStart).getTime()) / 86400000 + 1
                   );
                   return (
-                    <TableRow key={abs.id} hover sx={{ opacity: abs.id < 0 ? 0.6 : 1 }}>
+                    <TableRow
+                      key={abs.id}
+                      hover
+                      ref={abs.id === focusAbsenceId ? focusRowRef : undefined}
+                      selected={abs.id === focusAbsenceId}
+                      aria-current={abs.id === focusAbsenceId ? "true" : undefined}
+                      sx={{
+                        opacity: abs.id < 0 ? 0.6 : 1,
+                        ...(abs.id === focusAbsenceId && { boxShadow: (t) => `inset 3px 0 0 ${t.palette.primary.main}` }),
+                      }}
+                    >
                       <TableCell>
                         <Stack direction="row" spacing={1.25} alignItems="center">
                           <PersonAvatar name={personDisplayName(abs.user)} size="sm" />
