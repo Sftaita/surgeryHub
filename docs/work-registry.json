@@ -1286,13 +1286,36 @@
       "kind": "fix",
       "priority": "P3",
       "userImpact": "Lisibilité réduite sur téléphone, sans perte d'information.",
-      "status": "teste",
+      "status": "deploye",
       "statusSince": "2026-11-10",
       "refs": {
-        "decision": "D-188"
+        "branches": [
+          "fix/notif-mobile"
+        ],
+        "decision": "D-188",
+        "worktrees": [
+          "SurgicalHub-notification-center"
+        ],
+        "prs": [
+          89
+        ],
+        "commits": [
+          "b4bff9bebb6f8f8f47697ee7445a90cc077b0546",
+          "f8c7f3390b2d2f7163123161fc16fa719a5baebf"
+        ]
       },
-      "nextAction": "Branche fix/notif-mobile : badge sous le titre et pied de ligne en colonne en xs ; ABSENCE_OCCURRENCE_CANCELLED → /app/i/planning?view=week&date=… (instrumentiste). À relire, fusionner et déployer.",
-      "lastReviewed": "2026-11-10"
+      "nextAction": "Officialisé v2026.11.10-prod (f8c7f33). Recette visuelle utilisateur en production attendue (téléphone). Rollback : deploy/deploy.sh rollback 03a55d2a086dc4d26c891703fa4cde0c533aa706.",
+      "lastReviewed": "2026-11-10",
+      "validationNeeded": "Recette visuelle validée en environnement isolé (390 px, données synthétiques) ; recette visuelle en production avec une session réelle attendue de l'utilisateur.",
+      "prodEvidence": "v2026.11.10-prod (f8c7f33) : 0 migration (99/99) ; activate 2026-11-10 06:04 UTC ; mark OFFICIAL ; compat f8c7f33 et 03a55d2 compatibles ; 0 5xx ; voir docs/production.md.",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : centre de notifications sur téléphone avec une session réelle (badge sous le titre, lien « Voir mon planning »)."
+        }
+      ]
     }
   ]
 }
