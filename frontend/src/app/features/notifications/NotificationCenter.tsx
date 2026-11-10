@@ -177,21 +177,30 @@ function NotificationRow({ n, divider, onOpen }: { n: NotificationItem; divider:
         </Box>
 
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
-            <Typography variant="body2" fontWeight={isUnread ? 700 : 500} sx={{ minWidth: 0 }}>
+          {/* Sur téléphone, le badge passe sous le titre : un badge long ne comprime plus le titre. */}
+          <Box
+            sx={{
+              display: "grid",
+              alignItems: "center",
+              columnGap: 0.75,
+              gridTemplateColumns: { xs: "minmax(0, 1fr) auto", sm: "minmax(0, 1fr) auto auto" },
+              gridTemplateAreas: { xs: '"title dot" "state ."', sm: '"title state dot"' },
+            }}
+          >
+            <Typography variant="body2" fontWeight={isUnread ? 700 : 500} sx={{ gridArea: "title", minWidth: 0, alignSelf: "start" }}>
               {n.title}
             </Typography>
-            <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
+            <Box sx={{ gridArea: "state", justifySelf: "start", alignSelf: "start", "&:not(:empty)": { mt: { xs: 0.5, sm: 0 } } }}>
               <BusinessStateChip n={n} />
-              {isUnread && (
-                <Box
-                  component="span"
-                  aria-label="Non lue"
-                  sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.main", display: "inline-block" }}
-                />
-              )}
-            </Stack>
-          </Stack>
+            </Box>
+            {isUnread && (
+              <Box
+                component="span"
+                aria-label="Non lue"
+                sx={{ gridArea: "dot", alignSelf: "start", mt: 0.75, width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.main", display: "inline-block" }}
+              />
+            )}
+          </Box>
 
           {n.body && (
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, fontSize: 13.5, fontStyle: n.legacy ? "italic" : undefined }}>
@@ -199,7 +208,13 @@ function NotificationRow({ n, divider, onOpen }: { n: NotificationItem; divider:
             </Typography>
           )}
 
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5 }}>
+          {/* Sur téléphone, date et action sur une colonne : une action longue ne replie plus la ligne. */}
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={{ xs: 0.25, sm: 1 }}
+            alignItems={{ xs: "flex-start", sm: "center" }}
+            sx={{ mt: 0.5 }}
+          >
             <Tooltip title={n.sentAt ? dayjs(n.sentAt).format("dddd D MMMM YYYY [à] HH:mm") : ""}>
               <Typography variant="caption" color="text.disabled">
                 {n.sentAt ? dayjs(n.sentAt).fromNow() : ""}
@@ -211,7 +226,10 @@ function NotificationRow({ n, divider, onOpen }: { n: NotificationItem; divider:
                 color={toDo ? "primary.main" : "text.secondary"}
                 sx={{ display: "inline-flex", alignItems: "center", fontWeight: toDo ? 600 : 500 }}
               >
-                · {n.actionLabel}
+                <Box component="span" aria-hidden sx={{ display: { xs: "none", sm: "inline" }, mr: 0.5 }}>
+                  ·
+                </Box>
+                {n.actionLabel}
                 <ChevronRightIcon sx={{ fontSize: 15 }} />
               </Typography>
             )}

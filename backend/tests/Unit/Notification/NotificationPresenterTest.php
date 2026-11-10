@@ -258,6 +258,22 @@ final class NotificationPresenterTest extends TestCase
         self::assertNull($view['stateLabel']);
     }
 
+    public function test_surgeon_absence_on_a_post_opens_the_instrumentist_planning_on_that_day(): void
+    {
+        $instr = $this->user('ROLE_INSTRUMENTIST');
+        $payload = ['surgeonName' => 'Martin', 'date' => '2026-11-16', 'sentence' => 'Le Dr Martin sera absent le 16/11/2026.'];
+
+        $view = $this->present($this->event($instr, 'ABSENCE_OCCURRENCE_CANCELLED', $payload), $instr);
+        self::assertSame('/app/i/planning?view=week&date=2026-11-16', $view['targetUrl']);
+        self::assertSame('Voir mon planning', $view['actionLabel']);
+
+        $noDate = $this->present($this->event($instr, 'ABSENCE_OCCURRENCE_CANCELLED', ['surgeonName' => 'Martin']), $instr);
+        self::assertSame('/app/i/planning', $noDate['targetUrl']);
+
+        $manager = $this->user('ROLE_MANAGER');
+        self::assertNull($this->present($this->event($manager, 'ABSENCE_OCCURRENCE_CANCELLED_MGR', $payload), $manager)['targetUrl']);
+    }
+
     // ── Demande chirurgien acceptée — « sans instrumentiste » seulement si vrai ─
 
     public function test_accepted_surgeon_request_mentions_no_instrumentist_only_when_true(): void

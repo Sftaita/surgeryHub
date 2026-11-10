@@ -295,7 +295,11 @@ final class NotificationPresenter
             'ABSENCE_OCCURRENCE_CANCELLED', 'ABSENCE_OCCURRENCE_CANCELLED_MGR' => [
                 'title' => self::str($p, 'surgeonName') ? 'Absence du Dr ' . self::str($p, 'surgeonName') : 'Absence du chirurgien — créneau impacté',
                 'body' => self::str($p, 'sentence') ?? self::sentence(['Le créneau', $at, "est impacté par l'absence du chirurgien"]),
-                'category' => 'absence',
+                'category' => 'absence', 'actionLabel' => 'Voir mon planning',
+                // L'instrumentiste du poste : son planning, sur le jour du créneau (même cible que le push).
+                'targetUrl' => $type === 'ABSENCE_OCCURRENCE_CANCELLED' && in_array('ROLE_INSTRUMENTIST', $recipient->getRoles(), true) && !self::isManager($recipient)
+                    ? '/app/i/planning' . (preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) ($p['date'] ?? '')) ? '?view=week&date=' . $p['date'] : '')
+                    : null,
             ],
             'ABSENCE_OCCURRENCE_UNCOVERED' => [
                 'title' => self::str($p, 'absentName') ? 'Absence de ' . self::str($p, 'absentName') : 'Absence de votre instrumentiste',
