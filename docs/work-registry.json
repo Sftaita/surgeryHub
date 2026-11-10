@@ -1286,13 +1286,13 @@
       "kind": "fix",
       "priority": "P3",
       "userImpact": "Lisibilité réduite sur téléphone, sans perte d'information.",
-      "status": "a-analyser",
-      "statusSince": "2026-11-08",
+      "status": "teste",
+      "statusSince": "2026-11-10",
       "refs": {
         "decision": "D-188"
       },
-      "nextAction": "En xs : badge sous le titre et pied de ligne sur une colonne ; lien /app/i/planning pour les créneaux impactés.",
-      "lastReviewed": "2026-11-08"
+      "nextAction": "Branche fix/notif-mobile : badge sous le titre et pied de ligne en colonne en xs ; ABSENCE_OCCURRENCE_CANCELLED → /app/i/planning?view=week&date=… (instrumentiste). À relire, fusionner et déployer.",
+      "lastReviewed": "2026-11-10"
     }
   ]
 }
