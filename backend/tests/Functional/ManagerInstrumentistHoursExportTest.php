@@ -203,6 +203,35 @@ final class ManagerInstrumentistHoursExportTest extends WebTestCase
         self::assertSame('225h00', $overview['totals']['validated']);
     }
 
+    public function test_overview_flags_a_partial_total_when_an_instrumentist_has_no_rate(): void
+    {
+        $client = $this->boot();
+        $site = $this->makeSite('Partiel');
+        $rated = $this->createUser('ROLE_INSTRUMENTIST', 'Alice', 'Tarifee');
+        $this->makeRate($rated, InstrumentistRateType::HOURLY_RATE, '40.00');
+        $unrated = $this->createUser('ROLE_INSTRUMENTIST', 'Bruno', 'Sanstarif');
+        $this->makeMission($site, $rated, MissionStatus::VALIDATED, '2026-09-03 08:00', '2026-09-03 12:00');
+        $this->makeMission($site, $unrated, MissionStatus::VALIDATED, '2026-09-04 08:00', '2026-09-04 10:00');
+        $this->makeMission($site, $unrated, MissionStatus::VALIDATED, '2026-09-05 08:00', '2026-09-05 10:00');
+        $this->em->clear();
+        $now = new \DateTimeImmutable('2026-11-10 10:00', new \DateTimeZone(self::TZ));
+
+        $partial = $this->exporter()->overviewData(2026, 9, $site->getId(), null, 'validatedMinutes', 'desc', $now);
+        self::assertSame('≈ 160,00 €', $partial['totals']['validatedAmount'], 'Seules les prestations tarifées sont valorisées');
+        self::assertTrue($partial['totals']['partial']);
+        self::assertSame('Total financier partiel : 1 instrumentiste sans tarif, 2 prestations non valorisées. Les montants ne couvrent que les prestations tarifées.', $partial['partialNotice']);
+        self::assertStringContainsString('total partiel : 1 instrumentiste sans tarif', $partial['kpis'][3]['hint']);
+
+        $complete = $this->exporter()->overviewData(2026, 9, $site->getId(), 'Tarifee', 'validatedMinutes', 'desc', $now);
+        self::assertFalse($complete['totals']['partial']);
+        self::assertNull($complete['partialNotice']);
+        self::assertStringNotContainsString('partiel', $complete['kpis'][3]['hint']);
+
+        $manager = $this->login($client, $this->createUser('ROLE_MANAGER'));
+        $response = $this->get($client, $manager, '/api/manager/instrumentist-hours/export?month=2026-09&siteId=' . $site->getId());
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+    }
+
     public function test_variations_are_signed_for_colouring(): void
     {
         $this->boot();

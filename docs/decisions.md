@@ -17184,6 +17184,13 @@ prestation par prestation, ainsi qu'une synthèse PDF de la page.
 7. Exports non audités : aucune nouvelle valeur d'`AuditEventType` (une nouvelle valeur d'enum
    casserait le journal d'activité après un rollback, D-187). Pas de limitation d'exports
    simultanés : un décompte mensuel compte quelques dizaines de lignes (60 lignes = 2 pages).
+8. **Total partiel signalé** (demande utilisateur du 2026-11-13, revue de la PR #91) : dans la
+   synthèse, dès qu'une instrumentiste a des prestations sans tarif (`unratedInstrumentistCount`
+   du serveur), les totaux financiers sont marqués « total partiel » et un encadré indique le
+   nombre d'instrumentistes et de prestations non valorisées. Aucun calcul modifié.
+9. **Noms de sites** : imprimés tels qu'enregistrés (`Hospital.name`), sans transformation. Les
+   suffixes vus en recette (« be61 », « 058b ») provenaient uniquement du jeu de données de test
+   (suffixe aléatoire d'unicité), pas de l'application.
 
 **Limites.** Comme D-179/D-180 : mois d'appartenance = `startAt` planifié ; montants recalculés à
 la volée au tarif personnel en vigueur (pas un montant facturé). Aucune migration.

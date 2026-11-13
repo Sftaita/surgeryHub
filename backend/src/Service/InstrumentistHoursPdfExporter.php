@@ -69,6 +69,13 @@ final class InstrumentistHoursPdfExporter
         $t = $o['totals'];
         $siteName = $this->siteName($o['sites'], $siteId);
         $previous = $o['reference']['previousMonth'];
+        // Total financier partiel : au moins un instrumentiste a des prestations sans tarif (non valorisées).
+        $unratedPeople = $t['unratedInstrumentistCount'];
+        $partial = $unratedPeople > 0 ? sprintf(
+            'Total financier partiel : %d instrumentiste%s sans tarif, %d prestation%s non valorisée%s. Les montants ne couvrent que les prestations tarifées.',
+            $unratedPeople, $unratedPeople > 1 ? 's' : '',
+            $t['unratedCount'], $t['unratedCount'] > 1 ? 's' : '', $t['unratedCount'] > 1 ? 's' : '',
+        ) : null;
 
         $rows = array_map(function (array $i): array {
             $e = $i['estimate'];
@@ -104,7 +111,7 @@ final class InstrumentistHoursPdfExporter
                 ['label' => 'En attente de validation', 'value' => $this->duration($t['pendingMinutes']), 'hint' => sprintf('%d prestation%s', $t['pendingCount'], $t['pendingCount'] > 1 ? 's soumises' : ' soumise'), 'tone' => $t['count'] > 0 ? 'warn' : ''],
                 ['label' => 'Coût estimé validé', 'value' => $t['validatedAmount'] !== null ? $this->approx($t['validatedAmount']) : '—',
                     'hint' => ($t['encodedAmount'] !== null ? 'encodé ' . $this->approx($t['encodedAmount']) : 'aucune prestation valorisée')
-                        . ($t['unratedInstrumentistCount'] > 0 ? sprintf(' · %d instrumentiste%s sans tarif', $t['unratedInstrumentistCount'], $t['unratedInstrumentistCount'] > 1 ? 's' : '') : ''),
+                        . ($unratedPeople > 0 ? sprintf(' · total partiel : %d instrumentiste%s sans tarif', $unratedPeople, $unratedPeople > 1 ? 's' : '') : ''),
                     'tone' => ''],
             ],
             'previousHeading' => $o['asOfDay'] === null ? 'vs ' . $this->monthShort($previous) : sprintf('vs 1–%d %s', $o['asOfDay'], $this->monthShort($previous)),
@@ -117,7 +124,9 @@ final class InstrumentistHoursPdfExporter
                 'pending' => $this->duration($t['pendingMinutes']),
                 'encodedAmount' => $t['encodedAmount'] !== null ? $this->approx($t['encodedAmount']) : '—',
                 'validatedAmount' => $t['validatedAmount'] !== null ? $this->approx($t['validatedAmount']) : '—',
+                'partial' => $partial !== null,
             ],
+            'partialNotice' => $partial,
             'raw' => $o,
         ];
     }

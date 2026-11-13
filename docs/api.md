@@ -9854,6 +9854,10 @@ Synthèse PDF (A4 paysage) de la page : mêmes paramètres, mêmes contrôles (`
 données que la liste ci-dessus (`InstrumentistHoursService::overview()` tel quel), **toutes** les
 lignes (`limit` non accepté), les 4 indicateurs et la ligne de total du serveur. Évolutions
 imprimées en vert ▲ (hausse), rouge ▼ (baisse), gris (0 %), « — » sans historique.
+Si `totals.unratedInstrumentistCount > 0` (au moins une instrumentiste a des prestations sans tarif),
+le total financier est déclaré **partiel** : mention « total partiel » sous les deux coûts de la
+ligne de total, dans l'indicateur « Coût estimé validé », et encadré « Total financier partiel :
+N instrumentiste(s) sans tarif, M prestation(s) non valorisée(s) » (`totals.unratedCount`).
 Réponse `200 application/pdf`, `Content-Disposition: attachment; filename="heures-instrumentistes-YYYY-MM.pdf"`,
 `Cache-Control: private, no-store`. Même autorisation (`InstrumentistHoursVoter::VIEW`).
 

@@ -41,6 +41,7 @@
   .flat { color: #566270; background: #EFF2F5; }
   .none { color: #566270; }
   .inactive { font-size: 7px; color: #3A4754; background: #F1F4F7; padding: 1px 4px; border-radius: 6px; }
+  .partial { margin-top: 10px; padding: 6px 9px; border: 1px solid #E8C98F; background: #FFF6E5; border-radius: 4px; font-size: 8px; color: #8A5A12; }
   .note { margin-top: 10px; font-size: 7px; color: #566270; line-height: 1.5; }
 </style>
 </head>
@@ -106,13 +107,15 @@
         <td>{{ totals.encoded }}</td>
         <td>{{ totals.validated }}</td>
         <td>{{ totals.pending }}</td>
-        <td>{{ totals.encodedAmount }}</td>
-        <td>{{ totals.validatedAmount }}</td>
+        <td>{{ totals.encodedAmount }}{% if totals.partial %}<div class="sub missing">total partiel</div>{% endif %}</td>
+        <td>{{ totals.validatedAmount }}{% if totals.partial %}<div class="sub missing">total partiel</div>{% endif %}</td>
         <td></td>
         <td></td>
       </tr>
     </tbody>
   </table>
+
+  {% if partialNotice %}<div class="partial"><b>{{ partialNotice }}</b></div>{% endif %}
 
   <p class="note">
     Heures encodées = en attente de validation + validées · heures validées = missions validées ou clôturées · durée = fin − début réellement encodés (jamais l'horaire planifié).
