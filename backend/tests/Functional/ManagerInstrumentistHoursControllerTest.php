@@ -157,7 +157,8 @@ final class ManagerInstrumentistHoursControllerTest extends WebTestCase
             [$detail['summary']['count'], $detail['summary']['encodedMinutes'], $detail['summary']['validatedMinutes'], $detail['summary']['pendingMinutes']]);
         self::assertSame([$ra['estimate']['encodedAmount'], $ra['estimate']['validatedAmount']], [$detail['estimate']['encodedAmount'], $detail['estimate']['validatedAmount']]);
         self::assertSame($ra['comparison'], $detail['comparison']);
-        self::assertSame(['id' => $a->getId(), 'firstname' => 'Élodie', 'lastname' => $a->getLastname(), 'active' => true], $detail['instrumentist']);
+        self::assertSame(['id' => $a->getId(), 'firstname' => 'Élodie', 'lastname' => $a->getLastname(), 'active' => true, 'profilePicturePath' => null], $detail['instrumentist']);
+        self::assertSame($detail['instrumentist'], $ra['instrumentist']);
 
         $mine = $this->json($this->get($client, $this->login($client, $a), '/api/me/hours?month=2026-10&siteId=' . $site->getId()));
         self::assertSame($mine['summary'], $detail['summary']);

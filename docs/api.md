@@ -9839,8 +9839,50 @@ jamais limité par `limit`, sans évolution globale. `sites` couvre le mois enti
 
 `404` si `{id}` n'est pas une instrumentiste. Réponse = relevé `GET /api/me/hours` de
 l'instrumentiste (estimation comprise : `sites`, `summary`, `estimate`, `items`, mêmes champs
-et mêmes valeurs) + `instrumentist` (`id`, `firstname`, `lastname`, `active`), `comparison`
-(identique à sa ligne de liste), `provisional`, `asOfDay`.
+et mêmes valeurs) + `instrumentist` (`id`, `firstname`, `lastname`, `active`,
+`profilePicturePath`), `comparison` (identique à sa ligne de liste), `provisional`, `asOfDay`.
 
 Aucune donnée patient, aucun texte libre, aucun e-mail, aucun tarif firme, aucune heure planifiée.
+
+**D-189 — `instrumentist.profilePicturePath`** (liste et tiroir) : chemin brut de la photo de
+profil existante (`ProfilePictureStorage`, ex. `/uploads/profile-pictures/user-41-….jpg`), `null`
+sans photo ; résolu par le client (`resolveApiAssetUrl`), jamais une URL construite par le serveur.
+
+### `GET /api/manager/instrumentist-hours/export?month=YYYY-MM[&siteId=][&q=][&sort=][&direction=]` (D-189)
+
+Synthèse PDF (A4 paysage) de la page : mêmes paramètres, mêmes contrôles (`422`) et mêmes
+données que la liste ci-dessus (`InstrumentistHoursService::overview()` tel quel), **toutes** les
+lignes (`limit` non accepté), les 4 indicateurs et la ligne de total du serveur. Évolutions
+imprimées en vert ▲ (hausse), rouge ▼ (baisse), gris (0 %), « — » sans historique.
+Si `totals.unratedInstrumentistCount > 0` (au moins une instrumentiste a des prestations sans tarif),
+le total financier est déclaré **partiel** : mention « total partiel » sous les deux coûts de la
+ligne de total, dans l'indicateur « Coût estimé validé », et encadré « Total financier partiel :
+N instrumentiste(s) sans tarif, M prestation(s) non valorisée(s) » (`totals.unratedCount`).
+Réponse `200 application/pdf`, `Content-Disposition: attachment; filename="heures-instrumentistes-YYYY-MM.pdf"`,
+`Cache-Control: private, no-store`. Même autorisation (`InstrumentistHoursVoter::VIEW`).
+
+### `GET /api/manager/instrumentists/{id}/hours/export?month=YYYY-MM[&siteId=]` (D-189)
+
+« Décompte de prestations et d'honoraires » (A4 portrait) d'une instrumentiste indépendante.
+`404` si `{id}` n'est pas une instrumentiste, `422` comme le tiroir. Contenu = prestations
+**validées** du tiroir (`MyHoursService::statement()`), **une ligne par prestation**, ordre
+chronologique (date, début, mission) : date, site, chirurgien, type (bloc / consultation),
+début et fin réels (« — » pour une durée déclarée seule ou une part de présence commune D-156),
+durée validée, tarif (horaire ou forfait) et montant de la prestation
+(`FinancialCalculationService::evaluate()`). Les prestations en attente ne sont pas reprises
+(seulement comptées). Récapitulatif : nombre de prestations validées, total des heures validées,
+montant total = Σ des montants imprimés au centime (= `estimate.validatedAmount` du tiroir et
+de la ligne de liste ; incohérence → erreur, jamais un PDF faux).
+
+En-tête : SurgicalHub, période, numéro, date d'émission, nom, photo de profil si elle existe
+(sinon initiales), dénomination, n° d'entreprise / TVA, e-mail et téléphone **seulement s'ils
+sont renseignés** sur le compte. Ni émetteur, ni régime de TVA, ni statut de paiement : aucune
+de ces informations n'est configurée — rien n'est inventé. Statut imprimé : « non émis » (le
+document n'est pas un `InstrumentistStatement` du module Décomptes et n'en modifie aucun).
+
+Référence du relevé (imprimée sous ce libellé, jamais « numéro de décompte ») : `DPH-YYYYMM-<id instrumentiste sur 4 chiffres>[-S<siteId>]-<empreinte>` où l'empreinte
+= 6 premiers caractères hexadécimaux du SHA-256 des prestations imprimées (mission, minutes,
+montant). Recalculée, jamais stockée : même contenu → même référence ; contenu modifié → autre référence.
+Le document reste un relevé informatif, distinct du module comptable « Décomptes ».
+Nom de fichier : `decompte-YYYY-MM-<nom-prenom>.pdf`. Aucune donnée patient ni texte libre.
 

@@ -1,10 +1,15 @@
+import * as React from "react";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
+import ArrowDownwardRoundedIcon from "@mui/icons-material/ArrowDownwardRounded";
+import ArrowUpwardRoundedIcon from "@mui/icons-material/ArrowUpwardRounded";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import NorthEastIcon from "@mui/icons-material/NorthEast";
 import SouthEastIcon from "@mui/icons-material/SouthEast";
 import { monthLabel } from "../../hours-shared/format";
-import { deltaAria, pctLabel } from "../format";
+import { resolveApiAssetUrl } from "../../../api/apiAssetUrl";
+import type { InstrumentistRef } from "../api/instrumentistHours.types";
+import { deltaAria, initials, pctLabel } from "../format";
 
 // D-180 — petits éléments communs à la carte, à la page et au tiroir (maquettes 1a–3b).
 export const HOURS_COLOR = {
@@ -30,31 +35,61 @@ export const HOURS_COLOR = {
   amber800: "#8A5A12",
   slate50: "#EFF4FB",
   slate700: "#3B6296",
+  red50: "#FDEEEE",
+  red700: "#C62F36",
 } as const;
 
 /**
- * Évolution neutre : flèche + valeur signée, sans couleur de jugement (plus d'heures n'est ni
- * bien ni mal). « — » quand le serveur la déclare indisponible, raison en infobulle.
+ * Évolution : flèche + valeur signée. « — » quand le serveur la déclare indisponible, raison en
+ * infobulle. `tone="neutral"` (carte Top 5, D-180) : sans couleur de jugement. `tone="signed"`
+ * (page et tiroir, D-189) : pastille verte ↑ en hausse, rouge ↓ en baisse, grise à 0 % ; jamais de
+ * couleur sans historique.
  */
-export function Delta({ pct, reference, reason, size = 13 }: { pct: number | null; reference: string; reason: string | null; size?: number }) {
+export function Delta({ pct, reference, reason, size = 13, tone = "neutral" }: { pct: number | null; reference: string; reason: string | null; size?: number; tone?: "neutral" | "signed" }) {
   const label = deltaAria(pct, reference, reason);
+  const signed = tone === "signed" && pct !== null;
+  const palette = !signed ? null
+    : pct > 0 ? { fg: HOURS_COLOR.green800, bg: HOURS_COLOR.green100 }
+    : pct < 0 ? { fg: HOURS_COLOR.red700, bg: HOURS_COLOR.red50 }
+    : { fg: HOURS_COLOR.gray600, bg: HOURS_COLOR.gray75 };
+  const UpIcon = signed ? ArrowUpwardRoundedIcon : NorthEastIcon;
+  const DownIcon = signed ? ArrowDownwardRoundedIcon : SouthEastIcon;
   const content = (
     <Box
       component="span"
       aria-label={label}
       role="img"
+      data-tone={!signed ? "none" : pct > 0 ? "up" : pct < 0 ? "down" : "flat"}
       sx={{
         display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: "3px", whiteSpace: "nowrap",
-        fontSize: size, fontWeight: pct === null ? 600 : 700, color: pct === null ? HOURS_COLOR.gray600 : HOURS_COLOR.gray800,
+        fontSize: size, fontWeight: pct === null ? 600 : 700, color: palette?.fg ?? (pct === null ? HOURS_COLOR.gray600 : HOURS_COLOR.gray800),
         fontVariantNumeric: "tabular-nums",
+        ...(palette ? { bgcolor: palette.bg, borderRadius: "999px", px: "6px", py: "2px", gap: "2px", lineHeight: 1.3 } : {}),
       }}
     >
-      {pct !== null && pct > 0 && <NorthEastIcon aria-hidden sx={{ fontSize: size, color: HOURS_COLOR.gray600 }} />}
-      {pct !== null && pct < 0 && <SouthEastIcon aria-hidden sx={{ fontSize: size, color: HOURS_COLOR.gray600 }} />}
+      {pct !== null && pct > 0 && <UpIcon aria-hidden sx={{ fontSize: size, color: palette?.fg ?? HOURS_COLOR.gray600 }} />}
+      {pct !== null && pct < 0 && <DownIcon aria-hidden sx={{ fontSize: size, color: palette?.fg ?? HOURS_COLOR.gray600 }} />}
       {pctLabel(pct)}
     </Box>
   );
   return pct === null && reason ? <Tooltip title={reason}>{content}</Tooltip> : content;
+}
+
+/** D-189 — photo de profil existante, sinon initiales dans le cercle vert clair (même taille). */
+export function HoursAvatar({ person, size = 32 }: { person: InstrumentistRef; size?: number }) {
+  const [broken, setBroken] = React.useState(false);
+  const src = broken ? undefined : resolveApiAssetUrl(person.profilePicturePath);
+  if (src) {
+    return (
+      <Box component="img" src={src} alt="" aria-hidden onError={() => setBroken(true)} data-testid="hours-avatar-photo"
+        sx={{ width: size, height: size, borderRadius: "999px", objectFit: "cover", flex: "none", display: "block" }} />
+    );
+  }
+  return (
+    <Box aria-hidden data-testid="hours-avatar-initials" sx={{ width: size, height: size, borderRadius: "999px", bgcolor: HOURS_COLOR.green100, color: HOURS_COLOR.green900, display: "flex", alignItems: "center", justifyContent: "center", fontSize: Math.round(size * 0.375), fontWeight: 700, flex: "none" }}>
+      {initials(person)}
+    </Box>
+  );
 }
 
 /** ‹ Mois AAAA › — mois courant par défaut, jamais de mois futur. */

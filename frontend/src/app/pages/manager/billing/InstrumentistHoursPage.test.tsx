@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useMediaQuery } from "@mui/material";
 import InstrumentistHoursPage from "./InstrumentistHoursPage";
-import { fetchInstrumentistHours, fetchInstrumentistHoursDetail } from "../../../features/instrumentist-hours/api/instrumentistHours.api";
+import {
+  exportInstrumentistHoursPdf, exportInstrumentistStatementPdf, fetchInstrumentistHours, fetchInstrumentistHoursDetail,
+} from "../../../features/instrumentist-hours/api/instrumentistHours.api";
 import { detailFixture, listFixture } from "../../../features/instrumentist-hours/testFixtures";
 import type { InstrumentistHoursList, InstrumentistHoursQuery } from "../../../features/instrumentist-hours/api/instrumentistHours.types";
 import { shiftMonth } from "../../../features/hours-shared/format";
@@ -28,6 +30,8 @@ function deferred<T>() {
 vi.mock("../../../features/instrumentist-hours/api/instrumentistHours.api", () => ({
   fetchInstrumentistHours: vi.fn(),
   fetchInstrumentistHoursDetail: vi.fn(),
+  exportInstrumentistHoursPdf: vi.fn(),
+  exportInstrumentistStatementPdf: vi.fn(),
 }));
 vi.mock("../../../features/missions/drawer/ManagerMissionDrawer", () => ({
   ManagerMissionDrawer: ({ missionId }: { missionId: number | null }) => (missionId === null ? null : <div data-testid="mission-drawer">mission {missionId}</div>),
@@ -58,6 +62,10 @@ beforeEach(() => {
   (fetchInstrumentistHours as Mock).mockReset().mockImplementation((query: InstrumentistHoursQuery) => Promise.resolve(answer(query)));
   (fetchInstrumentistHoursDetail as Mock).mockReset().mockResolvedValue(detailFixture());
   (useMediaQuery as unknown as Mock).mockReturnValue(true);
+  (exportInstrumentistHoursPdf as Mock).mockReset().mockResolvedValue({ blob: new Blob(["%PDF-"]), filename: "heures-instrumentistes-2026-10.pdf" });
+  (exportInstrumentistStatementPdf as Mock).mockReset().mockResolvedValue({ blob: new Blob(["%PDF-"]), filename: "decompte-2026-10-dubois-claire.pdf" });
+  URL.createObjectURL = vi.fn(() => "blob:pdf");
+  URL.revokeObjectURL = vi.fn();
 });
 
 describe("D-180 — page Heures instrumentistes", () => {
@@ -214,5 +222,80 @@ describe("D-180 — page Heures instrumentistes", () => {
     expect(within(card).getByText("+8 %")).toBeInTheDocument();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.getByRole("combobox", { name: "Trier par" })).toBeInTheDocument();
+  });
+});
+
+describe("D-189 — variations colorées, photos et exports PDF", () => {
+  const rowOf = (name: string) => within(screen.getByRole("table")).getByText(name).closest("tr")!;
+  const tones = (tr: HTMLElement) => Array.from(tr.querySelectorAll("[data-tone]")).map((el) => [el.textContent?.replace(/\s/g, " "), el.getAttribute("data-tone")]);
+
+  it("colore les évolutions : hausse verte ↑, baisse rouge ↓, nulle grise, sans historique « — » sans couleur", async () => {
+    (fetchInstrumentistHours as Mock).mockImplementation((query: InstrumentistHoursQuery) => {
+      const base = answer(query);
+      base.items[2] = { ...base.items[2], comparison: { ...base.items[2].comparison, previousMonth: { ...base.items[2].comparison.previousMonth, pct: 0 } } };
+      return Promise.resolve(base);
+    });
+    renderPage();
+    await screen.findByText("Claire Dubois");
+
+    expect(tones(rowOf("Claire Dubois"))).toEqual([["+8 %", "up"], ["+6 %", "up"]]);
+    expect(tones(rowOf("Thomas Leroy"))).toEqual([["−9 %", "down"], ["−1 %", "down"]]);
+    expect(tones(rowOf("Nadia Benali"))).toEqual([["0 %", "flat"], ["+3 %", "up"]]);
+    expect(tones(rowOf("Elise Wouters"))).toEqual([["—", "none"], ["—", "none"]]);
+
+    const up = rowOf("Claire Dubois").querySelector("[data-tone=up]")!;
+    const down = rowOf("Thomas Leroy").querySelector("[data-tone=down]")!;
+    expect(up).toHaveStyle({ color: "#1F6B4F", backgroundColor: "#DDF4EA" });
+    expect(down).toHaveStyle({ color: "#C62F36", backgroundColor: "#FDEEEE" });
+    expect(up.querySelector("[data-testid=ArrowUpwardRoundedIcon]")).not.toBeNull();
+    expect(down.querySelector("[data-testid=ArrowDownwardRoundedIcon]")).not.toBeNull();
+  });
+
+  it("affiche la photo de profil existante, sinon (ou si elle ne charge pas) les initiales", async () => {
+    (fetchInstrumentistHours as Mock).mockImplementation((query: InstrumentistHoursQuery) => {
+      const base = answer(query);
+      base.items[0] = { ...base.items[0], instrumentist: { ...base.items[0].instrumentist, profilePicturePath: "/uploads/profile-pictures/user-11.jpg" } };
+      return Promise.resolve(base);
+    });
+    renderPage();
+    await screen.findByText("Claire Dubois");
+
+    const photo = within(rowOf("Claire Dubois")).getByTestId("hours-avatar-photo");
+    expect(photo.getAttribute("src")).toMatch(/\/uploads\/profile-pictures\/user-11\.jpg$/);
+    expect(within(rowOf("Thomas Leroy")).getByTestId("hours-avatar-initials")).toHaveTextContent("TL");
+
+    fireEvent.error(photo);
+    expect(within(rowOf("Claire Dubois")).getByTestId("hours-avatar-initials")).toHaveTextContent("CD");
+  });
+
+  it("exporte la synthèse PDF de la période et des filtres affichés", async () => {
+    renderPage("/app/m/billing/hours?month=2026-10&siteId=3&q=cl&sort=name:asc");
+    await screen.findByText("Claire Dubois");
+    await userEvent.click(screen.getByRole("button", { name: "Exporter PDF" }));
+    await waitFor(() => expect(exportInstrumentistHoursPdf).toHaveBeenCalledWith({ month: "2026-10", siteId: 3, q: "cl", sort: "name", direction: "asc" }));
+    expect(URL.createObjectURL).toHaveBeenCalled();
+  });
+
+  it("signale un export impossible sans rien télécharger", async () => {
+    (exportInstrumentistHoursPdf as Mock).mockRejectedValue(new Error("500"));
+    renderPage();
+    await screen.findByText("Claire Dubois");
+    await userEvent.click(screen.getByRole("button", { name: "Exporter PDF" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Export PDF impossible");
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("télécharge le décompte d'une ligne sans ouvrir le tiroir, et depuis le tiroir", async () => {
+    renderPage("/app/m/billing/hours?month=2026-10&siteId=3");
+    await screen.findByText("Claire Dubois");
+    await userEvent.click(screen.getByRole("button", { name: "Télécharger le décompte PDF de Claire Dubois" }));
+    await waitFor(() => expect(exportInstrumentistStatementPdf).toHaveBeenCalledWith(11, "2026-10", 3));
+    expect(screen.getByTestId("location").textContent).not.toContain("instrumentist=");
+
+    (fetchInstrumentistHoursDetail as Mock).mockResolvedValue({ ...detailFixture(), siteId: 3 });
+    await userEvent.click(rowOf("Nadia Benali"));
+    const drawerButton = await screen.findByRole("button", { name: "Télécharger le décompte PDF" });
+    await userEvent.click(drawerButton);
+    await waitFor(() => expect(exportInstrumentistStatementPdf).toHaveBeenLastCalledWith(41, "2026-10", 3));
   });
 });

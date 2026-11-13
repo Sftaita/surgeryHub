@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+{# D-189 — synthèse « Heures instrumentistes » : indicateurs et tableau de la page, A4 paysage. #}
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  @page { margin: 24px 28px 30px 28px; }
+  html { margin: 24px 28px 30px 28px; }
+  body { font-family: DejaVu Sans, sans-serif; font-size: 8.5px; color: #16202B; }
+  .header { display: table; width: 100%; padding-bottom: 10px; border-bottom: 2px solid #1F6B4F; margin-bottom: 10px; }
+  .header-left, .header-right { display: table-cell; vertical-align: top; }
+  .header-right { text-align: right; color: #566270; }
+  .logo { font-size: 15px; font-weight: bold; color: #1F6B4F; letter-spacing: 0.5px; }
+  .title { font-size: 12px; font-weight: bold; margin-top: 2px; }
+  .meta { margin-bottom: 10px; }
+  .meta span { margin-right: 16px; }
+  .meta b { color: #3A4754; }
+  .provisional { color: #8A5A12; font-weight: bold; }
+  table.kpis { width: 100%; border-collapse: separate; border-spacing: 0; margin-bottom: 12px; }
+  table.kpis td.gap { width: 8px; }
+  .kpi { width: 24%; border: 1px solid #DDE2E8; border-radius: 6px; padding: 8px 10px; vertical-align: top; }
+  .kpi-label { font-size: 7.5px; color: #566270; }
+  .kpi-value { font-size: 15px; font-weight: bold; margin-top: 2px; }
+  .kpi-value.warn { color: #8A5A12; }
+  .kpi-hint { font-size: 7px; color: #566270; margin-top: 2px; }
+  table.data { width: 100%; border-collapse: collapse; }
+  table.data thead { display: table-header-group; }
+  table.data thead th { background: #1F6B4F; color: #fff; padding: 5px 6px; font-size: 7.5px; font-weight: bold; text-align: right; }
+  table.data thead th.left { text-align: left; }
+  table.data td { padding: 5px 6px; border-bottom: 1px solid #E7EBEF; text-align: right; white-space: nowrap; }
+  table.data td.left { text-align: left; white-space: normal; }
+  table.data tr { page-break-inside: avoid; }
+  table.data tr.alt td { background: #F5F7FA; }
+  table.data tr.total td { font-weight: bold; background: #EFF2F5; border-top: 2px solid #1F6B4F; }
+  .sub { font-size: 7px; color: #566270; }
+  .missing { color: #8A5A12; font-weight: bold; }
+  .badge { padding: 1px 5px; border-radius: 8px; font-weight: bold; }
+  .up { color: #1F6B4F; background: #DDF4EA; }
+  .down { color: #C62F36; background: #FDEEEE; }
+  .flat { color: #566270; background: #EFF2F5; }
+  .none { color: #566270; }
+  .inactive { font-size: 7px; color: #3A4754; background: #F1F4F7; padding: 1px 4px; border-radius: 6px; }
+  .partial { margin-top: 10px; padding: 6px 9px; border: 1px solid #E8C98F; background: #FFF6E5; border-radius: 4px; font-size: 8px; color: #8A5A12; }
+  .note { margin-top: 10px; font-size: 7px; color: #566270; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">SurgicalHub</div>
+      <div class="title">Heures instrumentistes — synthèse {{ period }}</div>
+    </div>
+    <div class="header-right">Généré le {{ generatedAt }}</div>
+  </div>
+
+  <div class="meta">
+    <span><b>Période :</b> {{ period }}</span>
+    {% for f in filters %}<span><b>{{ f.label }} :</b> {{ f.value }}</span>{% endfor %}
+    {% if provisional %}<span class="provisional">{{ provisional }}</span>{% endif %}
+  </div>
+
+  <table class="kpis"><tr>
+    {% for k in kpis %}
+    {% if not loop.first %}<td class="gap"></td>{% endif %}
+    <td class="kpi">
+      <div class="kpi-label">{{ k.label }}</div>
+      <div class="kpi-value {{ k.tone }}">{{ k.value }}</div>
+      <div class="kpi-hint">{{ k.hint }}</div>
+    </td>
+    {% endfor %}
+  </tr></table>
+
+  <table class="data">
+    <thead>
+      <tr>
+        <th class="left">Instrumentiste</th>
+        <th>Prestations</th>
+        <th>Heures encodées</th>
+        <th>Heures validées</th>
+        <th>En attente</th>
+        <th>Coût est. encodé</th>
+        <th>Coût est. validé</th>
+        <th>{{ previousHeading }}</th>
+        <th>vs moy. 6 mois</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="{{ loop.index is even ? 'alt' : '' }}">
+        <td class="left"><b>{{ r.name }}</b>{% if r.inactive %} <span class="inactive">Inactive</span>{% endif %}</td>
+        <td>{{ r.count }}</td>
+        <td>{{ r.encoded }}</td>
+        <td><b>{{ r.validated }}</b></td>
+        <td>{{ r.pending }}</td>
+        <td class="{{ r.missingRate ? 'missing' : '' }}">{{ r.encodedAmount }}</td>
+        <td class="{{ r.missingRate ? 'missing' : '' }}"><b>{{ r.validatedAmount }}</b>{% if r.unratedNote %}<div class="sub missing">{{ r.unratedNote }}</div>{% endif %}</td>
+        <td>{% if r.previous.tone == 'none' %}<span class="none">—</span>{% else %}<span class="badge {{ r.previous.tone }}">{{ r.previous.text }}</span>{% endif %}</td>
+        <td>{% if r.average.tone == 'none' %}<span class="none">—</span>{% else %}<span class="badge {{ r.average.tone }}">{{ r.average.text }}</span>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="left" style="text-align:center;color:#566270;padding:14px 0;">Aucun instrumentiste pour ce périmètre.</td></tr>
+      {% endfor %}
+      <tr class="total">
+        <td class="left">{{ totals.label }}</td>
+        <td>{{ totals.count }}</td>
+        <td>{{ totals.encoded }}</td>
+        <td>{{ totals.validated }}</td>
+        <td>{{ totals.pending }}</td>
+        <td>{{ totals.encodedAmount }}{% if totals.partial %}<div class="sub missing">total partiel</div>{% endif %}</td>
+        <td>{{ totals.validatedAmount }}{% if totals.partial %}<div class="sub missing">total partiel</div>{% endif %}</td>
+        <td></td>
+        <td></td>
+      </tr>
+    </tbody>
+  </table>
+
+  {% if partialNotice %}<div class="partial"><b>{{ partialNotice }}</b></div>{% endif %}
+
+  <p class="note">
+    Heures encodées = en attente de validation + validées · heures validées = missions validées ou clôturées · durée = fin − début réellement encodés (jamais l'horaire planifié).
+    Coûts : estimation indicative au tarif personnel en vigueur à chaque prestation (horaire pour le bloc, forfait pour la consultation) — ni facture, ni paiement.
+    Évolutions des heures validées sur le même site ; moyenne personnelle des six mois précédents, limitée à l'historique observable (première prestation connue).
+  </p>
+</body>
+</html>

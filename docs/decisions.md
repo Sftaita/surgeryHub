@@ -17147,3 +17147,51 @@ mémoire à 512 Mo ; php-fpm a 5 processus, aucun conteneur n'a de limite mémoi
 
 **Hors périmètre.** Aucun workflow de mission modifié, aucune préférence modifiée, aucun envoi
 supplémentaire (e-mail / push). Les notifications historiques ne sont ni réécrites ni dédoublonnées.
+
+
+## D-189 — Heures instrumentistes : variations colorées, photos, synthèse PDF et décompte individuel (2026-11-10)
+
+**Contexte.** Demande utilisateur du 2026-11-10 : moderniser la page Facturation → Heures
+instrumentistes (D-180) sans toucher à la navigation ni aux autres pages, et produire un
+« décompte de prestations et d'honoraires » PDF pour une instrumentiste indépendante, détaillé
+prestation par prestation, ainsi qu'une synthèse PDF de la page.
+
+**Décision.**
+1. **Variations colorées sur la page et son tiroir** (demande explicite, revient sur la neutralité
+   de D-180 pour ces deux écrans) : hausse = pastille verte ↑, baisse = rouge ↓, 0 % = gris,
+   historique insuffisant = « — » sans couleur. `Delta` reçoit `tone="signed"` ; la carte Top 5 du
+   Dashboard garde `tone="neutral"` (autre page, inchangée). Pourcentages toujours ceux du serveur.
+2. **Photos** : `instrumentist.profilePicturePath` ajouté aux réponses D-180 (champ additif), photo
+   existante (`ProfilePictureStorage`) sinon initiales dans le cercle vert clair, même taille ;
+   aucun nouveau stockage. Le PDF embarque la photo en data URI, lue uniquement dans le dossier des
+   photos (chemin résolu par `realpath`, JPEG/PNG/GIF, ≤ 5 Mo) ; sinon initiales.
+3. **Deux exports PDF serveur** (`docs/api.md` § 51), `InstrumentistHoursVoter::VIEW`, dompdf via
+   `PdfService` : synthèse = `InstrumentistHoursService::overview()` ; décompte =
+   `MyHoursService::statement()` restreint aux prestations validées. **Aucun moteur parallèle** :
+   durées (`MissionExecutionService`), tarifs et montants (`FinancialCalculationService::evaluate()`)
+   sont ceux du tiroir ; total = `estimateOf()` des lignes imprimées, contrôlé au centime.
+4. **Pas un décompte du module Décomptes.** Le module existant (`InstrumentistStatementService`)
+   fige des lignes financières sélectionnées et porte un workflow GENERATED → SENT → PAID ; il
+   n'est ni utilisé ni modifié. Le PDF D-189 est un relevé calculé à la volée : statut « non émis »,
+   aucun « payé » / « à payer » (aucun statut financier fiable n'y est attaché). Validé par
+   l'utilisateur le 2026-11-10 : le document reste un relevé informatif de prestations.
+5. **Référence du relevé sans persistance** (libellé validé par l'utilisateur le 2026-11-10, à la place de « numéro de décompte ») : `DPH-YYYYMM-<id>[-S<site>]-<empreinte SHA-256 du contenu>` —
+   unique par contenu, sans migration ni nouvelle table. Limite : ce n'est pas une numérotation
+   comptable séquentielle ; deux exports au contenu identique portent la même référence.
+6. **Données absentes jamais inventées** : ni entité émettrice ni régime de TVA ne sont configurés
+   dans l'application → non imprimés ; coordonnées de l'instrumentiste (dénomination, n° d'entreprise
+   / TVA, e-mail, téléphone) imprimées seulement si renseignées.
+7. Exports non audités : aucune nouvelle valeur d'`AuditEventType` (une nouvelle valeur d'enum
+   casserait le journal d'activité après un rollback, D-187). Pas de limitation d'exports
+   simultanés : un décompte mensuel compte quelques dizaines de lignes (60 lignes = 2 pages).
+8. **Total partiel signalé** (demande utilisateur du 2026-11-13, revue de la PR #91) : dans la
+   synthèse, dès qu'une instrumentiste a des prestations sans tarif (`unratedInstrumentistCount`
+   du serveur), les totaux financiers sont marqués « total partiel » et un encadré indique le
+   nombre d'instrumentistes et de prestations non valorisées. Aucun calcul modifié.
+9. **Noms de sites** : imprimés tels qu'enregistrés (`Hospital.name`), sans transformation. Les
+   suffixes vus en recette (« be61 », « 058b ») provenaient uniquement du jeu de données de test
+   (suffixe aléatoire d'unicité), pas de l'application.
+
+**Limites.** Comme D-179/D-180 : mois d'appartenance = `startAt` planifié ; montants recalculés à
+la volée au tarif personnel en vigueur (pas un montant facturé). Aucune migration.
+

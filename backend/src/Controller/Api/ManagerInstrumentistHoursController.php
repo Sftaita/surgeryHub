@@ -4,6 +4,7 @@ namespace App\Controller\Api;
 
 use App\Repository\UserRepository;
 use App\Security\Voter\InstrumentistHoursVoter;
+use App\Service\InstrumentistHoursPdfExporter;
 use App\Service\InstrumentistHoursService;
 use App\Service\MyHoursService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -25,6 +26,7 @@ final class ManagerInstrumentistHoursController extends AbstractController
         private readonly InstrumentistHoursService $hours,
         private readonly MyHoursService $myHours,
         private readonly UserRepository $users,
+        private readonly InstrumentistHoursPdfExporter $pdfExporter,
     ) {
     }
 
@@ -34,33 +36,30 @@ final class ManagerInstrumentistHoursController extends AbstractController
         $this->denyAccessUnlessGranted(InstrumentistHoursVoter::VIEW);
 
         $now = new \DateTimeImmutable('now', new \DateTimeZone(self::TIMEZONE));
-        $month = $this->month($request, $now);
-        if ($month instanceof JsonResponse) {
-            return $month;
-        }
-        $siteId = $this->positiveInt($request, 'siteId');
-        if ($siteId instanceof JsonResponse) {
-            return $siteId;
-        }
-        $limit = $this->positiveInt($request, 'limit');
-        if ($limit instanceof JsonResponse) {
-            return $limit;
+        $args = $this->overviewArgs($request, $now, true);
+        if ($args instanceof JsonResponse) {
+            return $args;
         }
 
-        $sort = (string) $request->query->get('sort', 'validatedMinutes');
-        if (!in_array($sort, InstrumentistHoursService::SORTS, true)) {
-            return $this->invalid('Query parameter "sort" must be one of: ' . implode(', ', InstrumentistHoursService::SORTS));
-        }
-        $direction = (string) $request->query->get('direction', 'desc');
-        if (!in_array($direction, ['asc', 'desc'], true)) {
-            return $this->invalid('Query parameter "direction" must be "asc" or "desc"');
-        }
-        $q = $request->query->get('q');
-        if ($q !== null && (!is_string($q) || mb_strlen($q) > 100)) {
-            return $this->invalid('Query parameter "q" must be a string of at most 100 characters');
+        return $this->json($this->hours->overview(...$args));
+    }
+
+    /**
+     * D-189 — synthèse PDF de la page : mêmes paramètres et mêmes données que la liste, toutes
+     * les lignes (jamais de `limit`).
+     */
+    #[Route('/instrumentist-hours/export', name: 'api_manager_instrumentist_hours_export', methods: ['GET'])]
+    public function exportOverview(Request $request): Response
+    {
+        $this->denyAccessUnlessGranted(InstrumentistHoursVoter::VIEW);
+
+        $now = new \DateTimeImmutable('now', new \DateTimeZone(self::TIMEZONE));
+        $args = $this->overviewArgs($request, $now, false);
+        if ($args instanceof JsonResponse) {
+            return $args;
         }
 
-        return $this->json($this->hours->overview($month[0], $month[1], $siteId, $q, $sort, $direction, $limit, $now));
+        return $this->pdfResponse($this->pdfExporter->overview(...$args));
     }
 
     #[Route('/instrumentists/{id}/hours', name: 'api_manager_instrumentist_hours_detail', requirements: ['id' => '\d+'], methods: ['GET'])]
@@ -97,12 +96,87 @@ final class ManagerInstrumentistHoursController extends AbstractController
                 'firstname' => $instrumentist->getFirstname(),
                 'lastname' => $instrumentist->getLastname(),
                 'active' => $instrumentist->isActive(),
+                'profilePicturePath' => $instrumentist->getProfilePicturePath(),
             ],
             'sites' => $statement['sites'],
             'summary' => $statement['summary'],
             'estimate' => $statement['estimate'],
             'comparison' => $comparison['comparison'],
             'items' => $statement['items'],
+        ]);
+    }
+
+    /**
+     * D-189 — décompte de prestations et d'honoraires (PDF) : prestations VALIDÉES du tiroir,
+     * une ligne par prestation, dans l'ordre chronologique.
+     */
+    #[Route('/instrumentists/{id}/hours/export', name: 'api_manager_instrumentist_hours_statement_export', requirements: ['id' => '\d+'], methods: ['GET'])]
+    public function exportStatement(int $id, Request $request): Response
+    {
+        $this->denyAccessUnlessGranted(InstrumentistHoursVoter::VIEW);
+
+        $now = new \DateTimeImmutable('now', new \DateTimeZone(self::TIMEZONE));
+        $month = $this->month($request, $now);
+        if ($month instanceof JsonResponse) {
+            return $month;
+        }
+        $siteId = $this->positiveInt($request, 'siteId');
+        if ($siteId instanceof JsonResponse) {
+            return $siteId;
+        }
+        $instrumentist = $this->users->findInstrumentistById($id);
+        if ($instrumentist === null) {
+            return $this->json(['message' => 'Instrumentist not found'], Response::HTTP_NOT_FOUND);
+        }
+
+        return $this->pdfResponse($this->pdfExporter->statement($instrumentist, $month[0], $month[1], $siteId, $now));
+    }
+
+    /**
+     * Paramètres de la liste (et de sa synthèse PDF), dans l'ordre de InstrumentistHoursService::overview().
+     *
+     * @return list<mixed>|JsonResponse
+     */
+    private function overviewArgs(Request $request, \DateTimeImmutable $now, bool $withLimit): array|JsonResponse
+    {
+        $month = $this->month($request, $now);
+        if ($month instanceof JsonResponse) {
+            return $month;
+        }
+        $siteId = $this->positiveInt($request, 'siteId');
+        if ($siteId instanceof JsonResponse) {
+            return $siteId;
+        }
+        $limit = $withLimit ? $this->positiveInt($request, 'limit') : null;
+        if ($limit instanceof JsonResponse) {
+            return $limit;
+        }
+
+        $sort = (string) $request->query->get('sort', 'validatedMinutes');
+        if (!in_array($sort, InstrumentistHoursService::SORTS, true)) {
+            return $this->invalid('Query parameter "sort" must be one of: ' . implode(', ', InstrumentistHoursService::SORTS));
+        }
+        $direction = (string) $request->query->get('direction', 'desc');
+        if (!in_array($direction, ['asc', 'desc'], true)) {
+            return $this->invalid('Query parameter "direction" must be "asc" or "desc"');
+        }
+        $q = $request->query->get('q');
+        if ($q !== null && (!is_string($q) || mb_strlen($q) > 100)) {
+            return $this->invalid('Query parameter "q" must be a string of at most 100 characters');
+        }
+
+        return $withLimit
+            ? [$month[0], $month[1], $siteId, $q, $sort, $direction, $limit, $now]
+            : [$month[0], $month[1], $siteId, $q, $sort, $direction, $now];
+    }
+
+    /** @param array{pdf: string, filename: string} $export */
+    private function pdfResponse(array $export): Response
+    {
+        return new Response($export['pdf'], Response::HTTP_OK, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => sprintf('attachment; filename="%s"', $export['filename']),
+            'Cache-Control' => 'private, no-store',
         ]);
     }
 

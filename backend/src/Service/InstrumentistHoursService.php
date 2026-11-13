@@ -235,6 +235,8 @@ final class InstrumentistHoursService
                 'firstname' => $instrumentist->getFirstname(),
                 'lastname' => $instrumentist->getLastname(),
                 'active' => $instrumentist->isActive(),
+                // D-189 — chemin brut de la photo existante (ProfilePictureStorage), résolu par le front.
+                'profilePicturePath' => $instrumentist->getProfilePicturePath(),
             ],
             'count' => $summary['count'],
             'pendingCount' => $pendingCount,

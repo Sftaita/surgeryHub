@@ -8,10 +8,11 @@ import { dayOfMonth, dowShort, duration, euro, hourlyRate, monthLabel, monthName
 import { isFlatFee, isPresenceShare, StatusLabel, Track, TrackHeads } from "../hours-shared/HoursTrack";
 import type { MyHoursItem } from "../my-hours/api/myHours.types";
 import { ManagerMissionDrawer } from "../missions/drawer/ManagerMissionDrawer";
-import { fetchInstrumentistHoursDetail } from "./api/instrumentistHours.api";
+import { exportInstrumentistStatementPdf, fetchInstrumentistHoursDetail } from "./api/instrumentistHours.api";
 import type { InstrumentistHoursDetail } from "./api/instrumentistHours.types";
-import { approx, averagePeriodNote, averagePeriodRange, averageReason, fullName, initials, previousMonthReason } from "./format";
-import { Delta, HOURS_COLOR, ProvisionalChip } from "./components/HoursUi";
+import { approx, averagePeriodNote, averagePeriodRange, averageReason, fullName, previousMonthReason } from "./format";
+import { Delta, HOURS_COLOR, HoursAvatar, ProvisionalChip } from "./components/HoursUi";
+import { StatementPdfButton } from "./components/HoursPdf";
 
 interface Props {
   /** null = tiroir fermé. */
@@ -51,11 +52,7 @@ export function InstrumentistHoursDrawer({ instrumentistId, month, siteId, siteN
       >
         <Stack direction="row" alignItems="flex-start" gap={1.75} sx={{ px: wide ? 3 : 1, py: wide ? 2.5 : 1, borderBottom: `1px solid ${HOURS_COLOR.gray150}` }}>
           {!wide && <IconButton aria-label="Retour à la liste" onClick={onClose} sx={{ width: 44, height: 44 }}><ArrowBackIcon /></IconButton>}
-          {wide && data && (
-            <Box aria-hidden sx={{ width: 44, height: 44, borderRadius: 999, bgcolor: HOURS_COLOR.green100, color: HOURS_COLOR.green900, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 700, flex: "none" }}>
-              {initials(data.instrumentist)}
-            </Box>
-          )}
+          {wide && data && <HoursAvatar person={data.instrumentist} size={44} />}
           <Box sx={{ minWidth: 0, flex: 1, pt: wide ? 0 : 1 }}>
             <Typography id="hours-drawer-name" component="h2" noWrap sx={{ fontSize: wide ? 20 : 16, fontWeight: 800, color: HOURS_COLOR.gray900 }}>
               {data ? fullName(data.instrumentist) : "Détail des heures"}
@@ -102,6 +99,10 @@ function DetailBody({ data, onOpenMission, wide }: { data: InstrumentistHoursDet
         <Box><ProvisionalChip asOfDay={data.asOfDay} monthShortLabel={monthShort(data.month)} /></Box>
       )}
 
+      <Box>
+        <StatementPdfButton variant="button" name={fullName(data.instrumentist)} onExport={() => exportInstrumentistStatementPdf(data.instrumentist.id, data.month, data.siteId)} />
+      </Box>
+
       <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 1.5 }}>
         <Tile label="Encodées" value={duration(s.encodedMinutes)} hint={prestationCount(s.count)} />
         <Tile label="Validées" value={duration(s.validatedMinutes)} hint={`${s.validatedPct} % des encodées`} />
@@ -113,14 +114,14 @@ function DetailBody({ data, onOpenMission, wide }: { data: InstrumentistHoursDet
         <Comparison
           label={prevLabel}
           reference={prev.available ? `${duration(prev.validatedMinutes)} validées` : previousMonthReason(prev, previousMonth) ?? ""}
-          delta={<Delta pct={prev.pct} reference={prevLabel.replace(/^vs /, "")} reason={previousMonthReason(prev, previousMonth)} size={15} />}
+          delta={<Delta tone="signed" pct={prev.pct} reference={prevLabel.replace(/^vs /, "")} reason={previousMonthReason(prev, previousMonth)} size={15} />}
         />
         <Comparison
           label="vs moyenne personnelle"
           reference={avg.available
             ? `${duration(avg.validatedMinutes)} / mois${avgRange ? " · " + avgRange : ""}${avgNote ? " · " + avgNote : ""}`
             : averageReason(avg) ?? ""}
-          delta={<Delta pct={avg.pct} reference="la moyenne personnelle" reason={averageReason(avg)} size={15} />}
+          delta={<Delta tone="signed" pct={avg.pct} reference="la moyenne personnelle" reason={averageReason(avg)} size={15} />}
         />
       </Box>
       {avg.observableSince && (
