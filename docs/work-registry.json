@@ -1293,6 +1293,27 @@
       },
       "nextAction": "Branche fix/notif-mobile : badge sous le titre et pied de ligne en colonne en xs ; ABSENCE_OCCURRENCE_CANCELLED → /app/i/planning?view=week&date=… (instrumentiste). À relire, fusionner et déployer.",
       "lastReviewed": "2026-11-10"
+    },
+    {
+      "id": "D-189",
+      "title": "Heures instrumentistes : variations colorées, photos, synthèse PDF et décompte individuel",
+      "description": "Page Facturation › Heures instrumentistes (D-180) : indicateurs avec icônes, variations vert/rouge (page et tiroir ; Top 5 du Dashboard inchangé), photos de profil réelles (initiales sinon), bouton « Exporter PDF » (synthèse) et « Télécharger le décompte PDF » par instrumentiste (ligne du tableau et tiroir). Endpoints GET /api/manager/instrumentist-hours/export et GET /api/manager/instrumentists/{id}/hours/export (MANAGER / ADMIN). Décompte = une ligne par prestation validée, chronologique, total = Σ lignes = coût estimé validé. Aucune migration.",
+      "kind": "feature",
+      "priority": "P2",
+      "userImpact": "Le manager ne pouvait ni exporter la synthèse des heures ni remettre un décompte détaillé à une instrumentiste indépendante.",
+      "status": "teste",
+      "statusSince": "2026-11-10",
+      "refs": {
+        "branches": [
+          "feat/heures-instrumentistes-decompte"
+        ],
+        "decision": "D-189",
+        "worktrees": [
+          "SurgicalHub-heures-decompte"
+        ]
+      },
+      "nextAction": "Relecture utilisateur des PDF et de la page ; PR puis fusion et déploiement uniquement sur accord explicite.",
+      "lastReviewed": "2026-11-10"
     }
   ]
 }

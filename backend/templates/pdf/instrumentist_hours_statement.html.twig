@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+{# D-189 — décompte de prestations et d'honoraires (instrumentiste indépendant), A4 portrait. #}
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  @page { margin: 28px 32px 34px 32px; }
+  html { margin: 28px 32px 34px 32px; }
+  body { font-family: DejaVu Sans, sans-serif; font-size: 8.5px; color: #16202B; }
+  .header { display: table; width: 100%; padding-bottom: 12px; border-bottom: 2px solid #1F6B4F; margin-bottom: 14px; }
+  .header-left, .header-right { display: table-cell; vertical-align: top; }
+  .header-right { text-align: right; }
+  .logo { font-size: 17px; font-weight: bold; color: #1F6B4F; letter-spacing: 0.5px; }
+  .logo-sub { font-size: 8px; color: #566270; margin-top: 3px; }
+  .title { font-size: 12.5px; font-weight: bold; color: #16202B; letter-spacing: 0.3px; }
+  .meta-line { font-size: 8.5px; color: #3A4754; margin-top: 3px; }
+  .meta-line b { color: #16202B; }
+  .parties { display: table; width: 100%; margin-bottom: 14px; }
+  .party { display: table-cell; width: 50%; vertical-align: top; padding: 10px 12px; border: 1px solid #DDE2E8; border-radius: 6px; }
+  .party-gap { display: table-cell; width: 12px; }
+  .label { font-size: 7px; text-transform: uppercase; letter-spacing: 0.6px; color: #566270; margin-bottom: 4px; }
+  .who { display: table; }
+  .who-photo, .who-text { display: table-cell; vertical-align: middle; }
+  .who-photo { width: 52px; }
+  .photo { width: 42px; height: 42px; border-radius: 21px; }
+  .initials { width: 42px; height: 30px; padding-top: 12px; border-radius: 21px; background: #DDF4EA; color: #144D38; font-size: 13px; line-height: 1; font-weight: bold; text-align: center; }
+  .name { font-size: 11.5px; font-weight: bold; }
+  .info { font-size: 8px; color: #3A4754; margin-top: 2px; }
+  .period-value { font-size: 11.5px; font-weight: bold; }
+  .provisional { margin-top: 5px; font-size: 7.5px; color: #8A5A12; }
+  h2 { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: #1F6B4F; margin: 4px 0 6px; }
+  table.lines { width: 100%; border-collapse: collapse; }
+  table.lines thead { display: table-header-group; }
+  table.lines thead th { background: #1F6B4F; color: #fff; font-size: 7.5px; font-weight: bold; padding: 5px 5px; text-align: left; }
+  table.lines thead th.right { text-align: right; }
+  table.lines td { padding: 5px 5px; border-bottom: 1px solid #E7EBEF; vertical-align: top; }
+  table.lines tr { page-break-inside: avoid; }
+  table.lines tr.alt td { background: #F5F7FA; }
+  .right { text-align: right; } .nowrap { white-space: nowrap; }
+  .sub { font-size: 7px; color: #566270; }
+  .missing { color: #8A5A12; font-weight: bold; }
+  .empty { text-align: center; color: #566270; padding: 16px 0; }
+  .recap { margin-top: 14px; display: table; width: 100%; page-break-inside: avoid; }
+  .recap-left, .recap-right { display: table-cell; vertical-align: top; }
+  .recap-left { width: 55%; padding-right: 12px; }
+  .recap-table { width: 100%; border-collapse: collapse; }
+  .recap-table td { padding: 4px 0; border-bottom: 1px solid #E7EBEF; font-size: 8.5px; }
+  .total-box { background: #EFFAF5; border: 1px solid #DDF4EA; border-radius: 6px; padding: 12px 14px; text-align: right; }
+  .total-label { font-size: 7.5px; text-transform: uppercase; letter-spacing: 0.6px; color: #1F6B4F; }
+  .total-amount { font-size: 18px; font-weight: bold; color: #144D38; margin-top: 3px; }
+  .status { margin-top: 8px; padding: 7px 10px; border: 1px solid #DDE2E8; border-radius: 6px; font-size: 8px; }
+  .status b { color: #16202B; }
+  .notes { margin-top: 12px; font-size: 7px; color: #566270; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">SurgicalHub</div>
+      <div class="logo-sub">Relevé établi depuis les prestations validées</div>
+    </div>
+    <div class="header-right">
+      <div class="title">DÉCOMPTE DE PRESTATIONS ET D'HONORAIRES</div>
+      <div class="meta-line">Référence du relevé : <b>{{ number }}</b></div>
+      <div class="meta-line">Période : <b>{{ period }}</b>{% if siteName %} · Site : <b>{{ siteName }}</b>{% endif %}</div>
+      <div class="meta-line">Date d'émission : <b>{{ issuedAt }}</b></div>
+    </div>
+  </div>
+
+  <div class="parties">
+    <div class="party">
+      <div class="label">Prestataire indépendant</div>
+      <div class="who">
+        <div class="who-photo">
+          {% if instrumentist.photo %}<img class="photo" src="{{ instrumentist.photo }}" alt="">{% else %}<div class="initials">{{ instrumentist.initials }}</div>{% endif %}
+        </div>
+        <div class="who-text">
+          <div class="name">{{ instrumentist.name }}</div>
+          {% if instrumentist.companyName %}<div class="info">{{ instrumentist.companyName }}</div>{% endif %}
+          {% if instrumentist.vatNumber %}<div class="info">N° d'entreprise / TVA : {{ instrumentist.vatNumber }}</div>{% endif %}
+          {% if instrumentist.email %}<div class="info">{{ instrumentist.email }}</div>{% endif %}
+          {% if instrumentist.phone %}<div class="info">{{ instrumentist.phone }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="party-gap"></div>
+    <div class="party">
+      <div class="label">Période concernée</div>
+      <div class="period-value">{{ period }}</div>
+      <div class="info">{{ periodRange }}</div>
+      {% if siteName %}<div class="info">Site : {{ siteName }}</div>{% endif %}
+      {% if provisional %}<div class="provisional">{{ provisional }}</div>{% endif %}
+    </div>
+  </div>
+
+  <h2>Détail des prestations validées</h2>
+  <table class="lines">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Site</th>
+        <th>Chirurgien</th>
+        <th>Type</th>
+        <th class="right">Début</th>
+        <th class="right">Fin</th>
+        <th class="right">Durée validée</th>
+        <th class="right">Tarif</th>
+        <th class="right">Montant</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in lines %}
+      <tr class="{{ loop.index is even ? 'alt' : '' }}">
+        <td class="nowrap">{{ line.date }}</td>
+        <td>{{ line.site }}</td>
+        <td>{{ line.surgeon }}</td>
+        <td>{{ line.type }}{% if line.note %}<div class="sub">{{ line.note }}</div>{% endif %}</td>
+        <td class="right nowrap">{{ line.start }}</td>
+        <td class="right nowrap">{{ line.end }}</td>
+        <td class="right nowrap">{{ line.duration }}</td>
+        <td class="right nowrap{{ line.missingRate ? ' missing' : '' }}">{{ line.rate }}</td>
+        <td class="right nowrap"><b>{{ line.amount }}</b></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="empty">Aucune prestation validée sur cette période.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="recap">
+    <div class="recap-left">
+      <h2>Récapitulatif</h2>
+      <table class="recap-table">
+        <tr><td>Prestations validées</td><td class="right"><b>{{ summary.count }}</b></td></tr>
+        <tr><td>Total des heures validées</td><td class="right"><b>{{ summary.hours }}</b></td></tr>
+        {% if summary.unratedCount > 0 %}<tr><td class="missing">Prestations sans tarif (non valorisées)</td><td class="right missing">{{ summary.unratedCount }}</td></tr>{% endif %}
+        {% if summary.pendingCount > 0 %}<tr><td>Prestations en attente de validation (non reprises)</td><td class="right">{{ summary.pendingCount }}</td></tr>{% endif %}
+      </table>
+      <div class="status">
+        <b>Statut du décompte :</b> non émis — relevé établi le {{ issuedAt }} à partir des prestations validées.
+        Aucun statut de facturation ni de paiement n'y est associé.
+      </div>
+    </div>
+    <div class="recap-right">
+      <div class="total-box">
+        <div class="total-label">Montant total des honoraires</div>
+        <div class="total-amount">{{ summary.total }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    Une ligne par prestation validée, dans l'ordre chronologique. Durée = heures réellement encodées et validées
+    (jamais l'horaire planifié) ; « — » en début/fin quand seule une durée a été déclarée ou qu'il s'agit d'une part
+    de présence commune multi-salles. Tarif personnel en vigueur à la date de chaque prestation (horaire pour le bloc,
+    forfait pour la consultation) ; montant total = somme exacte des montants ligne à ligne.
+    Relevé informatif de prestations, distinct des décomptes du module comptable « Décomptes ». Document généré par SurgicalHub le {{ generatedAt }} — sans donnée patient.
+  </div>
+</body>
+</html>

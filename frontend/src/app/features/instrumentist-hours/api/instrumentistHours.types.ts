@@ -35,6 +35,8 @@ export interface InstrumentistRef {
   firstname: string | null;
   lastname: string | null;
   active: boolean;
+  /** D-189 — chemin brut de la photo de profil existante (resolveApiAssetUrl), null sans photo. */
+  profilePicturePath?: string | null;
 }
 
 export interface InstrumentistHoursRow {

@@ -5,16 +5,22 @@ import {
 } from "@mui/material";
 import ScheduleOutlinedIcon from "@mui/icons-material/ScheduleOutlined";
 import SearchIcon from "@mui/icons-material/Search";
+import EditCalendarOutlinedIcon from "@mui/icons-material/EditCalendarOutlined";
+import TaskAltOutlinedIcon from "@mui/icons-material/TaskAltOutlined";
+import HourglassEmptyOutlinedIcon from "@mui/icons-material/HourglassEmptyOutlined";
+import EuroOutlinedIcon from "@mui/icons-material/EuroOutlined";
+import type { SvgIconComponent } from "@mui/icons-material";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../../ui/PageHeader";
 import { currentMonth, duration, monthLabel, monthName, monthShort, prestationCount, shiftMonth } from "../../../features/hours-shared/format";
-import { fetchInstrumentistHours } from "../../../features/instrumentist-hours/api/instrumentistHours.api";
+import { exportInstrumentistHoursPdf, exportInstrumentistStatementPdf, fetchInstrumentistHours } from "../../../features/instrumentist-hours/api/instrumentistHours.api";
 import type { HoursSort, InstrumentistHoursList, InstrumentistHoursRow, SortDirection } from "../../../features/instrumentist-hours/api/instrumentistHours.types";
 import {
-  approx, averagePeriodNote, averageReason, encodedCost, fullName, initials, previousMonthHeading, previousMonthReason, unratedNote, validatedCost,
+  approx, averagePeriodNote, averageReason, encodedCost, fullName, previousMonthHeading, previousMonthReason, unratedNote, validatedCost,
 } from "../../../features/instrumentist-hours/format";
-import { Delta, HOURS_COLOR, HoursMonthNav, MissingRate } from "../../../features/instrumentist-hours/components/HoursUi";
+import { Delta, HOURS_COLOR, HoursAvatar, HoursMonthNav, MissingRate } from "../../../features/instrumentist-hours/components/HoursUi";
+import { ExportPdfButton, StatementPdfButton } from "../../../features/instrumentist-hours/components/HoursPdf";
 import { InstrumentistHoursDrawer } from "../../../features/instrumentist-hours/InstrumentistHoursDrawer";
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -33,7 +39,8 @@ const SORT_LABEL: Record<HoursSort, string> = {
  * D-180 — Facturation › Heures instrumentistes (maquettes 2a–2c). Le serveur calcule tout pour
  * le périmètre demandé (mois, site, recherche, tri) : indicateurs, lignes, total et évolutions.
  * Mois, site, recherche, tri et tiroir ouvert sont dans l'URL (lien partageable, Retour ferme
- * le tiroir).
+ * le tiroir). D-189 : variations colorées, photos de profil, synthèse PDF et décompte PDF par
+ * instrumentiste (générés par le serveur, mêmes données).
  */
 export default function InstrumentistHoursPage() {
   const wide = useMediaQuery("(min-width:900px)");
@@ -137,6 +144,9 @@ export default function InstrumentistHoursPage() {
               {data.totals.instrumentistCount} instrumentiste{data.totals.instrumentistCount > 1 ? "s" : ""} · {siteName ?? "tous les sites"}{q ? ` · « ${q} »` : ""}
             </Typography>
           )}
+          <Box sx={{ ml: data ? 0 : { md: "auto" } }}>
+            <ExportPdfButton disabled={!data} onExport={() => exportInstrumentistHoursPdf({ month, siteId, q: q || null, sort, direction })} />
+          </Box>
         </Paper>
 
         {data?.provisional && data.asOfDay !== null && (
@@ -163,7 +173,7 @@ export default function InstrumentistHoursPage() {
         ) : (
           <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }} aria-busy={query.isFetching}>
             <Kpis data={data} wide={wide} />
-            <Content data={data} wide={wide} month={month} siteName={siteName} q={q} isCurrentMonth={isCurrentMonth}
+            <Content data={data} wide={wide} month={month} siteId={siteId} siteName={siteName} q={q} isCurrentMonth={isCurrentMonth}
               sort={sort} direction={direction} onSort={toggleSort} onOpen={(id) => update({ instrumentist: String(id) }, true)}
               onReset={() => { setSearch(""); update({ siteId: null, q: null }); }} onCurrentMonth={() => changeMonth(thisMonth)} />
           </Box>
@@ -185,10 +195,10 @@ function Kpis({ data, wide }: { data: InstrumentistHoursList; wide: boolean }) {
   const empty = t.count === 0;
   return (
     <Box sx={{ display: "grid", gridTemplateColumns: wide ? "repeat(4, minmax(0, 1fr))" : "repeat(2, minmax(0, 1fr))", gap: wide ? 2 : 1.25 }}>
-      <Kpi label="Heures encodées" value={duration(t.encodedMinutes)} hint={`${prestationCount(t.count)} · en attente + validées`} ghost={empty} />
-      <Kpi label="Heures validées" value={duration(t.validatedMinutes)} hint={`${t.validatedPct} % des heures encodées`} ghost={empty} />
-      <Kpi label="En attente de validation" value={duration(t.pendingMinutes)} hint={`${t.pendingCount} prestation${t.pendingCount > 1 ? "s soumises" : " soumise"}`} warn={!empty} ghost={empty} />
-      <Kpi label="Coût estimé validé" money value={t.validatedAmount ? approx(t.validatedAmount) : "—"} ghost={empty}
+      <Kpi icon={EditCalendarOutlinedIcon} accent="slate" label="Heures encodées" value={duration(t.encodedMinutes)} hint={`${prestationCount(t.count)} · en attente + validées`} ghost={empty} />
+      <Kpi icon={TaskAltOutlinedIcon} accent="green" label="Heures validées" value={duration(t.validatedMinutes)} hint={`${t.validatedPct} % des heures encodées`} ghost={empty} />
+      <Kpi icon={HourglassEmptyOutlinedIcon} accent="amber" label="En attente de validation" value={duration(t.pendingMinutes)} hint={`${t.pendingCount} prestation${t.pendingCount > 1 ? "s soumises" : " soumise"}`} warn={!empty} ghost={empty} />
+      <Kpi icon={EuroOutlinedIcon} accent="green" label="Coût estimé validé" money value={t.validatedAmount ? approx(t.validatedAmount) : "—"} ghost={empty}
         hint={<>{t.encodedAmount ? `encodé ${approx(t.encodedAmount)}` : "aucune prestation valorisée"}{t.unratedInstrumentistCount > 0 && (
           <> · <Box component="span" sx={{ color: HOURS_COLOR.amber800, fontWeight: 600 }}>{t.unratedInstrumentistCount} instrumentiste{t.unratedInstrumentistCount > 1 ? "s" : ""} sans tarif</Box></>
         )}</>} />
@@ -196,16 +206,30 @@ function Kpis({ data, wide }: { data: InstrumentistHoursList; wide: boolean }) {
   );
 }
 
-/** Indicateur au style de StatCard ; un montant reste sur une ligne (« ≈ 20 975,00 € »). */
-function Kpi({ label, value, hint, warn, money, ghost }: { label: string; value: string; hint: React.ReactNode; warn?: boolean; money?: boolean; ghost?: boolean }) {
+const KPI_ACCENT = {
+  slate: { fg: HOURS_COLOR.slate700, bg: HOURS_COLOR.slate50 },
+  green: { fg: HOURS_COLOR.green800, bg: HOURS_COLOR.green50 },
+  amber: { fg: HOURS_COLOR.amber800, bg: HOURS_COLOR.amber50 },
+} as const;
+
+/** Indicateur au style de StatCard, icône discrète ; un montant reste sur une ligne (« ≈ 20 975,00 € »). */
+function Kpi({ icon: Icon, accent, label, value, hint, warn, money, ghost }: {
+  icon: SvgIconComponent; accent: keyof typeof KPI_ACCENT; label: string; value: string; hint: React.ReactNode; warn?: boolean; money?: boolean; ghost?: boolean;
+}) {
+  const a = KPI_ACCENT[accent];
   return (
-    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, minWidth: 0 }}>
-      <Typography variant="caption" color="text.secondary" noWrap component="div">{label}</Typography>
-      <Typography sx={{ mt: 0.25, fontSize: money ? { xs: 18, sm: 22, lg: 24 } : { xs: 22, sm: 28, lg: 30 }, lineHeight: money ? { xs: 1.7, sm: 1.45 } : 1.25, fontWeight: 700, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums",
+    <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, minWidth: 0, display: "flex", flexDirection: "column", gap: 0.75, borderColor: HOURS_COLOR.gray150 }}>
+      <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
+        <Box aria-hidden sx={{ width: 28, height: 28, borderRadius: "8px", bgcolor: a.bg, color: a.fg, display: "flex", alignItems: "center", justifyContent: "center", flex: "none" }}>
+          <Icon sx={{ fontSize: 17 }} />
+        </Box>
+        <Typography component="div" sx={{ fontSize: 13, fontWeight: 600, color: HOURS_COLOR.gray600, lineHeight: 1.3, minWidth: 0 }}>{label}</Typography>
+      </Stack>
+      <Typography sx={{ fontSize: money ? { xs: 18, sm: 22, lg: 24 } : { xs: 22, sm: 28, lg: 30 }, lineHeight: money ? { xs: 1.7, sm: 1.45 } : 1.25, fontWeight: 700, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.01em",
         color: ghost ? HOURS_COLOR.gray300 : warn ? HOURS_COLOR.amber800 : HOURS_COLOR.gray900 }}>
         {value}
       </Typography>
-      <Typography component="div" sx={{ fontSize: 12.5, color: HOURS_COLOR.gray600 }}>{hint}</Typography>
+      <Typography component="div" sx={{ fontSize: 12.5, color: HOURS_COLOR.gray600, lineHeight: 1.45 }}>{hint}</Typography>
     </Paper>
   );
 }
@@ -214,6 +238,7 @@ interface ContentProps {
   data: InstrumentistHoursList;
   wide: boolean;
   month: string;
+  siteId: number | null;
   siteName: string | null;
   q: string;
   isCurrentMonth: boolean;
@@ -261,13 +286,13 @@ function comparisons({ row, data, size }: { row: InstrumentistHoursRow; data: In
   const prev = row.comparison.previousMonth;
   const avg = row.comparison.personalAverage;
   return {
-    prev: <Delta pct={prev.pct} reference={monthName(data.reference.previousMonth)} reason={previousMonthReason(prev, data.reference.previousMonth)} size={size} />,
-    avg: <Delta pct={avg.pct} reference="la moyenne personnelle" reason={averageReason(avg)} size={size} />,
+    prev: <Delta tone="signed" pct={prev.pct} reference={monthName(data.reference.previousMonth)} reason={previousMonthReason(prev, data.reference.previousMonth)} size={size} />,
+    avg: <Delta tone="signed" pct={avg.pct} reference="la moyenne personnelle" reason={averageReason(avg)} size={size} />,
     avgNote: averagePeriodNote(avg) ?? (avg.reason === "NO_REFERENCE" && avg.observableSince ? `historique depuis ${monthShort(avg.observableSince)}` : null),
   };
 }
 
-function HoursTable({ data, sort, direction, onSort, onOpen }: ContentProps) {
+function HoursTable({ data, month, siteId, sort, direction, onSort, onOpen }: ContentProps) {
   const head = (key: HoursSort, label: string, align: "left" | "right" = "right") => (
     <TableCell align={align} sortDirection={sort === key ? direction : false} sx={{ fontSize: 12, fontWeight: 700, color: HOURS_COLOR.gray600, lineHeight: 1.3, verticalAlign: "bottom" }}>
       <TableSortLabel active={sort === key} direction={sort === key ? direction : key === "name" ? "asc" : "desc"} onClick={() => onSort(key)}>{label}</TableSortLabel>
@@ -277,7 +302,7 @@ function HoursTable({ data, sort, direction, onSort, onOpen }: ContentProps) {
   return (
     <Paper variant="outlined" sx={{ borderRadius: 2, overflow: "hidden" }}>
       <TableContainer>
-        <Table size="small" sx={{ minWidth: 860, "& td, & th": { px: 1.25, py: 1.5 } }}>
+        <Table size="small" sx={{ minWidth: 860, "& td, & th": { px: 1, py: 1.5 } }}>
           <TableHead>
             <TableRow>
               {head("name", "Instrumentiste", "left")}
@@ -287,6 +312,7 @@ function HoursTable({ data, sort, direction, onSort, onOpen }: ContentProps) {
               {head("validatedAmount", "Coût est. validé")}
               {head("previousMonthPct", previousMonthHeading(data.reference.previousMonth, data.asOfDay))}
               {head("personalAveragePct", "vs moy. 6 mois")}
+              <TableCell align="center" sx={{ fontSize: 12, fontWeight: 700, color: HOURS_COLOR.gray600, lineHeight: 1.3, verticalAlign: "bottom", whiteSpace: "nowrap", width: 64, px: 0.5 }}>Décompte</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -300,7 +326,7 @@ function HoursTable({ data, sort, direction, onSort, onOpen }: ContentProps) {
                   onClick={() => onOpen(row.instrumentist.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(row.instrumentist.id); } }}>
                   <TableCell>
                     <Stack direction="row" alignItems="center" gap={1.25}>
-                      <Avatar row={row} />
+                      <HoursAvatar person={row.instrumentist} />
                       <Box sx={{ minWidth: 0 }}>
                         <Stack direction="row" alignItems="center" gap={1}>
                           <Typography sx={{ fontSize: 14, fontWeight: 600, color: HOURS_COLOR.gray900, whiteSpace: "nowrap" }}>{fullName(row.instrumentist)}</Typography>
@@ -326,6 +352,9 @@ function HoursTable({ data, sort, direction, onSort, onOpen }: ContentProps) {
                     {c.avg}
                     {c.avgNote && <Typography sx={{ fontSize: 12, color: HOURS_COLOR.gray600 }}>{c.avgNote}</Typography>}
                   </TableCell>
+                  <TableCell align="center" sx={{ px: 0.5 }}>
+                    <StatementPdfButton name={fullName(row.instrumentist)} onExport={() => exportInstrumentistStatementPdf(row.instrumentist.id, month, siteId)} />
+                  </TableCell>
                 </TableRow>
               );
             })}
@@ -340,6 +369,7 @@ function HoursTable({ data, sort, direction, onSort, onOpen }: ContentProps) {
               <TableCell align="right">{duration(t.validatedMinutes)}</TableCell>
               <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{t.encodedAmount ? approx(t.encodedAmount) : "—"}</TableCell>
               <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>{t.validatedAmount ? approx(t.validatedAmount) : "—"}</TableCell>
+              <TableCell />
               <TableCell />
               <TableCell />
             </TableRow>
@@ -363,7 +393,7 @@ function HoursList({ data, onOpen }: ContentProps) {
               <Box component="button" type="button" onClick={() => onOpen(row.instrumentist.id)} aria-label={`${fullName(row.instrumentist)}, ${duration(row.validatedMinutes)} validées — ouvrir le détail`}
                 sx={{ width: "100%", border: "none", borderTop: i === 0 ? "none" : `1px solid ${HOURS_COLOR.gray100}`, background: "#fff", font: "inherit", textAlign: "left", cursor: "pointer",
                   display: "grid", gridTemplateColumns: "36px minmax(0, 1fr) auto", columnGap: "10px", rowGap: "8px", alignItems: "center", px: 2, py: 1.75 }}>
-                <Avatar row={row} />
+                <HoursAvatar person={row.instrumentist} />
                 <Box sx={{ minWidth: 0 }}>
                   <Stack direction="row" alignItems="center" gap={0.75}>
                     <Typography noWrap sx={{ fontSize: 14, fontWeight: 600, color: HOURS_COLOR.gray900 }}>{fullName(row.instrumentist)}</Typography>
@@ -397,14 +427,6 @@ function HoursList({ data, onOpen }: ContentProps) {
         </Stack>
       </Paper>
     </>
-  );
-}
-
-function Avatar({ row }: { row: InstrumentistHoursRow }) {
-  return (
-    <Box aria-hidden sx={{ width: 32, height: 32, borderRadius: 999, bgcolor: HOURS_COLOR.green100, color: HOURS_COLOR.green900, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, flex: "none" }}>
-      {initials(row.instrumentist)}
-    </Box>
   );
 }
 
