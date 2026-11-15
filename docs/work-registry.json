@@ -1301,8 +1301,8 @@
       "kind": "feature",
       "priority": "P2",
       "userImpact": "Le manager ne pouvait ni exporter la synthèse des heures ni remettre un décompte détaillé à une instrumentiste indépendante.",
-      "status": "teste",
-      "statusSince": "2026-11-10",
+      "status": "deploye",
+      "statusSince": "2026-11-15",
       "refs": {
         "branches": [
           "feat/heures-instrumentistes-decompte"
@@ -1310,10 +1310,28 @@
         "decision": "D-189",
         "worktrees": [
           "SurgicalHub-heures-decompte"
+        ],
+        "prs": [
+          91
+        ],
+        "commits": [
+          "381f2bf22ab2d9606a6332d86e8eed44ecf2efbf",
+          "9192e75bfe393c32c38dbe4c901174dedb994ed9",
+          "691231d0eff808d296fc2f6b89a0bb7dcdd83f60"
         ]
       },
-      "nextAction": "Relecture utilisateur des PDF et de la page ; PR puis fusion et déploiement uniquement sur accord explicite.",
-      "lastReviewed": "2026-11-10"
+      "nextAction": "Officialisé v2026.11.15-prod (691231d). Recette visuelle utilisateur en production attendue (page et deux PDF avec une session manager réelle). Rollback : deploy/deploy.sh rollback f8c7f3390b2d2f7163123161fc16fa719a5baebf (compatible le 2026-11-15).",
+      "lastReviewed": "2026-11-15",
+      "validationNeeded": "PDF et page validés par l'utilisateur en environnement isolé le 2026-11-13 ; contrôles de santé et exports API validés en production le 2026-11-15 ; recette visuelle en production avec une session réelle attendue de l'utilisateur.",
+      "prodEvidence": "v2026.11.15-prod (691231d) : 0 migration (99/99) ; activate 2026-11-15 08:14 UTC ; mark OFFICIAL ; compat 691231d et f8c7f33 compatibles (71 colonnes) ; exports par jetons console : manager #7 → 200 application/pdf (synthèse et relevé #18), instrumentiste #18 → 403, mois invalide → 422 ; compteurs audit / envois / notifications / missions identiques avant-après ; 0 5xx ; voir docs/production.md.",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : parcours visuel de la page Heures instrumentistes et des deux PDF (synthèse, relevé individuel) avec une session manager réelle en production."
+        }
+      ]
     }
   ]
 }
