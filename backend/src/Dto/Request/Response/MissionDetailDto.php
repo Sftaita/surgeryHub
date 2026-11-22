@@ -129,7 +129,9 @@ final class MissionDetailDto
          * (MissionCancellationPolicy): {blockedReason: {code, message}|null (the action is
          * then disabled with this reason), correction: {action: REJECT|REOPEN, message}|null
          * (the encoding correction the cancellation performs first, once confirmed),
-         * hasEncodingData: bool (archived without any financial effect if cancelled)}.
+         * hasEncodingData: bool (archived without any financial effect if cancelled),
+         * notifiesParticipants: bool (D-190 — false: the mission is over, cancelling it now
+         * notifies nobody)}.
          */
         public readonly ?array $cancellation = null,
         /** D-182 — duplicate links: {replacedByMissionId, replacesMissionIds}, null when none. */

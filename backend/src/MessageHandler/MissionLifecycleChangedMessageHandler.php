@@ -995,33 +995,58 @@ final class MissionLifecycleChangedMessageHandler
 
     /**
      * D-190 — the planned end of a cancelled mission as it was when the cancellation was
-     * decided: the pre-mutation snapshot carried by the message (payload endAt, ATOM with its
-     * offset), else the reloaded mission (messages emitted before the snapshot existed). An
-     * absent, unreadable or incoherent value (end before start) is unknown (null): the
-     * cancellation is then notified as before — never silenced on a doubt — and logged.
+     * decided: the pre-mutation snapshot carried by the message (payload startAt / endAt, ATOM
+     * with its offset). Only a snapshot ABSENT from the payload (a message emitted before the
+     * snapshot existed) falls back to the reloaded mission. A snapshot PRESENT but null,
+     * unreadable or incoherent (end before start) is unknown — never replaced by the database
+     * value, which may have changed since: null is returned, the cancellation is notified as
+     * before (never silenced on a doubt) and a warning is logged.
      */
     private function plannedEndAt(Mission $mission, MissionLifecycleChangedMessage $message): ?\DateTimeImmutable
     {
-        $fromSnapshot = static function (string $key) use ($message): ?\DateTimeImmutable {
-            $value = $message->payload[$key] ?? null;
-            $parsed = is_string($value) ? \DateTimeImmutable::createFromFormat(\DateTimeInterface::ATOM, $value) : false;
+        $unreadable = [];
+        $endAt   = self::snapshotInstant($message, 'endAt', $mission->getEndAt(), $unreadable);
+        $startAt = self::snapshotInstant($message, 'startAt', $mission->getStartAt(), $unreadable);
 
-            return $parsed instanceof \DateTimeImmutable ? $parsed : null;
-        };
-
-        $endAt   = $fromSnapshot('endAt') ?? $mission->getEndAt();
-        $startAt = $fromSnapshot('startAt') ?? $mission->getStartAt();
-        if ($endAt === null || ($startAt !== null && $endAt < $startAt)) {
+        if ($unreadable !== [] || !MissionCancellationPolicy::isPlannedEndKnown($endAt, $startAt)) {
             $this->logger->warning('MissionLifecycleChanged::CANCELLED: planned end unknown or incoherent, notified as an operational cancellation', [
-                'missionId' => $mission->getId(),
-                'endAt'     => $endAt?->format(\DateTimeInterface::ATOM),
-                'startAt'   => $startAt?->format(\DateTimeInterface::ATOM),
+                'missionId'  => $mission->getId(),
+                'endAt'      => $endAt?->format(\DateTimeInterface::ATOM),
+                'startAt'    => $startAt?->format(\DateTimeInterface::ATOM),
+                'unreadable' => $unreadable,
             ]);
 
             return null;
         }
 
         return $endAt;
+    }
+
+    /**
+     * D-190 — one instant of the message snapshot: $fallback only when the key is absent; a
+     * present value is parsed strictly (ATOM, no overflow such as 2026-02-31) and its raw value
+     * is recorded in $unreadable when it cannot be.
+     *
+     * @param array<string, mixed> $unreadable
+     */
+    private static function snapshotInstant(MissionLifecycleChangedMessage $message, string $key, ?\DateTimeImmutable $fallback, array &$unreadable): ?\DateTimeImmutable
+    {
+        if (!array_key_exists($key, $message->payload)) {
+            return $fallback;
+        }
+        $value = $message->payload[$key];
+        if ($value === null) {
+            return null; // known at the action time to be missing: unknown, never the database value
+        }
+        $parsed = is_string($value) ? \DateTimeImmutable::createFromFormat(\DateTimeInterface::ATOM, $value) : false;
+        $errors = \DateTimeImmutable::getLastErrors();
+        if (!$parsed instanceof \DateTimeImmutable || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+            $unreadable[$key] = is_scalar($value) ? (string) $value : get_debug_type($value);
+
+            return null;
+        }
+
+        return $parsed;
     }
 
     private function loadMission(int $missionId, string $context): ?Mission

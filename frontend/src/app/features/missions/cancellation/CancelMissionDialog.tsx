@@ -33,7 +33,9 @@ function serverMessage(err: unknown): string {
  * D-182 — « Annuler la mission », depuis son détail ou le planning manager, en deux clics :
  *
  * - Programme annulé : la mission n'a pas eu lieu (aucune heure, aucune prestation, aucune
- *   facturation) ; l'instrumentiste et le chirurgien reçoivent l'e-mail d'annulation.
+ *   facturation) ; l'instrumentiste et le chirurgien reçoivent l'e-mail d'annulation, sauf
+ *   pour une mission déjà terminée (D-190, `cancellation.notifiesParticipants` = false) :
+ *   correction administrative, annoncée comme telle, sans aucune notification.
  * - Mission remplacée par une autre mission : une mission existante (ex. créée par la
  *   remplaçante) est conservée à sa place, sa déclaration validée si le manager le demande ;
  *   la mission est annulée comme doublon en une seule opération, et le chirurgien est informé
@@ -135,6 +137,9 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
     else replacedMutation.mutate();
   };
 
+  // D-190 — décision du serveur (cancellation.notifiesParticipants) : mission terminée, son
+  // annulation ne prévient personne. Jamais déduit ici des horaires ou du statut.
+  const silentCancellation = mission?.cancellation?.notifiesParticipants === false;
   const instrumentistName = mission?.instrumentist ? personName(mission.instrumentist) : null;
   const replacementName = replacement ? personName(replacement.instrumentist) : null;
 
@@ -192,7 +197,9 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
                   <TextField
                     label="Motif communiqué (facultatif)" size="small" multiline minRows={2} value={message}
                     onChange={(e) => setMessage(e.target.value)}
-                    helperText="Repris dans l'e-mail d'annulation."
+                    helperText={silentCancellation
+                      ? "Conservé dans l'historique de la mission. Aucun e-mail n'est envoyé : la mission est terminée."
+                      : "Repris dans l'e-mail d'annulation."}
                     inputProps={{ maxLength: 500, "data-testid": "cancel-message" }}
                   />
                 )}
@@ -249,7 +256,13 @@ export function CancelMissionDialog({ missionId, open, onClose, onCancelled }: P
                 />
 
                 <Alert severity="info" icon={false} data-testid="cancel-mission-recap">
-                  {reason === "PROGRAM_CANCELLED" ? (
+                  {reason === "PROGRAM_CANCELLED" && silentCancellation ? (
+                    <>
+                      Mission terminée : son annulation est une correction administrative.{" "}
+                      <strong>Aucune notification ne sera envoyée</strong> (ni e-mail, ni push, ni notification dans l'application)
+                      {instrumentistName ? <> à <strong>{instrumentistName}</strong> ni</> : null} au <strong>Dr {personName(mission.surgeon)}</strong>.
+                    </>
+                  ) : reason === "PROGRAM_CANCELLED" ? (
                     <>
                       Recevront l'e-mail d'annulation :{" "}
                       {instrumentistName ? <><strong>{instrumentistName}</strong> et </> : null}

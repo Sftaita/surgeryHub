@@ -169,7 +169,7 @@ final class MissionMapper
      * cancelled (the action is then disabled), else the encoding correction its cancellation
      * performs first (submitted / validated).
      *
-     * @return array{blockedReason: ?array{code: string, message: string}, correction: ?array{action: string, message: string}}
+     * @return array{blockedReason: ?array{code: string, message: string}, correction: ?array{action: string, message: string}, notifiesParticipants: bool}
      */
     private function cancellation(Mission $m, int $prestationSize): array
     {
@@ -178,6 +178,9 @@ final class MissionMapper
         return [
             'blockedReason' => $blocked,
             'correction'    => $blocked === null ? MissionCancellationPolicy::correction($m) : null,
+            // D-190 — whether cancelling now would notify the surgeon / instrumentist (false: the
+            // mission is over, an administrative correction). The dialog shows it as is.
+            'notifiesParticipants' => MissionCancellationPolicy::isOperationalCancellation($m->getEndAt(), Clock::get()->now(), $m->getStartAt()),
         ];
     }
 

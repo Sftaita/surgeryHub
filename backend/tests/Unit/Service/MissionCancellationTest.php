@@ -281,6 +281,33 @@ final class MissionCancellationTest extends TestCase
         ));
     }
 
+    /**
+     * Review of PR #93 (P3) — the action instant is captured before the lock and the mutation:
+     * time spent applying the cancellation (here 10 min, simulated while auditing) never moves
+     * a request made before the end past it.
+     */
+    public function test_the_action_instant_is_captured_before_the_mutation(): void
+    {
+        $clock = new \Symfony\Component\Clock\MockClock('2026-11-19 16:55:00', 'Europe/Brussels');
+        \Symfony\Component\Clock\Clock::set($clock);
+        try {
+            $this->audit = $this->createMock(AuditService::class);
+            $this->audit->method('record')->willReturnCallback(function (?Mission $m, $actor, AuditEventType $type, array $payload) use ($clock) {
+                $clock->sleep(600);
+                $this->audits[] = [$type, $payload, $m];
+            });
+            $m = $this->mission(MissionStatus::IN_PROGRESS, $this->user('Perrine', 'Fictive'), '2026-11-19 15:00', '2026-11-19 17:00');
+
+            $this->service()->cancelByManager($m, $this->user('Mia', 'Manager'), MissionCancellationPolicy::REASON_PROGRAM_CANCELLED);
+
+            $message = $this->dispatched[0];
+            self::assertEquals(new \DateTimeImmutable('2026-11-19 16:55:00', new \DateTimeZone('Europe/Brussels')), $message->occurredAt);
+            self::assertTrue(MissionCancellationPolicy::isOperationalCancellation($m->getEndAt(), $message->occurredAt, $m->getStartAt()));
+        } finally {
+            \Symfony\Component\Clock\Clock::set(new \Symfony\Component\Clock\NativeClock());
+        }
+    }
+
     public function test_policy_a_cancellation_is_operational_strictly_before_the_planned_end(): void
     {
         $end = new \DateTimeImmutable('2026-11-19 17:00', new \DateTimeZone('Europe/Brussels'));
@@ -289,6 +316,10 @@ final class MissionCancellationTest extends TestCase
         self::assertFalse(MissionCancellationPolicy::isOperationalCancellation($end, new \DateTimeImmutable('2026-11-19T16:00:00Z')), 'the exact end: over');
         self::assertFalse(MissionCancellationPolicy::isOperationalCancellation($end, new \DateTimeImmutable('2026-11-22T10:00:00+01:00')));
         self::assertTrue(MissionCancellationPolicy::isOperationalCancellation(null, new \DateTimeImmutable('2026-11-22T10:00:00Z')), 'unknown end: never silenced');
+        $laterStart = new \DateTimeImmutable('2026-11-25 15:00', new \DateTimeZone('Europe/Brussels'));
+        self::assertTrue(MissionCancellationPolicy::isOperationalCancellation($end, new \DateTimeImmutable('2026-11-22T10:00:00Z'), $laterStart), 'end before start: never silenced');
+        self::assertFalse(MissionCancellationPolicy::isPlannedEndKnown($end, $laterStart));
+        self::assertTrue(MissionCancellationPolicy::isPlannedEndKnown($end, null));
     }
 
     public function test_cancel_mission_whose_start_time_passed_archives_encoding_and_cancels_open_calculations(): void

@@ -925,6 +925,62 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         self::assertCount(2, $this->dispatched);
     }
 
+    /**
+     * Review of PR #93, reserve 1 — a snapshot PRESENT but unreadable is never replaced by the
+     * database value, even a valid and past one: unknown → notified, warning logged. Same for
+     * a present null and for an overflowing date (2026-02-31).
+     */
+    public function test_a_present_but_unreadable_snapshot_never_falls_back_on_a_past_database_end(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $warnings = [];
+        $this->logger->method('warning')->willReturnCallback(function (string $msg, array $ctx) use (&$warnings): void { $warnings[] = [$msg, $ctx]; });
+
+        foreach (['n/a', null, '2026-02-31T17:00:00+01:00', 1763571600] as $i => $snapshot) {
+            $this->dispatched = [];
+            $this->em = $this->createMock(EntityManagerInterface::class);
+            // Valid and long past in the database: the old code would have silenced the cancellation.
+            $mission = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+            $this->stubFind($mission, [$previous->getId() => $previous]);
+
+            $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-22T10:15:00+01:00', $previous, ['endAt' => $snapshot]));
+
+            self::assertCount(2, $this->intents(NotificationType::PLANNING_MISSION_CANCELLED), 'snapshot #' . $i . ' ' . var_export($snapshot, true));
+        }
+        self::assertCount(4, $warnings);
+        self::assertSame('MissionLifecycleChanged::CANCELLED: planned end unknown or incoherent, notified as an operational cancellation', $warnings[0][0]);
+        self::assertSame(['endAt' => 'n/a'], $warnings[0][1]['unreadable']);
+        self::assertSame([], $warnings[1][1]['unreadable'], 'present null: unknown at the action time, not unreadable');
+        self::assertSame(['endAt' => '2026-02-31T17:00:00+01:00'], $warnings[2][1]['unreadable']);
+    }
+
+    /** An unreadable start snapshot also makes the planned end unknown (its coherence cannot be checked). */
+    public function test_an_unreadable_start_snapshot_keeps_the_notification(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $mission = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        $this->stubFind($mission);
+
+        $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-22T10:15:00+01:00', extra: ['startAt' => 'garbage']));
+
+        self::assertCount(1, $this->dispatched);
+    }
+
+    /** Only an ABSENT snapshot (legacy message) falls back on the reloaded mission. */
+    public function test_a_legacy_message_without_snapshot_uses_the_reloaded_mission(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $mission = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        $this->stubFind($mission);
+        $this->logger->expects($this->never())->method('warning');
+
+        $this->makeHandler()->__invoke(new MissionLifecycleChangedMessage($mission->getId(), MissionChangeType::CANCELLED, 7,
+            ['reason' => null, 'fromInstrumentistId' => null], new \DateTimeImmutable('2026-11-22T10:15:00+01:00')));
+
+        self::assertSame([], $this->dispatched);
+    }
+
     /** J — absence-driven and room-release cancellations of a mission not over keep their rules. */
     public function test_absence_and_room_release_cancellations_of_a_mission_not_over_are_unchanged(): void
     {

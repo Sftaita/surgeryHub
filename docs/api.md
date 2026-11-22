@@ -759,10 +759,11 @@ contient `reassign` aussi pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS` quand un m
 ### Détail mission — champs D-182
 
 `GET /api/missions/{id}` porte, pour les managers, `cancellation` : `{ blockedReason: {code,
-message}|null, correction: {action: "REJECT"|"REOPEN", message}|null, hasEncodingData }`
-(`MissionCancellationPolicy`), et pour tous `replacement` : `{ replacedByMissionId,
+message}|null, correction: {action: "REJECT"|"REOPEN", message}|null, hasEncodingData,
+notifiesParticipants }` (`MissionCancellationPolicy` ; `notifiesParticipants` D-190 : `false` =
+mission terminée, l'annuler maintenant ne prévient personne), et pour tous `replacement` : `{ replacedByMissionId,
 replacesMissionIds }` ou `null`. Les éléments de `GET /api/missions` portent aussi, pour les
-managers, `cancellation` : `{ blockedReason, correction }`. `allowedActions` contient `cancel`
+managers, `cancellation` : `{ blockedReason, correction, notifiesParticipants }`. `allowedActions` contient `cancel`
 aussi pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS`, `SUBMITTED` et `VALIDATED` non facturée,
 jamais quand `blockedReason` est servi — calculé avec la prestation multi-salles de la mission
 (liste et détail), exactement comme le contrôle serveur : le client affiche alors l'action

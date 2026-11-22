@@ -17223,13 +17223,29 @@ regarder si la mission était déjà terminée.
    `ReleasedRoomSlotTakeoverService`) posent cet instant avec l'horloge applicative
    (`Clock::get()->now()`, celle des règles métier) au lieu de `new \DateTimeImmutable()` :
    identique en production (`NativeClock`), cohérent quand l'horloge est figée en test.
-3. **Fin prévue de l'instant de l'action** : l'instantané `endAt` du message (ATOM avec son
-   offset, posé par `applyCancel()` avant mutation), sinon celle de la mission rechargée.
+3. **Fin prévue de l'instant de l'action** : l'instantané `startAt` / `endAt` du message (ATOM
+   avec son offset, posé par `applyCancel()` avant mutation). Seule une clé **absente** (message
+   émis avant l'instantané) retombe sur la mission rechargée ; une valeur **présente** n'est
+   jamais remplacée par celle de la base (revue PR #93, réserve 1).
    Comparaison d'instants (offsets inclus) : `endAt` est une heure métier Europe/Brussels
    (`BusinessDateTimeImmutableType`), `occurredAt` est en UTC en production ; les changements
    d'heure été / hiver sont donc sans effet.
-4. **Fin inconnue ou incohérente** (absente, illisible, antérieure au début) : jamais de
-   silence sur un doute — l'annulation reste notifiée comme avant, avec un avertissement journalisé.
+4. **Fin inconnue ou incohérente** — clé absente sans valeur en base, valeur présente `null`,
+   illisible (non ATOM, date débordante comme le 31/02, autre type) ou fin antérieure au début :
+   jamais de silence sur un doute — l'annulation reste notifiée comme avant, avec un avertissement
+   journalisé (`unreadable` : la valeur brute). Règle unique
+   `MissionCancellationPolicy::isPlannedEndKnown()`.
+4 bis. **Instant capturé avant la mutation** (revue PR #93, P3) : `cancel()` / `cancelByManager()`
+   prennent l'instant au début de l'opération, avant le verrou et la mutation, et le transmettent au
+   message : une demande faite avant la fin n'est jamais classée administrative à cause de la durée
+   de son propre traitement. Les émetteurs automatiques (absence, salle libérée) ne touchent que des
+   missions non commencées : inchangés.
+4 ter. **Fenêtre d'annulation** : le détail et la liste servent au manager
+   `cancellation.notifiesParticipants` (même règle, évaluée à l'affichage avec « maintenant »).
+   `false` → `CancelMissionDialog` annonce une correction administrative sans aucune notification,
+   au lieu de « Recevront l'e-mail d'annulation ». Le client affiche la décision du serveur, sans
+   la recalculer ; seule la décision prise à l'instant de l'action fait foi (une mission qui se
+   termine entre l'ouverture de la fenêtre et la confirmation n'est pas notifiée).
 5. **Point de contrôle unique** : le début de `handleCancelled()`, seul chemin qui notifie une
    annulation (`cancelByManager()` / `cancel()` → `MissionLifecycleChangedMessage(CANCELLED)`).
    Inchangé : le statut `CANCELLED`, l'instrumentiste retirée, l'`AuditEvent
@@ -17241,6 +17257,5 @@ regarder si la mission était déjà terminée.
    (`ABSENCE_MISSION_CANCELLED`) ne concerne que ces missions futures ; doublon remplacé
    (`cancel-as-replaced`) — jamais d'e-mail d'annulation (D-182 § 4), hors périmètre.
 
-**Limites.** La fenêtre d'annulation (`CancelMissionDialog`) annonce encore « Recevront l'e-mail
-d'annulation » pour une mission terminée : texte non modifié ici (aucun champ serveur ne le
-porte). Les notifications déjà envoyées pour #1129 ne sont pas retirées.
+**Limites.** Les notifications déjà envoyées pour #1129 ne sont pas retirées. Le texte de la
+fenêtre peut être dépassé si la mission se termine pendant qu'elle est ouverte (cf. 4 ter).

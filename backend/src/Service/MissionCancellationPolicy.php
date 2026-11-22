@@ -60,12 +60,23 @@ final class MissionCancellationPolicy
      * $cancelledAt is the instant of the business action (MissionLifecycleChangedMessage
      * occurredAt), never the moment a delayed Messenger worker handles it. Instants are compared
      * as such (offsets included): endAt is a Europe/Brussels business time, $cancelledAt usually
-     * UTC. An unknown planned end (null) never silences anything: the cancellation stays
-     * operational, as before this rule.
+     * UTC. An unknown or incoherent planned end (null, or before the start — see
+     * isPlannedEndKnown()) never silences anything: the cancellation stays operational, as
+     * before this rule.
+     *
+     * Also served to the manager before the action (MissionMapper, cancellation
+     * .notifiesParticipants, with "now"), so that the cancellation dialog announces exactly
+     * what the server will do — never re-derived client-side.
      */
-    public static function isOperationalCancellation(?\DateTimeImmutable $endAt, \DateTimeImmutable $cancelledAt): bool
+    public static function isOperationalCancellation(?\DateTimeImmutable $endAt, \DateTimeImmutable $cancelledAt, ?\DateTimeImmutable $startAt = null): bool
     {
-        return $endAt === null || $endAt > $cancelledAt;
+        return !self::isPlannedEndKnown($endAt, $startAt) || $endAt > $cancelledAt;
+    }
+
+    /** D-190 — a planned end the rule may rely on: present and not before the planned start. */
+    public static function isPlannedEndKnown(?\DateTimeImmutable $endAt, ?\DateTimeImmutable $startAt): bool
+    {
+        return $endAt !== null && ($startAt === null || $endAt >= $startAt);
     }
 
     public const ENCODING_SUBMITTED  = 'CANCELLATION_ENCODING_SUBMITTED';

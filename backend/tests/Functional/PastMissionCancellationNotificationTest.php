@@ -64,6 +64,7 @@ final class PastMissionCancellationNotificationTest extends WebTestCase
     {
         [$client, $token, $surgeon, $instrumentist, $site, $manager] = $this->fixtures();
         $mission = $this->mission($site, $surgeon, $manager, $instrumentist, MissionStatus::IN_PROGRESS, '2026-11-19 15:00', '2026-11-19 17:00');
+        self::assertFalse($this->detail($client, $token, $mission)['cancellation']['notifiesParticipants'], 'the dialog is told nobody will be notified');
 
         $response = $this->cancel($client, $token, $mission);
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
@@ -87,6 +88,7 @@ final class PastMissionCancellationNotificationTest extends WebTestCase
         [$client, $token, $surgeon, $instrumentist, $site, $manager] = $this->fixtures();
         $start = (new \DateTimeImmutable('+30 days', new \DateTimeZone('Europe/Brussels')))->setTime(8, 0);
         $mission = $this->mission($site, $surgeon, $manager, $instrumentist, MissionStatus::ASSIGNED, $start->format('Y-m-d H:i'), $start->setTime(12, 0)->format('Y-m-d H:i'));
+        self::assertTrue($this->detail($client, $token, $mission)['cancellation']['notifiesParticipants']);
 
         $response = $this->cancel($client, $token, $mission);
         self::assertSame(Response::HTTP_OK, $response->getStatusCode(), (string) $response->getContent());
@@ -149,6 +151,15 @@ final class PastMissionCancellationNotificationTest extends WebTestCase
         $this->missionIds[] = $m->getId();
 
         return $m;
+    }
+
+    /** @return array<string, mixed> the mission detail served to the manager */
+    private function detail(KernelBrowser $client, string $token, Mission $mission): array
+    {
+        $client->request('GET', '/api/missions/' . $mission->getId(), server: ['HTTP_AUTHORIZATION' => 'Bearer ' . $token]);
+        self::assertSame(Response::HTTP_OK, $client->getResponse()->getStatusCode(), (string) $client->getResponse()->getContent());
+
+        return json_decode((string) $client->getResponse()->getContent(), true);
     }
 
     private function cancel(KernelBrowser $client, string $token, Mission $mission): Response
