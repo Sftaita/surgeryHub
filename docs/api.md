@@ -562,7 +562,10 @@ ou validée reste refusée (correction de toute la prestation d'abord).
   PROGRAM_CANCELLED`, `archivedEncoding` (faits d'encodage ou `null`), `internalComment`,
   `encodingCorrection` (`{action, fromStatus, obsoleteFinancialCalculationIds}` ou `null`) ;
 - `MissionLifecycleChangedMessage(CANCELLED)` dispatché (async) → `PLANNING_MISSION_CANCELLED`
-  (e-mail activé par défaut) à l'instrumentiste retirée et au chirurgien.
+  (e-mail activé par défaut) à l'instrumentiste retirée et au chirurgien — **seulement si la
+  mission n'était pas terminée à l'instant de l'annulation** (D-190 : `endAt` > `occurredAt`).
+  Une mission déjà terminée (`endAt` ≤ instant de l'action) est annulée et auditée à l'identique,
+  sans aucune notification (in-app, push, e-mail).
 
 Les appelants automatiques (réaction aux absences, salle libérée, modifications de planning)
 gardent leur règle étroite (`DRAFT|OPEN|ASSIGNED`, sans encodage).

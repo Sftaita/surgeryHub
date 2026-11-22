@@ -716,6 +716,236 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         self::assertCount(1, $this->dispatched);
     }
 
+    // ── D-190 — a mission already over when cancelled: administrative, nobody notified ──
+
+    /** A mission of the given Brussels wall-clock times, previously assigned to $previous (FK cleared by cancel()). */
+    private function pastOrFutureMission(User $surgeon, string $start, string $end): Mission
+    {
+        $tz = new \DateTimeZone('Europe/Brussels');
+        $mission = $this->makeMission($surgeon, MissionStatus::CANCELLED);
+        $mission->setStartAt(new \DateTimeImmutable($start, $tz));
+        $mission->setEndAt(new \DateTimeImmutable($end, $tz));
+
+        return $mission;
+    }
+
+    /** The message exactly as MissionPostDeployService::cancelByManager() builds it (snapshot of the action time). */
+    private function cancelledAt(Mission $mission, string $occurredAt, ?User $previous = null, array $extra = []): MissionLifecycleChangedMessage
+    {
+        return new MissionLifecycleChangedMessage(
+            missionId:  $mission->getId(),
+            changeType: MissionChangeType::CANCELLED,
+            actorId:    7,
+            payload:    $extra + [
+                'reason'               => null,
+                'fromInstrumentistId'  => $previous?->getId(),
+                'previousStatus'       => 'IN_PROGRESS',
+                'causedByAbsenceId'    => null,
+                'startAt'              => $mission->getStartAt()?->format(\DateTimeInterface::ATOM),
+                'endAt'                => $mission->getEndAt()?->format(\DateTimeInterface::ATOM),
+                'cancellationReason'   => 'PROGRAM_CANCELLED',
+            ],
+            occurredAt: new \DateTimeImmutable($occurredAt),
+        );
+    }
+
+    /** A + F — the real case (#1129): 19/11 15:00–17:00, cancelled on 22/11, an instrumentist was assigned. */
+    public function test_a_mission_over_for_days_is_cancelled_without_any_notification_to_surgeon_or_instrumentist(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        $this->stubFind($mission, [$previous->getId() => $previous]);
+        $this->logger->expects($this->atLeastOnce())->method('info')->with($this->logicalOr(
+            'MissionLifecycleChanged received',
+            'MissionLifecycleChanged::CANCELLED: mission already over when cancelled, no notification',
+        ));
+
+        $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-22T10:15:00+01:00', $previous));
+
+        self::assertSame([], $this->dispatched, 'no intent at all: no in-app, no push, no e-mail, for nobody');
+    }
+
+    /** B — a future mission keeps both notices, unchanged. */
+    public function test_a_future_mission_cancellation_still_notifies_surgeon_and_instrumentist(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->pastOrFutureMission($surgeon, '2026-11-25 15:00', '2026-11-25 17:00');
+        $this->stubFind($mission, [$previous->getId() => $previous]);
+
+        $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-22T10:15:00+01:00', $previous));
+
+        $intents = $this->intents(NotificationType::PLANNING_MISSION_CANCELLED);
+        self::assertCount(2, $intents);
+        self::assertSame($surgeon, $intents[0]->recipient);
+        self::assertSame($previous, $intents[1]->recipient);
+    }
+
+    /** C — a mission in progress (started, not ended) keeps both notices. */
+    public function test_a_mission_in_progress_cancellation_still_notifies(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        $this->stubFind($mission, [$previous->getId() => $previous]);
+
+        $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-19T16:59:59+01:00', $previous));
+
+        self::assertCount(2, $this->intents(NotificationType::PLANNING_MISSION_CANCELLED));
+    }
+
+    /** D — at the exact end instant the mission is over (here expressed in UTC: 17:00 CET = 16:00Z). */
+    public function test_a_cancellation_exactly_at_the_end_instant_notifies_nobody(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        $this->stubFind($mission, [$previous->getId() => $previous]);
+
+        $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-19T16:00:00+00:00', $previous));
+
+        self::assertSame([], $this->dispatched);
+    }
+
+    /**
+     * E — decided before the mission's end, handled by a late worker after it: the decision
+     * belongs to the action instant (occurredAt), never to the handling time.
+     */
+    public function test_a_cancellation_decided_before_the_end_but_handled_after_it_still_notifies(): void
+    {
+        \Symfony\Component\Clock\Clock::set(new \Symfony\Component\Clock\MockClock('2026-11-22 10:00:00', 'Europe/Brussels'));
+        try {
+            $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+            $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+            $mission  = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+            $this->stubFind($mission, [$previous->getId() => $previous]);
+
+            $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-18T09:00:00+01:00', $previous));
+
+            self::assertCount(2, $this->intents(NotificationType::PLANNING_MISSION_CANCELLED));
+        } finally {
+            \Symfony\Component\Clock\Clock::set(new \Symfony\Component\Clock\NativeClock());
+        }
+    }
+
+    /**
+     * H — DST: on 25/10/2026 Brussels leaves summer time (03:00 CEST → 02:00 CET). A mission
+     * 08:00–10:00 that day ends at 09:00Z (CET, +01:00), not 08:00Z; in summer (15/07, CEST)
+     * 15:00–17:00 ends at 15:00Z. Checked with the process in UTC, as in production.
+     */
+    public function test_the_end_instant_is_compared_with_its_real_offset_across_dst_changes(): void
+    {
+        $previousTz = date_default_timezone_get();
+        date_default_timezone_set('UTC');
+        try {
+            $cases = [
+                ['2026-10-25 08:00', '2026-10-25 10:00', '2026-10-25T08:30:00+00:00', 2], // 09:30 CET, before the end
+                ['2026-10-25 08:00', '2026-10-25 10:00', '2026-10-25T09:00:00+00:00', 0], // 10:00 CET, the end
+                ['2026-03-29 08:00', '2026-03-29 10:00', '2026-03-29T07:59:59+00:00', 2], // 09:59:59 CEST (summer since 02:00)
+                ['2026-03-29 08:00', '2026-03-29 10:00', '2026-03-29T08:00:00+00:00', 0], // 10:00 CEST, the end
+                ['2026-07-15 15:00', '2026-07-15 17:00', '2026-07-15T14:59:59+00:00', 2],
+                ['2026-07-15 15:00', '2026-07-15 17:00', '2026-07-15T15:00:00+00:00', 0],
+            ];
+            foreach ($cases as [$start, $end, $occurredAt, $expected]) {
+                $this->dispatched = [];
+                $this->em = $this->createMock(EntityManagerInterface::class);
+                $surgeon  = $this->makeUser(null, ['ROLE_SURGEON']);
+                $previous = $this->makeUser(null, ['ROLE_INSTRUMENTIST']);
+                $mission  = $this->pastOrFutureMission($surgeon, $start, $end);
+                $this->stubFind($mission, [$previous->getId() => $previous]);
+
+                $this->makeHandler()->__invoke($this->cancelledAt($mission, $occurredAt, $previous));
+
+                self::assertCount($expected, $this->dispatched, "$start–$end cancelled at $occurredAt");
+            }
+        } finally {
+            date_default_timezone_set($previousTz);
+        }
+    }
+
+    /** I — a Messenger retry of the same past cancellation stays silent; a future one keeps one episode per recipient. */
+    public function test_a_retry_never_duplicates_and_never_revives_a_silenced_cancellation(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $past     = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        $this->stubFind($past, [$previous->getId() => $previous]);
+        $message = $this->cancelledAt($past, '2026-11-22T10:15:00+01:00', $previous);
+
+        $this->makeHandler()->__invoke($message);
+        $this->makeHandler()->__invoke($message);
+        self::assertSame([], $this->dispatched);
+
+        $this->em = $this->createMock(EntityManagerInterface::class);
+        $future = $this->pastOrFutureMission($surgeon, '2026-11-25 15:00', '2026-11-25 17:00');
+        $this->stubFind($future, [$previous->getId() => $previous]);
+        $message = $this->cancelledAt($future, '2026-11-22T10:15:00+01:00', $previous);
+
+        $this->makeHandler()->__invoke($message);
+        $this->makeHandler()->__invoke($message);
+        self::assertCount(4, $this->dispatched);
+        self::assertSame($this->dispatched[0]->episodeRef, $this->dispatched[2]->episodeRef, 'retry = same episode (dispatcher idempotency)');
+        self::assertSame($this->dispatched[1]->episodeRef, $this->dispatched[3]->episodeRef);
+    }
+
+    /** The planned end of the action time (snapshot) wins over the reloaded mission, moved since. */
+    public function test_the_planned_end_is_the_snapshot_of_the_action_time(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $mission  = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        $this->stubFind($mission);
+        $message  = $this->cancelledAt($mission, '2026-11-22T10:15:00+01:00');
+        $mission->setEndAt(new \DateTimeImmutable('2026-11-30 17:00', new \DateTimeZone('Europe/Brussels')));
+
+        $this->makeHandler()->__invoke($message);
+
+        self::assertSame([], $this->dispatched);
+    }
+
+    /** An unknown / unreadable / incoherent planned end never silences a cancellation: notified as before, logged. */
+    public function test_an_unknown_or_incoherent_planned_end_keeps_the_notification_and_is_logged(): void
+    {
+        $surgeon = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $this->logger->expects($this->exactly(2))->method('warning')
+            ->with('MissionLifecycleChanged::CANCELLED: planned end unknown or incoherent, notified as an operational cancellation');
+
+        // No snapshot and no endAt on the mission (legacy message, corrupted row).
+        $noEnd = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        (new \ReflectionProperty($noEnd, 'endAt'))->setValue($noEnd, null);
+        $this->stubFind($noEnd);
+        $this->makeHandler()->__invoke($this->cancelledAt($noEnd, '2026-11-22T10:15:00+01:00', extra: ['endAt' => 'n/a']));
+        self::assertCount(1, $this->dispatched);
+
+        // An end before the start.
+        $this->em = $this->createMock(EntityManagerInterface::class);
+        $incoherent = $this->pastOrFutureMission($surgeon, '2026-11-25 15:00', '2026-11-19 17:00');
+        $this->stubFind($incoherent);
+        $this->makeHandler()->__invoke($this->cancelledAt($incoherent, '2026-11-22T10:15:00+01:00'));
+        self::assertCount(2, $this->dispatched);
+    }
+
+    /** J — absence-driven and room-release cancellations of a mission not over keep their rules. */
+    public function test_absence_and_room_release_cancellations_of_a_mission_not_over_are_unchanged(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->pastOrFutureMission($surgeon, '2026-11-25 15:00', '2026-11-25 17:00');
+        $this->stubFind($mission, [$previous->getId() => $previous]);
+
+        $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-22T10:15:00+01:00', $previous, ['causedByAbsenceId' => 58]));
+        self::assertCount(1, $this->dispatched, 'absence: the surgeon only, the instrumentist gets the absence recap');
+        self::assertSame($surgeon, $this->dispatched[0]->recipient);
+
+        $this->dispatched = [];
+        $this->makeHandler()->__invoke(new MissionLifecycleChangedMessage($mission->getId(), MissionChangeType::CANCELLED, $surgeon->getId(), [
+            'roomSlotId' => 5, 'fromInstrumentistId' => $previous->getId(),
+            'endAt' => $mission->getEndAt()->format(\DateTimeInterface::ATOM),
+        ], new \DateTimeImmutable('2026-11-22T10:15:00+01:00')));
+        self::assertCount(1, $this->dispatched, 'room release: the instrumentist only');
+        self::assertSame($previous, $this->dispatched[0]->recipient);
+    }
+
     // ── Generic ───────────────────────────────────────────────────────────────
 
     public function test_unhandled_change_types_log_and_do_not_throw(): void

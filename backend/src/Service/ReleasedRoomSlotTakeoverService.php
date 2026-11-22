@@ -344,7 +344,7 @@ class ReleasedRoomSlotTakeoverService
                 changeType: MissionChangeType::CANCELLED,
                 actorId: $actor->getId(),
                 payload: $cancelPayload,
-                occurredAt: new \DateTimeImmutable(),
+                occurredAt: \Symfony\Component\Clock\Clock::get()->now(), // D-190 — the instant of the action (application clock)
             ));
         }
 

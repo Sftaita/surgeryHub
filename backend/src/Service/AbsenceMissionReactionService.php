@@ -407,7 +407,7 @@ class AbsenceMissionReactionService
                 'actorId'               => $actor->getId(),
                 'actorName'             => self::displayName($actor),
             ],
-            occurredAt: new \DateTimeImmutable(),
+            occurredAt: Clock::get()->now(), // D-190 - the instant of the action (application clock)
         ));
 
         // CAS B (D-118) — before letting this instrumentist count as genuinely released, look

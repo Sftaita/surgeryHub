@@ -26,6 +26,7 @@ use App\Notification\OpenMissionPoolNotifier;
 use App\Enum\OpenEpisodeCause;
 use App\Enum\OpenPoolExclusionReason;
 use App\Service\MissionAssignmentRefusalPolicy;
+use App\Service\MissionCancellationPolicy;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionPostDeployService;
 use App\Service\NotificationTargetResolver;
@@ -69,6 +70,7 @@ use Symfony\Component\Clock\Clock;
  *   REASSIGNED → PLANNING_MISSION_REASSIGNED to old and new instrumentist;
  *                SURGEON_POST_COVERED to surgeon when transitioning OPEN→ASSIGNED
  *   CANCELLED → PLANNING_MISSION_CANCELLED to surgeon; to instrumentist if assigned (defensive)
+ *               — D-190: never for a mission already over when cancelled (endAt <= occurredAt)
  *
  * CAS B (D-118): REASSIGNED with payload['causedByAbsenceId'] set (AbsenceMissionReactionService's
  * automatic post-absence reassignment) suppresses the "new instrumentist" PLANNING_MISSION_
@@ -569,6 +571,21 @@ final class MissionLifecycleChangedMessageHandler
             return;
         }
 
+        // D-190 — a mission already over when it was cancelled (endAt <= occurredAt, the instant
+        // of the action — not of this possibly delayed handling) is an administrative correction:
+        // nobody is notified, on any channel. The cancellation itself (status, audit, archived
+        // encoding) was already applied and recorded by the emitter; nothing else is skipped.
+        $endAt = $this->plannedEndAt($mission, $message);
+        if (!MissionCancellationPolicy::isOperationalCancellation($endAt, $message->occurredAt)) {
+            $this->logger->info('MissionLifecycleChanged::CANCELLED: mission already over when cancelled, no notification', [
+                'missionId'   => $mission->getId(),
+                'endAt'       => $endAt?->format(\DateTimeInterface::ATOM),
+                'cancelledAt' => $message->occurredAt->format(\DateTimeInterface::ATOM),
+            ]);
+
+            return;
+        }
+
         $reason  = $message->payload['reason'] ?? null;
         $payload = [
             'missionId'   => $mission->getId(),
@@ -975,6 +992,37 @@ final class MissionLifecycleChangedMessageHandler
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * D-190 — the planned end of a cancelled mission as it was when the cancellation was
+     * decided: the pre-mutation snapshot carried by the message (payload endAt, ATOM with its
+     * offset), else the reloaded mission (messages emitted before the snapshot existed). An
+     * absent, unreadable or incoherent value (end before start) is unknown (null): the
+     * cancellation is then notified as before — never silenced on a doubt — and logged.
+     */
+    private function plannedEndAt(Mission $mission, MissionLifecycleChangedMessage $message): ?\DateTimeImmutable
+    {
+        $fromSnapshot = static function (string $key) use ($message): ?\DateTimeImmutable {
+            $value = $message->payload[$key] ?? null;
+            $parsed = is_string($value) ? \DateTimeImmutable::createFromFormat(\DateTimeInterface::ATOM, $value) : false;
+
+            return $parsed instanceof \DateTimeImmutable ? $parsed : null;
+        };
+
+        $endAt   = $fromSnapshot('endAt') ?? $mission->getEndAt();
+        $startAt = $fromSnapshot('startAt') ?? $mission->getStartAt();
+        if ($endAt === null || ($startAt !== null && $endAt < $startAt)) {
+            $this->logger->warning('MissionLifecycleChanged::CANCELLED: planned end unknown or incoherent, notified as an operational cancellation', [
+                'missionId' => $mission->getId(),
+                'endAt'     => $endAt?->format(\DateTimeInterface::ATOM),
+                'startAt'   => $startAt?->format(\DateTimeInterface::ATOM),
+            ]);
+
+            return null;
+        }
+
+        return $endAt;
+    }
 
     private function loadMission(int $missionId, string $context): ?Mission
     {

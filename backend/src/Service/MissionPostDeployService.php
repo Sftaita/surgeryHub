@@ -481,7 +481,8 @@ class MissionPostDeployService
             changeType: MissionChangeType::CANCELLED,
             actorId:    $actor->getId(),
             payload:    $payload,
-            occurredAt: new \DateTimeImmutable(),
+            // D-190 — the instant of the action, on the application clock the business rules use.
+            occurredAt: Clock::get()->now(),
         ));
     }
 
