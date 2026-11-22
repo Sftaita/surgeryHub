@@ -17231,7 +17231,9 @@ regarder si la mission était déjà terminée.
    (`BusinessDateTimeImmutableType`), `occurredAt` est en UTC en production ; les changements
    d'heure été / hiver sont donc sans effet.
 4. **Fin inconnue ou incohérente** — clé absente sans valeur en base, valeur présente `null`,
-   illisible (non ATOM, date débordante comme le 31/02, autre type) ou fin antérieure au début :
+   illisible (non ATOM, date débordante comme le 31/02, autre type) ou fin antérieure au début,
+   pour `endAt` **comme pour `startAt`** (un `startAt` présent mais `null` rend l'instantané
+   incomplet, contre-audit PR #93) :
    jamais de silence sur un doute — l'annulation reste notifiée comme avant, avec un avertissement
    journalisé (`unreadable` : la valeur brute). Règle unique
    `MissionCancellationPolicy::isPlannedEndKnown()`.

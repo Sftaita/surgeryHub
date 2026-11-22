@@ -1025,7 +1025,7 @@ final class MissionLifecycleChangedMessageHandler
     /**
      * D-190 — one instant of the message snapshot: $fallback only when the key is absent; a
      * present value is parsed strictly (ATOM, no overflow such as 2026-02-31) and its raw value
-     * is recorded in $unreadable when it cannot be.
+     * is recorded in $unreadable when it is null or cannot be parsed.
      *
      * @param array<string, mixed> $unreadable
      */
@@ -1036,7 +1036,12 @@ final class MissionLifecycleChangedMessageHandler
         }
         $value = $message->payload[$key];
         if ($value === null) {
-            return null; // known at the action time to be missing: unknown, never the database value
+            // Known at the action time to be missing: unknown, never the database value. Recorded
+            // so that a null START also makes the planned end unknown (isPlannedEndKnown() alone
+            // would accept a null start), symmetrically with a null end.
+            $unreadable[$key] = null;
+
+            return null;
         }
         $parsed = is_string($value) ? \DateTimeImmutable::createFromFormat(\DateTimeInterface::ATOM, $value) : false;
         $errors = \DateTimeImmutable::getLastErrors();

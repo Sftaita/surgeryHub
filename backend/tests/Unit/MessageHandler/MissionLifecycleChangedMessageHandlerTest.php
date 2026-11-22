@@ -951,7 +951,7 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         self::assertCount(4, $warnings);
         self::assertSame('MissionLifecycleChanged::CANCELLED: planned end unknown or incoherent, notified as an operational cancellation', $warnings[0][0]);
         self::assertSame(['endAt' => 'n/a'], $warnings[0][1]['unreadable']);
-        self::assertSame([], $warnings[1][1]['unreadable'], 'present null: unknown at the action time, not unreadable');
+        self::assertSame(['endAt' => null], $warnings[1][1]['unreadable'], 'present null: unknown at the action time');
         self::assertSame(['endAt' => '2026-02-31T17:00:00+01:00'], $warnings[2][1]['unreadable']);
     }
 
@@ -965,6 +965,29 @@ final class MissionLifecycleChangedMessageHandlerTest extends TestCase
         $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-22T10:15:00+01:00', extra: ['startAt' => 'garbage']));
 
         self::assertCount(1, $this->dispatched);
+    }
+
+    /**
+     * Review of d474bc4 — a start snapshot PRESENT but null is unknown, exactly like a null end:
+     * with a valid past end (snapshot and database), the cancellation is still notified and a
+     * warning is logged; the database start is never substituted.
+     */
+    public function test_a_present_null_start_snapshot_keeps_the_notification_with_a_warning(): void
+    {
+        $surgeon  = $this->makeUser('surgeon@test.com', ['ROLE_SURGEON']);
+        $previous = $this->makeUser('i@test.com', ['ROLE_INSTRUMENTIST']);
+        $mission  = $this->pastOrFutureMission($surgeon, '2026-11-19 15:00', '2026-11-19 17:00');
+        $this->stubFind($mission, [$previous->getId() => $previous]);
+        $warnings = [];
+        $this->logger->method('warning')->willReturnCallback(function (string $msg, array $ctx) use (&$warnings): void { $warnings[] = [$msg, $ctx]; });
+
+        $this->makeHandler()->__invoke($this->cancelledAt($mission, '2026-11-22T10:15:00+01:00', $previous,
+            ['startAt' => null, 'endAt' => '2026-11-19T17:00:00+01:00']));
+
+        self::assertCount(2, $this->intents(NotificationType::PLANNING_MISSION_CANCELLED));
+        self::assertCount(1, $warnings);
+        self::assertSame('MissionLifecycleChanged::CANCELLED: planned end unknown or incoherent, notified as an operational cancellation', $warnings[0][0]);
+        self::assertSame(['startAt' => null], $warnings[0][1]['unreadable']);
     }
 
     /** Only an ABSENT snapshot (legacy message) falls back on the reloaded mission. */
