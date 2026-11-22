@@ -406,11 +406,13 @@ class MissionPostDeployService
      */
     public function cancel(Mission $mission, User $actor, ?string $reason = null, bool $notify = true, ?int $causedByAbsenceId = null): void
     {
+        // D-190 — the instant of the action, taken before the lock and the mutation.
+        $requestedAt = Clock::get()->now();
         // D-150 — under the mission row lock, re-checked against the committed state.
         $payload = $this->assignments->inLockedChange($mission, fn (): array => $this->applyCancel($mission, $actor, $reason, $causedByAbsenceId));
 
         if ($notify) {
-            $this->dispatchCancelled($mission, $actor, $payload);
+            $this->dispatchCancelled($mission, $actor, $payload, $requestedAt);
         }
     }
 
@@ -434,6 +436,7 @@ class MissionPostDeployService
             throw new MissionCancellationException(MissionCancellationPolicy::REASON_INVALID, "Motif d'annulation invalide.", ['missionId' => $mission->getId()]);
         }
 
+        $requestedAt = Clock::get()->now(); // D-190 — the instant of the action, before the lock and the mutation
         $payload = $this->assignments->inLockedChange($mission, fn (): array => $this->applyCancel($mission, $actor, $reason, null, [
             'cancellationReason'   => $cancellationReason,
             'replacement'          => $replacement,
@@ -442,7 +445,7 @@ class MissionPostDeployService
         ]));
 
         if ($notify) {
-            $this->dispatchCancelled($mission, $actor, $payload);
+            $this->dispatchCancelled($mission, $actor, $payload, $requestedAt);
         }
 
         return $payload;
@@ -471,7 +474,7 @@ class MissionPostDeployService
     }
 
     /** @param array<string,mixed> $payload */
-    private function dispatchCancelled(Mission $mission, User $actor, array $payload): void
+    private function dispatchCancelled(Mission $mission, User $actor, array $payload, \DateTimeImmutable $requestedAt): void
     {
         // The manager's internal comment never leaves the audit (no notification carries it).
         unset($payload['internalComment']);
@@ -481,7 +484,9 @@ class MissionPostDeployService
             changeType: MissionChangeType::CANCELLED,
             actorId:    $actor->getId(),
             payload:    $payload,
-            occurredAt: new \DateTimeImmutable(),
+            // D-190 — the instant of the action (application clock), captured before the mutation:
+            // a request made before the end is never classified administrative by its own duration.
+            occurredAt: $requestedAt,
         ));
     }
 

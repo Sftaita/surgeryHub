@@ -124,6 +124,42 @@ describe("ManagerMissionDrawer — annulation de mission (Point 5)", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("D-190 — mission terminée (décision serveur) : aucune notification annoncée, rien n'est promis par e-mail", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "IN_PROGRESS",
+      instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
+      allowedActions: ["view", "cancel"],
+      cancellation: { blockedReason: null, hasEncodingData: false, notifiesParticipants: false },
+    }));
+
+    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
+    const recap = await within(dialogPaper()).findByTestId("cancel-mission-recap");
+    expect(recap).toHaveTextContent("correction administrative");
+    expect(recap).toHaveTextContent("Aucune notification ne sera envoyée");
+    expect(recap).toHaveTextContent("Sophie Martin");
+    expect(recap).not.toHaveTextContent("Recevront l'e-mail d'annulation");
+    expect(within(dialogPaper()).queryByText("Repris dans l'e-mail d'annulation.")).not.toBeInTheDocument();
+
+    await user.click(within(dialogPaper()).getByTestId("confirm-cancel-mission"));
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith("/api/missions/42/cancel", { reason: undefined, internalComment: undefined }));
+  });
+
+  it("D-190 — mission non terminée (décision serveur) : l'e-mail d'annulation reste annoncé", async () => {
+    const user = userEvent.setup();
+    renderDrawer(baseMission({
+      status: "ASSIGNED",
+      instrumentist: { id: 9, firstname: "Sophie", lastname: "Martin" },
+      allowedActions: ["view", "cancel"],
+      cancellation: { blockedReason: null, hasEncodingData: false, notifiesParticipants: true },
+    }));
+
+    await user.click(await screen.findByRole("button", { name: "Annuler la mission" }));
+    const recap = await within(dialogPaper()).findByTestId("cancel-mission-recap");
+    expect(recap).toHaveTextContent("Recevront l'e-mail d'annulation");
+    expect(recap).not.toHaveTextContent("Aucune notification");
+  });
+
   it("confirmer l'annulation transmet le motif communiqué et le commentaire interne", async () => {
     const user = userEvent.setup();
     renderDrawer(baseMission({ status: "OPEN", cancellation: { blockedReason: null, hasEncodingData: false } }));

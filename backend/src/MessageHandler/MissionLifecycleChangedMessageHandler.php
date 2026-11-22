@@ -26,6 +26,7 @@ use App\Notification\OpenMissionPoolNotifier;
 use App\Enum\OpenEpisodeCause;
 use App\Enum\OpenPoolExclusionReason;
 use App\Service\MissionAssignmentRefusalPolicy;
+use App\Service\MissionCancellationPolicy;
 use App\Service\MissionEligibilityService;
 use App\Service\MissionPostDeployService;
 use App\Service\NotificationTargetResolver;
@@ -69,6 +70,7 @@ use Symfony\Component\Clock\Clock;
  *   REASSIGNED → PLANNING_MISSION_REASSIGNED to old and new instrumentist;
  *                SURGEON_POST_COVERED to surgeon when transitioning OPEN→ASSIGNED
  *   CANCELLED → PLANNING_MISSION_CANCELLED to surgeon; to instrumentist if assigned (defensive)
+ *               — D-190: never for a mission already over when cancelled (endAt <= occurredAt)
  *
  * CAS B (D-118): REASSIGNED with payload['causedByAbsenceId'] set (AbsenceMissionReactionService's
  * automatic post-absence reassignment) suppresses the "new instrumentist" PLANNING_MISSION_
@@ -569,6 +571,21 @@ final class MissionLifecycleChangedMessageHandler
             return;
         }
 
+        // D-190 — a mission already over when it was cancelled (endAt <= occurredAt, the instant
+        // of the action — not of this possibly delayed handling) is an administrative correction:
+        // nobody is notified, on any channel. The cancellation itself (status, audit, archived
+        // encoding) was already applied and recorded by the emitter; nothing else is skipped.
+        $endAt = $this->plannedEndAt($mission, $message);
+        if (!MissionCancellationPolicy::isOperationalCancellation($endAt, $message->occurredAt)) {
+            $this->logger->info('MissionLifecycleChanged::CANCELLED: mission already over when cancelled, no notification', [
+                'missionId'   => $mission->getId(),
+                'endAt'       => $endAt?->format(\DateTimeInterface::ATOM),
+                'cancelledAt' => $message->occurredAt->format(\DateTimeInterface::ATOM),
+            ]);
+
+            return;
+        }
+
         $reason  = $message->payload['reason'] ?? null;
         $payload = [
             'missionId'   => $mission->getId(),
@@ -975,6 +992,67 @@ final class MissionLifecycleChangedMessageHandler
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
+
+    /**
+     * D-190 — the planned end of a cancelled mission as it was when the cancellation was
+     * decided: the pre-mutation snapshot carried by the message (payload startAt / endAt, ATOM
+     * with its offset). Only a snapshot ABSENT from the payload (a message emitted before the
+     * snapshot existed) falls back to the reloaded mission. A snapshot PRESENT but null,
+     * unreadable or incoherent (end before start) is unknown — never replaced by the database
+     * value, which may have changed since: null is returned, the cancellation is notified as
+     * before (never silenced on a doubt) and a warning is logged.
+     */
+    private function plannedEndAt(Mission $mission, MissionLifecycleChangedMessage $message): ?\DateTimeImmutable
+    {
+        $unreadable = [];
+        $endAt   = self::snapshotInstant($message, 'endAt', $mission->getEndAt(), $unreadable);
+        $startAt = self::snapshotInstant($message, 'startAt', $mission->getStartAt(), $unreadable);
+
+        if ($unreadable !== [] || !MissionCancellationPolicy::isPlannedEndKnown($endAt, $startAt)) {
+            $this->logger->warning('MissionLifecycleChanged::CANCELLED: planned end unknown or incoherent, notified as an operational cancellation', [
+                'missionId'  => $mission->getId(),
+                'endAt'      => $endAt?->format(\DateTimeInterface::ATOM),
+                'startAt'    => $startAt?->format(\DateTimeInterface::ATOM),
+                'unreadable' => $unreadable,
+            ]);
+
+            return null;
+        }
+
+        return $endAt;
+    }
+
+    /**
+     * D-190 — one instant of the message snapshot: $fallback only when the key is absent; a
+     * present value is parsed strictly (ATOM, no overflow such as 2026-02-31) and its raw value
+     * is recorded in $unreadable when it is null or cannot be parsed.
+     *
+     * @param array<string, mixed> $unreadable
+     */
+    private static function snapshotInstant(MissionLifecycleChangedMessage $message, string $key, ?\DateTimeImmutable $fallback, array &$unreadable): ?\DateTimeImmutable
+    {
+        if (!array_key_exists($key, $message->payload)) {
+            return $fallback;
+        }
+        $value = $message->payload[$key];
+        if ($value === null) {
+            // Known at the action time to be missing: unknown, never the database value. Recorded
+            // so that a null START also makes the planned end unknown (isPlannedEndKnown() alone
+            // would accept a null start), symmetrically with a null end.
+            $unreadable[$key] = null;
+
+            return null;
+        }
+        $parsed = is_string($value) ? \DateTimeImmutable::createFromFormat(\DateTimeInterface::ATOM, $value) : false;
+        $errors = \DateTimeImmutable::getLastErrors();
+        if (!$parsed instanceof \DateTimeImmutable || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+            $unreadable[$key] = is_scalar($value) ? (string) $value : get_debug_type($value);
+
+            return null;
+        }
+
+        return $parsed;
+    }
 
     private function loadMission(int $missionId, string $context): ?Mission
     {

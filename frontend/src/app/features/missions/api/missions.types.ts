@@ -233,6 +233,11 @@ export interface MissionCancellationInfo {
   correction?: { action: "REJECT" | "REOPEN"; message: string } | null;
   /** Encodage existant : archivé sans aucune incidence financière si la mission est annulée (détail seulement). */
   hasEncodingData?: boolean;
+  /**
+   * D-190 — décision du serveur : annuler maintenant prévient-il le chirurgien et l'instrumentiste ?
+   * `false` : mission terminée, correction administrative sans aucune notification. Affiché tel quel.
+   */
+  notifiesParticipants?: boolean;
 }
 
 export interface Mission {

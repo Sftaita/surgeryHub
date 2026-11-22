@@ -17195,3 +17195,69 @@ prestation par prestation, ainsi qu'une synthèse PDF de la page.
 **Limites.** Comme D-179/D-180 : mois d'appartenance = `startAt` planifié ; montants recalculés à
 la volée au tarif personnel en vigueur (pas un montant facturé). Aucune migration.
 
+
+---
+
+## D-190 — Annulation d'une mission déjà terminée : correction administrative, aucune notification (2026-11-22)
+
+Branche `fix/past-mission-cancellation-notifications`. Non fusionnée, non déployée.
+
+**Contexte.** Le 21/11/2026 (19:40 UTC), un manager a annulé (« supprimé » dans l'interface,
+`POST /api/missions/{id}/cancel`) la mission #1129 du 19/11/2026, 15:00–17:00, CHIREC Delta,
+restée `IN_PROGRESS` faute d'encodage. Le chirurgien et l'instrumentiste précédemment affectée
+ont reçu `PLANNING_MISSION_CANCELLED` (in-app + e-mail « SurgicalHub — Votre mission est
+annulée »). Cause : depuis D-182 une mission commencée ou passée est annulable, mais
+`MissionLifecycleChangedMessageHandler::handleCancelled()` notifiait toute annulation sans
+regarder si la mission était déjà terminée.
+
+**Décision.**
+1. **Règle unique** `MissionCancellationPolicy::isOperationalCancellation(endAt, cancelledAt)` :
+   une annulation n'est opérationnelle (notifiée) que si `endAt > cancelledAt`. À l'instant exact
+   de fin, la mission est terminée. Une mission terminée annulée est une correction
+   administrative : **aucune** notification d'annulation, sur aucun canal (in-app, push, e-mail),
+   ni au chirurgien ni à l'instrumentiste.
+2. **Instant de l'action**, jamais celui du traitement : `cancelledAt` = `occurredAt` du message
+   (posé par l'émetteur au moment de la mutation). Un worker Messenger en retard ne transforme
+   pas une annulation opérationnelle en annulation silencieuse. Les trois émetteurs de
+   `CANCELLED` (`MissionPostDeployService`, `AbsenceMissionReactionService`,
+   `ReleasedRoomSlotTakeoverService`) posent cet instant avec l'horloge applicative
+   (`Clock::get()->now()`, celle des règles métier) au lieu de `new \DateTimeImmutable()` :
+   identique en production (`NativeClock`), cohérent quand l'horloge est figée en test.
+3. **Fin prévue de l'instant de l'action** : l'instantané `startAt` / `endAt` du message (ATOM
+   avec son offset, posé par `applyCancel()` avant mutation). Seule une clé **absente** (message
+   émis avant l'instantané) retombe sur la mission rechargée ; une valeur **présente** n'est
+   jamais remplacée par celle de la base (revue PR #93, réserve 1).
+   Comparaison d'instants (offsets inclus) : `endAt` est une heure métier Europe/Brussels
+   (`BusinessDateTimeImmutableType`), `occurredAt` est en UTC en production ; les changements
+   d'heure été / hiver sont donc sans effet.
+4. **Fin inconnue ou incohérente** — clé absente sans valeur en base, valeur présente `null`,
+   illisible (non ATOM, date débordante comme le 31/02, autre type) ou fin antérieure au début,
+   pour `endAt` **comme pour `startAt`** (un `startAt` présent mais `null` rend l'instantané
+   incomplet, contre-audit PR #93) :
+   jamais de silence sur un doute — l'annulation reste notifiée comme avant, avec un avertissement
+   journalisé (`unreadable` : la valeur brute). Règle unique
+   `MissionCancellationPolicy::isPlannedEndKnown()`.
+4 bis. **Instant capturé avant la mutation** (revue PR #93, P3) : `cancel()` / `cancelByManager()`
+   prennent l'instant au début de l'opération, avant le verrou et la mutation, et le transmettent au
+   message : une demande faite avant la fin n'est jamais classée administrative à cause de la durée
+   de son propre traitement. Les émetteurs automatiques (absence, salle libérée) ne touchent que des
+   missions non commencées : inchangés.
+4 ter. **Fenêtre d'annulation** : le détail et la liste servent au manager
+   `cancellation.notifiesParticipants` (même règle, évaluée à l'affichage avec « maintenant »).
+   `false` → `CancelMissionDialog` annonce une correction administrative sans aucune notification,
+   au lieu de « Recevront l'e-mail d'annulation ». Le client affiche la décision du serveur, sans
+   la recalculer ; seule la décision prise à l'instant de l'action fait foi (une mission qui se
+   termine entre l'ouverture de la fenêtre et la confirmation n'est pas notifiée).
+5. **Point de contrôle unique** : le début de `handleCancelled()`, seul chemin qui notifie une
+   annulation (`cancelByManager()` / `cancel()` → `MissionLifecycleChangedMessage(CANCELLED)`).
+   Inchangé : le statut `CANCELLED`, l'instrumentiste retirée, l'`AuditEvent
+   MISSION_CANCELLED_POST_DEPLOY`, l'encodage archivé, les calculs financiers, les permissions
+   (Voters), le message de cycle de vie lui-même (émis et traité, journalisé), l'idempotence
+   (`episodeRef`) et les retries. Aucune migration.
+6. **Autres chemins** vérifiés : annulations automatiques sur absence et salle libérée (missions
+   jamais commencées, `AbsenceMissionProtectionPolicy`) — inchangées ; le récapitulatif d'absence
+   (`ABSENCE_MISSION_CANCELLED`) ne concerne que ces missions futures ; doublon remplacé
+   (`cancel-as-replaced`) — jamais d'e-mail d'annulation (D-182 § 4), hors périmètre.
+
+**Limites.** Les notifications déjà envoyées pour #1129 ne sont pas retirées. Le texte de la
+fenêtre peut être dépassé si la mission se termine pendant qu'elle est ouverte (cf. 4 ter).

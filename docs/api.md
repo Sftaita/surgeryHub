@@ -562,7 +562,10 @@ ou validée reste refusée (correction de toute la prestation d'abord).
   PROGRAM_CANCELLED`, `archivedEncoding` (faits d'encodage ou `null`), `internalComment`,
   `encodingCorrection` (`{action, fromStatus, obsoleteFinancialCalculationIds}` ou `null`) ;
 - `MissionLifecycleChangedMessage(CANCELLED)` dispatché (async) → `PLANNING_MISSION_CANCELLED`
-  (e-mail activé par défaut) à l'instrumentiste retirée et au chirurgien.
+  (e-mail activé par défaut) à l'instrumentiste retirée et au chirurgien — **seulement si la
+  mission n'était pas terminée à l'instant de l'annulation** (D-190 : `endAt` > `occurredAt`).
+  Une mission déjà terminée (`endAt` ≤ instant de l'action) est annulée et auditée à l'identique,
+  sans aucune notification (in-app, push, e-mail).
 
 Les appelants automatiques (réaction aux absences, salle libérée, modifications de planning)
 gardent leur règle étroite (`DRAFT|OPEN|ASSIGNED`, sans encodage).
@@ -756,10 +759,11 @@ contient `reassign` aussi pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS` quand un m
 ### Détail mission — champs D-182
 
 `GET /api/missions/{id}` porte, pour les managers, `cancellation` : `{ blockedReason: {code,
-message}|null, correction: {action: "REJECT"|"REOPEN", message}|null, hasEncodingData }`
-(`MissionCancellationPolicy`), et pour tous `replacement` : `{ replacedByMissionId,
+message}|null, correction: {action: "REJECT"|"REOPEN", message}|null, hasEncodingData,
+notifiesParticipants }` (`MissionCancellationPolicy` ; `notifiesParticipants` D-190 : `false` =
+mission terminée, l'annuler maintenant ne prévient personne), et pour tous `replacement` : `{ replacedByMissionId,
 replacesMissionIds }` ou `null`. Les éléments de `GET /api/missions` portent aussi, pour les
-managers, `cancellation` : `{ blockedReason, correction }`. `allowedActions` contient `cancel`
+managers, `cancellation` : `{ blockedReason, correction, notifiesParticipants }`. `allowedActions` contient `cancel`
 aussi pour `IN_PROGRESS` / `ENCODING_IN_PROGRESS`, `SUBMITTED` et `VALIDATED` non facturée,
 jamais quand `blockedReason` est servi — calculé avec la prestation multi-salles de la mission
 (liste et détail), exactement comme le contrôle serveur : le client affiche alors l'action
