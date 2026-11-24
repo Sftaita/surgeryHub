@@ -1295,6 +1295,46 @@
       "lastReviewed": "2026-11-10"
     },
     {
+      "id": "D-190",
+      "title": "Annulation d'une mission déjà terminée : correction administrative, aucune notification",
+      "description": "Annuler une mission dont la fin prévue est atteinte (endAt ≤ instant de la demande, Europe/Brussels, offsets comparés) n'envoie plus aucune notification (in-app, e-mail, push) au chirurgien ni à l'instrumentiste ; statut, AuditEvent et historique inchangés. Fin inconnue, illisible ou incohérente (instantané startAt / endAt présent mais null ou invalide) : notification conservée + avertissement journalisé ; seule une clé absente retombe sur la mission rechargée. Instant capturé avant la mutation. cancellation.notifiesParticipants servi par le serveur (détail et liste) et affiché par la fenêtre d'annulation. Aucune migration.",
+      "kind": "fix",
+      "priority": "P2",
+      "userImpact": "Un manager qui annulait une mission passée (cas réel #1129) déclenchait des notifications et e-mails d'annulation injustifiés au chirurgien et à l'instrumentiste.",
+      "status": "deploye",
+      "statusSince": "2026-11-24",
+      "refs": {
+        "branches": [
+          "fix/past-mission-cancellation-notifications"
+        ],
+        "decision": "D-190",
+        "worktrees": [
+          "SurgicalHub-past-cancel"
+        ],
+        "prs": [
+          93
+        ],
+        "commits": [
+          "dbf8ac19bcd14fda6fa49cc648f48f7dc749f8e6",
+          "d474bc4fe6fa1c23a44278d5cdd0810ae053eea5",
+          "4b6c72e2e787a6c402e6815086c9bc30847ea33c",
+          "1ce2f01bc0229100e52c55bdf8f0dc9d46ad4873"
+        ]
+      },
+      "nextAction": "Officialisé v2026.11.24-prod (1ce2f01). Validation fonctionnelle utilisateur attendue (fenêtre d'annulation d'une mission terminée avec une session manager réelle). Rollback : deploy/deploy.sh rollback 691231d0eff808d296fc2f6b89a0bb7dcdd83f60 (compatible le 2026-11-24).",
+      "lastReviewed": "2026-11-24",
+      "validationNeeded": "Tests locaux (unitaires, fonctionnels sur base jetable) et contrôles de production en lecture seule validés ; annulation réelle non exercée en production (aucune mission réelle annulée) ; confirmation utilisateur attendue.",
+      "prodEvidence": "v2026.11.24-prod (1ce2f01) : 0 migration (99/99) ; activate 2026-11-24 06:38 UTC ; worker recréé sur l'image 1ce2f01, handler porteur de isPlannedEndKnown ; mark OFFICIAL ; compat 1ce2f01 et 691231d compatibles (71 colonnes) ; GET /api/missions/{id} par jeton console (manager #7) : #1128 et #1115 (terminées) notifiesParticipants false, #1144 et #1141 (à venir) true ; CHECKSUM missions / audit / envois / notifications identiques avant-après ; 0 5xx ; voir docs/production.md.",
+      "pendingOps": [
+        {
+          "type": "validation",
+          "status": "en-attente",
+          "validation": "utilisateur",
+          "description": "Réserve non bloquante : ouvrir la fenêtre d'annulation d'une mission terminée avec une session manager réelle (texte « correction administrative », sans annuler de mission réelle) ; le chemin asynchrone d'une annulation réelle n'a pas été exercé en production."
+        }
+      ]
+    },
+    {
       "id": "D-189",
       "title": "Heures instrumentistes : variations colorées, photos, synthèse PDF et décompte individuel",
       "description": "Page Facturation › Heures instrumentistes (D-180) : indicateurs avec icônes, variations vert/rouge (page et tiroir ; Top 5 du Dashboard inchangé), photos de profil réelles (initiales sinon), bouton « Exporter PDF » (synthèse) et « Télécharger le décompte PDF » par instrumentiste (ligne du tableau et tiroir). Endpoints GET /api/manager/instrumentist-hours/export et GET /api/manager/instrumentists/{id}/hours/export (MANAGER / ADMIN). Décompte = une ligne par prestation validée, chronologique, total = Σ lignes = coût estimé validé. Aucune migration.",
